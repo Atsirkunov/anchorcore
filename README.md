@@ -6,6 +6,7 @@ Connect your knowledge to any AI model. An AI memory layer / knowledge operating
 
 - [Product Plan](./docs/product-plan.md)
 - [Architecture Overview](./docs/architecture.md)
+- [macOS Packaging Plan](./docs/packaging.md)
 
 ## Project layout
 
