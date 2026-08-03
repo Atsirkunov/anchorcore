@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, or_, select
@@ -15,11 +16,44 @@ logger = logging.getLogger(__name__)
 
 
 def chunk_text(text: str) -> list[str]:
+    """Fixed-size chunks with overlap (used for entity summaries)."""
     size, overlap = settings.chunk_size, settings.chunk_overlap
     if len(text) <= size:
         return [text]
     step = size - overlap
     return [text[i : i + size] for i in range(0, max(len(text) - size + 1, 1), step)]
+
+
+def chunk_document(text: str) -> list[str]:
+    """Section-aware chunks of a full document: split on paragraph boundaries,
+    falling back to fixed-size with overlap for oversized paragraphs."""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    chunks: list[str] = []
+    current = ""
+    for paragraph in paragraphs:
+        if len(paragraph) > settings.chunk_size:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(chunk_text(paragraph))
+        elif len(current) + len(paragraph) + 2 <= settings.chunk_size:
+            current = paragraph if not current else f"{current}\n\n{paragraph}"
+        else:
+            if current:
+                chunks.append(current)
+            current = paragraph
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def classify_windows(text: str) -> list[str]:
+    """Split long documents into overlapping windows for classification."""
+    window = settings.classify_window_chars
+    if len(text) <= window:
+        return [text]
+    step = max(window // 2, 1)
+    return [text[i : i + window] for i in range(0, max(len(text) - window + 1, 1), step)]
 
 
 def record_sync_error(db: Session, source: Source, exc: Exception) -> None:
@@ -96,13 +130,16 @@ class IngestionPipeline:
         ).scalar_one_or_none()
 
         if existing is not None:
-            if existing.content_hash == digest:
+            missing_text = not existing.text
+            if existing.content_hash == digest and not missing_text:
                 return False
             existing.content_hash = digest
             existing.title = doc.title
             existing.author = doc.author
             existing.updated_at = doc.updated_at
             existing.stale = False
+            if missing_text or existing.text != doc.text:
+                existing.text = doc.text
             return True
 
         db.add(
@@ -110,6 +147,7 @@ class IngestionPipeline:
                 source_id=source.id,
                 external_id=doc.external_id,
                 title=doc.title,
+                text=doc.text,
                 content_hash=digest,
                 author=doc.author,
                 updated_at=doc.updated_at,
@@ -121,7 +159,12 @@ class IngestionPipeline:
     async def _classify_and_store(self, db: Session, source: Source, doc: IngestionDoc) -> int:
         # Classify BEFORE touching the DB: LLM calls are slow and must never
         # hold a write lock on SQLite (blocks syncs/requests concurrently).
-        classified = await self.classifier.classify(doc.text, doc.source_ref or doc.title)
+        base_ref = doc.source_ref or doc.title
+        windows = classify_windows(doc.text)
+        classified: list[dict] = []
+        for index, window in enumerate(windows, start=1):
+            ref = f"{base_ref} §{index}" if len(windows) > 1 else base_ref
+            classified.extend(await self.classifier.classify(window, ref))
 
         item = db.execute(
             select(IngestedItem).where(
@@ -138,7 +181,12 @@ class IngestionPipeline:
         db.flush()
 
         count = 0
+        seen: set[str] = set()
         for item_data in classified:
+            key = item_data["summary"].lower()
+            if key in seen:
+                continue
+            seen.add(key)
             entity = Entity(
                 item_id=item.id,
                 kind=item_data["kind"],
@@ -161,15 +209,25 @@ class IngestionPipeline:
                 )
             count += 1
 
+        # full-document chunks so long content is fully retrievable
+        doc_chunks = chunk_document(doc.text)
+        for index, chunk_content in enumerate(doc_chunks, start=1):
+            ref = f"{base_ref} §{index}" if len(doc_chunks) > 1 else base_ref
+            db.add(Chunk(item_id=item.id, source_ref=ref, content=chunk_content))
+
         db.commit()
 
         await self._embed_item(db, item)
         return count
 
     async def _embed_item(self, db: Session, item: IngestedItem) -> None:
-        chunks = db.execute(select(Chunk).where(Chunk.entity_id.in_(
-            select(Entity.id).where(Entity.item_id == item.id)
-        ))).scalars().all()
+        chunks = db.execute(
+            select(Chunk).where(
+                or_(Chunk.item_id == item.id, Chunk.entity_id.in_(
+                    select(Entity.id).where(Entity.item_id == item.id)
+                ))
+            )
+        ).scalars().all()
 
         texts = [c.content for c in chunks if c.embedding is None]
         if not texts:

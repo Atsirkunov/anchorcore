@@ -6,18 +6,20 @@ from sqlalchemy import select
 
 from .config import settings
 from .db import SessionLocal
+from .embedder import pack_f32
 from .folder_watcher import FolderWatcher
-from .models import Source
+from .models import Chunk, Source
 
 logger = logging.getLogger(__name__)
 
 
 class Scheduler:
     """Background loops: periodic Jira polls, hourly folder re-scans, folder file watcher,
-    with a task watchdog that restarts dead loops."""
+    embedding backfill, with a task watchdog that restarts dead loops."""
 
-    def __init__(self, pipeline):
+    def __init__(self, pipeline, embedder):
         self.pipeline = pipeline
+        self.embedder = embedder
         self.watcher = FolderWatcher(settings.folder_watch_debounce)
         self._tasks: dict[str, asyncio.Task] = {}
         self._watch_task: asyncio.Task | None = None
@@ -29,11 +31,13 @@ class Scheduler:
             "folder": asyncio.create_task(
                 self._poll_loop("folder", settings.folder_scan_minutes), name="folder"
             ),
+            "backfill": asyncio.create_task(self._backfill_loop(), name="backfill"),
         }
         self._watch_task = asyncio.create_task(self._watch_loop(), name="folder-watch")
         self._watchdog_task = asyncio.create_task(self._watchdog(), name="watchdog")
         self.watcher.start()
         self.reload_sources()
+        asyncio.create_task(self._backfill_embeddings(), name="backfill-startup")
 
     async def stop(self) -> None:
         tasks = list(self._tasks.values()) + [self._watch_task, self._watchdog_task]
@@ -48,6 +52,30 @@ class Scheduler:
         if self._watch_task is not None:
             states["folder-watch"] = "running" if not self._watch_task.done() else "stopped"
         return states
+
+    async def _backfill_loop(self) -> None:
+        while True:
+            await asyncio.sleep(15 * 60)
+            try:
+                await self._backfill_embeddings()
+            except Exception as exc:  # noqa: BLE001
+                logger.error("embedding backfill loop crashed: %s", exc)
+
+    async def _backfill_embeddings(self) -> None:
+        with SessionLocal() as db:
+            chunks = list(db.execute(select(Chunk).where(Chunk.embedding.is_(None))).scalars())
+            if not chunks:
+                return
+            texts = [c.content for c in chunks]
+            try:
+                vectors = await self.embedder.embed(texts)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("embedding backfill failed (%s); %d chunks still pending", exc, len(chunks))
+                return
+            for chunk, vector in zip(chunks, vectors):
+                chunk.embedding = pack_f32([vector])
+            db.commit()
+            logger.info("embedding backfill: embedded %d chunks", len(chunks))
 
     def reload_sources(self) -> None:
         """(Re)build folder watchers from enabled folder sources in the DB."""
