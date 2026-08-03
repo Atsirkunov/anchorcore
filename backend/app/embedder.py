@@ -9,6 +9,8 @@ from .http import RetryClient
 
 logger = logging.getLogger(__name__)
 
+BATCH_SIZE = 32
+
 
 def pack_f32(vectors: list[list[float]]) -> bytes:
     return b"".join(struct.pack("<f", v) for vector in vectors for v in vector)
@@ -22,15 +24,19 @@ class Embedder:
     async def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        payload = {"model": settings.embed_model, "input": texts}
-        async with RetryClient(timeout=settings.classifier_timeout) as client:
-            resp = await client.post(
-                f"{settings.ollama_base_url.rstrip('/')}/v1/embeddings",
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()["data"]
-        return [item["embedding"] for item in sorted(data, key=lambda d: d["index"])]
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), BATCH_SIZE):
+            batch = texts[start : start + BATCH_SIZE]
+            payload = {"model": settings.embed_model, "input": batch}
+            async with RetryClient(timeout=settings.classifier_timeout) as client:
+                resp = await client.post(
+                    f"{settings.ollama_base_url.rstrip('/')}/v1/embeddings",
+                    json=payload,
+                )
+                resp.raise_for_status()
+                data = resp.json()["data"]
+            vectors.extend(item["embedding"] for item in sorted(data, key=lambda d: d["index"]))
+        return vectors
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:

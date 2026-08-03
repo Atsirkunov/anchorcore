@@ -62,7 +62,7 @@ class AskRequest(BaseModel):
 
 
 class Citation(BaseModel):
-    entity_id: int
+    entity_id: int | None
     kind: str
     summary: str
     source_ref: str
