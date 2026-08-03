@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     jira_poll_minutes: int = 15
     folder_scan_minutes: int = 60
+    folder_watch_debounce: float = 3.0
     chunk_size: int = 800
     chunk_overlap: int = 100
     top_k: int = 8
