@@ -95,3 +95,20 @@ def test_folder_watcher_picks_up_new_files(client, tmp_path):
             break
     assert found, "watcher did not ingest the new file within 20s"
     assert source["id"] is not None
+
+
+def test_reclassify_rebuilds_entities(client, tmp_path):
+    (tmp_path / "r.md").write_text("We decided to adopt the new stack.", encoding="utf-8")
+    source = client.post(
+        "/sources",
+        json={"connector": "folder", "name": "recl", "config": {"path": str(tmp_path)}},
+    ).json()
+
+    sync = client.post(f"/sources/{source['id']}/sync")
+    assert sync.status_code == 200
+    assert client.get("/entities").json()
+
+    result = client.post(f"/sources/{source['id']}/reclassify")
+    assert result.status_code == 200
+    assert result.json()["entities"] >= 1
+    assert client.get("/entities").json()

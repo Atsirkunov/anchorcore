@@ -21,6 +21,8 @@ export const api = {
     }),
   syncSource: (id: number) =>
     request<{ items: number; entities: number }>(`/sources/${id}/sync`, { method: "POST" }),
+  reclassifySource: (id: number) =>
+    request<{ items: number; entities: number }>(`/sources/${id}/reclassify`, { method: "POST" }),
   deleteSource: (id: number) => request<{ deleted: boolean }>(`/sources/${id}`, { method: "DELETE" }),
 
   listEntities: (params?: { kind?: string }) =>

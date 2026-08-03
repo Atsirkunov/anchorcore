@@ -47,6 +47,16 @@ export function SourcesTab() {
     }
   }
 
+  async function reclassify(id: number) {
+    setError(null);
+    try {
+      await api.reclassifySource(id);
+      refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   return (
     <div>
       <h2>Sources</h2>
@@ -92,6 +102,7 @@ export function SourcesTab() {
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <button onClick={() => sync(s.id)} style={styles.button}>Sync now</button>
+              <button onClick={() => reclassify(s.id)} style={styles.button}>Reclassify</button>
               <button onClick={() => api.deleteSource(s.id).then(refresh)} style={{ ...styles.button, background: "#3a1d1d" }}>
                 Delete
               </button>

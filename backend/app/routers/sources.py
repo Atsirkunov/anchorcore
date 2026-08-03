@@ -51,6 +51,18 @@ def make_router(pipeline: IngestionPipeline, secrets: SecretStore, scheduler) ->
         except ConnectorError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @router.post("/{source_id}/reclassify")
+    async def reclassify_source(source_id: int, db: Session = Depends(get_db)) -> dict:
+        """Force re-classification of all items in the source (e.g. after
+        installing the LLM model or switching to a better classifier)."""
+        source = db.get(Source, source_id)
+        if source is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        try:
+            return await pipeline.sync_source(db, source, force_reclassify=True)
+        except ConnectorError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @router.get("/{source_id}/config")
     def get_config(source_id: int, db: Session = Depends(get_db)) -> dict:
         source = db.get(Source, source_id)
