@@ -73,3 +73,25 @@ def test_health_reports_components(client):
     assert health["components"]["ollama"] in {"ok", "offline"}
     assert "tasks" in health["components"]
     assert "failing_sources" in health["components"]
+
+
+def test_folder_watcher_picks_up_new_files(client, tmp_path):
+    import time
+
+    source = client.post(
+        "/sources",
+        json={"connector": "folder", "name": "watched", "config": {"path": str(tmp_path)}},
+    ).json()
+
+    (tmp_path / "new.md").write_text("We decided to ship the watcher.", encoding="utf-8")
+
+    deadline = time.monotonic() + 20
+    found = False
+    while time.monotonic() < deadline:
+        time.sleep(1)
+        entities = client.get("/entities").json()
+        if any("watcher" in e["summary"] for e in entities):
+            found = True
+            break
+    assert found, "watcher did not ingest the new file within 20s"
+    assert source["id"] is not None

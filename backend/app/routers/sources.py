@@ -13,7 +13,7 @@ from ..pipeline import IngestionPipeline
 from ..secrets import SecretStore, store_source_config
 
 
-def make_router(pipeline: IngestionPipeline, secrets: SecretStore) -> APIRouter:
+def make_router(pipeline: IngestionPipeline, secrets: SecretStore, scheduler) -> APIRouter:
     router = APIRouter(prefix="/sources", tags=["sources"])
 
     @router.post("", response_model=schemas.SourceOut, status_code=201)
@@ -24,6 +24,7 @@ def make_router(pipeline: IngestionPipeline, secrets: SecretStore) -> APIRouter:
         store_source_config(db, source, payload.config, secrets)
         db.commit()
         db.refresh(source)
+        scheduler.reload_sources()
         return source
 
     @router.get("", response_model=list[schemas.SourceOut])
@@ -37,6 +38,7 @@ def make_router(pipeline: IngestionPipeline, secrets: SecretStore) -> APIRouter:
             raise HTTPException(status_code=404, detail="Source not found")
         db.delete(source)
         db.commit()
+        scheduler.reload_sources()
         return {"deleted": True}
 
     @router.post("/{source_id}/sync")

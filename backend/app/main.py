@@ -66,7 +66,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(sources.make_router(pipeline, secrets))
+app.include_router(sources.make_router(pipeline, secrets, scheduler))
 app.include_router(entities.make_router())
 app.include_router(entities.review_router())
 app.include_router(qa.make_router(answer_engine))
