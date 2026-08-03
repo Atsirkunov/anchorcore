@@ -1,14 +1,13 @@
 import json
 import logging
 
-import httpx
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .config import settings
 from .embedder import Embedder, unpack_f32
 from .http import RetryClient
-from .models import Chunk, Entity
+from .models import Chunk, Entity, IngestedItem
 from .schemas import AskResponse, Citation
 
 logger = logging.getLogger(__name__)
@@ -47,44 +46,57 @@ class AnswerEngine:
 
         answer_text = await self._generate(question, context)
 
-        citations = [
-            Citation(
-                entity_id=hit["chunk"].entity_id,
-                kind=hit["entity"].kind,
-                summary=hit["entity"].summary[:200],
-                source_ref=hit["chunk"].source_ref,
-                score=round(hit["score"], 3),
-                snippet=hit["chunk"].content[:300],
+        citations = []
+        for hit in hits[:5]:
+            chunk, entity, item = hit["chunk"], hit["entity"], hit["item"]
+            if entity is not None:
+                kind, summary = entity.kind, entity.summary[:200]
+            else:
+                kind = "document"
+                summary = (item.title if item is not None else chunk.source_ref)[:200]
+            citations.append(
+                Citation(
+                    entity_id=entity.id if entity is not None else None,
+                    kind=kind,
+                    summary=summary,
+                    source_ref=chunk.source_ref,
+                    score=round(hit["score"], 3),
+                    snippet=chunk.content[:300],
+                )
             )
-            for hit in hits[:5]
-        ]
         return AskResponse(answer=answer_text, citations=citations)
 
     def _vector_search(self, db: Session, query_embedding: list[float]) -> list[dict]:
-        rows = db.execute(
-            select(Chunk, Entity)
-            .join(Entity, Chunk.entity_id == Entity.id)
-            .where(Chunk.embedding.is_not(None), Entity.status != "stale")
-        ).all()
+        rows = db.execute(self._chunk_query().where(Chunk.embedding.is_not(None))).all()
 
         scored = []
-        for chunk, entity in rows:
+        for chunk, entity, item in rows:
+            if entity is not None and entity.status == "stale":
+                continue
             vector = unpack_f32(chunk.embedding, len(query_embedding))
             score = _cosine(query_embedding, vector)
-            scored.append({"chunk": chunk, "entity": entity, "score": score})
+            scored.append({"chunk": chunk, "entity": entity, "item": item, "score": score})
 
         scored.sort(key=lambda r: r["score"], reverse=True)
         return [hit for hit in scored[: settings.top_k] if hit["score"] > 0.2]
 
     def _keyword_search(self, db: Session) -> list[dict]:
         rows = db.execute(
-            select(Chunk, Entity)
-            .join(Entity, Chunk.entity_id == Entity.id)
-            .where(Entity.status != "stale")
-            .order_by(Entity.created_at.desc())
-            .limit(settings.top_k)
+            self._chunk_query().order_by(Chunk.created_at.desc()).limit(settings.top_k)
         ).all()
-        return [{"chunk": chunk, "entity": entity, "score": 0.0} for chunk, entity in rows]
+        return [
+            {"chunk": chunk, "entity": entity, "item": item, "score": 0.0}
+            for chunk, entity, item in rows
+            if entity is None or entity.status != "stale"
+        ]
+
+    def _chunk_query(self):
+        """Chunks of type: entity-summary (entity set) or full-document (item set)."""
+        return (
+            select(Chunk, Entity, IngestedItem)
+            .outerjoin(Entity, Chunk.entity_id == Entity.id)
+            .outerjoin(IngestedItem, Chunk.item_id == IngestedItem.id)
+        )
 
     async def _generate(self, question: str, context: str) -> str:
         is_local = settings.answer_base_url.startswith(("http://localhost", "http://127.0.0.1"))

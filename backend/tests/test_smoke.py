@@ -143,3 +143,42 @@ def test_merge_cleans_references(client, tmp_path):
     resp = client.post("/review/merge", json={"proposal_id": proposal_id, "decision": "merge"})
     assert resp.status_code == 200, resp.text
     assert resp.json()["merged"] is True
+
+
+def test_full_document_chunking(client, tmp_path):
+    """Long documents get section-aware chunks beyond entity summaries."""
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import Chunk, Entity, IngestedItem
+
+    paragraphs = [
+        "We decided to launch the beta in June.",
+        *[f"Paragraph number {i} discussing the feature set in detail." for i in range(1, 29)],
+        "Action item: finish the remaining rollout before the launch.",
+    ]
+    (tmp_path / "big.md").write_text("\n\n".join(paragraphs), encoding="utf-8")
+
+    source = client.post(
+        "/sources",
+        json={"connector": "folder", "name": "big", "config": {"path": str(tmp_path)}},
+    ).json()
+    client.post(f"/sources/{source['id']}/sync")
+
+    with SessionLocal() as db:
+        item = db.execute(select(IngestedItem).where(IngestedItem.source_id == source["id"])).scalar_one()
+        assert item.text, "raw text must be stored"
+        doc_chunks = db.execute(
+            select(Chunk).where(Chunk.item_id == item.id, Chunk.entity_id.is_(None))
+        ).scalars().all()
+        assert len(doc_chunks) >= 2, "long doc must produce multiple full-doc chunks"
+        assert any("Paragraph number 28" in c.content for c in doc_chunks), (
+            "content beyond the first window must be chunked"
+        )
+        entities = db.execute(select(Entity).where(Entity.item_id == item.id)).scalars().all()
+        assert entities, "classification still produces entities"
+
+    # QA (keyword fallback, no models in tests) must return citations
+    qa = client.post("/qa", json={"question": "What is discussed?"})
+    assert qa.status_code == 200
+    assert qa.json()["citations"]

@@ -13,9 +13,9 @@ from sqlalchemy.orm import Session
 from .answer_engine import AnswerEngine
 from .classifier import Classifier
 from .config import settings
-from .db import Base, SessionLocal, engine, get_db
+from .db import Base, SessionLocal, engine, get_db, migrate
 from .embedder import Embedder
-from .models import Source
+from .models import Chunk, Source
 from .pipeline import IngestionPipeline
 from .routers import entities, qa, sources
 from .scheduler import Scheduler
@@ -44,12 +44,13 @@ embedder = Embedder()
 secrets = SecretStore(settings.data_dir / "secrets.enc")
 pipeline = IngestionPipeline(classifier, embedder, secrets)
 answer_engine = AnswerEngine(embedder)
-scheduler = Scheduler(pipeline)
+scheduler = Scheduler(pipeline, embedder)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    migrate()
     scheduler.start()
     logger.info("AnchorCore started. Data dir: %s", settings.data_dir)
     yield
@@ -80,12 +81,16 @@ async def health(db: Session = Depends(get_db)) -> dict:
             select(Source).where(Source.error_count > 0, Source.enabled.is_(True))
         ).scalars()
     )
+    pending_embeddings = db.execute(
+        select(Chunk.id).where(Chunk.embedding.is_(None)).limit(1)
+    ).first() is not None
     return {
         "status": "ok",
         "data_dir": str(settings.data_dir),
         "components": {
             "ollama": "ok" if ollama_ok else "offline",
             "answer_key": _answer_provider(),
+            "pending_embeddings": pending_embeddings,
             "tasks": scheduler.task_states(),
             "failing_sources": [{"id": s.id, "name": s.name, "error": s.last_error, "count": s.error_count} for s in failing_sources],
         },

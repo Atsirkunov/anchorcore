@@ -39,6 +39,7 @@ class IngestedItem(Base):
     source_id: Mapped[int] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"))
     external_id: Mapped[str] = mapped_column(String(500), default="")
     title: Mapped[str] = mapped_column(String(500), default="")
+    text: Mapped[str] = mapped_column(Text, default="")  # raw content for chunking/backfill
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
     author: Mapped[str] = mapped_column(String(300), default="")
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -47,6 +48,7 @@ class IngestedItem(Base):
 
     source: Mapped[Source] = relationship(back_populates="items")
     entities: Mapped[list["Entity"]] = relationship(back_populates="item")
+    chunks: Mapped[list["Chunk"]] = relationship(back_populates="item")
 
 
 class Entity(Base):
@@ -100,13 +102,19 @@ class Chunk(Base):
     __tablename__ = "chunks"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    entity_id: Mapped[int] = mapped_column(ForeignKey("entities.id", ondelete="CASCADE"))
+    item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ingested_items.id", ondelete="CASCADE"), nullable=True
+    )  # set for full-document chunks
+    entity_id: Mapped[int | None] = mapped_column(
+        ForeignKey("entities.id", ondelete="CASCADE"), nullable=True
+    )  # set for entity-summary chunks
     source_ref: Mapped[str] = mapped_column(String(500), default="")
     content: Mapped[str] = mapped_column(Text, default="")
     embedding: Mapped[bytes | None] = mapped_column(nullable=True)  # float32 blob
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
-    entity: Mapped[Entity] = relationship(back_populates="chunks")
+    entity: Mapped[Entity | None] = relationship(back_populates="chunks")
+    item: Mapped[IngestedItem | None] = relationship(back_populates="chunks")
 
 
 class MergeAction(Base):

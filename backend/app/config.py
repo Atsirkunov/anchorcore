@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     folder_watch_debounce: float = 3.0
     chunk_size: int = 800
     chunk_overlap: int = 100
+    classify_window_chars: int = 8000
     top_k: int = 8
     low_confidence_threshold: float = 0.6
     duplicate_threshold: float = 0.92
