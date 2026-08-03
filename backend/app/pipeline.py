@@ -40,14 +40,14 @@ class IngestionPipeline:
         self.embedder = embedder
         self.secrets = secrets
 
-    async def sync_source(self, db: Session, source: Source) -> dict:
+    async def sync_source(self, db: Session, source: Source, force_reclassify: bool = False) -> dict:
         try:
-            return await self._sync_source(db, source)
+            return await self._sync_source(db, source, force_reclassify)
         except Exception as exc:
             record_sync_error(db, source, exc)
             raise
 
-    async def _sync_source(self, db: Session, source: Source) -> dict:
+    async def _sync_source(self, db: Session, source: Source, force_reclassify: bool = False) -> dict:
         config = resolve_source_config(source, self.secrets)
         connector = build_connector(source.connector, config)
         docs, cursor = await connector.fetch(source.last_sync_cursor or "")
@@ -55,7 +55,7 @@ class IngestionPipeline:
         created_items = 0
         new_entities = 0
         for doc in docs:
-            if self._upsert_doc(db, source, doc):
+            if self._upsert_doc(db, source, doc) or force_reclassify:
                 created_items += 1
                 new_entities += await self._classify_and_store(db, source, doc)
 
