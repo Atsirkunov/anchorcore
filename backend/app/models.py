@@ -68,12 +68,14 @@ class Entity(Base):
     item: Mapped[IngestedItem] = relationship(back_populates="entities")
     chunks: Mapped[list["Chunk"]] = relationship(back_populates="entity", cascade="all, delete-orphan")
     outgoing: Mapped[list["Relationship"]] = relationship(
-        back_populates="from_entity", foreign_keys="Relationship.from_entity_id"
+        back_populates="from_entity", foreign_keys="Relationship.from_entity_id", passive_deletes=True
     )
     incoming: Mapped[list["Relationship"]] = relationship(
-        back_populates="to_entity", foreign_keys="Relationship.to_entity_id"
+        back_populates="to_entity", foreign_keys="Relationship.to_entity_id", passive_deletes=True
     )
-    merge_proposals: Mapped[list["MergeAction"]] = relationship(back_populates="entity_a", foreign_keys="MergeAction.entity_a_id")
+    merge_proposals: Mapped[list["MergeAction"]] = relationship(
+        back_populates="entity_a", foreign_keys="MergeAction.entity_a_id", passive_deletes=True
+    )
 
     def __repr__(self) -> str:
         return f"<Entity {self.id} {self.kind}: {self.summary[:40]}>"
