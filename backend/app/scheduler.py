@@ -6,17 +6,22 @@ from sqlalchemy import select
 
 from .config import settings
 from .db import SessionLocal
+from .folder_watcher import FolderWatcher
 from .models import Source
 
 logger = logging.getLogger(__name__)
 
 
 class Scheduler:
-    """Background loop: periodic Jira polls + hourly folder re-scans, with a task watchdog."""
+    """Background loops: periodic Jira polls, hourly folder re-scans, folder file watcher,
+    with a task watchdog that restarts dead loops."""
 
     def __init__(self, pipeline):
         self.pipeline = pipeline
+        self.watcher = FolderWatcher(settings.folder_watch_debounce)
         self._tasks: dict[str, asyncio.Task] = {}
+        self._watch_task: asyncio.Task | None = None
+        self._watchdog_task: asyncio.Task | None = None
 
     def start(self) -> None:
         self._tasks = {
@@ -25,15 +30,41 @@ class Scheduler:
                 self._poll_loop("folder", settings.folder_scan_minutes), name="folder"
             ),
         }
-        asyncio.create_task(self._watchdog(), name="watchdog")
+        self._watch_task = asyncio.create_task(self._watch_loop(), name="folder-watch")
+        self._watchdog_task = asyncio.create_task(self._watchdog(), name="watchdog")
+        self.watcher.start()
+        self.reload_sources()
 
     async def stop(self) -> None:
-        for task in list(self._tasks.values()):
+        tasks = list(self._tasks.values()) + [self._watch_task, self._watchdog_task]
+        tasks = [t for t in tasks if t is not None]
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self.watcher.stop()
 
     def task_states(self) -> dict[str, str]:
-        return {name: ("running" if not task.done() else "stopped") for name, task in self._tasks.items()}
+        states = {name: ("running" if not task.done() else "stopped") for name, task in self._tasks.items()}
+        if self._watch_task is not None:
+            states["folder-watch"] = "running" if not self._watch_task.done() else "stopped"
+        return states
+
+    def reload_sources(self) -> None:
+        """(Re)build folder watchers from enabled folder sources in the DB."""
+        with SessionLocal() as db:
+            folder_sources = list(
+                db.execute(
+                    select(Source).where(Source.connector == "folder", Source.enabled.is_(True))
+                ).scalars()
+            )
+        current = {s.id for s in folder_sources}
+        for source_id in list(self.watcher.current_ids()):
+            if source_id not in current:
+                self.watcher.remove(source_id)
+        for source in folder_sources:
+            path = source.config_dict().get("path")
+            if path:
+                self.watcher.add(source.id, path)
 
     async def _watchdog(self) -> None:
         """Restart any poll task that died unexpectedly."""
@@ -44,6 +75,12 @@ class Scheduler:
                     exc = task.exception()
                     logger.error("task %s died (%s); restarting", name, exc)
                     self._tasks[name] = asyncio.create_task(self._poll_loop(name, _minutes_for(name)), name=name)
+
+    async def _watch_loop(self) -> None:
+        while True:
+            await asyncio.sleep(0.5)
+            for source_id in self.watcher.drain():
+                await self._sync_source_by_id(source_id)
 
     async def _poll_loop(self, connector_type: str, minutes: int) -> None:
         while True:
@@ -63,11 +100,17 @@ class Scheduler:
                 ).scalars()
             )
         for source in sources:
-            try:
-                with SessionLocal() as db:
-                    await self.pipeline.sync_source(db, source)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("scheduled sync failed for %s: %s", source.name, exc)
+            await self._sync_source_by_id(source.id)
+
+    async def _sync_source_by_id(self, source_id: int) -> None:
+        try:
+            with SessionLocal() as db:
+                source = db.get(Source, source_id)
+                if source is None:
+                    return
+                await self.pipeline.sync_source(db, source)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("sync failed for source %s: %s", source_id, exc)
 
 
 def _minutes_for(connector_type: str) -> int:
