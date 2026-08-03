@@ -223,6 +223,16 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **Expected:** 3-5x wall-clock reduction on GPU machines; scales with hardware.
 
+### B12. Retrieval quality: hybrid search + chunk cleaning (P2 — discovered)
+**Problem:** full-document chunks are raw extracted text (repeated headers, page numbers, encoding garbage) and vector-only search with `nomic-embed-text` ranks them poorly — a DVCA question scored all candidates ~0.7 and surfaced unrelated sections, while clean entity-summary chunks retrieved far better. Verified with a retrieval probe on the 237-page rulebook (only 5 chunks mention DVSE/DVCA; they ranked below unrelated chunks).
+
+**Scope:**
+- **Chunk text cleaning** before embedding: strip repeated headers/footers, page numbers, control chars/encoding artifacts; normalize whitespace
+- **Hybrid retrieval**: combine vector similarity with keyword/BM25 scoring (SQLite FTS5) so acronyms like DVCA/DVSE hit directly; configurable weights
+- Optional: LLM rerank of top-k candidates (evaluated after hybrid lands)
+
+**DoD:** the DVCA question returns the DVSE sections with scores ≥ 0.8 and a correct cited answer on the 237-page PDF.
+
 ### B10. Model configuration via UI — superseded by B4. (see B4)
 
 ---
