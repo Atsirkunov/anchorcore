@@ -1,135 +1,182 @@
-# AnchorCore — Architecture Overview (v0.1)
+# AnchorCore — Architecture Overview (v1.0)
 
-> Target stack (from strategy notes): **Python FastAPI · Next.js · PostgreSQL · Qdrant · Ollama · Cloud LLM APIs**
-> This document is a high-level view, not a spec. Keep it in sync as the system evolves.
+> Locked through structured product/architecture drilldown (13 decisions).
+> Stack: **FastAPI · React (Vite) · SQLite + sqlite-vec · Ollama · BYO cloud LLM APIs**
 
 ---
 
-## 1. System Context (C4 level 1)
+## 1. Runtime Model: Local-First (Plex-Style)
 
-```
-                    +---------------------------+
-                    |  Users (PMs / Eng Mgrs)   |
-                    +-------------+-------------+
-                                  |
-                                  | HTTPS
-                                  v
-                    +---------------------------+
-                    |      AnchorCore UI        |  (Next.js)
-                    +-------------+-------------+
-                                  |
-                                  v
-                    +---------------------------+
-                    |    AnchorCore Platform    |  (API + services)
-                    +-------------+-------------+
-                                  |
-              +-------------------+-------------------+
-              |                   |                   |
-              v                   v                   v
-   +------------+        +------------+        +------------+
-   | Jira       |        | Slack      |        | Notion     |
-   | Docs/GitHub|        | Drive etc. |        | Cloud LLMs |
-   +------------+        +------------+        +------------+
-        external sources                          model providers
-```
+One local process = the entire product. No Docker, no sidecar services, no setup.
 
-AnchorCore is the memory layer between an organization's tools and any AI model.
+## 2. System Diagram
 
-## 2. Container View (C4 level 2)
+```mermaid
+flowchart TB
+    subgraph laptop["User's Laptop (macOS)"]
+        direction TB
+        browser["Browser UI<br/>(React SPA, localhost)"]
+        api["AnchorCore App<br/>FastAPI (single process)"]
+        api --- connectors["Connectors<br/>Folder watch · Jira poll"]
+        api --- pipeline["Ingestion Pipeline<br/>Extract → classify → entities"]
+        api --- rag["Answer Engine<br/>RAG + section citations"]
+        api --- review["Review API<br/>low-confidence · duplicates"]
+        db[("Entity Graph<br/>SQLite + sqlite-vec")]
+        secrets["Secrets<br/>macOS Keychain"]
+        api --- db
+        api --- secrets
+        browser --- api
+        ollama["Ollama<br/>3B classifier<br/>nomic-embed-text"]
+        api --- ollama
+    end
 
-```
-+-----------------------------+        +----------------------------+
-|   UI (Next.js)              |        |   API (FastAPI)            |
-|  - Chat / Q&A               |<------>|  - Auth / permissions      |
-|  - Sources & connectors mgmt|        |  - Ingestion orchestration |
-|  - Knowledge explorer       |        |  - Q&A endpoint            |
-+-----------------------------+        |  - Extraction jobs         |
-                                       +-------------+--------------+
-                                                     |
-                    +--------------------------------+--------------------------------+
-                    |                                 |                                |
-                    v                                 v                                v
-        +-------------------------+     +-------------------------+     +-------------------------+
-        |  Connectors             |     |  Extraction / Ingestion |     |  Memory Store           |
-        |  Jira, Slack, Notion,   |     |  Parsers -> normalizer  |     |  PostgreSQL (facts,     |
-        |  Drive, GitHub, uploads |     |  LLM extraction of      |     |    relations, sources,  |
-        |                         |     |  entities / decisions   |     |    provenance)          |
-        +-------------------------+     +-------------------------+     +-------------------------+
-                                                                |
-                                                                v
-                                                     +-------------------------+
-                                                     |  Qdrant (vector index)  |
-                                                     |  embeddings for semantic |
-                                                     |  retrieval               |
-                                                     +-------------------------+
-                                                                |
-                                                                v
-                                                     +-------------------------+
-                                                     |  Model layer            |
-                                                     |  Ollama (local) + cloud |
-                                                     |  LLM APIs (OpenAI etc.) |
-                                                     +-------------------------+
+    jira["Jira Cloud API"]
+    folder["Local folder<br/>(watched)"]
+    cloud["BYO LLM API<br/>(OpenAI-compatible)"]
+
+    connectors --- folder
+    connectors --- jira
+    rag --- cloud
 ```
 
-## 3. Data Flow — Knowledge Pipeline
+## 3. Data Flow — Ingestion
 
-```
-[Source] -> Extract text + metadata -> Normalize -> Identify entities/decisions/requirements
-          -> Create knowledge objects -> Store relationships (PG) + embeddings (Qdrant)
-          -> Index ready for retrieval
+```mermaid
+flowchart LR
+    watcher["Folder watcher<br/>fs events + hourly scan"] --> extract["Extract text"]
+    jira["Jira poll<br/>15 min, incremental"] --> extract
+    extract --> hash["Hash dedup"]
+    hash --> classify["Classify<br/>(Ollama 3B)"]
+    classify --> entities["Entities + relationships<br/>(SQLite)"]
+    classify --> embed["Embed chunks<br/>(nomic-embed-text)"]
+    embed --> vec["sqlite-vec index"]
+    entities --> review["Review UI<br/>confirm / merge / reclassify"]
 ```
 
-**Retrieval (Q&A):**
-```
-Question -> Embed query -> Hybrid search (vector + structured + relations)
-        -> Gather context (permission-filtered) -> LLM answer -> citations from sources
+**Deletion policy:** sources removed → marked `stale`; knowledge is never auto-deleted.
+
+## 4. Data Flow — Q&A
+
+```mermaid
+sequenceDiagram
+    participant U as User (browser)
+    participant A as AnchorCore App
+    participant V as sqlite-vec
+    participant O as Ollama
+    participant M as BYO LLM API
+
+    U->>A: "What was decided about X, and why?"
+    A->>O: embed question
+    O-->>A: query vector
+    A->>V: top-k similarity
+    V-->>A: sections (tagged w/ source refs)
+    A->>M: answer prompt w/ retrieved sections
+    M-->>A: answer + citations
+    A-->>U: answer + clickable source chips
 ```
 
-## 4. Proposed Tech Stack
+## 5. Data Model — Uniform Entity Graph
 
-| Layer | Choice | Notes |
+Everything is an entity. Contradictions stay external to the baseline object.
+
+```mermaid
+erDiagram
+    ENTITIES {
+        int id PK
+        string type "decision|document|action|note|person|system|feature|customer"
+        string summary
+        string reasoning
+        float confidence
+        string author
+        string source_ref "source + section"
+        string status "unverified|verified|disputed|stale"
+        string owner
+        datetime created_at
+        datetime updated_at
+    }
+    RELATIONSHIPS {
+        int id PK
+        int from_entity_id FK
+        int to_entity_id FK
+        string kind "supersedes|depends_on|owns|blocks"
+        string source_ref
+        float confidence
+        datetime created_at
+    }
+    SOURCES {
+        int id PK
+        string connector "folder|jira|linear|upload"
+        string config_ref
+        string last_sync_cursor
+    }
+    CHUNKS {
+        int id PK
+        int entity_id FK
+        string source_ref "section"
+        string content
+        vector embedding
+    }
+    MERGE_ACTIONS {
+        int id PK
+        int entity_a_id FK
+        int entity_b_id FK
+        string status "proposed|merged|dismissed"
+        string user
+        datetime created_at
+    }
+    ENTITIES ||--o{ RELATIONSHIPS : "participates"
+    ENTITIES ||--o{ CHUNKS : "chunked"
+    ENTITIES ||--o{ MERGE_ACTIONS : "proposed"
+
+    CONTRADICTIONS {
+        int id PK
+        int claim_a_id FK
+        int claim_b_id FK
+        string kind
+        string evidence
+        string status
+    }
+```
+
+## 6. Container Table
+
+| Container | Responsibility | Tech |
 |---|---|---|
-| UI | Next.js (TypeScript) | Chat, connectors, knowledge explorer |
-| API | Python FastAPI | Async, jobs, SSE streaming |
-| Primary store | PostgreSQL | Facts, decisions, sources, permissions, provenance |
-| Vector store | Qdrant | Semantic search + hybrid retrieval |
-| Extraction | LLM-driven (Ollama local / cloud APIs) | Entity + decision extraction |
-| Models | Ollama (local, dev) + cloud LLM APIs | Provider-agnostic abstraction |
-| Connectors | One at a time (Jira first) | Webhooks + polling |
-| Infra | Docker Compose (dev), later K8s | On-prem path for enterprise |
+| Web UI | Connect sources, review queue, duplicate proposals, Q&A chat | React SPA (Vite, TS) |
+| API | All endpoints, orchestration, config | FastAPI |
+| Entity Store | Entities, relationships, provenance, sync state | SQLite + SQLAlchemy |
+| Vector Store | Chunk embeddings + similarity search | sqlite-vec (same SQLite file) |
+| Classifier | Entity kind extraction | Ollama 3B + rule fallback |
+| Embedder | Chunk embeddings | Ollama `nomic-embed-text` |
+| Answer Engine | RAG composition + citations | BYO cloud model (OpenAI-compatible) |
+| Secret Store | Credentials (Jira token, model keys) | macOS Keychain via `keyring` |
 
-## 5. Data Model Sketch (Core Entities)
+## 7. Security
 
-- **Source** — a connected tool + credential reference.
-- **Document** — normalized unit of ingested content (raw text + metadata).
-- **Entity** — person, system, customer, feature, requirement.
-- **KnowledgeObject** — decision, requirement, risk, timeline item.
-  - fields: type, summary, reasoning, confidence, timestamp, author, verification status, source ref.
-- **Relationship** — links objects/entities (e.g., *delays*, *depends on*, *supersedes*).
-- **Contradiction** — detected conflicts between knowledge objects (with claim refs).
-- **Workspace / User / Permission** — access control to knowledge.
+- Credentials: **macOS Keychain** (`keyring`), encrypted-file fallback; never in DB/config/logs.
+- Local-only server binds 127.0.0.1.
+- Secret values masked in logs and error responses.
+- `SecretStore` interface maps to cloud secret managers in hosted v2.
 
-## 6. Provenance & Trust (Non-Negotiable)
+## 8. Key Interfaces (Swap Points)
 
-Every knowledge item carries: source, confidence, timestamp, author, verification status.
-Contradiction detection flags stale/conflicting claims (e.g., currency support change) — surfaced in the UI, never silently resolved.
+| Interface | v1 | v2+ swap |
+|---|---|---|
+| `VectorStore` | sqlite-vec | Qdrant / pgvector (hosted) |
+| `ModelClient` | Ollama + BYO OpenAI-compatible | Any provider |
+| `SecretStore` | Keychain | Cloud secret manager |
+| `Connector` | Folder, Jira | Linear, Slack, Notion, Drive |
+| `DB` | SQLite | PostgreSQL (hosted migration) |
 
-## 7. Security & Privacy
-
-- Permission-aware retrieval: answers only include knowledge the user may see.
-- No credentials stored in plaintext; secret manager for connector tokens.
-- Enterprise: on-prem deployment, audit log, compliance posture.
-- Model provider choice per workspace (local via Ollama when required).
-
-## 8. Evolution Path
+## 9. Evolution Path
 
 ```
-Phase 1: upload + Q&A (citations)
-  -> Phase 2: Jira connector
-  -> Phase 3: memory core (provenance, contradictions, verification)
-  -> Phase 4: agentic levels (draft, prepare action w/ approval, autonomous)
+v1: local-first, folder + Jira, classification + review + cited Q&A
+  -> v1.5: Linear connector, packaging (.dmg)
+  -> v2: team sharing, hosted option, Slack, contradictions, bundled models
+  -> v3: agentic levels (draft, prepare-action-with-approval), enterprise compliance
 ```
 
 ---
 
-*Companion doc: [product-plan.md](./product-plan.md)*
+*Companion docs: [product-plan.md](./product-plan.md), [packaging.md](./packaging.md)*
