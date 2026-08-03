@@ -2,14 +2,12 @@
 __pycache__/
 *.py[cod]
 .venv/
-backend/.env
-backend/uploads/
-backend/*.db
+.env
 
 # Node
 node_modules/
-frontend/.next/
-frontend/out/
+.next/
+dist/
 
 # Editor / OS
 .vscode/
