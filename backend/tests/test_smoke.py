@@ -1,17 +1,4 @@
-import pytest
-from fastapi.testclient import TestClient
-
 from app.main import app
-
-
-@pytest.fixture()
-def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("ANCHOR_DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
-    monkeypatch.setenv("ANCHOR_OLLAMA_BASE_URL", "http://localhost:1")
-    monkeypatch.setenv("ANCHOR_CLASSIFIER_TIMEOUT", "1.0")
-    monkeypatch.setenv("ANCHOR_ANSWER_BASE_URL", "http://localhost:1")
-    with TestClient(app) as c:
-        yield c
 
 
 def test_health(client):
@@ -63,3 +50,26 @@ def test_review_endpoints(client, tmp_path):
     patch = client.patch(f"/entities/{entity['id']}", json={"status": "verified"})
     assert patch.status_code == 200
     assert patch.json()["status"] == "verified"
+
+
+def test_sync_error_tracking(client, tmp_path):
+    source = client.post(
+        "/sources",
+        json={"connector": "folder", "name": "bad", "config": {"path": str(tmp_path / "nope")}},
+    ).json()
+
+    sync = client.post(f"/sources/{source['id']}/sync")
+    assert sync.status_code == 400
+
+    sources = client.get("/sources").json()
+    failing = next(s for s in sources if s["id"] == source["id"])
+    assert failing["error_count"] == 1
+    assert "does not exist" in (failing["last_error"] or "")
+
+
+def test_health_reports_components(client):
+    health = client.get("/health").json()
+    assert health["status"] == "ok"
+    assert health["components"]["ollama"] in {"ok", "offline"}
+    assert "tasks" in health["components"]
+    assert "failing_sources" in health["components"]

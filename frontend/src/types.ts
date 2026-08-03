@@ -4,7 +4,19 @@ export type Source = {
   name: string;
   enabled: boolean;
   last_synced_at: string | null;
+  last_error: string | null;
+  error_count: number;
   created_at: string;
+};
+
+export type Health = {
+  status: string;
+  components: {
+    ollama: string;
+    answer_key: string;
+    tasks: Record<string, string>;
+    failing_sources: { id: number; name: string; error: string | null; count: number }[];
+  };
 };
 
 export type Entity = {

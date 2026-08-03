@@ -11,6 +11,8 @@ class SourceOut(BaseModel):
     name: str
     enabled: bool
     last_synced_at: datetime | None
+    last_error: str | None
+    error_count: int
     created_at: datetime
 
 

@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 
 from .config import settings
+from .http import RetryClient
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ class Classifier:
             "temperature": 0.1,
             "response_format": {"type": "json_object"},
         }
-        async with httpx.AsyncClient(timeout=settings.classifier_timeout) as client:
+        async with RetryClient(timeout=settings.classifier_timeout) as client:
             resp = await client.post(
                 f"{settings.ollama_base_url.rstrip('/')}/v1/chat/completions",
                 json=payload,

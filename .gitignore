@@ -9,6 +9,11 @@ backend/data/
 node_modules/
 .next/
 dist/
+*.tsbuildinfo
+
+# Runtime
+backend/data/
+*.log
 
 # Editor / OS
 .vscode/
