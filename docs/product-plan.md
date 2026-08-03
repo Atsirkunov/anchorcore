@@ -134,17 +134,86 @@ Candidates, in rough order of revenue pull (all build on the v1 memory core):
 
 ## 13. Backlog
 
-### Model configuration in UI (high priority)
-**Problem:** model settings (answer base URL, model name, BYO key, retries) live in `backend/.env` — read at startup, restart required, invisible to non-technical users. This is the first thing testers will hit ("how do I connect my OpenAI key?").
+Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = later.
+
+### B1. Error transparency + downloadable logs (P1)
+**Problem:** today errors surface as raw "Internal Server Error" with no context; logs only exist in the console/file on the machine. Test users can't help debug.
 
 **Scope:**
-- Settings tab in the UI (provider selection: Ollama local / OpenAI-compatible cloud / custom base URL, model name, API key)
-- BYO keys stored via the existing `SecretStore` (keychain), never in DB/config files
-- Runtime-mutable settings: DB-backed `app_settings` table overriding env defaults; `Settings` becomes a runtime service, not an import-time singleton
-- Health banner and answer engine read the runtime provider; no restart needed
-- Env file remains the fallback/default layer (packaging still ships env defaults)
+- Structured error records (component, source, timestamp, message) surfaced in a "System" tab, not just a raw log tail
+- Context on errors: which source/connector/step failed, last sync status, model availability
+- **Download log button** in the app serving `data/anchorcore.log` (current file; rotated files via UI list)
+- Secrets never in logs (audit existing paths — connector errors, config dumps)
+- Frontend surfaces the specific error text (already partially done — make consistent across all actions)
 
-**Definition of done:** a tester connects their own model key from the UI in under 60s, without touching a config file or restarting.
+**DoD:** a tester hits a failure and can export a log file + error context in two clicks.
+
+### B2. Progress feedback on every action (P1)
+**Problem:** sync/reclassify are synchronous — long operations look frozen, large sources can time out, and there's no "is it done?" signal.
+
+**Scope:**
+- Busy states on all buttons (spinner/disabled) — small, immediate
+- **Background job model** for sync/reclassify: job starts immediately, UI polls job status (running / done / failed, processed X of Y, entities produced)
+- Job history (last N jobs per source) — doubles as an error surface
+- Progress shown inline in Sources tab
+
+**DoD:** reclassify of a large source shows live progress and completion, never a browser timeout.
+
+### B3. Entity dispute tracking (P2)
+**Problem:** "dispute" currently just flips a status flag — no record of who disputed, when, or why. The trust story needs an audit trail.
+
+**Scope:**
+- `disputes` table: entity_id, timestamp, reason (optional), user
+- Dispute counter on the entity + activity timeline in the UI
+- Disputed entities excluded from Q&A context by default (configurable) — the "never present contested facts as truth" behavior
+- (v2: full verification workflow per product plan)
+
+**DoD:** dispute an entity → counter increments, reason stored, answers stop citing it.
+
+### B4. LLM configuration in app (P1)
+**Problem:** model settings live in `backend/.env` — restart required, invisible, blocked testers ("how do I connect my key?").
+
+**Scope:**
+- Settings tab: provider presets (Ollama local / OpenAI-compatible cloud / custom base URL), classifier model, embed model, answer model + API key
+- BYO keys via existing `SecretStore` (keychain), never in DB/config/logs
+- Runtime-mutable settings: DB-backed `app_settings` overriding env defaults; `Settings` becomes a runtime service, not an import-time singleton
+- "Test connection" button per provider (verifies key/model reachability)
+- Health banner reads live provider; no restart needed
+
+**DoD:** a tester connects their own model key from the UI in under 60s, no config file, no restart.
+
+### B5. Full-document chunking (P1 — discovered)
+**Problem:** today only *entity summaries* are chunked and embedded, and the classifier input is truncated at ~12k chars. A big PDF (like the current test file) loses most of its content — most of the document is never retrievable.
+
+**Scope:**
+- Chunk the full document text (section-aware, ~800 tokens with overlap — config already exists)
+- Embed all chunks, tag each with source ref + entity links
+- Classifier input: process long documents in sections instead of one truncated call
+- QA retrieval uses full-document chunks (citations point to sections)
+
+**DoD:** a 300-page PDF is fully indexed; questions about content in page 250 return cited answers.
+
+### B6. Embedding backfill job (P1 — discovered)
+**Problem:** when embedding fails (Ollama down), chunks are stored unembedded — and nothing ever retries them unless the file changes. The memory silently stays keyword-only.
+
+**Scope:**
+- Periodic (and on-startup) job: embed all chunks with missing embeddings
+- Health component: "N chunks pending embedding" so it's visible, not silent
+
+**DoD:** after Ollama comes back, all pending chunks get embedded without user action, and health reports the catch-up.
+
+### B7. Source configuration editing in UI (P2)
+**Problem:** editing a folder path or Jira credentials requires delete + recreate.
+
+**Scope:** `PUT /sources/{id}` (config, name, enabled), edit form in Sources tab; secret fields stay keychain-backed.
+
+### B8. First-run wizard (P2)
+**Scope:** on first launch: check Ollama → offer install/pull instructions, model selection, quick folder connect, sample question. Turns the 60-second wow into the onboarding path.
+
+### B9. Document type coverage (P2)
+**Scope:** add `.docx`/`.pptx`/`.odt` extraction (small deps); revisit after real tester file types are known — the watched folder currently only ingests a subset of formats.
+
+### B10. Model configuration via UI — superseded by B4. (see B4)
 
 ---
 
