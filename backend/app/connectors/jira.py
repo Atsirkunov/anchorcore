@@ -2,8 +2,7 @@ import logging
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-import httpx
-
+from ..http import RetryClient
 from .base import BaseConnector, ConnectorError, IngestionDoc
 
 logger = logging.getLogger(__name__)
@@ -37,7 +36,7 @@ class JiraConnector(BaseConnector):
         docs: list[IngestionDoc] = []
         next_cursor = since_cursor
         start_at = 0
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with RetryClient(timeout=60.0) as client:
             while True:
                 resp = await client.get(
                     f"{self.base_url}/rest/api/3/search",

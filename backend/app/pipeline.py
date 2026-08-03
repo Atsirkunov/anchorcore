@@ -22,6 +22,18 @@ def chunk_text(text: str) -> list[str]:
     return [text[i : i + size] for i in range(0, max(len(text) - size + 1, 1), step)]
 
 
+def record_sync_error(db: Session, source: Source, exc: Exception) -> None:
+    source.last_error = f"{type(exc).__name__}: {exc}"[:1000]
+    source.error_count += 1
+    db.commit()
+
+
+def record_sync_success(db: Session, source: Source) -> None:
+    source.last_error = None
+    source.error_count = 0
+    db.commit()
+
+
 class IngestionPipeline:
     def __init__(self, classifier: Classifier, embedder: Embedder, secrets: SecretStore):
         self.classifier = classifier
@@ -29,6 +41,13 @@ class IngestionPipeline:
         self.secrets = secrets
 
     async def sync_source(self, db: Session, source: Source) -> dict:
+        try:
+            return await self._sync_source(db, source)
+        except Exception as exc:
+            record_sync_error(db, source, exc)
+            raise
+
+    async def _sync_source(self, db: Session, source: Source) -> dict:
         config = resolve_source_config(source, self.secrets)
         connector = build_connector(source.connector, config)
         docs, cursor = await connector.fetch(source.last_sync_cursor or "")
@@ -43,7 +62,7 @@ class IngestionPipeline:
         if cursor:
             source.last_sync_cursor = cursor
         source.last_synced_at = datetime.now(timezone.utc)
-        db.commit()
+        record_sync_success(db, source)
         logger.info("source %s synced: %d items, %d entities", source.name, created_items, new_entities)
         return {"items": created_items, "entities": new_entities}
 

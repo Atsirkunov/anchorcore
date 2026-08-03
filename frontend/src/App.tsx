@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import type { Health } from "./types";
 import { AskTab } from "./tabs/AskTab";
 import { EntitiesTab } from "./tabs/EntitiesTab";
 import { ReviewTab } from "./tabs/ReviewTab";
@@ -17,13 +18,36 @@ const TABS: { id: Tab; label: string }[] = [
 export default function App() {
   const [tab, setTab] = useState<Tab>("ask");
   const [online, setOnline] = useState<boolean | null>(null);
+  const [health, setHealth] = useState<Health | null>(null);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
 
   useEffect(() => {
-    api
-      .health()
-      .then(() => setOnline(true))
-      .catch(() => setOnline(false));
+    let cancelled = false;
+    async function poll() {
+      try {
+        const h = await api.health();
+        if (cancelled) return;
+        setHealth(h);
+        setOnline(true);
+      } catch {
+        if (!cancelled) setOnline(false);
+      }
+    }
+    poll();
+    const timer = setInterval(poll, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, []);
+
+  const issues = health
+    ? [
+        ...(health.components.ollama === "offline" ? ["Ollama offline — classification falls back to rules, answers are limited"] : []),
+        ...(health.components.answer_key === "missing" ? ["No answer model key configured — answers show matching context only"] : []),
+        ...health.components.failing_sources.map((s) => `Sync failing: ${s.name} (${s.count}×) — ${s.error ?? "unknown error"}`),
+      ]
+    : [];
 
   return (
     <div style={styles.wrap}>
@@ -47,6 +71,18 @@ export default function App() {
           {online === false ? "API offline" : online ? "API online" : "checking…"}
         </span>
       </header>
+      {!bannerDismissed && issues.length > 0 && (
+        <div style={styles.banner}>
+          <div style={{ flex: 1 }}>
+            {issues.map((issue, i) => (
+              <div key={i}>• {issue}</div>
+            ))}
+          </div>
+          <button onClick={() => setBannerDismissed(true)} style={styles.dismiss}>
+            Dismiss
+          </button>
+        </div>
+      )}
       <main style={styles.main}>
         {tab === "ask" && <AskTab />}
         {tab === "sources" && <SourcesTab />}
@@ -79,5 +115,16 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 14,
   },
   tabActive: { background: "#1e2430", color: "#e6e8eb" },
+  banner: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 12,
+    background: "#3a1d1d",
+    color: "#fca5a5",
+    padding: "0.6rem 1.5rem",
+    fontSize: 13,
+    borderBottom: "1px solid #4c2626",
+  },
+  dismiss: { background: "none", border: "1px solid #6b3030", color: "#fca5a5", borderRadius: 6, padding: "0.2rem 0.6rem", cursor: "pointer" },
   main: { padding: "1.5rem", maxWidth: 1000, margin: "0 auto" },
 };

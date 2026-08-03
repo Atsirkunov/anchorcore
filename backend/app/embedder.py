@@ -5,6 +5,7 @@ import struct
 import httpx
 
 from .config import settings
+from .http import RetryClient
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ class Embedder:
         if not texts:
             return []
         payload = {"model": settings.embed_model, "input": texts}
-        async with httpx.AsyncClient(timeout=settings.classifier_timeout) as client:
+        async with RetryClient(timeout=settings.classifier_timeout) as client:
             resp = await client.post(
                 f"{settings.ollama_base_url.rstrip('/')}/v1/embeddings",
                 json=payload,

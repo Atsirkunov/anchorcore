@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .embedder import Embedder, unpack_f32
+from .http import RetryClient
 from .models import Chunk, Entity
 from .schemas import AskResponse, Citation
 
@@ -100,7 +101,7 @@ class AnswerEngine:
             ],
             "temperature": 0.2,
         }
-        async with httpx.AsyncClient(timeout=settings.answer_timeout) as client:
+        async with RetryClient(timeout=settings.answer_timeout) as client:
             resp = await client.post(
                 f"{settings.answer_base_url.rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {settings.answer_api_key}"},

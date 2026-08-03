@@ -1,25 +1,43 @@
 import logging
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from fastapi import FastAPI
+import httpx
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from .answer_engine import AnswerEngine
 from .classifier import Classifier
 from .config import settings
-from .db import Base, SessionLocal, engine
+from .db import Base, SessionLocal, engine, get_db
 from .embedder import Embedder
+from .models import Source
 from .pipeline import IngestionPipeline
 from .routers import entities, qa, sources
 from .scheduler import Scheduler
 from .secrets import SecretStore
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 settings.data_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _setup_logging() -> None:
+    handler = RotatingFileHandler(
+        settings.data_dir / "anchorcore.log",
+        maxBytes=10_000_000,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    logging.getLogger().addHandler(handler)
+
+
+logging.basicConfig(level=logging.INFO)
+_setup_logging()
+logger = logging.getLogger(__name__)
 
 classifier = Classifier()
 embedder = Embedder()
@@ -55,8 +73,32 @@ app.include_router(qa.make_router(answer_engine))
 
 
 @app.get("/health")
-def health() -> dict:
-    return {"status": "ok", "data_dir": str(settings.data_dir)}
+async def health(db: Session = Depends(get_db)) -> dict:
+    ollama_ok = await _check_ollama()
+    failing_sources = list(
+        db.execute(
+            select(Source).where(Source.error_count > 0, Source.enabled.is_(True))
+        ).scalars()
+    )
+    return {
+        "status": "ok",
+        "data_dir": str(settings.data_dir),
+        "components": {
+            "ollama": "ok" if ollama_ok else "offline",
+            "answer_key": "configured" if settings.answer_api_key else "missing",
+            "tasks": scheduler.task_states(),
+            "failing_sources": [{"id": s.id, "name": s.name, "error": s.last_error, "count": s.error_count} for s in failing_sources],
+        },
+    }
+
+
+async def _check_ollama() -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(3.0, connect=2.0)) as client:
+            resp = await client.get(f"{settings.ollama_base_url.rstrip('/')}/api/tags")
+            return resp.status_code == 200
+    except httpx.TransportError:
+        return False
 
 
 # Serve built frontend if present (must be last — catches everything else)
