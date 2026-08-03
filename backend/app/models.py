@@ -21,6 +21,8 @@ class Source(Base):
     config: Mapped[str] = mapped_column(Text, default="{}")  # JSON, secrets referenced by key
     last_sync_cursor: Mapped[str] = mapped_column(String(500), default="")
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_count: Mapped[int] = mapped_column(Integer, default=0)
     enabled: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
