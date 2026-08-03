@@ -83,6 +83,8 @@ def test_folder_watcher_picks_up_new_files(client, tmp_path):
         json={"connector": "folder", "name": "watched", "config": {"path": str(tmp_path)}},
     ).json()
 
+    # give the watchdog observer a beat to start watching before we create the file
+    time.sleep(1)
     (tmp_path / "new.md").write_text("We decided to ship the watcher.", encoding="utf-8")
 
     deadline = time.monotonic() + 20
