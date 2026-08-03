@@ -32,7 +32,8 @@ ollama pull nomic-embed-text  # embeddings
 python -m venv .venv
 .venv/Scripts/activate        # Windows (.venv/bin/activate on mac/linux)
 pip install -r requirements.txt
-cp .env.example .env          # set ANCHOR_ANSWER_API_KEY for real answers (BYO model key)
+cp .env.example .env          # set ANCHOR_ANSWER_API_KEY for cloud answers,
+                              # or point ANCHOR_ANSWER_BASE_URL at Ollama for local answers
 uvicorn app.main:app --port 8000
 ```
 
@@ -50,8 +51,8 @@ Or `npm run build` — the built `dist/` is served automatically by the backend 
 ## Behavior without models
 
 - No Ollama → classification falls back to rule-based; answers fall back to keyword context.
-- No `ANCHOR_ANSWER_API_KEY` → answers return matching context instead of LLM text.
-- Everything degrades gracefully; add Ollama + a model key to unlock the full experience.
+- No `ANCHOR_ANSWER_API_KEY` and cloud base URL → answers return matching context instead of LLM text.
+- Everything degrades gracefully; add Ollama + a model key (or point the answer engine at Ollama) to unlock the full experience.
 
 ## API surface (v1)
 
