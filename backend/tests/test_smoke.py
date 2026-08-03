@@ -114,3 +114,32 @@ def test_reclassify_rebuilds_entities(client, tmp_path):
     assert result.status_code == 200
     assert result.json()["entities"] >= 1
     assert client.get("/entities").json()
+
+
+def test_merge_cleans_references(client, tmp_path):
+    """Merging an entity with relationship/merge rows must not 500 (NOT NULL FK bug)."""
+    from app.db import SessionLocal
+    from app.models import MergeAction, Relationship
+
+    (tmp_path / "d0.md").write_text("We decided to adopt stack number zero.", encoding="utf-8")
+    (tmp_path / "d1.md").write_text("We decided to adopt stack number one.", encoding="utf-8")
+    source = client.post(
+        "/sources",
+        json={"connector": "folder", "name": "merge", "config": {"path": str(tmp_path)}},
+    ).json()
+    client.post(f"/sources/{source['id']}/sync")
+
+    entities = client.get("/entities").json()
+    assert len(entities) >= 2
+    a, b = entities[0], entities[1]
+
+    with SessionLocal() as db:
+        action = MergeAction(entity_a_id=a["id"], entity_b_id=b["id"], status="proposed")
+        db.add(action)
+        db.add(Relationship(from_entity_id=a["id"], to_entity_id=b["id"], kind="related"))
+        db.commit()
+        proposal_id = action.id
+
+    resp = client.post("/review/merge", json={"proposal_id": proposal_id, "decision": "merge"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["merged"] is True

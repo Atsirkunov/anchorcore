@@ -3,13 +3,13 @@ import math
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from .. import schemas
 from ..config import settings
 from ..db import get_db
-from ..models import Chunk, Entity, IngestedItem, MergeAction
+from ..models import Chunk, Entity, IngestedItem, MergeAction, Relationship
 
 logger = logging.getLogger(__name__)
 
@@ -126,8 +126,8 @@ def review_router() -> APIRouter:
             db.commit()
             return {"merged": False}
 
-        b = db.get(Entity, payload.entity_b_id)
-        a = db.get(Entity, payload.entity_a_id)
+        b = db.get(Entity, action.entity_b_id)
+        a = db.get(Entity, action.entity_a_id)
         if a is None or b is None:
             raise HTTPException(status_code=404, detail="Entity not found")
 
@@ -138,6 +138,16 @@ def review_router() -> APIRouter:
         if not a.author and b.author:
             a.author = b.author
         a.status = "unverified"
+        db.execute(
+            delete(Relationship).where(
+                or_(Relationship.from_entity_id == b.id, Relationship.to_entity_id == b.id)
+            )
+        )
+        db.execute(
+            delete(MergeAction).where(
+                or_(MergeAction.entity_a_id == b.id, MergeAction.entity_b_id == b.id)
+            )
+        )
         db.delete(b)
         action.status = "merged"
         db.commit()

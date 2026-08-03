@@ -1,14 +1,14 @@
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from .classifier import Classifier
 from .config import settings
 from .connectors import ConnectorError, IngestionDoc, build_connector
 from .embedder import Embedder, pack_f32
-from .models import Chunk, Entity, IngestedItem, Source, content_hash
+from .models import Chunk, Entity, IngestedItem, MergeAction, Relationship, Source, content_hash
 from .secrets import SecretStore, resolve_source_config
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,26 @@ def record_sync_success(db: Session, source: Source) -> None:
     source.last_error = None
     source.error_count = 0
     db.commit()
+
+
+def _detach_entity_refs(db: Session, entity_ids: list[int]) -> None:
+    """Delete rows that reference entities about to be deleted.
+
+    The ORM would otherwise try to NULL their NOT NULL FK columns
+    (merge_actions.entity_a_id, relationships.*_id), which fails.
+    """
+    if not entity_ids:
+        return
+    db.execute(
+        delete(MergeAction).where(
+            or_(MergeAction.entity_a_id.in_(entity_ids), MergeAction.entity_b_id.in_(entity_ids))
+        )
+    )
+    db.execute(
+        delete(Relationship).where(
+            or_(Relationship.from_entity_id.in_(entity_ids), Relationship.to_entity_id.in_(entity_ids))
+        )
+    )
 
 
 class IngestionPipeline:
@@ -112,6 +132,7 @@ class IngestionPipeline:
 
         # drop stale classifications from previous content, keep the item row
         old_entities = db.execute(select(Entity).where(Entity.item_id == item.id)).scalars().all()
+        _detach_entity_refs(db, [e.id for e in old_entities])
         for entity in old_entities:
             db.delete(entity)
         db.flush()
