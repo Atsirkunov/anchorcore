@@ -132,4 +132,20 @@ Candidates, in rough order of revenue pull (all build on the v1 memory core):
 
 ---
 
+## 13. Backlog
+
+### Model configuration in UI (high priority)
+**Problem:** model settings (answer base URL, model name, BYO key, retries) live in `backend/.env` — read at startup, restart required, invisible to non-technical users. This is the first thing testers will hit ("how do I connect my OpenAI key?").
+
+**Scope:**
+- Settings tab in the UI (provider selection: Ollama local / OpenAI-compatible cloud / custom base URL, model name, API key)
+- BYO keys stored via the existing `SecretStore` (keychain), never in DB/config files
+- Runtime-mutable settings: DB-backed `app_settings` table overriding env defaults; `Settings` becomes a runtime service, not an import-time singleton
+- Health banner and answer engine read the runtime provider; no restart needed
+- Env file remains the fallback/default layer (packaging still ships env defaults)
+
+**Definition of done:** a tester connects their own model key from the UI in under 60s, without touching a config file or restarting.
+
+---
+
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md)*
