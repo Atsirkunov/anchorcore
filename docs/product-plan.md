@@ -233,6 +233,19 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** the DVCA question returns the DVSE sections with scores ≥ 0.8 and a correct cited answer on the 237-page PDF.
 
+### B13. Dev process hardening (P0 — do first tomorrow)
+**Problem (from session retrospective):** environment chaos cost more time than code bugs — multiple servers sharing one SQLite DB (stale code, lock fights, an elevated process we couldn't kill), `.env` silently overwritten with example defaults, duplicate keys silently overriding (pydantic takes the last), 15-min operations looking frozen, hand-rolled SQLite migrations already biting once.
+
+**Scope:**
+- **Single run entry point**: `start.ps1`/`start.sh` that kills orphans on the port, starts the backend with correct cwd/env, and prints a config banner on boot (loaded base URL, model, DB path, Ollama reachability)
+- **Startup config validation**: log effective settings, warn on duplicate `.env` keys and on missing models (interim until B4)
+- **Alembic migrations** (replace hand-rolled `db.py:migrate` ALTERs)
+- **CI via GitHub Actions**: pytest + frontend build on every push
+- **Process habit**: regression test with every bug fix (the merge 500 was a pre-existing bug only caught by a new test)
+- Pull **B2 (progress/background jobs)** forward — long ops must never look frozen
+
+**DoD:** fresh checkout → one command boots a healthy app with a visible config summary; pushes can't silently break the suite.
+
 ### B10. Model configuration via UI — superseded by B4. (see B4)
 
 ---
