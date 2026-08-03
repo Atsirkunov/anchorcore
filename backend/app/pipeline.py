@@ -99,6 +99,10 @@ class IngestionPipeline:
         return True
 
     async def _classify_and_store(self, db: Session, source: Source, doc: IngestionDoc) -> int:
+        # Classify BEFORE touching the DB: LLM calls are slow and must never
+        # hold a write lock on SQLite (blocks syncs/requests concurrently).
+        classified = await self.classifier.classify(doc.text, doc.source_ref or doc.title)
+
         item = db.execute(
             select(IngestedItem).where(
                 IngestedItem.source_id == source.id,
@@ -112,7 +116,6 @@ class IngestionPipeline:
             db.delete(entity)
         db.flush()
 
-        classified = await self.classifier.classify(doc.text, doc.source_ref or doc.title)
         count = 0
         for item_data in classified:
             entity = Entity(

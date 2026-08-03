@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     classifier_model: str = "llama3.2:3b"
     embed_model: str = "nomic-embed-text"
     classifier_timeout: float = 60.0
+    http_retries: int = 3
 
     answer_model: str = "gpt-4o-mini"
     answer_api_key: str = ""

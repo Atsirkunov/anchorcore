@@ -85,11 +85,19 @@ async def health(db: Session = Depends(get_db)) -> dict:
         "data_dir": str(settings.data_dir),
         "components": {
             "ollama": "ok" if ollama_ok else "offline",
-            "answer_key": "configured" if settings.answer_api_key else "missing",
+            "answer_key": _answer_provider(),
             "tasks": scheduler.task_states(),
             "failing_sources": [{"id": s.id, "name": s.name, "error": s.last_error, "count": s.error_count} for s in failing_sources],
         },
     }
+
+
+def _answer_provider() -> str:
+    if settings.answer_base_url.startswith(("http://localhost", "http://127.0.0.1")):
+        return "ollama"
+    if settings.answer_api_key:
+        return "configured"
+    return "missing"
 
 
 async def _check_ollama() -> bool:

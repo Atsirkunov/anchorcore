@@ -87,12 +87,11 @@ class AnswerEngine:
         return [{"chunk": chunk, "entity": entity, "score": 0.0} for chunk, entity in rows]
 
     async def _generate(self, question: str, context: str) -> str:
-        if settings.answer_base_url.startswith("http://localhost") or settings.answer_base_url.startswith("http://127.0.0.1"):
-            return f"Answer for: {question}\n\n[Note: answer model unavailable offline; showing top context.]\n\n{context[:1500]}"
-
-        if not settings.answer_api_key:
+        is_local = settings.answer_base_url.startswith(("http://localhost", "http://127.0.0.1"))
+        if not is_local and not settings.answer_api_key:
             return f"Answer for: {question}\n\n[No model key configured. Matching context:]\n\n{context[:1500]}"
 
+        headers = {"Authorization": f"Bearer {settings.answer_api_key}"} if settings.answer_api_key else {}
         payload = {
             "model": settings.answer_model,
             "messages": [
@@ -101,14 +100,18 @@ class AnswerEngine:
             ],
             "temperature": 0.2,
         }
-        async with RetryClient(timeout=settings.answer_timeout) as client:
-            resp = await client.post(
-                f"{settings.answer_base_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.answer_api_key}"},
-                json=payload,
-            )
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+        try:
+            async with RetryClient(timeout=settings.answer_timeout) as client:
+                resp = await client.post(
+                    f"{settings.answer_base_url.rstrip('/')}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("answer generation failed (%s); returning context only", exc)
+            return f"Answer for: {question}\n\n[Answer model unreachable ({type(exc).__name__}); showing matching context.]\n\n{context[:1500]}"
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
