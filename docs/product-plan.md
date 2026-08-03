@@ -213,6 +213,16 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 ### B9. Document type coverage (P2)
 **Scope:** add `.docx`/`.pptx`/`.odt` extraction (small deps); revisit after real tester file types are known — the watched folder currently only ingests a subset of formats.
 
+### B11. Parallel classification throughput (P2 — discovered)
+**Problem:** windowed classification runs sequentially — a 237-page PDF took ~15 min (160+ serial LLM calls). Hardware is fine; the pipeline serializes.
+
+**Scope:**
+- Bounded concurrency in the pipeline: `asyncio.Semaphore(N)` around classifier calls (N configurable, default 4)
+- Document Ollama tuning in README/.env guidance: `OLLAMA_NUM_PARALLEL`, `OLLAMA_CONTEXT_LENGTH=8192` (windows need only ~2.5k tokens; 32k default wastes KV cache), `OLLAMA_KEEP_ALIVE` (avoid model unload churn)
+- Health/System tab shows throughput stats (windows processed, avg latency) once B1 lands
+
+**Expected:** 3-5x wall-clock reduction on GPU machines; scales with hardware.
+
 ### B10. Model configuration via UI — superseded by B4. (see B4)
 
 ---
