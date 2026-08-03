@@ -75,10 +75,20 @@ export function SourcesTab() {
         {sources.map((s) => (
           <li key={s.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#171a21", border: "1px solid #2d333b", borderRadius: 8, padding: "0.6rem 0.9rem" }}>
             <div>
-              <div style={{ fontWeight: 600 }}>{s.name}</div>
+              <div style={{ fontWeight: 600 }}>
+                {s.name}
+                {s.error_count > 0 && (
+                  <span style={{ marginLeft: 8, fontSize: 11, background: "#3a1d1d", color: "#fca5a5", padding: "0.1rem 0.5rem", borderRadius: 999, fontWeight: 700 }}>
+                    sync failing ×{s.error_count}
+                  </span>
+                )}
+              </div>
               <div style={{ fontSize: 12, color: "#9ca3af" }}>
                 {s.connector} · last sync: {s.last_synced_at ? new Date(s.last_synced_at).toLocaleString() : "never"}
               </div>
+              {s.last_error && (
+                <div style={{ fontSize: 12, color: "#f87171", marginTop: 2 }} title={s.last_error}>{s.last_error.slice(0, 120)}</div>
+              )}
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <button onClick={() => sync(s.id)} style={styles.button}>Sync now</button>

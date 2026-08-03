@@ -1,4 +1,4 @@
-import type { AskResponse, Entity, MergeProposal, Source } from "./types";
+import type { AskResponse, Entity, Health, MergeProposal, Source } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
@@ -10,7 +10,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  health: () => request<{ status: string }>("/health"),
+  health: () => request<Health>("/health"),
 
   listSources: () => request<Source[]>("/sources"),
   createSource: (payload: { connector: string; name: string; config: Record<string, string> }) =>
