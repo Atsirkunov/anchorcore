@@ -247,6 +247,17 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 ### B10. Model configuration via UI — superseded by B4. (see B4)
 
+### B14. Agent connectivity via MCP (P2 — see [mcp.md](./mcp.md))
+**Problem:** users want their own harnesses (Claude Code, Codex, opencode) to use AnchorCore's memory, but today only the browser UI can reach it.
+
+**Scope (per [mcp.md](./mcp.md)):**
+- B14.1 Local stdio MCP server, read-only: `ask`, `search`, `get_entity`, `get_source`, `list_sources`, `memory_status` — thin adapters over existing services; results respect status/dispute filtering
+- B14.2 Streamable HTTP transport mounted on the FastAPI app (`/mcp`), bearer-token auth (opt-in, disabled on localhost), calls audited in `system_events` — the "centralized dataset for agents" story
+- B14.3 Write-back `ingest` tool (items stored `unverified`, author `mcp:<token>`, routed to the review UI)
+- B14.4 Registry publishing for one-command harness installs
+
+**DoD:** a tester points Claude Code at their AnchorCore memory (local or centralized), asks a question, and gets a cited answer; every MCP call appears in the audit trail.
+
 ---
 
-*Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md)*
+*Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md)*

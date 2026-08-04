@@ -166,6 +166,7 @@ erDiagram
 | `ModelClient` | Ollama + BYO OpenAI-compatible | Any provider |
 | `SecretStore` | Keychain | Cloud secret manager |
 | `Connector` | Folder, Jira | Linear, Slack, Notion, Drive |
+| `AgentAdapter` | MCP server (stdio + HTTP) — see [mcp.md](./mcp.md) | MCP registry / deeper tool set |
 | `DB` | SQLite | PostgreSQL (hosted migration) |
 
 ## 9. Evolution Path
