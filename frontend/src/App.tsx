@@ -5,14 +5,16 @@ import { AskTab } from "./tabs/AskTab";
 import { EntitiesTab } from "./tabs/EntitiesTab";
 import { ReviewTab } from "./tabs/ReviewTab";
 import { SourcesTab } from "./tabs/SourcesTab";
+import { SystemTab } from "./tabs/SystemTab";
 
-type Tab = "ask" | "sources" | "entities" | "review";
+type Tab = "ask" | "sources" | "entities" | "review" | "system";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "ask", label: "Ask" },
   { id: "sources", label: "Sources" },
   { id: "entities", label: "Entities" },
   { id: "review", label: "Review" },
+  { id: "system", label: "System" },
 ];
 
 export default function App() {
@@ -88,6 +90,7 @@ export default function App() {
         {tab === "sources" && <SourcesTab />}
         {tab === "entities" && <EntitiesTab />}
         {tab === "review" && <ReviewTab />}
+        {tab === "system" && <SystemTab />}
       </main>
     </div>
   );

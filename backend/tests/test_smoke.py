@@ -1,4 +1,27 @@
+import time
+
 from app.main import app
+
+
+def wait_job(client, job_id: int, deadline: float = 30.0) -> dict:
+    """Poll a background job until it finishes; returns the job payload."""
+    start = time.monotonic()
+    while time.monotonic() < start + deadline:
+        job = client.get(f"/sources/jobs/{job_id}")
+        assert job.status_code == 200, job.text
+        payload = job.json()
+        if payload["status"] != "running":
+            return payload
+        time.sleep(0.2)
+    raise AssertionError(f"job {job_id} did not finish within {deadline}s")
+
+
+def start_and_wait(client, source_id: int, kind: str = "sync", deadline: float = 30.0) -> dict:
+    resp = client.post(f"/sources/{source_id}/{kind}")
+    assert resp.status_code == 202, resp.text
+    job = resp.json()
+    assert job["status"] == "running"
+    return wait_job(client, job["id"], deadline=deadline)
 
 
 def test_health(client):
@@ -16,14 +39,14 @@ def test_folder_ingest_flow(client, tmp_path):
     )
     assert source.status_code == 201
 
-    sync = client.post(f"/sources/{source.json()['id']}/sync")
-    assert sync.status_code == 200
-    assert sync.json()["items"] == 1
-    assert sync.json()["entities"] >= 1
+    job = start_and_wait(client, source.json()["id"])
+    assert job["status"] == "done"
+    assert job["result"]["items"] == 1
+    assert job["result"]["entities"] >= 1
 
     # re-sync must dedupe
-    sync2 = client.post(f"/sources/{source.json()['id']}/sync")
-    assert sync2.json()["items"] == 0
+    job2 = start_and_wait(client, source.json()["id"])
+    assert job2["result"]["items"] == 0
 
     entities = client.get("/entities").json()
     assert len(entities) >= 1
@@ -35,13 +58,47 @@ def test_folder_ingest_flow(client, tmp_path):
     assert qa.json()["answer"]
 
 
+def test_job_history_and_progress(client, tmp_path):
+    (tmp_path / "a.md").write_text("We decided to ship v1 in June.", encoding="utf-8")
+    (tmp_path / "b.md").write_text("Action: document the release process.", encoding="utf-8")
+    source = client.post(
+        "/sources",
+        json={"connector": "folder", "name": "hist", "config": {"path": str(tmp_path)}},
+    ).json()
+    job = start_and_wait(client, source["id"])
+    assert job["total"] == 2
+    assert job["processed"] == 2
+
+    history = client.get(f"/sources/jobs?source_id={source['id']}").json()
+    assert [j["id"] for j in history] == [job["id"]]
+    assert history[0]["kind"] == "sync"
+    assert history[0]["status"] == "done"
+    assert history[0]["result"]["entities"] >= 1
+
+
+def test_reclassify_runs_as_job(client, tmp_path):
+    (tmp_path / "r.md").write_text("We decided to adopt the new stack.", encoding="utf-8")
+    source = client.post(
+        "/sources",
+        json={"connector": "folder", "name": "recl", "config": {"path": str(tmp_path)}},
+    ).json()
+    start_and_wait(client, source["id"])
+    assert client.get("/entities").json()
+
+    job = start_and_wait(client, source["id"], kind="reclassify")
+    assert job["status"] == "done"
+    assert job["kind"] == "reclassify"
+    assert job["result"]["entities"] >= 1
+    assert client.get("/entities").json()
+
+
 def test_review_endpoints(client, tmp_path):
     (tmp_path / "a.md").write_text("We decided to ship v1 in June.", encoding="utf-8")
     source = client.post(
         "/sources",
         json={"connector": "folder", "name": "notes", "config": {"path": str(tmp_path)}},
     ).json()
-    client.post(f"/sources/{source['id']}/sync")
+    start_and_wait(client, source["id"])
 
     low = client.get("/review/low-confidence")
     assert low.status_code == 200
@@ -58,13 +115,18 @@ def test_sync_error_tracking(client, tmp_path):
         json={"connector": "folder", "name": "bad", "config": {"path": str(tmp_path / "nope")}},
     ).json()
 
-    sync = client.post(f"/sources/{source['id']}/sync")
-    assert sync.status_code == 400
+    job = start_and_wait(client, source["id"])
+    assert job["status"] == "failed"
+    assert "does not exist" in (job["error"] or "")
 
     sources = client.get("/sources").json()
     failing = next(s for s in sources if s["id"] == source["id"])
     assert failing["error_count"] == 1
     assert "does not exist" in (failing["last_error"] or "")
+
+
+def test_job_404(client):
+    assert client.get("/sources/jobs/999999").status_code == 404
 
 
 def test_health_reports_components(client):
@@ -76,8 +138,6 @@ def test_health_reports_components(client):
 
 
 def test_folder_watcher_picks_up_new_files(client, tmp_path):
-    import time
-
     source = client.post(
         "/sources",
         json={"connector": "folder", "name": "watched", "config": {"path": str(tmp_path)}},
@@ -106,13 +166,10 @@ def test_reclassify_rebuilds_entities(client, tmp_path):
         json={"connector": "folder", "name": "recl", "config": {"path": str(tmp_path)}},
     ).json()
 
-    sync = client.post(f"/sources/{source['id']}/sync")
-    assert sync.status_code == 200
+    start_and_wait(client, source["id"])
     assert client.get("/entities").json()
 
-    result = client.post(f"/sources/{source['id']}/reclassify")
-    assert result.status_code == 200
-    assert result.json()["entities"] >= 1
+    start_and_wait(client, source["id"], kind="reclassify")
     assert client.get("/entities").json()
 
 
@@ -127,7 +184,7 @@ def test_merge_cleans_references(client, tmp_path):
         "/sources",
         json={"connector": "folder", "name": "merge", "config": {"path": str(tmp_path)}},
     ).json()
-    client.post(f"/sources/{source['id']}/sync")
+    start_and_wait(client, source["id"])
 
     entities = client.get("/entities").json()
     assert len(entities) >= 2
@@ -163,7 +220,7 @@ def test_full_document_chunking(client, tmp_path):
         "/sources",
         json={"connector": "folder", "name": "big", "config": {"path": str(tmp_path)}},
     ).json()
-    client.post(f"/sources/{source['id']}/sync")
+    start_and_wait(client, source["id"])
 
     with SessionLocal() as db:
         item = db.execute(select(IngestedItem).where(IngestedItem.source_id == source["id"])).scalar_one()

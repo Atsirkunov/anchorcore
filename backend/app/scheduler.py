@@ -9,6 +9,7 @@ from .db import SessionLocal
 from .embedder import pack_f32
 from .folder_watcher import FolderWatcher
 from .models import Chunk, Source
+from .system_events import record as record_event
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,12 @@ class Scheduler:
                 vectors = await self.embedder.embed(texts)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("embedding backfill failed (%s); %d chunks still pending", exc, len(chunks))
+                record_event(
+                    "embedder",
+                    f"embedding backfill failed; {len(chunks)} chunks still pending",
+                    level="warning",
+                    detail=f"{type(exc).__name__}: {exc}",
+                )
                 return
             for chunk, vector in zip(chunks, vectors):
                 chunk.embedding = pack_f32([vector])
@@ -102,6 +109,11 @@ class Scheduler:
                 if task.done() and not task.cancelled():
                     exc = task.exception()
                     logger.error("task %s died (%s); restarting", name, exc)
+                    record_event(
+                        "scheduler",
+                        f"task '{name}' died; restarting",
+                        detail=f"{type(exc).__name__}: {exc}",
+                    )
                     self._tasks[name] = asyncio.create_task(self._poll_loop(name, _minutes_for(name)), name=name)
 
     async def _watch_loop(self) -> None:
@@ -116,6 +128,11 @@ class Scheduler:
                 await self._sync_connector(connector_type)
             except Exception as exc:  # noqa: BLE001
                 logger.error("connector loop %s crashed: %s", connector_type, exc)
+                record_event(
+                    "scheduler",
+                    f"connector loop '{connector_type}' crashed",
+                    detail=f"{type(exc).__name__}: {exc}",
+                )
             await asyncio.sleep(minutes * 60)
 
     async def _sync_connector(self, connector_type: str) -> None:
@@ -139,6 +156,12 @@ class Scheduler:
                 await self.pipeline.sync_source(db, source)
         except Exception as exc:  # noqa: BLE001
             logger.warning("sync failed for source %s: %s", source_id, exc)
+            record_event(
+                "scheduler",
+                f"background sync failed for source {source_id}",
+                source_id=source_id,
+                detail=f"{type(exc).__name__}: {exc}",
+            )
 
 
 def _minutes_for(connector_type: str) -> int:

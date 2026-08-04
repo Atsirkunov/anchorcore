@@ -1,10 +1,42 @@
+import logging
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+logger = logging.getLogger(__name__)
+
+
+def _env_file_path() -> Path:
+    return Path(".env")
+
+
+def validate_env_file() -> list[str]:
+    """Check the .env file for duplicate keys and typos (unknown ANCHOR_* keys).
+
+    Returns a list of human-readable warnings; empty when the file is clean.
+    """
+    env_path = _env_file_path()
+    if not env_path.exists():
+        return []
+    warnings: list[str] = []
+    seen: dict[str, int] = {}
+    for lineno, raw in enumerate(env_path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key = line.split("=", 1)[0].strip()
+        if not key:
+            continue
+        if key in seen:
+            warnings.append(f".env:{lineno}: duplicate key '{key}' (first defined on line {seen[key]}) — last value wins")
+        seen[key] = lineno
+        if key.startswith("ANCHOR_") and key.removeprefix("ANCHOR_").lower() not in Settings.model_fields:
+            warnings.append(f".env:{lineno}: unknown key '{key}' — is it a typo? pydantic-settings ignores it")
+    return warnings
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="ANCHOR_")
+    model_config = SettingsConfigDict(env_file=".env", env_prefix="ANCHOR_", extra="ignore")
 
     data_dir: Path = Path("data")
     database_url: str = ""
@@ -34,6 +66,25 @@ class Settings(BaseSettings):
     @property
     def resolved_database_url(self) -> str:
         return self.database_url or f"sqlite:///{self.data_dir / 'anchorcore.db'}"
+
+    def banner(self) -> list[str]:
+        """Effective settings shown at boot so a fresh checkout is easy to sanity-check."""
+        if self.answer_base_url.startswith(("http://localhost", "http://127.0.0.1")):
+            answer_provider = f"ollama ({self.answer_model})"
+        elif self.answer_api_key:
+            answer_provider = f"{self.answer_base_url} ({self.answer_model})"
+        else:
+            answer_provider = f"{self.answer_base_url} — API key MISSING (answers fall back to context only)"
+        return [
+            "--- AnchorCore config ---",
+            f"  data dir        : {self.data_dir}",
+            f"  database        : {self.resolved_database_url}",
+            f"  ollama          : {self.ollama_base_url}",
+            f"  classifier model: {self.classifier_model}",
+            f"  embed model     : {self.embed_model}",
+            f"  answer model    : {answer_provider}",
+            "-------------------------",
+        ]
 
 
 settings = Settings()

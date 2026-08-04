@@ -136,20 +136,22 @@ Candidates, in rough order of revenue pull (all build on the v1 memory core):
 
 Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = later.
 
-### B1. Error transparency + downloadable logs (P1)
+### B1. Error transparency + downloadable logs — DONE (commit: add B1 troubleshooting pass)
 **Problem:** today errors surface as raw "Internal Server Error" with no context; logs only exist in the console/file on the machine. Test users can't help debug.
 
-**Scope:**
-- Structured error records (component, source, timestamp, message) surfaced in a "System" tab, not just a raw log tail
-- Context on errors: which source/connector/step failed, last sync status, model availability
-- **Download log button** in the app serving `data/anchorcore.log` (current file; rotated files via UI list)
-- Secrets never in logs (audit existing paths — connector errors, config dumps)
-- Frontend surfaces the specific error text (already partially done — make consistent across all actions)
+**Done:**
+- Structured error records (`system_events` table: component, source, level, message, detail, timestamp) recorded by pipeline/scheduler/embedder/QA failure paths, surfaced in a **System tab** (filter by component/level, source name)
+- `/system/status`: model availability, Ollama reachability, answer provider, scheduler tasks, pending-embedding count, failing sources
+- **Log download**: `/system/logs` lists `anchorcore.log` + rotated files; download endpoint (sanitized, no path traversal)
+- **Secrets never in logs/UI**: `RedactingFormatter` on console + file handlers, redaction applied to stored error text and `source.last_error`; `GET /sources/{id}/config` masks tokens (was leaking the Jira token in plaintext)
+- Frontend surfaces specific error text consistently (fetch `detail` parsed in `api.ts`)
 
-**DoD:** a tester hits a failure and can export a log file + error context in two clicks.
+**DoD:** a tester hits a failure and can export a log file + error context in two clicks. — met via System tab → Download log.
 
-### B2. Progress feedback on every action (P1)
+### B2. Progress feedback on every action (P1 — jobs core + recent-jobs panel done)
 **Problem:** sync/reclassify are synchronous — long operations look frozen, large sources can time out, and there's no "is it done?" signal.
+
+**Status:** background job model (202 + polling + history + progress in Sources tab) landed with B13; job history now also surfaced in the System tab. **Remaining:** busy states on review/merge actions and the QA spinner, "running jobs" summary in the header.
 
 **Scope:**
 - Busy states on all buttons (spinner/disabled) — small, immediate
@@ -193,12 +195,10 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** a 300-page PDF is fully indexed; questions about content in page 250 return cited answers.
 
-### B6. Embedding backfill job (P1 — discovered)
+### B6. Embedding backfill job — DONE (commit: add B1 troubleshooting pass)
 **Problem:** when embedding fails (Ollama down), chunks are stored unembedded — and nothing ever retries them unless the file changes. The memory silently stays keyword-only.
 
-**Scope:**
-- Periodic (and on-startup) job: embed all chunks with missing embeddings
-- Health component: "N chunks pending embedding" so it's visible, not silent
+**Status:** backfill loop (on startup + every 15 min) landed with B13; visibility done in the troubleshooting pass — `pending_embeddings` count in `/health` + `/system/status`, "Embedding backfill" card in the System tab.
 
 **DoD:** after Ollama comes back, all pending chunks get embedded without user action, and health reports the catch-up.
 
@@ -223,28 +223,27 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **Expected:** 3-5x wall-clock reduction on GPU machines; scales with hardware.
 
-### B12. Retrieval quality: hybrid search + chunk cleaning (P2 — discovered)
+### B12. Retrieval quality: hybrid search + chunk cleaning (P2 — discovered, confirmed live)
 **Problem:** full-document chunks are raw extracted text (repeated headers, page numbers, encoding garbage) and vector-only search with `nomic-embed-text` ranks them poorly — a DVCA question scored all candidates ~0.7 and surfaced unrelated sections, while clean entity-summary chunks retrieved far better. Verified with a retrieval probe on the 237-page rulebook (only 5 chunks mention DVSE/DVCA; they ranked below unrelated chunks).
+
+**Confirmed live (Aug 2026):** a "Merger and related rules and movements" question on the same rulebook retrieved the MRGR section (§434, score 0.632) plus 4 unrelated chunks (§457 PLAC at 0.606, etc.); the relevant movement-table chunks (§437 key dates, §586 event matrix) did not make top-8, and llama3.2:3b then hallucinated a PLAC→merger link. The correct data exists (Table 103 movement rules are inside the top chunk itself) — the retrieval + generation pipeline failed to use it.
 
 **Scope:**
 - **Chunk text cleaning** before embedding: strip repeated headers/footers, page numbers, control chars/encoding artifacts; normalize whitespace
 - **Hybrid retrieval**: combine vector similarity with keyword/BM25 scoring (SQLite FTS5) so acronyms like DVCA/DVSE hit directly; configurable weights
-- Optional: LLM rerank of top-k candidates (evaluated after hybrid lands)
+- Optional: LLM rerank of top-k candidates (evaluated after hybrid lands); answer quality should be re-tested with a better model than llama3.2:3b for the generation step
 
 **DoD:** the DVCA question returns the DVSE sections with scores ≥ 0.8 and a correct cited answer on the 237-page PDF.
 
-### B13. Dev process hardening (P0 — do first tomorrow)
+### B13. Dev process hardening — DONE (commit: add B13 dev process hardening)
 **Problem (from session retrospective):** environment chaos cost more time than code bugs — multiple servers sharing one SQLite DB (stale code, lock fights, an elevated process we couldn't kill), `.env` silently overwritten with example defaults, duplicate keys silently overriding (pydantic takes the last), 15-min operations looking frozen, hand-rolled SQLite migrations already biting once.
 
-**Scope:**
-- **Single run entry point**: `start.ps1`/`start.sh` that kills orphans on the port, starts the backend with correct cwd/env, and prints a config banner on boot (loaded base URL, model, DB path, Ollama reachability)
-- **Startup config validation**: log effective settings, warn on duplicate `.env` keys and on missing models (interim until B4)
-- **Alembic migrations** (replace hand-rolled `db.py:migrate` ALTERs)
+**Done:**
+- **Single run entry point**: `start.ps1`/`start.sh` that kills orphans on the port, creates the venv/.env on first run, applies Alembic migrations, and boots the backend
+- **Startup config validation**: `.env` warnings for duplicate keys + unknown `ANCHOR_*` keys; boot banner logs effective settings (base URL, models, DB path); Ollama model availability checked at startup
+- **Alembic migrations** (replace hand-rolled `db.py:migrate` ALTERs) — legacy DBs auto-stamped
 - **CI via GitHub Actions**: pytest + frontend build on every push
-- **Process habit**: regression test with every bug fix (the merge 500 was a pre-existing bug only caught by a new test)
-- Pull **B2 (progress/background jobs)** forward — long ops must never look frozen
-
-**DoD:** fresh checkout → one command boots a healthy app with a visible config summary; pushes can't silently break the suite.
+- **B2 pulled forward**: sync/reclassify are now background jobs (202 + `GET /sources/jobs`), Sources tab polls progress with busy states and inline progress bars
 
 ### B10. Model configuration via UI — superseded by B4. (see B4)
 
