@@ -11,12 +11,48 @@ export type Source = {
 
 export type Health = {
   status: string;
+  data_dir: string;
   components: {
     ollama: string;
     answer_key: string;
+    pending_embeddings: number;
     tasks: Record<string, string>;
     failing_sources: { id: number; name: string; error: string | null; count: number }[];
   };
+};
+
+export type SystemStatus = {
+  version: string;
+  data_dir: string;
+  database: string;
+  ollama: {
+    reachable: boolean;
+    base_url: string;
+    classifier_model: string;
+    embed_model: string;
+    missing_models: string[];
+  };
+  answer: { provider: string; model: string; base_url: string };
+  tasks: Record<string, string>;
+  pending_embeddings: number;
+  failing_sources: { id: number; name: string; error: string | null; count: number }[];
+};
+
+export type SystemEvent = {
+  id: number;
+  component: string;
+  level: "error" | "warning" | "info";
+  source_id: number | null;
+  source_name: string | null;
+  message: string;
+  detail: string;
+  created_at: string;
+};
+
+export type LogFile = {
+  name: string;
+  size: number;
+  modified: string;
 };
 
 export type Entity = {
@@ -53,4 +89,18 @@ export type MergeProposal = {
   entity_a_id: number;
   entity_b_id: number;
   reason: string;
+};
+
+export type Job = {
+  id: number;
+  source_id: number;
+  kind: "sync" | "reclassify";
+  status: "running" | "done" | "failed";
+  total: number;
+  processed: number;
+  result: { items?: number; entities?: number };
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
 };

@@ -10,7 +10,9 @@ from .config import settings
 from .connectors import ConnectorError, IngestionDoc, build_connector
 from .embedder import Embedder, pack_f32
 from .models import Chunk, Entity, IngestedItem, MergeAction, Relationship, Source, content_hash
+from .redact import redact
 from .secrets import SecretStore, resolve_source_config
+from .system_events import record as record_event
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +59,7 @@ def classify_windows(text: str) -> list[str]:
 
 
 def record_sync_error(db: Session, source: Source, exc: Exception) -> None:
-    source.last_error = f"{type(exc).__name__}: {exc}"[:1000]
+    source.last_error = redact(f"{type(exc).__name__}: {exc}")[:1000]
     source.error_count += 1
     db.commit()
 
@@ -94,22 +96,41 @@ class IngestionPipeline:
         self.embedder = embedder
         self.secrets = secrets
 
-    async def sync_source(self, db: Session, source: Source, force_reclassify: bool = False) -> dict:
+    async def sync_source(
+        self, db: Session, source: Source, force_reclassify: bool = False, progress=None
+    ) -> dict:
         try:
-            return await self._sync_source(db, source, force_reclassify)
+            return await self._sync_source(db, source, force_reclassify, progress)
         except Exception as exc:
             record_sync_error(db, source, exc)
+            record_event(
+                "pipeline",
+                f"sync failed for source '{source.name}'",
+                source_id=source.id,
+                detail=f"{type(exc).__name__}: {exc}",
+                db=db,
+            )
             raise
 
-    async def _sync_source(self, db: Session, source: Source, force_reclassify: bool = False) -> dict:
+    async def _sync_source(
+        self, db: Session, source: Source, force_reclassify: bool = False, progress=None
+    ) -> dict:
         config = resolve_source_config(source, self.secrets)
         connector = build_connector(source.connector, config)
         docs, cursor = await connector.fetch(source.last_sync_cursor or "")
 
         created_items = 0
         new_entities = 0
-        for doc in docs:
+        total = len(docs)
+        for index, doc in enumerate(docs, start=1):
+            if progress is not None:
+                await progress(index, total)
             if self._upsert_doc(db, source, doc) or force_reclassify:
+                # Commit the item BEFORE classification: LLM calls are slow and
+                # must never run while this session holds the SQLite write lock
+                # (other writers would block — and a blocked sqlite busy-wait
+                # stalls the whole event loop).
+                db.commit()
                 created_items += 1
                 new_entities += await self._classify_and_store(db, source, doc)
 
