@@ -70,6 +70,10 @@ def make_router(
     ) -> list[schemas.JobOut]:
         return jobs.recent(db, source_id=source_id, limit=min(limit, 100))
 
+    @router.get("/jobs/running", response_model=list[schemas.JobOut])
+    def list_running_jobs(db: Session = Depends(get_db)) -> list[schemas.JobOut]:
+        return jobs.running(db)
+
     @router.get("/jobs/{job_id}", response_model=schemas.JobOut)
     def get_job(job_id: int, db: Session = Depends(get_db)) -> schemas.JobOut:
         job = jobs.get(db, job_id)
