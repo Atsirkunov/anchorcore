@@ -1,5 +1,7 @@
+import asyncio
 import logging
 import re
+import time
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, or_, select
@@ -13,6 +15,7 @@ from .models import Chunk, Entity, IngestedItem, MergeAction, Relationship, Sour
 from .redact import redact
 from .secrets import SecretStore, resolve_source_config
 from .system_events import record as record_event
+from .throughput import throughput
 
 logger = logging.getLogger(__name__)
 
@@ -182,10 +185,19 @@ class IngestionPipeline:
         # hold a write lock on SQLite (blocks syncs/requests concurrently).
         base_ref = doc.source_ref or doc.title
         windows = classify_windows(doc.text)
-        classified: list[dict] = []
-        for index, window in enumerate(windows, start=1):
-            ref = f"{base_ref} §{index}" if len(windows) > 1 else base_ref
-            classified.extend(await self.classifier.classify(window, ref))
+        sem = asyncio.Semaphore(settings.classifier_concurrency)
+
+        async def classify_one(window: str, ref: str) -> list[dict]:
+            async with sem:
+                started = time.monotonic()
+                try:
+                    return await self.classifier.classify(window, ref)
+                finally:
+                    throughput.record(time.monotonic() - started)
+
+        refs = [f"{base_ref} §{index}" if len(windows) > 1 else base_ref for index in range(1, len(windows) + 1)]
+        results = await asyncio.gather(*(classify_one(w, r) for w, r in zip(windows, refs)))
+        classified: list[dict] = [item for batch in results for item in batch]
 
         item = db.execute(
             select(IngestedItem).where(
