@@ -26,6 +26,20 @@ ollama pull llama3.2:3b       # classifier
 ollama pull nomic-embed-text  # embeddings
 ```
 
+**Large-document throughput (B11):** classification windows run in parallel
+(4 by default, configurable via `ANCHOR_CLASSIFIER_CONCURRENCY`). For the
+parallelism to actually speed things up, the Ollama server must agree:
+
+```bash
+# Windows: set as user env vars, then restart Ollama
+setx OLLAMA_NUM_PARALLEL 4
+setx OLLAMA_CONTEXT_LENGTH 8192   # windows need ~2.5k tokens; default wastes KV cache
+setx OLLAMA_KEEP_ALIVE 30m        # avoid model unload churn between long jobs
+# macOS/Linux: export the same vars before running `ollama serve`
+```
+
+Throughput (windows processed, avg latency) is visible in the System tab.
+
 **One command** (Windows `.\start.ps1` / macOS+Linux `./start.sh`):
 
 ```bash
