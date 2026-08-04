@@ -9,6 +9,7 @@ from .embedder import Embedder, unpack_f32
 from .http import RetryClient
 from .models import Chunk, Entity, IngestedItem
 from .schemas import AskResponse, Citation
+from .system_events import record as record_event
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,12 @@ class AnswerEngine:
             hits = self._vector_search(db, query_embedding)
         except Exception as exc:  # noqa: BLE001
             logger.warning("embedding/search failed (%s); using keyword search", exc)
+            record_event(
+                "qa",
+                "retrieval degraded to newest-chunks fallback (embedding/search failed)",
+                level="warning",
+                detail=f"{type(exc).__name__}: {exc}",
+            )
             hits = self._keyword_search(db)
 
         if not hits:
@@ -123,6 +130,12 @@ class AnswerEngine:
                 return resp.json()["choices"][0]["message"]["content"]
         except Exception as exc:  # noqa: BLE001
             logger.warning("answer generation failed (%s); returning context only", exc)
+            record_event(
+                "qa",
+                "answer generation failed; returning matching context only",
+                level="warning",
+                detail=f"{type(exc).__name__}: {exc}",
+            )
             return f"Answer for: {question}\n\n[Answer model unreachable ({type(exc).__name__}); showing matching context.]\n\n{context[:1500]}"
 
 

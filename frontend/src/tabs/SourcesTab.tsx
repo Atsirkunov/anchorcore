@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import type { Source } from "../types";
+import type { Job, Source } from "../types";
+
+const POLL_MS = 1000;
 
 export function SourcesTab() {
   const [sources, setSources] = useState<Source[]>([]);
@@ -10,12 +12,40 @@ export function SourcesTab() {
   const [jira, setJira] = useState({ base_url: "", email: "", token: "", project: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [runningJobs, setRunningJobs] = useState<Record<number, Job>>({});
+  const pollRef = useRef<number | null>(null);
 
   const refresh = useCallback(() => {
     api.listSources().then(setSources).catch((e) => setError(String(e)));
   }, []);
 
-  useEffect(() => refresh(), [refresh]);
+  const stopPolling = useCallback(() => {
+    if (pollRef.current !== null) {
+      window.clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  const pollRunningJobs = useCallback(() => {
+    api.listJobs().then((jobs) => {
+      const running = Object.fromEntries(jobs.filter((j) => j.status === "running").map((j) => [j.id, j]));
+      setRunningJobs(running);
+      const finished = jobs.some((j) => j.status !== "running");
+      if (Object.keys(running).length === 0) {
+        stopPolling();
+        refresh();
+      } else if (finished) {
+        refresh();
+      }
+    }).catch(() => {});
+  }, [refresh, stopPolling]);
+
+  useEffect(() => {
+    refresh();
+    pollRunningJobs();
+    pollRef.current = window.setInterval(pollRunningJobs, POLL_MS);
+    return stopPolling;
+  }, [refresh, pollRunningJobs, stopPolling]);
 
   async function addSource() {
     setBusy(true);
@@ -37,24 +67,24 @@ export function SourcesTab() {
     }
   }
 
-  async function sync(id: number) {
+  async function startJob(id: number, kind: "sync" | "reclassify") {
     setError(null);
     try {
-      await api.syncSource(id);
-      refresh();
+      const job = kind === "sync" ? await api.syncSource(id) : await api.reclassifySource(id);
+      setRunningJobs((prev) => ({ ...prev, [job.id]: job }));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }
 
-  async function reclassify(id: number) {
-    setError(null);
-    try {
-      await api.reclassifySource(id);
-      refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
+  function runningJobFor(sourceId: number): Job | undefined {
+    return Object.values(runningJobs).find((j) => j.source_id === sourceId);
+  }
+
+  function jobLabel(job: Job): string {
+    const verb = job.kind === "reclassify" ? "Reclassifying" : "Syncing";
+    if (job.total > 0) return `${verb}… ${job.processed}/${job.total}`;
+    return `${verb}…`;
   }
 
   return (
@@ -82,33 +112,50 @@ export function SourcesTab() {
       </div>
       {error && <p style={{ color: "#f87171" }}>{error}</p>}
       <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 8 }}>
-        {sources.map((s) => (
-          <li key={s.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#171a21", border: "1px solid #2d333b", borderRadius: 8, padding: "0.6rem 0.9rem" }}>
-            <div>
-              <div style={{ fontWeight: 600 }}>
-                {s.name}
-                {s.error_count > 0 && (
-                  <span style={{ marginLeft: 8, fontSize: 11, background: "#3a1d1d", color: "#fca5a5", padding: "0.1rem 0.5rem", borderRadius: 999, fontWeight: 700 }}>
-                    sync failing ×{s.error_count}
-                  </span>
+        {sources.map((s) => {
+          const job = runningJobFor(s.id);
+          return (
+            <li key={s.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#171a21", border: "1px solid #2d333b", borderRadius: 8, padding: "0.6rem 0.9rem" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600 }}>
+                  {s.name}
+                  {s.error_count > 0 && (
+                    <span style={{ marginLeft: 8, fontSize: 11, background: "#3a1d1d", color: "#fca5a5", padding: "0.1rem 0.5rem", borderRadius: 999, fontWeight: 700 }}>
+                      sync failing ×{s.error_count}
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: 12, color: "#9ca3af" }}>
+                  {s.connector} · last sync: {s.last_synced_at ? new Date(s.last_synced_at).toLocaleString() : "never"}
+                </div>
+                {job && (
+                  <div style={{ marginTop: 6 }}>
+                    <div style={{ fontSize: 12, color: "#7dd3fc" }}>{jobLabel(job)}</div>
+                    {job.total > 0 && (
+                      <div style={{ height: 6, borderRadius: 3, background: "#2d333b", marginTop: 4, overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: `${Math.min(100, (job.processed / job.total) * 100)}%`, background: "#38bdf8", transition: "width 0.3s" }} />
+                      </div>
+                    )}
+                  </div>
+                )}
+                {s.last_error && (
+                  <div style={{ fontSize: 12, color: "#f87171", marginTop: 2 }} title={s.last_error}>{s.last_error.slice(0, 120)}</div>
                 )}
               </div>
-              <div style={{ fontSize: 12, color: "#9ca3af" }}>
-                {s.connector} · last sync: {s.last_synced_at ? new Date(s.last_synced_at).toLocaleString() : "never"}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => startJob(s.id, "sync")} disabled={!!job} style={styles.button}>
+                  {job?.kind === "sync" ? "Syncing…" : "Sync now"}
+                </button>
+                <button onClick={() => startJob(s.id, "reclassify")} disabled={!!job} style={styles.button}>
+                  {job?.kind === "reclassify" ? "Reclassifying…" : "Reclassify"}
+                </button>
+                <button onClick={() => api.deleteSource(s.id).then(refresh)} disabled={!!job} style={{ ...styles.button, background: "#3a1d1d" }}>
+                  Delete
+                </button>
               </div>
-              {s.last_error && (
-                <div style={{ fontSize: 12, color: "#f87171", marginTop: 2 }} title={s.last_error}>{s.last_error.slice(0, 120)}</div>
-              )}
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={() => sync(s.id)} style={styles.button}>Sync now</button>
-              <button onClick={() => reclassify(s.id)} style={styles.button}>Reclassify</button>
-              <button onClick={() => api.deleteSource(s.id).then(refresh)} style={{ ...styles.button, background: "#3a1d1d" }}>
-                Delete
-              </button>
-            </div>
-          </li>
-        ))}
+            </li>
+          );
+        })}
         {sources.length === 0 && <li style={{ color: "#6b7280" }}>No sources yet. Add a folder to watch.</li>}
       </ul>
     </div>

@@ -117,6 +117,43 @@ class Chunk(Base):
     item: Mapped[IngestedItem | None] = relationship(back_populates="chunks")
 
 
+class Job(Base):
+    __tablename__ = "jobs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(50))  # sync | reclassify
+    status: Mapped[str] = mapped_column(String(20), default="running", index=True)  # running|done|failed
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    processed: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[str] = mapped_column(Text, default="{}")  # JSON summary of what happened
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    source: Mapped[Source] = relationship()
+
+    def result_dict(self) -> dict:
+        return json.loads(self.result or "{}")
+
+
+class SystemEvent(Base):
+    __tablename__ = "system_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    component: Mapped[str] = mapped_column(String(50), index=True)  # pipeline|connector|scheduler|embedder|qa|system
+    level: Mapped[str] = mapped_column(String(20), default="error", index=True)  # error|warning|info
+    source_id: Mapped[int | None] = mapped_column(
+        ForeignKey("sources.id", ondelete="SET NULL"), nullable=True
+    )
+    message: Mapped[str] = mapped_column(Text, default="")
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    source: Mapped[Source | None] = relationship()
+
+
 class MergeAction(Base):
     __tablename__ = "merge_actions"
 
