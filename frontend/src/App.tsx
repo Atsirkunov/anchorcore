@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
-import type { Health } from "./types";
+import type { Health, Job } from "./types";
 import { AskTab } from "./tabs/AskTab";
 import { EntitiesTab } from "./tabs/EntitiesTab";
 import { ReviewTab } from "./tabs/ReviewTab";
@@ -22,6 +22,7 @@ export default function App() {
   const [online, setOnline] = useState<boolean | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [runningJobs, setRunningJobs] = useState<Job[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -37,6 +38,25 @@ export default function App() {
     }
     poll();
     const timer = setInterval(poll, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function pollJobs() {
+      try {
+        const jobs = await api.runningJobs();
+        if (cancelled) return;
+        setRunningJobs(jobs);
+      } catch {
+        // ignore — status badge shows API offline instead
+      }
+    }
+    pollJobs();
+    const timer = setInterval(pollJobs, 5000);
     return () => {
       cancelled = true;
       clearInterval(timer);
@@ -69,6 +89,16 @@ export default function App() {
             </button>
           ))}
         </nav>
+        {runningJobs.length > 0 && (
+          <button
+            onClick={() => setTab("sources")}
+            title={runningJobs.map((j) => `#${j.id} ${j.kind}${j.total > 0 ? ` ${j.processed}/${j.total}` : ""}`).join("\n")}
+            style={styles.jobsBadge}
+          >
+            <span style={styles.spinner} />
+            {runningJobs.length} running
+          </button>
+        )}
         <span style={{ color: online === false ? "#f87171" : online ? "#4ade80" : "#6b7280", fontSize: 12 }}>
           {online === false ? "API offline" : online ? "API online" : "checking…"}
         </span>
@@ -130,4 +160,25 @@ const styles: Record<string, React.CSSProperties> = {
   },
   dismiss: { background: "none", border: "1px solid #6b3030", color: "#fca5a5", borderRadius: 6, padding: "0.2rem 0.6rem", cursor: "pointer" },
   main: { padding: "1.5rem", maxWidth: 1000, margin: "0 auto" },
+  jobsBadge: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    background: "#1e2430",
+    border: "1px solid #38bdf8",
+    color: "#7dd3fc",
+    padding: "0.25rem 0.6rem",
+    borderRadius: 999,
+    fontSize: 12,
+    cursor: "pointer",
+  },
+  spinner: {
+    width: 10,
+    height: 10,
+    borderRadius: "50%",
+    border: "2px solid #2d333b",
+    borderTopColor: "#38bdf8",
+    animation: "spin 0.8s linear infinite",
+    flexShrink: 0,
+  },
 };
