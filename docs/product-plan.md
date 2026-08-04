@@ -148,18 +148,12 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** a tester hits a failure and can export a log file + error context in two clicks. — met via System tab → Download log.
 
-### B2. Progress feedback on every action (P1 — jobs core + recent-jobs panel done)
+### B2. Progress feedback on every action (P1) — DONE
 **Problem:** sync/reclassify are synchronous — long operations look frozen, large sources can time out, and there's no "is it done?" signal.
 
-**Status:** background job model (202 + polling + history + progress in Sources tab) landed with B13; job history now also surfaced in the System tab. **Remaining:** busy states on review/merge actions and the QA spinner, "running jobs" summary in the header.
+**Done:** background job model (202 + polling + history + progress bars in Sources tab, job history in System tab) landed with B13; busy/disabled states + per-item indicators on review/merge/verify/dispute actions, QA spinner + "Thinking…" state, and a running-jobs summary badge in the header (polls `/sources/jobs/running`) landed in the B2 remainder pass.
 
-**Scope:**
-- Busy states on all buttons (spinner/disabled) — small, immediate
-- **Background job model** for sync/reclassify: job starts immediately, UI polls job status (running / done / failed, processed X of Y, entities produced)
-- Job history (last N jobs per source) — doubles as an error surface
-- Progress shown inline in Sources tab
-
-**DoD:** reclassify of a large source shows live progress and completion, never a browser timeout.
+**DoD:** reclassify of a large source shows live progress and completion, never a browser timeout. — met.
 
 ### B3. Entity dispute tracking (P2)
 **Problem:** "dispute" currently just flips a status flag — no record of who disputed, when, or why. The trust story needs an audit trail.
