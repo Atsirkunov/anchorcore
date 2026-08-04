@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     classifier_model: str = "llama3.2:3b"
     embed_model: str = "nomic-embed-text"
     classifier_timeout: float = 60.0
+    classifier_concurrency: int = 4
     http_retries: int = 3
 
     answer_model: str = "gpt-4o-mini"
@@ -81,6 +82,7 @@ class Settings(BaseSettings):
             f"  database        : {self.resolved_database_url}",
             f"  ollama          : {self.ollama_base_url}",
             f"  classifier model: {self.classifier_model}",
+            f"  classifier conc : {self.classifier_concurrency}",
             f"  embed model     : {self.embed_model}",
             f"  answer model    : {answer_provider}",
             "-------------------------",
