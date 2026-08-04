@@ -43,6 +43,7 @@ export const api = {
     if (sourceId !== undefined) params.set("source_id", String(sourceId));
     return request<Job[]>(`/sources/jobs?${params}`);
   },
+  runningJobs: () => request<Job[]>("/sources/jobs/running"),
   deleteSource: (id: number) => request<{ deleted: boolean }>(`/sources/${id}`, { method: "DELETE" }),
 
   listEntities: (params?: { kind?: string }) =>

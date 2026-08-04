@@ -28,14 +28,20 @@ export function AskTab() {
         <input
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && submit()}
+          onKeyDown={(e) => e.key === "Enter" && !busy && submit()}
           placeholder="What was decided about X, and why?"
           style={{ flex: 1, padding: "0.6rem 0.8rem", borderRadius: 8, border: "1px solid #2d333b", background: "#171a21", color: "#e6e8eb" }}
         />
-        <button onClick={submit} disabled={busy} style={{ padding: "0.6rem 1.2rem", borderRadius: 8, border: "none", background: "#6366f1", color: "#fff", cursor: "pointer" }}>
-          {busy ? "…" : "Ask"}
+        <button onClick={submit} disabled={busy} style={{ padding: "0.6rem 1.2rem", borderRadius: 8, border: "none", background: "#6366f1", color: "#fff", cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.6 : 1 }}>
+          {busy ? "Thinking…" : "Ask"}
         </button>
       </div>
+      {busy && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, color: "#9ca3af", fontSize: 13 }}>
+          <span style={styles.spinner} />
+          Retrieving context and composing an answer…
+        </div>
+      )}
       {error && <p style={{ color: "#f87171" }}>{error}</p>}
       {result && (
         <div style={{ marginTop: 16 }}>
@@ -58,3 +64,15 @@ export function AskTab() {
     </div>
   );
 }
+
+const styles: Record<string, React.CSSProperties> = {
+  spinner: {
+    width: 14,
+    height: 14,
+    borderRadius: "50%",
+    border: "2px solid #2d333b",
+    borderTopColor: "#7dd3fc",
+    animation: "spin 0.8s linear infinite",
+    flexShrink: 0,
+  },
+};

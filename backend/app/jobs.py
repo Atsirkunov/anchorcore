@@ -43,6 +43,13 @@ class JobManager:
             db.execute(query.order_by(Job.created_at.desc()).limit(limit)).scalars().all()
         )
 
+    def running(self, db: Session) -> list[Job]:
+        return list(
+            db.execute(
+                select(Job).where(Job.status == "running").order_by(Job.created_at.asc())
+            ).scalars().all()
+        )
+
     async def _run(self, job_id: int) -> None:
         async def progress(processed: int, total: int) -> None:
             with SessionLocal() as db:
