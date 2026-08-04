@@ -89,6 +89,19 @@ export function SystemTab() {
             </div>
           </div>
           <div style={styles.card}>
+            <div style={styles.cardTitle}>Classifier throughput</div>
+            <div style={{ fontSize: 12 }}>
+              {status.classifier.windows > 0 ? (
+                <>
+                  {status.classifier.windows} windows · avg {status.classifier.avg_latency_ms} ms
+                  <div style={{ color: "#9ca3af" }}>concurrency {status.classifier.concurrency}</div>
+                </>
+              ) : (
+                <span style={{ color: "#6b7280" }}>no windows classified yet</span>
+              )}
+            </div>
+          </div>
+          <div style={styles.card}>
             <div style={styles.cardTitle}>Scheduler tasks</div>
             <div style={{ fontSize: 12 }}>
               {Object.entries(status.tasks).map(([name, state]) => (

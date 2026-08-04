@@ -13,6 +13,7 @@ from ..config import settings
 from ..db import get_db
 from ..models import Chunk, Source, SystemEvent
 from ..status import answer_provider, missing_ollama_models, ollama_reachable
+from ..throughput import throughput
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,10 @@ def make_router(scheduler) -> APIRouter:
             },
             "tasks": scheduler.task_states(),
             "pending_embeddings": pending,
+            "classifier": {
+                **throughput.snapshot(),
+                "concurrency": settings.classifier_concurrency,
+            },
             "failing_sources": [
                 {"id": s.id, "name": s.name, "error": s.last_error, "count": s.error_count}
                 for s in failing_sources

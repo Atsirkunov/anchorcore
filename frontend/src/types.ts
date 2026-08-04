@@ -9,6 +9,12 @@ export type Source = {
   created_at: string;
 };
 
+export type ClassifierStats = {
+  windows: number;
+  avg_latency_ms: number;
+  concurrency: number;
+};
+
 export type Health = {
   status: string;
   data_dir: string;
@@ -17,6 +23,7 @@ export type Health = {
     answer_key: string;
     pending_embeddings: number;
     tasks: Record<string, string>;
+    classifier: ClassifierStats;
     failing_sources: { id: number; name: string; error: string | null; count: number }[];
   };
 };
@@ -35,6 +42,7 @@ export type SystemStatus = {
   answer: { provider: string; model: string; base_url: string };
   tasks: Record<string, string>;
   pending_embeddings: number;
+  classifier: ClassifierStats;
   failing_sources: { id: number; name: string; error: string | null; count: number }[];
 };
 

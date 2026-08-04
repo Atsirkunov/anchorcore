@@ -23,6 +23,7 @@ from .routers import entities, qa, sources, system
 from .scheduler import Scheduler
 from .secrets import SecretStore
 from .status import answer_provider, missing_ollama_models, ollama_reachable
+from .throughput import throughput
 
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -137,6 +138,10 @@ async def health(db: Session = Depends(get_db)) -> dict:
             "answer_key": answer_provider(),
             "pending_embeddings": pending_embeddings,
             "tasks": scheduler.task_states(),
+            "classifier": {
+                **throughput.snapshot(),
+                "concurrency": settings.classifier_concurrency,
+            },
             "failing_sources": [{"id": s.id, "name": s.name, "error": s.last_error, "count": s.error_count} for s in failing_sources],
         },
     }

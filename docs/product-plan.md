@@ -213,15 +213,15 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 ### B9. Document type coverage (P2)
 **Scope:** add `.docx`/`.pptx`/`.odt` extraction (small deps); revisit after real tester file types are known — the watched folder currently only ingests a subset of formats.
 
-### B11. Parallel classification throughput (P2 — discovered)
+### B11. Parallel classification throughput (P2 — discovered) — DONE
 **Problem:** windowed classification runs sequentially — a 237-page PDF took ~15 min (160+ serial LLM calls). Hardware is fine; the pipeline serializes.
 
-**Scope:**
-- Bounded concurrency in the pipeline: `asyncio.Semaphore(N)` around classifier calls (N configurable, default 4)
-- Document Ollama tuning in README/.env guidance: `OLLAMA_NUM_PARALLEL`, `OLLAMA_CONTEXT_LENGTH=8192` (windows need only ~2.5k tokens; 32k default wastes KV cache), `OLLAMA_KEEP_ALIVE` (avoid model unload churn)
-- Health/System tab shows throughput stats (windows processed, avg latency) once B1 lands
+**Done:**
+- Bounded concurrency in the pipeline: `asyncio.Semaphore(N)` around classifier calls (N = `ANCHOR_CLASSIFIER_CONCURRENCY`, default 4) — windows are classified with `asyncio.gather`, results concatenated in order
+- Ollama tuning documented (README + `.env.example`): `OLLAMA_NUM_PARALLEL=4` (match app concurrency), `OLLAMA_CONTEXT_LENGTH=8192` (windows need ~2.5k tokens; 32k default wastes KV cache), `OLLAMA_KEEP_ALIVE=30m` (avoid model unload churn)
+- Throughput stats live: `throughput.py` tracker records per-window latency; `/health` + `/system/status` expose windows + avg latency + concurrency; System tab shows a "Classifier throughput" card
 
-**Expected:** 3-5x wall-clock reduction on GPU machines; scales with hardware.
+**Expected:** 3-5x wall-clock reduction on GPU machines; scales with hardware. Without `OLLAMA_NUM_PARALLEL`, requests queue at the server (no speedup, no harm).
 
 ### B12. Retrieval quality: hybrid search + chunk cleaning (P2 — discovered, confirmed live)
 **Problem:** full-document chunks are raw extracted text (repeated headers, page numbers, encoding garbage) and vector-only search with `nomic-embed-text` ranks them poorly — a DVCA question scored all candidates ~0.7 and surfaced unrelated sections, while clean entity-summary chunks retrieved far better. Verified with a retrieval probe on the 237-page rulebook (only 5 chunks mention DVSE/DVCA; they ranked below unrelated chunks).
