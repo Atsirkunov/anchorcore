@@ -1,6 +1,7 @@
 from datetime import datetime
+import json
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class SourceOut(BaseModel):
@@ -73,3 +74,45 @@ class Citation(BaseModel):
 class AskResponse(BaseModel):
     answer: str
     citations: list[Citation]
+
+
+class SystemEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    component: str
+    level: str
+    source_id: int | None
+    source_name: str | None = None
+    message: str
+    detail: str
+    created_at: datetime
+
+
+class LogFileOut(BaseModel):
+    name: str
+    size: int
+    modified: datetime
+
+
+class JobOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    source_id: int
+    kind: str
+    status: str  # running | done | failed
+    total: int
+    processed: int
+    result: dict = {}
+    error: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+    @field_validator("result", mode="before")
+    @classmethod
+    def _parse_result(cls, value):
+        if isinstance(value, str):
+            return json.loads(value or "{}")
+        return value
