@@ -313,6 +313,49 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** after 5+ follow-ups, the newest answer is visible without scrolling.
 
+### B20. Launchable package for others (P1 — "usable by others" blocker)
+**Problem:** today AnchorCore runs from a repo checkout (`start.ps1`); a non-developer can't install and launch it. `packaging.md` is a plan only, stale (references Next.js; we're Vite), and macOS-only.
+
+**Scope:**
+- Windows first (this machine): PyInstaller single-file backend exe bundling the built `frontend/dist` — one process serves UI + API on 127.0.0.1:8000
+- Installer/launcher script: checks/starts Ollama, pulls models if missing, opens the browser, first-run data dir under `%LOCALAPPDATA%`
+- Update `packaging.md` to reality (Vite, current stack, Windows-first, macOS later); keep macOS `.app` + signing as the stretch milestone
+- CI artifact: build the exe on tag/push so testers get a download
+
+**DoD:** a non-developer downloads one file, runs it, and lands in the Ask tab with models working — no terminal, no repo.
+
+### B21. Sample dataset for variety and complexity (P1 — first, per agreed prio)
+**Problem:** `sample/` has one 18-line sprint note. Can't demo or validate variety (classification kinds, relationships, duplicates, review, follow-ups, people) on real-shaped data.
+
+**Scope:**
+- Mini-company corpus: `decisions/` (PRD cuts, architecture tradeoffs w/ reasoning), `meetings/` (retro + planning notes with action items + owners), `specs/` (feature doc with cross-references), `people.md` (who owns what — feeds future who_knows)
+- Deliberately include: one duplicate pair (review/merge), one low-confidence item (review), one disputed-worthy claim, and follow-up-friendly topics (e.g. a decision whose movements/steps are asked about second)
+- Docs/README update: how to point a folder source at `sample/` and what each file exercises
+
+**DoD:** connecting `sample/` exercises every Review tab state, produces multiple entity kinds with owners, and supports a 3+ turn follow-up demo.
+
+### B22. Live integration validation: Jira / Linear (P2)
+**Problem:** the Jira connector has never hit a real instance; Linear doesn't exist. "Connects to your tools" is claimed but unproven.
+
+**Scope:**
+- Jira: validate against a real sandbox instance (Atlassian free tier + API token) — incremental cursor, comments→doc text, author/assignee mapping, error surfaces; fix whatever breaks
+- Linear: new connector (Linear API key auth, issues/cycles → IngestionDoc), incremental by updatedAt, same source config pattern (base_url/api_key/project→team)
+- Recorded JSON fixtures + mocked-fetch tests so CI validates connector logic without credentials (per B21 sample data)
+- Troubleshooting pass in README: how to create a Jira API token / Linear API key, expected permission scope
+
+**DoD:** a Jira source and a Linear source sync real data end-to-end on a sandbox; connector logic covered by fixture tests in CI.
+
+### B23. External/cloud models for classification (P2)
+**Problem:** the classifier is hardwired to Ollama (`classifier.py` posts to `ollama_base_url`); B4 lets users set the *answer* model to any OpenAI-compatible provider, but classification can't. Better models = more accurate complex classifications (documents with tricky kinds, higher confidence).
+
+**Scope:**
+- Split classifier from Ollama: `classifier_base_url` + optional `classifier_api_key` (SecretStore), default = Ollama (unchanged behavior)
+- Preset in Settings tab: "classifier provider" (Ollama local / cloud OpenAI-compatible) — mirrors the answer-model pattern
+- Keep rule fallback + windowed parallelism; cost guardrail note (cloud classification on big docs is token-heavy — surface expected cost in UI)
+- Test: classifier hits configured base URL with Bearer key; fallback path unchanged
+
+**DoD:** a user points classification at a cloud model from the Settings tab; a complex document classifies with higher confidence than the local 3B, no restart.
+
 ### B14. Agent connectivity via MCP (P2 — see [mcp.md](./mcp.md))
 **Problem:** users want their own harnesses (Claude Code, Codex, opencode) to use AnchorCore's memory, but today only the browser UI can reach it.
 
