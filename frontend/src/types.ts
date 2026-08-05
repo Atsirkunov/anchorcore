@@ -6,6 +6,7 @@ export type AppSettings = {
   answer_model: string;
   answer_base_url: string;
   answer_timeout: string;
+  answer_reasoning_effort: string; // none | low | medium | high
   answer_api_key: string; // masked as "***set***" when stored
 };
 

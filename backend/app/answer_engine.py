@@ -369,6 +369,17 @@ class AnswerEngine:
             ],
             "temperature": 0.2,
         }
+        effort = (self.settings.get("answer_reasoning_effort") or "none").lower()
+        if effort != "none":
+            if is_local:
+                # Ollama reasoning models (deepseek-r1, qwen3, llama3.3-thinking…)
+                payload["think"] = True
+                payload.pop("temperature", None)
+            else:
+                # OpenAI-compatible reasoning models (o-series, gpt-5, …)
+                # reject temperature; they decide sampling internally
+                payload["reasoning_effort"] = effort
+                payload.pop("temperature", None)
         try:
             async with RetryClient(timeout=timeout) as client:
                 resp = await client.post(

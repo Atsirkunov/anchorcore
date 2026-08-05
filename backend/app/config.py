@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     answer_api_key: str = ""
     answer_base_url: str = "https://api.openai.com/v1"
     answer_timeout: float = 90.0
+    answer_reasoning_effort: str = "none"
 
     jira_poll_minutes: int = 15
     folder_scan_minutes: int = 60

@@ -30,6 +30,7 @@ SETTING_KEYS = (
     "answer_model",
     "answer_base_url",
     "answer_timeout",
+    "answer_reasoning_effort",
 )
 SECRET_KEYS = ("answer_api_key",)
 ALL_KEYS = SETTING_KEYS + SECRET_KEYS

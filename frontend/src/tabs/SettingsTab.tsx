@@ -156,6 +156,20 @@ export function SettingsTab() {
           <input style={styles.input} value={form.answer_base_url} onChange={set("answer_base_url")} placeholder="https://api.openai.com/v1" />
           <label style={styles.label}>Model</label>
           <input style={styles.input} value={form.answer_model} onChange={set("answer_model")} placeholder="gpt-4o-mini" />
+          <label style={styles.label}>Reasoning effort (for reasoning-capable models)</label>
+          <select
+            style={styles.input}
+            value={form.answer_reasoning_effort || "none"}
+            onChange={(e) => setForm({ ...form, answer_reasoning_effort: e.target.value })}
+          >
+            <option value="none">none — fast, no reasoning (default)</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
+            Cloud (o-series, gpt-5): sends <code>reasoning_effort</code>. Local Ollama: enables thinking on reasoning models (deepseek-r1, qwen3, llama3.3-thinking).
+          </div>
           <button style={styles.button} disabled={testBusy === "answer"} onClick={() => testConnection("answer")}>
             {testBusy === "answer" ? "Testing…" : "Test answer model"}
           </button>
