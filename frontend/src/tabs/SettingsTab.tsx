@@ -89,7 +89,16 @@ export function SettingsTab() {
   }
 
   if (!form) {
-    return <div>Loading settings…</div>;
+    return (
+      <div>
+        <h2>Model settings</h2>
+        {error ? (
+          <p style={{ color: "#f87171" }}>Failed to load settings: {error}</p>
+        ) : (
+          <div>Loading settings…</div>
+        )}
+      </div>
+    );
   }
 
   const set = (key: keyof AppSettings) => (e: React.ChangeEvent<HTMLInputElement>) =>

@@ -11,6 +11,8 @@ export default defineConfig({
       "/review": "http://localhost:8000",
       "/qa": "http://localhost:8000",
       "/health": "http://localhost:8000",
+      "/system": "http://localhost:8000",
+      "/settings": "http://localhost:8000",
     },
   },
   build: {
