@@ -11,6 +11,7 @@ from sqlalchemy import func, inspect, select
 from sqlalchemy.orm import Session
 
 from .answer_engine import AnswerEngine
+from .app_settings import SettingsService
 from .classifier import Classifier
 from .config import settings, validate_env_file
 from .db import engine, get_db
@@ -19,7 +20,7 @@ from .jobs import JobManager
 from .models import Chunk, Source
 from .pipeline import IngestionPipeline
 from .redact import RedactingFormatter
-from .routers import entities, qa, sources, system
+from .routers import entities, qa, settings as settings_router, sources, system
 from .scheduler import Scheduler
 from .secrets import SecretStore
 from .status import answer_provider, missing_ollama_models, ollama_reachable
@@ -50,11 +51,12 @@ logger = logging.getLogger(__name__)
 for warning in validate_env_file():
     logger.warning("%s", warning)
 
-classifier = Classifier()
-embedder = Embedder()
 secrets = SecretStore(settings.data_dir / "secrets.enc")
+settings_svc = SettingsService(settings, secrets)
+classifier = Classifier(settings_svc)
+embedder = Embedder(settings_svc)
 pipeline = IngestionPipeline(classifier, embedder, secrets)
-answer_engine = AnswerEngine(embedder)
+answer_engine = AnswerEngine(embedder, settings_svc)
 scheduler = Scheduler(pipeline, embedder)
 jobs = JobManager(pipeline)
 
@@ -89,7 +91,7 @@ async def lifespan(_app: FastAPI):
     scheduler.start()
     for line in settings.banner():
         logger.info("%s", line)
-    missing = missing_ollama_models()
+    missing = missing_ollama_models(settings_svc)
     if missing:
         logger.warning(
             "Ollama models missing: %s — classification falls back to rule-based until pulled. "
@@ -116,12 +118,13 @@ app.include_router(sources.make_router(pipeline, secrets, scheduler, jobs))
 app.include_router(entities.make_router())
 app.include_router(entities.review_router())
 app.include_router(qa.make_router(answer_engine))
-app.include_router(system.make_router(scheduler))
+app.include_router(system.make_router(scheduler, settings_svc))
+app.include_router(settings_router.make_router(settings_svc))
 
 
 @app.get("/health")
 async def health(db: Session = Depends(get_db)) -> dict:
-    ollama_ok = ollama_reachable()
+    ollama_ok = ollama_reachable(settings_svc)
     failing_sources = list(
         db.execute(
             select(Source).where(Source.error_count > 0, Source.enabled.is_(True))
@@ -135,7 +138,7 @@ async def health(db: Session = Depends(get_db)) -> dict:
         "data_dir": str(settings.data_dir),
         "components": {
             "ollama": "ok" if ollama_ok else "offline",
-            "answer_key": answer_provider(),
+            "answer_key": answer_provider(settings_svc),
             "pending_embeddings": pending_embeddings,
             "tasks": scheduler.task_states(),
             "classifier": {
