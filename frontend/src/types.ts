@@ -1,3 +1,20 @@
+export type AppSettings = {
+  ollama_base_url: string;
+  classifier_model: string;
+  embed_model: string;
+  classifier_timeout: string;
+  answer_model: string;
+  answer_base_url: string;
+  answer_timeout: string;
+  answer_api_key: string; // masked as "***set***" when stored
+};
+
+export type TestConnectionResult = {
+  ok: boolean;
+  provider: string;
+  message: string;
+};
+
 export type Source = {
   id: number;
   connector: string;

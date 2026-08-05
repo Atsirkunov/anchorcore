@@ -4,7 +4,7 @@ import struct
 
 import httpx
 
-from .config import settings
+from .app_settings import SettingsService
 from .http import RetryClient
 
 logger = logging.getLogger(__name__)
@@ -21,16 +21,22 @@ def unpack_f32(data: bytes, dims: int) -> list[float]:
 
 
 class Embedder:
+    def __init__(self, settings: SettingsService):
+        self.settings = settings
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        model = self.settings.get("embed_model") or "nomic-embed-text"
+        base_url = self.settings.get("ollama_base_url") or "http://localhost:11434"
+        timeout = self.settings.get_float("classifier_timeout", 60.0)
         vectors: list[list[float]] = []
         for start in range(0, len(texts), BATCH_SIZE):
             batch = texts[start : start + BATCH_SIZE]
-            payload = {"model": settings.embed_model, "input": batch}
-            async with RetryClient(timeout=settings.classifier_timeout) as client:
+            payload = {"model": model, "input": batch}
+            async with RetryClient(timeout=timeout) as client:
                 resp = await client.post(
-                    f"{settings.ollama_base_url.rstrip('/')}/v1/embeddings",
+                    f"{base_url.rstrip('/')}/v1/embeddings",
                     json=payload,
                 )
                 resp.raise_for_status()

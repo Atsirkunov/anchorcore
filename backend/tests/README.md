@@ -59,18 +59,29 @@ from `backend/`. CI runs this plus the frontend build on every push
 | `test_age_decay_favors_recent` | age decay: 0.5^age/halflife math, recent > old |
 | `test_diversity_cap_limits_per_source` | per-source cap: one source can't monopolize results |
 
+## 4. `tests/test_settings.py` — B4 runtime LLM config (8 tests)
+
+| Test | Covers |
+|---|---|
+| `test_settings_get_returns_env_defaults` | GET shape; secret key masked |
+| `test_settings_put_updates_and_persists` | PUT persists across requests (DB-backed) |
+| `test_settings_unknown_key_rejected` | unknown keys → 422 |
+| `test_settings_secret_masked_and_stored_in_keystore` | secret → `***set***` in API, plaintext only in SecretStore |
+| `test_settings_clear_restores_env` | clearing an override falls back to env default |
+| `test_test_connection_ollama_unreachable` | Ollama down → graceful failure result |
+| `test_test_connection_answer_requires_key` | answer provider validation path |
+| `test_system_status_reflects_runtime_settings` | `/system/status` reads live (runtime) values |
+
 ---
 
-## 4. Shared helpers
+## 5. Shared helpers
 
 - `tests/conftest.py` — temp DB + data dir env vars, unreachable Ollama,
   TestClient fixture.
 - `tests/test_smoke.py::start_and_wait` / `wait_job` — poll a background job
   to completion (used by retrieval tests too).
 
-## 5. Manual probes (not automated — need real Ollama + data)
-
-Run with the app booted and models pulled to validate retrieval quality
+## 6. Manual probes (not automated — need real Ollama + data)Run with the app booted and models pulled to validate retrieval quality
 against real corpora (e.g. the 237-page rulebook):
 
 - Ask: `What are the DVCA movement rules?` → expect §4.25 DVCA sections top-ranked.
@@ -119,6 +130,7 @@ Tests in the suite today map to shipped features:
 |---|---|
 | B1 error transparency | test_system.py (all 8) |
 | B2 jobs/progress | test_smoke.py (jobs, history, reclassify, 404) |
+| B4 runtime LLM config | test_settings.py (all 8) |
 | B5 full-doc chunking | test_smoke.py (`test_full_document_chunking`) |
 | B6 embedding backfill | test_system.py (`test_health_reports_pending_embedding_count`) |
 | B11 parallel classification | manual probes only (throughput in System tab) — consider automated latency-order test |

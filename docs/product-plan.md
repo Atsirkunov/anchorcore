@@ -166,17 +166,18 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** dispute an entity → counter increments, reason stored, answers stop citing it.
 
-### B4. LLM configuration in app (P1)
+### B4. LLM configuration in app (P1) — DONE
 **Problem:** model settings live in `backend/.env` — restart required, invisible, blocked testers ("how do I connect my key?").
 
-**Scope:**
-- Settings tab: provider presets (Ollama local / OpenAI-compatible cloud / custom base URL), classifier model, embed model, answer model + API key
-- BYO keys via existing `SecretStore` (keychain), never in DB/config/logs
-- Runtime-mutable settings: DB-backed `app_settings` overriding env defaults; `Settings` becomes a runtime service, not an import-time singleton
-- "Test connection" button per provider (verifies key/model reachability)
-- Health banner reads live provider; no restart needed
+**Done:**
+- **Settings tab** in the UI: provider presets (Ollama local / OpenAI-compatible cloud / custom), classifier model, embed model, answer model + API key
+- **BYO keys via `SecretStore`**: `answer_api_key` stored under `app:` keys in the keychain (encrypted-file fallback), never in DB/config/logs; responses mask it as `***set***`
+- **Runtime-mutable settings**: new `app_settings` table (migration `b4a00c1`) + `SettingsService` — env `.env` stays the default layer, DB overrides win, secrets resolve from the SecretStore. `Classifier`/`Embedder`/`AnswerEngine`/`status` probes now read through the service at call time → **no restart needed**
+- **"Test connection"** per provider: `/settings/test-connection` verifies Ollama reachability + model presence, and answer-provider reachability (key required for non-local)
+- Health banner + System tab read live provider values
+- Tests: CRUD + persistence, unknown-key 422, secret masking + keychain storage, clear→env fallback, test-connection failure paths, runtime values in `/system/status`
 
-**DoD:** a tester connects their own model key from the UI in under 60s, no config file, no restart.
+**DoD:** a tester connects their own model key from the UI in under 60s, no config file, no restart. — met.
 
 ### B5. Full-document chunking (P1 — discovered)
 **Problem:** today only *entity summaries* are chunked and embedded, and the classifier input is truncated at ~12k chars. A big PDF (like the current test file) loses most of its content — most of the document is never retrievable.

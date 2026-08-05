@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from .config import settings
+from .app_settings import SettingsService
 from .http import RetryClient
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,9 @@ Keep summaries to one sentence. confidence must be between 0 and 1. If no items 
 
 
 class Classifier:
+    def __init__(self, settings: SettingsService):
+        self.settings = settings
+
     async def classify(self, text: str, source_ref: str) -> list[dict[str, Any]]:
         try:
             return await self._classify_llm(text, source_ref)
@@ -37,7 +40,7 @@ class Classifier:
     async def _classify_llm(self, text: str, source_ref: str) -> list[dict[str, Any]]:
         truncated = text[:12000] if len(text) > 12000 else text
         payload = {
-            "model": settings.classifier_model,
+            "model": self.settings.get("classifier_model") or "llama3.2:3b",
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"Source: {source_ref}\n\nContent:\n{truncated}"},
@@ -45,9 +48,11 @@ class Classifier:
             "temperature": 0.1,
             "response_format": {"type": "json_object"},
         }
-        async with RetryClient(timeout=settings.classifier_timeout) as client:
+        base_url = self.settings.get("ollama_base_url") or "http://localhost:11434"
+        timeout = self.settings.get_float("classifier_timeout", 60.0)
+        async with RetryClient(timeout=timeout) as client:
             resp = await client.post(
-                f"{settings.ollama_base_url.rstrip('/')}/v1/chat/completions",
+                f"{base_url.rstrip('/')}/v1/chat/completions",
                 json=payload,
             )
             resp.raise_for_status()

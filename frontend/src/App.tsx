@@ -4,16 +4,18 @@ import type { Health, Job } from "./types";
 import { AskTab } from "./tabs/AskTab";
 import { EntitiesTab } from "./tabs/EntitiesTab";
 import { ReviewTab } from "./tabs/ReviewTab";
+import { SettingsTab } from "./tabs/SettingsTab";
 import { SourcesTab } from "./tabs/SourcesTab";
 import { SystemTab } from "./tabs/SystemTab";
 
-type Tab = "ask" | "sources" | "entities" | "review" | "system";
+type Tab = "ask" | "sources" | "entities" | "review" | "settings" | "system";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "ask", label: "Ask" },
   { id: "sources", label: "Sources" },
   { id: "entities", label: "Entities" },
   { id: "review", label: "Review" },
+  { id: "settings", label: "Settings" },
   { id: "system", label: "System" },
 ];
 
@@ -120,6 +122,7 @@ export default function App() {
         {tab === "sources" && <SourcesTab />}
         {tab === "entities" && <EntitiesTab />}
         {tab === "review" && <ReviewTab />}
+        {tab === "settings" && <SettingsTab />}
         {tab === "system" && <SystemTab />}
       </main>
     </div>

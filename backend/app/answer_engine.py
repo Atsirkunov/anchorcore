@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
+from .app_settings import SettingsService
 from .config import settings
 from .embedder import Embedder, unpack_f32
 from .http import RetryClient
@@ -84,8 +85,9 @@ def _age_decay(created_at, halflife_days: float) -> float:
 
 
 class AnswerEngine:
-    def __init__(self, embedder: Embedder):
+    def __init__(self, embedder: Embedder, settings: SettingsService):
         self.embedder = embedder
+        self.settings = settings
 
     async def ask(self, db: Session, question: str) -> AskResponse:
         vector_hits: list[dict] | None = None
@@ -156,17 +158,17 @@ class AnswerEngine:
         elif not keyword_hits:
             fused = [{**h, "score": 1.0 / (RRF_K + rank)} for rank, h in enumerate(vector_hits, start=1)]
         else:
-            fused = _rrf_fuse(vector_hits, keyword_hits, settings.retrieval_keyword_weight)
+            fused = _rrf_fuse(vector_hits, keyword_hits, self.settings.get_float("retrieval_keyword_weight", 1.0))
 
         for hit in fused:
             hit["score"] *= _age_decay(
-                hit["chunk"].created_at, settings.retrieval_age_halflife_days
+                hit["chunk"].created_at, self.settings.get_float("retrieval_age_halflife_days", 365.0)
             )
 
         fused.sort(key=lambda r: r["score"], reverse=True)
 
         # diversity cap: one source must not monopolize the results
-        cap = settings.retrieval_max_per_source
+        cap = int(self.settings.get_float("retrieval_max_per_source", 3))
         if cap > 0:
             per_source: dict[int, int] = {}
             capped: list[dict] = []
@@ -303,13 +305,18 @@ class AnswerEngine:
         )
 
     async def _generate(self, question: str, context: str) -> str:
-        is_local = settings.answer_base_url.startswith(("http://localhost", "http://127.0.0.1"))
-        if not is_local and not settings.answer_api_key:
+        answer_base = self.settings.get("answer_base_url") or ""
+        api_key = self.settings.get("answer_api_key") or ""
+        model = self.settings.get("answer_model") or "gpt-4o-mini"
+        timeout = self.settings.get_float("answer_timeout", 90.0)
+
+        is_local = answer_base.startswith(("http://localhost", "http://127.0.0.1"))
+        if not is_local and not api_key:
             return f"Answer for: {question}\n\n[No model key configured. Matching context:]\n\n{context[:1500]}"
 
-        headers = {"Authorization": f"Bearer {settings.answer_api_key}"} if settings.answer_api_key else {}
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         payload = {
-            "model": settings.answer_model,
+            "model": model,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"Question: {question}\n\nContext:\n{context}"},
@@ -317,9 +324,9 @@ class AnswerEngine:
             "temperature": 0.2,
         }
         try:
-            async with RetryClient(timeout=settings.answer_timeout) as client:
+            async with RetryClient(timeout=timeout) as client:
                 resp = await client.post(
-                    f"{settings.answer_base_url.rstrip('/')}/chat/completions",
+                    f"{answer_base.rstrip('/')}/chat/completions",
                     headers=headers,
                     json=payload,
                 )

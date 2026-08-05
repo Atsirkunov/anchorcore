@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.answer_engine import _age_decay, _rrf_fuse
 from app.cleaning import clean_text, repeated_lines, strip_repeated
+from app.config import settings
 from app.pipeline import chunk_document
 
 from tests.test_smoke import start_and_wait
@@ -160,10 +161,15 @@ def test_diversity_cap_limits_per_source(client, tmp_path):
     start_and_wait(client, source["id"])
 
     from app.answer_engine import AnswerEngine
+    from app.app_settings import SettingsService
     from app.embedder import Embedder
     from app.db import SessionLocal
+    from app.secrets import SecretStore
 
-    engine = AnswerEngine(Embedder())
+    engine = AnswerEngine(
+        Embedder(SettingsService(settings, SecretStore(settings.data_dir / "secrets.enc"))),
+        SettingsService(settings, SecretStore(settings.data_dir / "secrets.enc")),
+    )
     with SessionLocal() as db:
         keyword_hits = engine._keyword_search(db, "DVCA")
         assert keyword_hits, "expected keyword hits"
