@@ -146,8 +146,8 @@ def test_age_decay_favors_recent():
     assert abs(_age_decay(None, 365) - 1.0) < 1e-9
 
 
-def test_diversity_cap_limits_per_source(client, tmp_path):
-    """One source must not monopolize the top results (per-source cap)."""
+def test_diversity_cap_limits_per_item(client, tmp_path):
+    """With multiple files, one file must not monopolize the top results."""
     from app.config import settings
 
     (tmp_path / "a.md").write_text("§1 DVCA movement rules.\n", encoding="utf-8")
@@ -175,12 +175,56 @@ def test_diversity_cap_limits_per_source(client, tmp_path):
         assert keyword_hits, "expected keyword hits"
         cap = settings.retrieval_max_per_source
         assert cap >= 1
-        # same-source hits must be capped; other sources may contribute too
         fused = engine._fuse_and_rank(db, None, keyword_hits)
         assert fused, "expected fused hits"
+        # 4 identical files → ≥3 distinct items → cap applies per item
         from collections import Counter
 
-        counts = Counter(h["source_id"] for h in fused)
+        counts = Counter(h["chunk"].item_id for h in fused)
         assert max(counts.values()) <= cap, counts
-        this_source = next(h for h in fused if h["source_id"] == source["id"])
-        assert this_source is not None
+
+
+def test_diversity_cap_relaxed_for_single_file(client, tmp_path):
+    """A single big document must be allowed to surface multiple sections
+    (no other files to diversify against — the cap must not starve it)."""
+    from app.config import settings
+
+    paragraphs = "\n\n".join(
+        ["§1 DVCA movement rules."]
+        + [
+            f"Paragraph number {i} discussing the DVCA movement rules in considerable detail "
+            f"so that the section splits into multiple chunks."
+            for i in range(1, 60)
+        ]
+    )
+    (tmp_path / "big.md").write_text(paragraphs, encoding="utf-8")
+    source = client.post(
+        "/sources",
+        json={"connector": "folder", "name": "single", "config": {"path": str(tmp_path)}},
+    ).json()
+    start_and_wait(client, source["id"])
+
+    from app.answer_engine import AnswerEngine
+    from app.app_settings import SettingsService
+    from app.embedder import Embedder
+    from app.db import SessionLocal
+    from app.secrets import SecretStore
+
+    engine = AnswerEngine(
+        Embedder(SettingsService(settings, SecretStore(settings.data_dir / "secrets.enc"))),
+        SettingsService(settings, SecretStore(settings.data_dir / "secrets.enc")),
+    )
+    with SessionLocal() as db:
+        keyword_hits = engine._keyword_search(db, "DVCA")
+        from app.models import IngestedItem
+        from sqlalchemy import select
+
+        item_id = db.execute(
+            select(IngestedItem.id).where(IngestedItem.source_id == source["id"])
+        ).scalar_one()
+        mine = [h for h in keyword_hits if h["chunk"].item_id == item_id]
+        assert len(mine) >= 5, "expected many DVCA chunks from one file"
+        fused = engine._fuse_and_rank(db, None, mine)
+        assert len(fused) > settings.retrieval_max_per_source, (
+            "single-file corpus must not be capped below top_k"
+        )

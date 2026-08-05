@@ -20,7 +20,15 @@ SYSTEM_PROMPT = """You are AnchorCore, the memory of an organization.
 Answer the user's question using ONLY the provided context sections.
 Each section is tagged with a section ID like [S1], [S2]...
 Always cite the sections you use by ID at the end of the relevant sentence.
-If the context does not contain the answer, say so clearly instead of guessing.
+
+Synthesis rules:
+- If the context describes a process, workflow, or rules, SYNTHESIZE the
+  steps/mechanics explicitly from the sections — don't just say what the
+  thing is or that it isn't described.
+- Combine evidence across sections (definition + rules + workflow) into one
+  coherent explanation.
+- Only if the context genuinely has nothing relevant, say so clearly instead
+  of guessing.
 """
 
 RRF_K = 60.0
@@ -82,6 +90,14 @@ def _age_decay(created_at, halflife_days: float) -> float:
     if halflife_days <= 0:
         return 1.0
     return 0.5 ** (age_days / halflife_days)
+
+
+def _content_signature(content: str) -> str:
+    """Normalized fingerprint for near-duplicate detection: lowercase,
+    whitespace collapsed, leading page-number/space noise stripped."""
+    text = re.sub(r"\s+", " ", content).strip().lower()
+    text = re.sub(r"^\d{1,4}\s+", "", text)  # leading page number
+    return text[:160]
 
 
 class AnswerEngine:
@@ -167,21 +183,51 @@ class AnswerEngine:
 
         fused.sort(key=lambda r: r["score"], reverse=True)
 
-        # diversity cap: one source must not monopolize the results
+        # diversity cap: one file must not monopolize the results when the
+        # corpus has multiple files (Cerebras: cap per file). For a
+        # single-file corpus there's nothing to diversify against — allow
+        # the full top-k so a big document's sections can all surface.
         cap = int(self.settings.get_float("retrieval_max_per_source", 3))
         if cap > 0:
-            per_source: dict[int, int] = {}
+            item_ids = {hit["chunk"].item_id or (hit["entity"].item_id if hit.get("entity") else None) for hit in fused}
+            item_ids.discard(None)
+            distinct_items = len(item_ids) or 1
+            effective_cap = cap if distinct_items >= 3 else settings.top_k
+            per_item: dict[int, int] = {}
             capped: list[dict] = []
             for hit in fused:
-                sid = hit.get("source_id") or 0
-                if per_source.get(sid, 0) >= cap:
+                item_id = hit["chunk"].item_id
+                if item_id is None and hit.get("entity") is not None:
+                    item_id = hit["entity"].item_id
+                iid = item_id if item_id is not None else -hit["chunk"].id
+                if per_item.get(iid, 0) >= effective_cap:
                     continue
-                per_source[sid] = per_source.get(sid, 0) + 1
+                per_item[iid] = per_item.get(iid, 0) + 1
                 capped.append(hit)
             fused = capped
 
+        # dedupe near-identical chunk content from the same item (e.g. TOC
+        # entries duplicating body sections) — keep the best-scoring copy
+        fused = self._dedupe_similar(fused)
+
         hits = fused[: settings.top_k]
         return self._expand_context(db, hits)
+
+    @staticmethod
+    def _dedupe_similar(hits: list[dict]) -> list[dict]:
+        seen: set[tuple[int | None, str]] = set()
+        out: list[dict] = []
+        for hit in hits:
+            chunk = hit["chunk"]
+            item_id = chunk.item_id
+            if item_id is None and hit.get("entity") is not None:
+                item_id = hit["entity"].item_id
+            key = (item_id, _content_signature(chunk.content))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(hit)
+        return out
 
     def _expand_context(self, db: Session, hits: list[dict]) -> list[dict]:
         """Pull neighboring chunks of the same item so section boundaries
