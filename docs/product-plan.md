@@ -230,6 +230,18 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **Remaining (optional, evaluated after hybrid):** LLM rerank of top-k candidates; re-test answer quality with a better generation model than llama3.2:3b (retrieval is now the strong part; generation still limits final answers).
 
+### B12.1. Fusion + diversity + recency + context expansion (P1 — Cerebras learnings) — DONE
+**Problem:** the hybrid merge used score normalization (min-max), which is fragile across retrievers; one large document could monopolize top-k; old and new answers ranked equally; chunk boundaries stripped surrounding context.
+
+**Done (informed by [Cerebras' KB post](./architecture.md#4b-retrieval-design-informed-by-cerebras-knowledge-base)):**
+- **RRF fusion** replaces min-max: `score = Σ w / (60 + rank)` across vector + FTS5 lists; consensus across retrievers beats a single strong vote; no normalization
+- **Age decay**: `0.5^(age/halflife)` multiplier (`ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS`, default 365) — newer answers win ties
+- **Per-source diversity cap**: max 3 chunks per source (`ANCHOR_RETRIEVAL_MAX_PER_SOURCE`) — one document can't monopolize results
+- **Context expansion**: after ranking, pull up to `ANCHOR_RETRIEVAL_CONTEXT_WINDOW` (default 1) neighboring chunks per side of a winning chunk, so headings/preconditions/caveats aren't lost
+- Tests: RRF consensus vs single vote, keyword weight scaling, age decay math, per-source cap
+
+**DoD:** two sources answering the same question — neither monopolizes top-8; a newer answer beats an older one at equal relevance; answers include neighboring section context.
+
 ### B13. Dev process hardening — DONE (commit: add B13 dev process hardening)
 **Problem (from session retrospective):** environment chaos cost more time than code bugs — multiple servers sharing one SQLite DB (stale code, lock fights, an elevated process we couldn't kill), `.env` silently overwritten with example defaults, duplicate keys silently overriding (pydantic takes the last), 15-min operations looking frozen, hand-rolled SQLite migrations already biting once.
 
@@ -241,6 +253,47 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 - **B2 pulled forward**: sync/reclassify are now background jobs (202 + `GET /sources/jobs`), Sources tab polls progress with busy states and inline progress bars
 
 ### B10. Model configuration via UI — superseded by B4. (see B4)
+
+### B15. Scoped search via projects (P2 — Cerebras learning)
+**Problem:** as the corpus grows, "search everything everywhere" stops being useful — compiler engineers don't want infrastructure runbooks in their results. Cerebras found projects are how search stays relevant by default.
+
+**Scope:**
+- A **project** = named bundle of sources (folders, Jira, later Slack channels); a source can belong to multiple projects without duplication
+- Per-user default project, persisted on profile, scopes queries automatically (Q&A + MCP `search`)
+- UI: project picker in the header + Sources tab grouping; optional "all" scope
+
+**DoD:** connect 3+ sources, create two projects with overlapping sources, and confirm the same question returns project-scoped results.
+
+### B16. who_knows — expertise queries (P2 — Cerebras learning)
+**Problem:** a top question in every org is "who is the expert in Y?" Cerebras surfaces people with demonstrated expertise from the index.
+
+**Scope:**
+- Query over entity graph + owners: entities authored by/assigned to a person, weighted by entity confidence + recency + count
+- `who_knows(topic)` tool (MCP + UI); people surfaced with their evidence (which entities prove expertise, cited)
+
+**DoD:** ask "who knows about migrations" and get a ranked person list with cited evidence.
+
+### B17. Planner → Executor → Synthesis query architecture (P2 — Cerebras learning)
+**Problem:** today Q&A is single-pass RAG (one retriever set, one synthesis call). Cerebras runs a light planner pass that picks which retrieval tools matter for the query, fans them out in parallel, normalizes evidence, then synthesizes.
+
+**Scope:**
+- Planner: small LLM pass over query + source catalog → tool selection (`search`, `search_keyword`, `who_knows`, source-restricted search)
+- Executor: parallel tool calls, normalized evidence bundle (scores, recency, source hints)
+- Synthesis: final LLM pass over evidence bundle (current behavior becomes the "search-only" path)
+- Same pipeline exposed to MCP clients as raw primitives (per mcp.md) — the client becomes the orchestrator
+
+**DoD:** a question that needs two source types (e.g. decision + person) is answered with evidence from both, cited.
+
+### B18. Distillation of raw content before embedding (P2 — Cerebras learning)
+**Problem:** Cerebras found embedding raw text underperforms a normalized form: "accuracy increased significantly when the thread was normalized into a consistent format." They extract question/summary/resolution/system refs from threads; short filler messages beat detailed ones in cosine similarity.
+
+**Scope:**
+- Distillation pass over doc items: extract searchable one-line question/summary + key terms + systems mentioned (reuses classifier infra)
+- IDF-gated embedding: skip low-signal content (rare-token IDF < threshold, short filler) from embedding; keep in FTS
+- Full-document chunks stay embedded (B12 DoD) but distilled summaries become a first-class embeddable unit
+- Age decay makes old answers rank lower when relevance ties (B12.1)
+
+**DoD:** a chat-log-style source produces findable distilled Q&A units; filler messages don't pollute vector results.
 
 ### B14. Agent connectivity via MCP (P2 — see [mcp.md](./mcp.md))
 **Problem:** users want their own harnesses (Claude Code, Codex, opencode) to use AnchorCore's memory, but today only the browser UI can reach it.
