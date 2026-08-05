@@ -345,7 +345,7 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** a Jira source and a Linear source sync real data end-to-end on a sandbox; connector logic covered by fixture tests in CI.
 
-### B23. External/cloud models for classification (P2)
+### B23. External/cloud models for classification (P1 — raised from P2: unblocks complex classification without a big local model)
 **Problem:** the classifier is hardwired to Ollama (`classifier.py` posts to `ollama_base_url`); B4 lets users set the *answer* model to any OpenAI-compatible provider, but classification can't. Better models = more accurate complex classifications (documents with tricky kinds, higher confidence).
 
 **Scope:**
