@@ -67,7 +67,7 @@ export default function App() {
 
   const issues = health
     ? [
-        ...(health.components.ollama === "offline" ? ["Ollama offline — classification falls back to rules, answers are limited"] : []),
+        ...(health.components.ollama === "offline" ? ["Classification model not configured — classification falls back to rules, answers are limited (check Settings → Test Ollama)"] : []),
         ...(health.components.answer_key === "missing" ? ["No answer model configured — answers show matching context only (set ANCHOR_ANSWER_API_KEY or point ANCHOR_ANSWER_BASE_URL at Ollama)"] : []),
         ...health.components.failing_sources.map((s) => `Sync failing: ${s.name} (${s.count}×) — ${s.error ?? "unknown error"}`),
       ]
