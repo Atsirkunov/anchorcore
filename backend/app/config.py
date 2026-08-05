@@ -61,7 +61,10 @@ class Settings(BaseSettings):
     chunk_overlap: int = 100
     chunk_max_chars: int = 1600
     classify_window_chars: int = 8000
-    retrieval_keyword_weight: float = 0.3
+    retrieval_keyword_weight: float = 1.0
+    retrieval_max_per_source: int = 3
+    retrieval_age_halflife_days: int = 365
+    retrieval_context_window: int = 1
     top_k: int = 8
     low_confidence_threshold: float = 0.6
     duplicate_threshold: float = 0.92
@@ -86,7 +89,8 @@ class Settings(BaseSettings):
             f"  classifier model: {self.classifier_model}",
             f"  classifier conc : {self.classifier_concurrency}",
             f"  embed model     : {self.embed_model}",
-            f"  retrieval       : hybrid (keyword weight {self.retrieval_keyword_weight})",
+            f"  retrieval       : RRF fusion (keyword weight {self.retrieval_keyword_weight}, "
+            f"max {self.retrieval_max_per_source}/source, age halflife {self.retrieval_age_halflife_days}d)",
             f"  answer model    : {answer_provider}",
             "-------------------------",
         ]

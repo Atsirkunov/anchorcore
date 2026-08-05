@@ -75,6 +75,31 @@ sequenceDiagram
     A-->>U: answer + clickable source chips
 ```
 
+## 4b. Retrieval Design (informed by Cerebras' knowledge base)
+
+Cerebras published how their internal KB serves 15k queries/day (2026-07).
+Their design validated our hybrid approach and added four concrete techniques
+we adopted (B12.1):
+
+1. **Multi-scorer fusion, no single trusted scorer** — they run full-text,
+   embeddings, and IDF-scored retrievers in parallel and fuse the ranked
+   lists. We fuse FTS5 (bm25) + cosine via **reciprocal rank fusion (RRF)**:
+   `score = Σ weight / (60 + rank)`. Consensus across scorers beats a single
+   strong vote; no score normalization needed.
+2. **Per-source diversity cap** — a document that matches broadly must not
+   monopolize the top-k. After fusion, cap results per source (default 3).
+3. **Age decay** — "Slack answers expire"; when relevance is otherwise equal,
+   the newer hit wins. A recency multiplier is applied in fusion.
+4. **Context expansion** — once winners are picked, pull the neighboring
+   sections (heading, preconditions, caveats) that chunking split apart, so
+   the LLM sees a complete section instead of a lonely paragraph.
+
+Further learnings parked in the backlog: scoped search via *projects* (bundles
+of sources with a per-user default — "search everything everywhere" stops
+being useful at scale), *who_knows* expertise queries, planner→executor→
+synthesis query architecture, and distillation of raw content into
+question/summary/resolution fields before embedding.
+
 ## 5. Data Model — Uniform Entity Graph
 
 Everything is an entity. Contradictions stay external to the baseline object.
