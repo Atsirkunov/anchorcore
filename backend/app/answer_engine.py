@@ -1,8 +1,9 @@
 import json
 import logging
 import re
+from datetime import datetime, timezone
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -20,6 +21,8 @@ Each section is tagged with a section ID like [S1], [S2]...
 Always cite the sections you use by ID at the end of the relevant sentence.
 If the context does not contain the answer, say so clearly instead of guessing.
 """
+
+RRF_K = 60.0
 
 _FTS_WORD_RE = re.compile(r"[a-z0-9_§\-]+", re.IGNORECASE)
 _FTS_STOPWORDS = {
@@ -47,6 +50,39 @@ def _fts_match_query(question: str) -> str | None:
     return " OR ".join(f'"{t}"' for t in terms)
 
 
+def _rrf_fuse(
+    vector_hits: list[dict], keyword_hits: list[dict], keyword_weight: float
+) -> list[dict]:
+    """Reciprocal rank fusion: score = Σ w / (k + rank) across ranked lists.
+
+    Consensus across retrievers beats a single strong vote; needs no score
+    normalization (Cerebras KB design, k=60).
+    """
+    fused: dict[int, dict] = {}
+    for rank, hit in enumerate(vector_hits, start=1):
+        entry = fused.setdefault(hit["chunk"].id, {**hit, "score": 0.0})
+        entry["score"] += 1.0 / (RRF_K + rank)
+    for rank, hit in enumerate(keyword_hits, start=1):
+        entry = fused.setdefault(hit["chunk"].id, {**hit, "score": 0.0})
+        entry["score"] += keyword_weight / (RRF_K + rank)
+    return list(fused.values())
+
+
+def _age_decay(created_at, halflife_days: float) -> float:
+    """0.5^(age/halflife): recent wins when relevance is otherwise equal."""
+    if created_at is None:
+        return 1.0
+    try:
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        age_days = max(0.0, (datetime.now(timezone.utc) - created_at).total_seconds() / 86400)
+    except (TypeError, OverflowError):
+        return 1.0
+    if halflife_days <= 0:
+        return 1.0
+    return 0.5 ** (age_days / halflife_days)
+
+
 class AnswerEngine:
     def __init__(self, embedder: Embedder):
         self.embedder = embedder
@@ -70,7 +106,7 @@ class AnswerEngine:
             # embedding AND FTS both unavailable (e.g. pre-migration DB):
             # keep the old newest-chunks fallback so degraded mode still answers
             keyword_hits = self._keyword_fallback(db)
-        hits = self._merge_hits(vector_hits, keyword_hits)
+        hits = self._fuse_and_rank(db, vector_hits, keyword_hits)
 
         if not hits:
             return AskResponse(
@@ -81,6 +117,9 @@ class AnswerEngine:
         sections = []
         for idx, hit in enumerate(hits, start=1):
             content = hit["chunk"].content[:2000]
+            extra = hit.get("expanded", [])
+            if extra:
+                content = content + "\n\n[continued]\n\n" + "\n\n".join(e[:800] for e in extra[:3])
             sections.append(f"[S{idx}] {content}")
         context = "\n\n".join(sections)
 
@@ -106,6 +145,73 @@ class AnswerEngine:
             )
         return AskResponse(answer=answer_text, citations=citations)
 
+    def _fuse_and_rank(
+        self, db: Session, vector_hits: list[dict] | None, keyword_hits: list[dict] | None
+    ) -> list[dict]:
+        """RRF fusion → age decay → per-source diversity cap → top_k → context expansion."""
+        if not vector_hits and not keyword_hits:
+            return []
+        if not vector_hits:
+            fused = [{**h, "score": 1.0 / (RRF_K + rank)} for rank, h in enumerate(keyword_hits, start=1)]
+        elif not keyword_hits:
+            fused = [{**h, "score": 1.0 / (RRF_K + rank)} for rank, h in enumerate(vector_hits, start=1)]
+        else:
+            fused = _rrf_fuse(vector_hits, keyword_hits, settings.retrieval_keyword_weight)
+
+        for hit in fused:
+            hit["score"] *= _age_decay(
+                hit["chunk"].created_at, settings.retrieval_age_halflife_days
+            )
+
+        fused.sort(key=lambda r: r["score"], reverse=True)
+
+        # diversity cap: one source must not monopolize the results
+        cap = settings.retrieval_max_per_source
+        if cap > 0:
+            per_source: dict[int, int] = {}
+            capped: list[dict] = []
+            for hit in fused:
+                sid = hit.get("source_id") or 0
+                if per_source.get(sid, 0) >= cap:
+                    continue
+                per_source[sid] = per_source.get(sid, 0) + 1
+                capped.append(hit)
+            fused = capped
+
+        hits = fused[: settings.top_k]
+        return self._expand_context(db, hits)
+
+    def _expand_context(self, db: Session, hits: list[dict]) -> list[dict]:
+        """Pull neighboring chunks of the same item so section boundaries
+        (heading, preconditions, caveats) aren't lost (Cerebras learning)."""
+        window = settings.retrieval_context_window
+        if window <= 0 or not hits:
+            return hits
+        hit_ids = {h["chunk"].id for h in hits}
+        for hit in hits:
+            chunk = hit["chunk"]
+            item_id = chunk.item_id
+            if item_id is None and hit.get("entity") is not None:
+                item_id = hit["entity"].item_id
+            if item_id is None:
+                continue
+            siblings = db.execute(
+                select(Chunk.id, Chunk.content)
+                .where(Chunk.item_id == item_id)
+                .order_by(Chunk.id)
+            ).all()
+            idx = next((i for i, (cid, _c) in enumerate(siblings) if cid == chunk.id), None)
+            if idx is None:
+                continue
+            neighbors = [
+                content
+                for cid, content in siblings[max(0, idx - window) : idx + window + 1]
+                if cid not in hit_ids and cid != chunk.id
+            ]
+            if neighbors:
+                hit["expanded"] = neighbors
+        return hits
+
     def _vector_search(self, db: Session, query_embedding: list[float]) -> list[dict]:
         rows = db.execute(self._chunk_query().where(Chunk.embedding.is_not(None))).all()
 
@@ -115,10 +221,18 @@ class AnswerEngine:
                 continue
             vector = unpack_f32(chunk.embedding, len(query_embedding))
             score = _cosine(query_embedding, vector)
-            scored.append({"chunk": chunk, "entity": entity, "item": item, "score": score})
+            scored.append(
+                {
+                    "chunk": chunk,
+                    "entity": entity,
+                    "item": item,
+                    "source_id": item.source_id if item is not None else None,
+                    "score": score,
+                }
+            )
 
         scored.sort(key=lambda r: r["score"], reverse=True)
-        return [hit for hit in scored[: settings.top_k] if hit["score"] > 0.2]
+        return [hit for hit in scored[: settings.top_k * 4] if hit["score"] > 0.2]
 
     def _keyword_search(self, db: Session, question: str) -> list[dict]:
         """FTS5 keyword search over chunks (bm25 ranking). Returns [] when
@@ -154,50 +268,25 @@ class AnswerEngine:
                     "chunk": chunk,
                     "entity": entity,
                     "item": item,
+                    "source_id": item.source_id if item is not None else None,
                     "score": -by_id[chunk.id],
                 }
             )
         hits.sort(key=lambda r: r["score"], reverse=True)
         return hits
 
-    def _merge_hits(
-        self, vector_hits: list[dict] | None, keyword_hits: list[dict] | None
-    ) -> list[dict]:
-        """Hybrid merge: normalized bm25 + cosine, configurable keyword weight."""
-        if not vector_hits and not keyword_hits:
-            return []
-        if not vector_hits:
-            return keyword_hits or []
-        if not keyword_hits:
-            return vector_hits
-
-        kw_max = max(h["score"] for h in keyword_hits) or 1.0
-        vec_max = max(h["score"] for h in vector_hits) or 1.0
-        weight = settings.retrieval_keyword_weight
-
-        combined: dict[int, dict] = {}
-        for hit in vector_hits:
-            combined[hit["chunk"].id] = {**hit, "vec": hit["score"] / vec_max, "kw": 0.0}
-        for hit in keyword_hits:
-            entry = combined.setdefault(hit["chunk"].id, {**hit, "vec": 0.0})
-            entry["kw"] = hit["score"] / kw_max
-            entry["chunk"] = hit["chunk"]
-            entry["entity"] = hit["entity"]
-            entry["item"] = hit["item"]
-
-        results = []
-        for entry in combined.values():
-            entry["score"] = weight * entry["kw"] + (1 - weight) * entry["vec"]
-            results.append(entry)
-        results.sort(key=lambda r: r["score"], reverse=True)
-        return results[: settings.top_k]
-
     def _keyword_fallback(self, db: Session) -> list[dict]:
         rows = db.execute(
             self._chunk_query().order_by(Chunk.created_at.desc()).limit(settings.top_k)
         ).all()
         return [
-            {"chunk": chunk, "entity": entity, "item": item, "score": 0.0}
+            {
+                "chunk": chunk,
+                "entity": entity,
+                "item": item,
+                "source_id": item.source_id if item is not None else None,
+                "score": 0.0,
+            }
             for chunk, entity, item in rows
             if entity is None or entity.status != "stale"
         ]
@@ -207,7 +296,10 @@ class AnswerEngine:
         return (
             select(Chunk, Entity, IngestedItem)
             .outerjoin(Entity, Chunk.entity_id == Entity.id)
-            .outerjoin(IngestedItem, Chunk.item_id == IngestedItem.id)
+            .outerjoin(
+                IngestedItem,
+                or_(Chunk.item_id == IngestedItem.id, Entity.item_id == IngestedItem.id),
+            )
         )
 
     async def _generate(self, question: str, context: str) -> str:

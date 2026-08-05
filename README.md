@@ -41,11 +41,15 @@ setx OLLAMA_KEEP_ALIVE 30m        # avoid model unload churn between long jobs
 Throughput (windows processed, avg latency) is visible in the System tab.
 
 **Retrieval (B12):** chunks are cleaned (page numbers, repeated headers,
-encoding artifacts) and split at section headings; Q&A uses hybrid retrieval —
-cosine vector search blended with SQLite FTS5 keyword scores
-(`ANCHOR_RETRIEVAL_KEYWORD_WEIGHT`, default 0.3). After upgrading, run
-**Reclassify** on existing sources to rebuild chunks with cleaning + heading
-boundaries (`chunks_fts` is created by the Alembic migration automatically).
+encoding artifacts) and split at section headings; Q&A fuses vector search
+with SQLite FTS5 keyword scores via **reciprocal rank fusion** (RRF, k=60),
+then applies age decay and a per-source diversity cap, and expands winning
+chunks with neighboring sections. Config: `ANCHOR_RETRIEVAL_KEYWORD_WEIGHT`
+(list weight, default 1.0), `ANCHOR_RETRIEVAL_MAX_PER_SOURCE` (3),
+`ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS` (365), `ANCHOR_RETRIEVAL_CONTEXT_WINDOW`
+(1). After upgrading, run **Reclassify** on existing sources to rebuild chunks
+with cleaning + heading boundaries (`chunks_fts` is created by the Alembic
+migration automatically).
 
 **One command** (Windows `.\start.ps1` / macOS+Linux `./start.sh`):
 
