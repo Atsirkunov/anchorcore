@@ -59,7 +59,9 @@ class Settings(BaseSettings):
     folder_watch_debounce: float = 3.0
     chunk_size: int = 800
     chunk_overlap: int = 100
+    chunk_max_chars: int = 1600
     classify_window_chars: int = 8000
+    retrieval_keyword_weight: float = 0.3
     top_k: int = 8
     low_confidence_threshold: float = 0.6
     duplicate_threshold: float = 0.92
@@ -84,6 +86,7 @@ class Settings(BaseSettings):
             f"  classifier model: {self.classifier_model}",
             f"  classifier conc : {self.classifier_concurrency}",
             f"  embed model     : {self.embed_model}",
+            f"  retrieval       : hybrid (keyword weight {self.retrieval_keyword_weight})",
             f"  answer model    : {answer_provider}",
             "-------------------------",
         ]

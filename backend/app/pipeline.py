@@ -8,6 +8,7 @@ from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from .classifier import Classifier
+from .cleaning import clean_text, repeated_lines, strip_repeated
 from .config import settings
 from .connectors import ConnectorError, IngestionDoc, build_connector
 from .embedder import Embedder, pack_f32
@@ -29,27 +30,80 @@ def chunk_text(text: str) -> list[str]:
     return [text[i : i + size] for i in range(0, max(len(text) - size + 1, 1), step)]
 
 
+_HEADING_RE = re.compile(
+    r"^\s*(?:"
+    r"§\s*\d+(\.\d+)*"  # §434, §4.2.1
+    r"|\d{1,4}(\.\d{1,4}){1,3}"  # 4.2.1, 12.3.4.5
+    r"|(?:article|annex|section|schedule|rule|appendix)\s+\d+"  # Article 12
+    r")(?:\s|[:.)\-]|$)",
+    re.IGNORECASE,
+)
+
+_CAPS_HEADING_RE = re.compile(r"^[A-Z][A-Z0-9 &()/\-]{3,80}$")
+
+
+def _is_heading(line: str) -> bool:
+    """A line that looks like a section heading: numbered markers (§434,
+    4.2.1, Article 12) or short ALL-CAPS titles. Page-number lines are
+    already removed by cleaning before chunking."""
+    stripped = line.strip()
+    if not stripped or len(stripped) > 80:
+        return False
+    if _HEADING_RE.match(stripped):
+        return True
+    if _CAPS_HEADING_RE.match(stripped) and not stripped.isdigit():
+        return True
+    return False
+
+
 def chunk_document(text: str) -> list[str]:
-    """Section-aware chunks of a full document: split on paragraph boundaries,
-    falling back to fixed-size with overlap for oversized paragraphs."""
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    """Section-aware chunks: hard boundaries at heading lines, paragraph
+    accumulation inside a section, fixed-size fallback only for oversized
+    paragraphs/sections. Max section size = chunk_max_chars."""
+    max_chars = settings.chunk_max_chars
+    lines = text.split("\n")
+    sections: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        if _is_heading(line):
+            if current:
+                sections.append("\n".join(current))
+                current = []
+            current.append(line)
+        else:
+            current.append(line)
+    if current:
+        sections.append("\n".join(current))
+
     chunks: list[str] = []
+    for section in sections:
+        chunks.extend(_split_section(section, max_chars))
+    return chunks
+
+
+def _split_section(section: str, max_chars: int) -> list[str]:
+    """Split one section by paragraphs; fall back to fixed-size for oversized
+    paragraphs. Keeps headings attached to their section's first chunk."""
+    if len(section) <= max_chars:
+        return [section]
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", section) if p.strip()]
+    out: list[str] = []
     current = ""
     for paragraph in paragraphs:
-        if len(paragraph) > settings.chunk_size:
+        if len(paragraph) > max_chars:
             if current:
-                chunks.append(current)
+                out.append(current)
                 current = ""
-            chunks.extend(chunk_text(paragraph))
-        elif len(current) + len(paragraph) + 2 <= settings.chunk_size:
+            out.extend(chunk_text(paragraph))
+        elif len(current) + len(paragraph) + 2 <= max_chars:
             current = paragraph if not current else f"{current}\n\n{paragraph}"
         else:
             if current:
-                chunks.append(current)
+                out.append(current)
             current = paragraph
     if current:
-        chunks.append(current)
-    return chunks
+        out.append(current)
+    return out
 
 
 def classify_windows(text: str) -> list[str]:
@@ -242,8 +296,10 @@ class IngestionPipeline:
                 )
             count += 1
 
-        # full-document chunks so long content is fully retrievable
-        doc_chunks = chunk_document(doc.text)
+        # full-document chunks so long content is fully retrievable;
+        # clean BEFORE chunking so boundaries/embeddings/FTS tokens are clean
+        cleaned = strip_repeated(clean_text(doc.text), repeated_lines(doc.text))
+        doc_chunks = chunk_document(cleaned)
         for index, chunk_content in enumerate(doc_chunks, start=1):
             ref = f"{base_ref} §{index}" if len(doc_chunks) > 1 else base_ref
             db.add(Chunk(item_id=item.id, source_ref=ref, content=chunk_content))
