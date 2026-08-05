@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import schemas
+from ..app_settings import SettingsService
 from ..config import settings
 from ..db import get_db
 from ..models import Chunk, Source, SystemEvent
@@ -22,7 +23,7 @@ APP_VERSION = "1.0.0"
 _LOG_NAME_RE = re.compile(r"^anchorcore\.log(\.\d+)?$")
 
 
-def make_router(scheduler) -> APIRouter:
+def make_router(scheduler, settings_svc: SettingsService) -> APIRouter:
     router = APIRouter(prefix="/system", tags=["system"])
 
     @router.get("/status")
@@ -35,22 +36,22 @@ def make_router(scheduler) -> APIRouter:
                 select(Source).where(Source.error_count > 0, Source.enabled.is_(True))
             ).scalars()
         )
-        missing = missing_ollama_models()
+        missing = missing_ollama_models(settings_svc)
         return {
             "version": APP_VERSION,
             "data_dir": str(settings.data_dir),
             "database": settings.resolved_database_url,
             "ollama": {
-                "reachable": ollama_reachable(),
-                "base_url": settings.ollama_base_url,
-                "classifier_model": settings.classifier_model,
-                "embed_model": settings.embed_model,
+                "reachable": ollama_reachable(settings_svc),
+                "base_url": settings_svc.get("ollama_base_url") or "",
+                "classifier_model": settings_svc.get("classifier_model") or "",
+                "embed_model": settings_svc.get("embed_model") or "",
                 "missing_models": missing,
             },
             "answer": {
-                "provider": answer_provider(),
-                "model": settings.answer_model,
-                "base_url": settings.answer_base_url,
+                "provider": answer_provider(settings_svc),
+                "model": settings_svc.get("answer_model") or "",
+                "base_url": settings_svc.get("answer_base_url") or "",
             },
             "tasks": scheduler.task_states(),
             "pending_embeddings": pending,

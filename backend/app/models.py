@@ -154,6 +154,22 @@ class SystemEvent(Base):
     source: Mapped[Source | None] = relationship()
 
 
+class AppSetting(Base):
+    """Runtime-mutable app settings (B4): DB values override .env defaults.
+
+    Secrets (API keys) are NOT stored here — they live in the SecretStore
+    under keys prefixed `app:`. This table holds non-secret overrides.
+    """
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class MergeAction(Base):
     __tablename__ = "merge_actions"
 
