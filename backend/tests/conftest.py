@@ -13,6 +13,9 @@ os.environ["ANCHOR_CLASSIFIER_TIMEOUT"] = "1.0"
 os.environ["ANCHOR_HTTP_RETRIES"] = "0"
 os.environ["ANCHOR_ANSWER_BASE_URL"] = "https://api.openai.com/v1"
 os.environ["ANCHOR_DATA_DIR"] = str(Path(tempfile.mkdtemp(prefix="anchorcore-data-")))
+# never touch the real OS keychain from tests — secrets go to the encrypted
+# fallback file under the temp data dir instead
+os.environ["ANCHOR_SECRETS_NO_KEYRING"] = "1"
 
 
 @pytest.fixture()
