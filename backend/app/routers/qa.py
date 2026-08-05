@@ -13,7 +13,7 @@ def make_router(answer_engine: AnswerEngine) -> APIRouter:
 
     @router.post("", response_model=schemas.AskResponse)
     async def ask(payload: schemas.AskRequest, db: Session = Depends(get_db)) -> schemas.AskResponse:
-        return await answer_engine.ask(db, payload.question)
+        return await answer_engine.ask(db, payload.question, history=payload.history)
 
     @router.get("/context", response_model=list[schemas.EntityOut])
     def context_snapshot(db: Session = Depends(get_db)) -> list[Entity]:

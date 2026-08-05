@@ -58,8 +58,14 @@ class MergeDecision(BaseModel):
     decision: str  # merge | dismiss
 
 
+class AskTurn(BaseModel):
+    role: str  # user | assistant
+    content: str
+
+
 class AskRequest(BaseModel):
     question: str
+    history: list[AskTurn] = []  # previous turns, oldest first
 
 
 class Citation(BaseModel):

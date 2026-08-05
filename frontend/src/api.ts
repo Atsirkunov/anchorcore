@@ -1,4 +1,4 @@
-import type { AppSettings, AskResponse, Entity, Health, Job, LogFile, MergeProposal, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
+import type { AppSettings, AskResponse, AskTurn, Entity, Health, Job, LogFile, MergeProposal, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
@@ -64,11 +64,14 @@ export const api = {
       body: JSON.stringify({ proposal_id: proposalId, decision }),
     }),
 
-  ask: (question: string) =>
+  ask: (question: string, history: AskTurn[] = []) =>
     request<AskResponse>("/qa", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({
+        question,
+        history: history.map((t) => ({ role: t.role, content: t.content })),
+      }),
     }),
 
   systemStatus: () => request<SystemStatus>("/system/status"),
