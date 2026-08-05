@@ -105,6 +105,12 @@ export type Citation = {
   snippet: string;
 };
 
+export type AskTurn = {
+  role: "user" | "assistant";
+  content: string;
+  citations?: Citation[];
+};
+
 export type AskResponse = {
   answer: string;
   citations: Citation[];

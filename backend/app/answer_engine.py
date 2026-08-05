@@ -105,10 +105,23 @@ class AnswerEngine:
         self.embedder = embedder
         self.settings = settings
 
-    async def ask(self, db: Session, question: str) -> AskResponse:
+    async def ask(
+        self, db: Session, question: str, history: list | None = None
+    ) -> AskResponse:
+        """Answer a question; `history` (previous user/assistant turns) enables
+        follow-ups: the question is rewritten into a standalone query before
+        retrieval, and the conversation is passed to generation."""
+        history = [t for t in (history or []) if t.content and t.content.strip()]
+        query = question
+        if history:
+            rewritten = await self._rewrite_followup(question, history)
+            if rewritten:
+                logger.info("follow-up rewritten: %r -> %r", question, rewritten)
+                query = rewritten
+
         vector_hits: list[dict] | None = None
         try:
-            query_embedding = (await self.embedder.embed([question]))[0]
+            query_embedding = (await self.embedder.embed([query]))[0]
             vector_hits = self._vector_search(db, query_embedding)
         except Exception as exc:  # noqa: BLE001
             logger.warning("embedding/search failed (%s); keyword-only retrieval", exc)
@@ -119,7 +132,7 @@ class AnswerEngine:
                 detail=f"{type(exc).__name__}: {exc}",
             )
 
-        keyword_hits = self._keyword_search(db, question)
+        keyword_hits = self._keyword_search(db, query)
         if not keyword_hits and vector_hits is None:
             # embedding AND FTS both unavailable (e.g. pre-migration DB):
             # keep the old newest-chunks fallback so degraded mode still answers
@@ -141,7 +154,7 @@ class AnswerEngine:
             sections.append(f"[S{idx}] {content}")
         context = "\n\n".join(sections)
 
-        answer_text = await self._generate(question, context)
+        answer_text = await self._generate(query, context, history=history)
 
         citations = []
         for hit in hits[:5]:
@@ -350,7 +363,51 @@ class AnswerEngine:
             )
         )
 
-    async def _generate(self, question: str, context: str) -> str:
+    async def _rewrite_followup(self, question: str, history: list) -> str | None:
+        """Rewrite a follow-up ('show the movements for it') into a standalone
+        query using the conversation so retrieval has a resolvable referent.
+        Returns None (→ use the raw question) when no model is available."""
+        answer_base = self.settings.get("answer_base_url") or ""
+        api_key = self.settings.get("answer_api_key") or ""
+        model = self.settings.get("answer_model") or "gpt-4o-mini"
+        is_local = answer_base.startswith(("http://localhost", "http://127.0.0.1"))
+        if not is_local and not api_key:
+            return None
+        transcript = "\n".join(
+            f"{t.get('role', 'user')}: {t.get('content', '')}" for t in history[-6:]
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You rewrite a user's follow-up question into a standalone "
+                    "question that includes all context from the conversation "
+                    "needed to answer it alone. Respond with ONLY the rewritten "
+                    "question, no preamble."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Conversation:\n{transcript}\n\nFollow-up: {question}",
+            },
+        ]
+        payload = {"model": model, "messages": messages, "temperature": 0.0, "max_tokens": 120}
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        try:
+            async with RetryClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"{answer_base.rstrip('/')}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+                resp.raise_for_status()
+                rewritten = resp.json()["choices"][0]["message"]["content"].strip()
+            return rewritten[:500] if rewritten else None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("follow-up rewrite failed (%s); using raw question", exc)
+            return None
+
+    async def _generate(self, question: str, context: str, history: list | None = None) -> str:
         answer_base = self.settings.get("answer_base_url") or ""
         api_key = self.settings.get("answer_api_key") or ""
         model = self.settings.get("answer_model") or "gpt-4o-mini"
@@ -361,11 +418,17 @@ class AnswerEngine:
             return f"Answer for: {question}\n\n[No model key configured. Matching context:]\n\n{context[:1500]}"
 
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        user_content = f"Question: {question}\n\nContext:\n{context}"
+        if history:
+            transcript = "\n".join(
+                f"{t.get('role', 'user')}: {t.get('content', '')}" for t in history[-6:]
+            )
+            user_content = f"Conversation so far:\n{transcript}\n\n{user_content}"
         payload = {
             "model": model,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Question: {question}\n\nContext:\n{context}"},
+                {"role": "user", "content": user_content},
             ],
             "temperature": 0.2,
         }
