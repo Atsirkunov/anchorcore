@@ -302,6 +302,17 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** a chat-log-style source produces findable distilled Q&A units; filler messages don't pollute vector results.
 
+### B19. Chat: newest answer on top (P2 — UX)
+**Problem:** in long follow-up conversations the latest answer renders at the bottom of the page, off-screen; the user has to scroll down to see the new response (or misses that it arrived).
+
+**Scope:**
+- Render the chat newest-first (latest turn at the top of the page, below the input), so the current answer is always immediately visible
+- Input stays pinned near the top; older context scrolls down
+- Keep "Clear context" visible regardless of ordering
+- (Alternative considered: auto-scroll to newest at bottom — rejected: fights the user's reading position on long threads)
+
+**DoD:** after 5+ follow-ups, the newest answer is visible without scrolling.
+
 ### B14. Agent connectivity via MCP (P2 — see [mcp.md](./mcp.md))
 **Problem:** users want their own harnesses (Claude Code, Codex, opencode) to use AnchorCore's memory, but today only the browser UI can reach it.
 
