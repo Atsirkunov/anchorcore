@@ -88,7 +88,7 @@ npm run dev                   # dev server on :5173, proxies API to :8000
 
 Or `npm run build` — the built `dist/` is served automatically by the backend at http://localhost:8000.
 
-**Tests** (from `backend/`): `python -m pytest tests -q`
+**Tests** (from `backend/`): `python -m pytest tests -q` — catalog: [backend/tests/README.md](./backend/tests/README.md)
 
 **CI:** GitHub Actions runs backend tests + frontend build on every push
 (see `.github/workflows/ci.yml`).
