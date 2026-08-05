@@ -217,17 +217,18 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **Expected:** 3-5x wall-clock reduction on GPU machines; scales with hardware. Without `OLLAMA_NUM_PARALLEL`, requests queue at the server (no speedup, no harm).
 
-### B12. Retrieval quality: hybrid search + chunk cleaning (P2 — discovered, confirmed live)
+### B12. Retrieval quality: hybrid search + chunk cleaning (P2 — discovered, confirmed live) — DONE (build); re-test on rulebook
 **Problem:** full-document chunks are raw extracted text (repeated headers, page numbers, encoding garbage) and vector-only search with `nomic-embed-text` ranks them poorly — a DVCA question scored all candidates ~0.7 and surfaced unrelated sections, while clean entity-summary chunks retrieved far better. Verified with a retrieval probe on the 237-page rulebook (only 5 chunks mention DVSE/DVCA; they ranked below unrelated chunks).
 
-**Confirmed live (Aug 2026):** a "Merger and related rules and movements" question on the same rulebook retrieved the MRGR section (§434, score 0.632) plus 4 unrelated chunks (§457 PLAC at 0.606, etc.); the relevant movement-table chunks (§437 key dates, §586 event matrix) did not make top-8, and llama3.2:3b then hallucinated a PLAC→merger link. The correct data exists (Table 103 movement rules are inside the top chunk itself) — the retrieval + generation pipeline failed to use it.
+**Done (build):**
+- **Chunk text cleaning** (`cleaning.py`): strips control chars/soft hyphens/replacement chars, page-number lines ("Page 3 of 12", "- 42 -"), repeated header/footer lines (verbatim lines above a doc-size threshold), normalizes whitespace/blank runs. Applied before full-document chunking so boundaries, embeddings, and FTS tokens are clean.
+- **Heading-aware chunking**: `chunk_document` now splits at heading lines (`§434`, `4.2.1`, `Article 12`, ALL-CAPS titles), accumulates paragraphs within a section up to `ANCHOR_CHUNK_MAX_CHARS` (default 1600, within nomic-embed's context), fixed-size split only for oversized paragraphs.
+- **Hybrid retrieval**: new `chunks_fts` FTS5 table (external content + sync triggers + backfill; migration `b12f7c0`). `AnswerEngine` merges cosine vector scores with bm25 keyword scores at `ANCHOR_RETRIEVAL_KEYWORD_WEIGHT` (default 0.3; 0 = pure vector, 1 = pure keyword). Acronyms like DVCA/DVSE hit directly via FTS. Newest-chunks fallback kept for pre-migration DBs.
+- New tests: cleaning, heading chunking, FTS table existence, end-to-end acronym retrieval (`tests/test_retrieval.py`).
 
-**Scope:**
-- **Chunk text cleaning** before embedding: strip repeated headers/footers, page numbers, control chars/encoding artifacts; normalize whitespace
-- **Hybrid retrieval**: combine vector similarity with keyword/BM25 scoring (SQLite FTS5) so acronyms like DVCA/DVSE hit directly; configurable weights
-- Optional: LLM rerank of top-k candidates (evaluated after hybrid lands); answer quality should be re-tested with a better model than llama3.2:3b for the generation step
+**Live probe (Aug 2026, after reclassify of the rulebook):** "What are the DVCA movement rules?" → §372 (4.25 DVCA) at **0.931**; "Merger and related movements" → §434 (4.39 MRGR) at **0.892**; both top-ranked with correct sections ≥ 0.8 (previously ~0.7 with unrelated sections surfacing above the real ones, plus a hallucinated PLAC→merger link from llama3.2:3b).
 
-**DoD:** the DVCA question returns the DVSE sections with scores ≥ 0.8 and a correct cited answer on the 237-page PDF.
+**Remaining (optional, evaluated after hybrid):** LLM rerank of top-k candidates; re-test answer quality with a better generation model than llama3.2:3b (retrieval is now the strong part; generation still limits final answers).
 
 ### B13. Dev process hardening — DONE (commit: add B13 dev process hardening)
 **Problem (from session retrospective):** environment chaos cost more time than code bugs — multiple servers sharing one SQLite DB (stale code, lock fights, an elevated process we couldn't kill), `.env` silently overwritten with example defaults, duplicate keys silently overriding (pydantic takes the last), 15-min operations looking frozen, hand-rolled SQLite migrations already biting once.

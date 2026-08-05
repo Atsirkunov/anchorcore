@@ -1,7 +1,8 @@
 import json
 import logging
+import re
 
-from sqlalchemy import or_, select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -20,24 +21,56 @@ Always cite the sections you use by ID at the end of the relevant sentence.
 If the context does not contain the answer, say so clearly instead of guessing.
 """
 
+_FTS_WORD_RE = re.compile(r"[a-z0-9_§\-]+", re.IGNORECASE)
+_FTS_STOPWORDS = {
+    "a", "an", "the", "and", "or", "but", "of", "in", "on", "at", "to", "for",
+    "with", "about", "is", "are", "was", "were", "be", "been", "being", "am",
+    "do", "does", "did", "have", "has", "had", "will", "would", "can", "could",
+    "should", "shall", "may", "might", "must", "what", "which", "who", "whom",
+    "whose", "when", "where", "why", "how", "this", "that", "these", "those",
+    "it", "its", "not", "no", "so", "if", "then", "than", "too", "very", "s",
+    "t", "you", "your", "we", "our", "they", "their", "i", "me", "my",
+}
+
+
+def _fts_match_query(question: str) -> str | None:
+    """Turn a question into an FTS5 MATCH expression: OR of quoted terms."""
+    terms = [
+        t
+        for t in _FTS_WORD_RE.findall(question.lower())
+        if len(t) >= 2 and t not in _FTS_STOPWORDS
+    ]
+    if not terms:
+        return None
+    # quote each term; FTS5 quotes can't be escaped, and our token regex
+    # never produces quotes, so plain wrapping is safe
+    return " OR ".join(f'"{t}"' for t in terms)
+
 
 class AnswerEngine:
     def __init__(self, embedder: Embedder):
         self.embedder = embedder
 
     async def ask(self, db: Session, question: str) -> AskResponse:
+        vector_hits: list[dict] | None = None
         try:
             query_embedding = (await self.embedder.embed([question]))[0]
-            hits = self._vector_search(db, query_embedding)
+            vector_hits = self._vector_search(db, query_embedding)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("embedding/search failed (%s); using keyword search", exc)
+            logger.warning("embedding/search failed (%s); keyword-only retrieval", exc)
             record_event(
                 "qa",
-                "retrieval degraded to newest-chunks fallback (embedding/search failed)",
+                "embedding failed; retrieval degraded to keyword-only",
                 level="warning",
                 detail=f"{type(exc).__name__}: {exc}",
             )
-            hits = self._keyword_search(db)
+
+        keyword_hits = self._keyword_search(db, question)
+        if not keyword_hits and vector_hits is None:
+            # embedding AND FTS both unavailable (e.g. pre-migration DB):
+            # keep the old newest-chunks fallback so degraded mode still answers
+            keyword_hits = self._keyword_fallback(db)
+        hits = self._merge_hits(vector_hits, keyword_hits)
 
         if not hits:
             return AskResponse(
@@ -87,7 +120,79 @@ class AnswerEngine:
         scored.sort(key=lambda r: r["score"], reverse=True)
         return [hit for hit in scored[: settings.top_k] if hit["score"] > 0.2]
 
-    def _keyword_search(self, db: Session) -> list[dict]:
+    def _keyword_search(self, db: Session, question: str) -> list[dict]:
+        """FTS5 keyword search over chunks (bm25 ranking). Returns [] when
+        the FTS table is missing or the query has no useful terms."""
+        match = _fts_match_query(question)
+        if match is None:
+            return []
+        try:
+            rows = db.execute(
+                text(
+                    "SELECT rowid, bm25(chunks_fts) AS rank FROM chunks_fts "
+                    "WHERE chunks_fts MATCH :q ORDER BY rank LIMIT :limit"
+                ),
+                {"q": match, "limit": settings.top_k * 4},
+            ).all()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("FTS keyword search unavailable (%s)", exc)
+            return []
+        if not rows:
+            return []
+        by_id = {row[0]: row[1] for row in rows}  # rowid -> bm25 rank (more negative = better)
+
+        chunks = db.execute(
+            self._chunk_query().where(Chunk.id.in_(list(by_id)))
+        ).all()
+        hits = []
+        for chunk, entity, item in chunks:
+            if entity is not None and entity.status == "stale":
+                continue
+            # bm25 returns negative scores; more negative = better match
+            hits.append(
+                {
+                    "chunk": chunk,
+                    "entity": entity,
+                    "item": item,
+                    "score": -by_id[chunk.id],
+                }
+            )
+        hits.sort(key=lambda r: r["score"], reverse=True)
+        return hits
+
+    def _merge_hits(
+        self, vector_hits: list[dict] | None, keyword_hits: list[dict] | None
+    ) -> list[dict]:
+        """Hybrid merge: normalized bm25 + cosine, configurable keyword weight."""
+        if not vector_hits and not keyword_hits:
+            return []
+        if not vector_hits:
+            return keyword_hits or []
+        if not keyword_hits:
+            return vector_hits
+
+        kw_max = max(h["score"] for h in keyword_hits) or 1.0
+        vec_max = max(h["score"] for h in vector_hits) or 1.0
+        weight = settings.retrieval_keyword_weight
+
+        combined: dict[int, dict] = {}
+        for hit in vector_hits:
+            combined[hit["chunk"].id] = {**hit, "vec": hit["score"] / vec_max, "kw": 0.0}
+        for hit in keyword_hits:
+            entry = combined.setdefault(hit["chunk"].id, {**hit, "vec": 0.0})
+            entry["kw"] = hit["score"] / kw_max
+            entry["chunk"] = hit["chunk"]
+            entry["entity"] = hit["entity"]
+            entry["item"] = hit["item"]
+
+        results = []
+        for entry in combined.values():
+            entry["score"] = weight * entry["kw"] + (1 - weight) * entry["vec"]
+            results.append(entry)
+        results.sort(key=lambda r: r["score"], reverse=True)
+        return results[: settings.top_k]
+
+    def _keyword_fallback(self, db: Session) -> list[dict]:
         rows = db.execute(
             self._chunk_query().order_by(Chunk.created_at.desc()).limit(settings.top_k)
         ).all()
