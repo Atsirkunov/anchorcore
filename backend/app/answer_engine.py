@@ -100,6 +100,15 @@ def _content_signature(content: str) -> str:
     return text[:160]
 
 
+def _turn_text(turn) -> str:
+    """Render a history turn (dict or pydantic AskTurn) as 'role: content'."""
+    if isinstance(turn, dict):
+        return f"{turn.get('role', 'user')}: {turn.get('content', '')}"
+    role = getattr(turn, "role", "user")
+    content = getattr(turn, "content", "")
+    return f"{role}: {content}"
+
+
 class AnswerEngine:
     def __init__(self, embedder: Embedder, settings: SettingsService):
         self.embedder = embedder
@@ -373,9 +382,7 @@ class AnswerEngine:
         is_local = answer_base.startswith(("http://localhost", "http://127.0.0.1"))
         if not is_local and not api_key:
             return None
-        transcript = "\n".join(
-            f"{t.get('role', 'user')}: {t.get('content', '')}" for t in history[-6:]
-        )
+        transcript = "\n".join(_turn_text(t) for t in history[-6:])
         messages = [
             {
                 "role": "system",
@@ -420,9 +427,7 @@ class AnswerEngine:
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         user_content = f"Question: {question}\n\nContext:\n{context}"
         if history:
-            transcript = "\n".join(
-                f"{t.get('role', 'user')}: {t.get('content', '')}" for t in history[-6:]
-            )
+            transcript = "\n".join(_turn_text(t) for t in history[-6:])
             user_content = f"Conversation so far:\n{transcript}\n\n{user_content}"
         payload = {
             "model": model,

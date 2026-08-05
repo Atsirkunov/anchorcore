@@ -127,6 +127,75 @@ def test_rewrite_returns_none_without_key():
     svc.clear("answer_api_key")
 
 
+def test_rewrite_with_pydantic_turns():
+    """The API delivers history as AskTurn pydantic models — _rewrite_followup
+    and _generate must accept them (regression: .get() on pydantic fails)."""
+    from app.answer_engine import AnswerEngine
+    from app.embedder import Embedder
+    from app.schemas import AskTurn
+
+    svc = _make_svc()
+    svc.set("answer_base_url", "https://api.openai.com/v1")
+    svc.set("answer_api_key", "sk-turn-test")
+
+    engine = AnswerEngine(Embedder(svc), svc)
+    calls = []
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            calls.append(json)
+            msgs = json.get("messages", [])
+            is_rewrite = "rewrite" in (msgs[0].get("content", "") if msgs else "").lower()
+            content = "rewritten query" if is_rewrite else "answer ok"
+
+            class _Resp:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {"choices": [{"message": {"content": content}}]}
+
+            return _Resp()
+
+    import app.answer_engine as ae
+
+    original = ae.RetryClient
+    ae.RetryClient = _FakeClient
+    try:
+        rewritten = asyncio.run(
+            engine._rewrite_followup(
+                "show movements for it",
+                [AskTurn(role="user", content="merger details"), AskTurn(role="assistant", content="MRGR.")],
+            )
+        )
+        asyncio.run(
+            engine._generate(
+                "q",
+                "ctx",
+                history=[AskTurn(role="user", content="merger details")],
+            )
+        )
+    finally:
+        ae.RetryClient = original
+
+    assert rewritten == "rewritten query"
+    rewrite_content = calls[0]["messages"][-1]["content"]
+    assert "merger details" in rewrite_content
+    gen_content = calls[1]["messages"][-1]["content"]
+    assert "Conversation so far" in gen_content
+    svc.clear("answer_base_url")
+    svc.clear("answer_api_key")
+
+
 def test_generate_includes_conversation():
     """Generation payload must contain the conversation transcript."""
     from app.answer_engine import AnswerEngine
