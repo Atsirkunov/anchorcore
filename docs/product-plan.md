@@ -243,6 +243,12 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** two sources answering the same question — neither monopolizes top-8; a newer answer beats an older one at equal relevance; answers include neighboring section context.
 
+**B12.1 fixes (post-build, live findings):**
+- Diversity cap is now **per-file (item)**, not per-source: a multi-file corpus gets diversity (Cerebras: "cap how many results each file can contribute"), but a single big document is no longer starved (cap relaxes when the candidate set has <3 distinct files)
+- **Near-duplicate chunk dedupe**: same content appearing twice (TOC entry + body section, e.g. §720/§434 MRGR) keeps only the best-scoring copy
+- **Synthesis prompt strengthened**: the model must synthesize process/workflow steps explicitly from evidence instead of hedging ("not explicitly described") — live probe: "how does MRGR work" now returns a step-by-step explanation citing sections, where before it refused
+- New tests: per-item cap with multiple files; cap relaxed for single-file corpus
+
 ### B13. Dev process hardening — DONE (commit: add B13 dev process hardening)
 **Problem (from session retrospective):** environment chaos cost more time than code bugs — multiple servers sharing one SQLite DB (stale code, lock fights, an elevated process we couldn't kill), `.env` silently overwritten with example defaults, duplicate keys silently overriding (pydantic takes the last), 15-min operations looking frozen, hand-rolled SQLite migrations already biting once.
 
