@@ -1,4 +1,4 @@
-import type { AskResponse, Entity, Health, Job, LogFile, MergeProposal, Source, SystemEvent, SystemStatus } from "./types";
+import type { AppSettings, AskResponse, Entity, Health, Job, LogFile, MergeProposal, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
@@ -72,6 +72,19 @@ export const api = {
     }),
 
   systemStatus: () => request<SystemStatus>("/system/status"),
+  getSettings: () => request<AppSettings>("/settings"),
+  updateSettings: (payload: Partial<AppSettings>) =>
+    request<AppSettings>("/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  testConnection: (provider: "ollama" | "answer") =>
+    request<TestConnectionResult>("/settings/test-connection", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider }),
+    }),
   systemErrors: (params?: { component?: string; level?: string; limit?: number }) => {
     const q = new URLSearchParams();
     if (params?.component) q.set("component", params.component);
