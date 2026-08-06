@@ -13,7 +13,7 @@ from ..app_settings import SettingsService
 from ..config import settings
 from ..db import get_db
 from ..models import Chunk, Source, SystemEvent
-from ..status import answer_provider, missing_ollama_models, ollama_reachable
+from ..status import answer_provider, classifier_is_local, missing_ollama_models, ollama_reachable
 from ..throughput import throughput
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,17 @@ def make_router(scheduler, settings_svc: SettingsService) -> APIRouter:
                 "embed_model": settings_svc.get("embed_model") or "",
                 "missing_models": missing,
             },
+            "classifier": {
+                "provider": "local" if classifier_is_local(settings_svc) else "cloud",
+                "base_url": (
+                    settings_svc.get("classifier_base_url")
+                    or settings_svc.get("ollama_base_url")
+                    or ""
+                ),
+                "model": settings_svc.get("classifier_model") or "",
+                **throughput.snapshot(),
+                "concurrency": settings.classifier_concurrency,
+            },
             "answer": {
                 "provider": answer_provider(settings_svc),
                 "model": settings_svc.get("answer_model") or "",
@@ -55,10 +66,6 @@ def make_router(scheduler, settings_svc: SettingsService) -> APIRouter:
             },
             "tasks": scheduler.task_states(),
             "pending_embeddings": pending,
-            "classifier": {
-                **throughput.snapshot(),
-                "concurrency": settings.classifier_concurrency,
-            },
             "failing_sources": [
                 {"id": s.id, "name": s.name, "error": s.last_error, "count": s.error_count}
                 for s in failing_sources

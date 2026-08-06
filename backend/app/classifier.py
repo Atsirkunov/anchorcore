@@ -48,17 +48,29 @@ class Classifier:
             "temperature": 0.1,
             "response_format": {"type": "json_object"},
         }
-        base_url = self.settings.get("ollama_base_url") or "http://localhost:11434"
+        base_url = self._base_url()
+        api_key = self.settings.get("classifier_api_key") or ""
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         timeout = self.settings.get_float("classifier_timeout", 60.0)
         async with RetryClient(timeout=timeout) as client:
             resp = await client.post(
                 f"{base_url.rstrip('/')}/v1/chat/completions",
+                headers=headers,
                 json=payload,
             )
             resp.raise_for_status()
             raw = resp.json()["choices"][0]["message"]["content"]
             data = json.loads(raw)
         return self._normalize(data.get("items", []), source_ref)
+
+    def _base_url(self) -> str:
+        """Classifier endpoint: explicit classifier_base_url wins; otherwise
+        the shared Ollama base URL (local default)."""
+        return (
+            self.settings.get("classifier_base_url")
+            or self.settings.get("ollama_base_url")
+            or "http://localhost:11434"
+        )
 
     def _classify_rules(self, text: str, source_ref: str) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []

@@ -153,10 +153,11 @@ async def health(db: Session = Depends(get_db)) -> dict:
 
 # Serve built frontend if present (must be last — catches everything else).
 # Resolves in both dev (repo layout) and frozen (PyInstaller) modes.
+_meipass = getattr(sys, "_MEIPASS", None)
 _frontend_candidates = [
     Path(__file__).resolve().parents[2] / "frontend" / "dist",  # dev repo
-    Path(sys._MEIPASS) / "frontend_dist",  # PyInstaller onefile
+    Path(_meipass) / "frontend_dist" if _meipass else None,  # PyInstaller onefile
 ]
-frontend_dist = next((p for p in _frontend_candidates if p.exists()), None)
+frontend_dist = next((p for p in _frontend_candidates if p is not None and p.exists()), None)
 if frontend_dist is not None:
     app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="ui")
