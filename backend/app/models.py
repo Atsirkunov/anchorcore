@@ -44,6 +44,8 @@ class IngestedItem(Base):
     author: Mapped[str] = mapped_column(String(300), default="")
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     stale: Mapped[bool] = mapped_column(default=False)
+    doc_type: Mapped[str] = mapped_column(String(50), default="")  # standards|meeting|decision_log|prd|runbook|general
+    window_hashes: Mapped[str] = mapped_column(Text, default="{}")  # JSON {index: sha256}
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     source: Mapped[Source] = relationship(back_populates="items")
@@ -62,6 +64,8 @@ class Entity(Base):
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     author: Mapped[str] = mapped_column(String(300), default="")
     source_ref: Mapped[str] = mapped_column(String(500), default="")  # source + section
+    window_text: Mapped[str] = mapped_column(Text, default="")  # classifier input window
+    window_index: Mapped[int | None] = mapped_column(Integer, nullable=True)  # window ordinal
     status: Mapped[str] = mapped_column(String(50), default="unverified", index=True)
     owner: Mapped[str] = mapped_column(String(300), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

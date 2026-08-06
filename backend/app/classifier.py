@@ -1,9 +1,8 @@
+import hashlib
 import json
 import logging
 import re
 from typing import Any
-
-import httpx
 
 from .app_settings import SettingsService
 from .http import RetryClient
@@ -12,7 +11,13 @@ logger = logging.getLogger(__name__)
 
 KINDS = ["decision", "document", "action", "note"]
 
-SYSTEM_PROMPT = f"""You extract knowledge items from organizational text.
+DOC_TYPES = ["standards", "runbook", "meeting", "decision_log", "prd", "general"]
+
+# Per-document-type extraction prompts (B26): the extraction prompt adapts to
+# what kind of document the text is, so e.g. a regulatory standard doesn't get
+# spurious "decision"/"action" labels for procedural steps.
+PROMPTS: dict[str, str] = {
+    "general": """You extract knowledge items from organizational text.
 
 Classify each item into exactly one of these kinds:
 - decision: a choice made, with reasoning behind it
@@ -23,6 +28,82 @@ Classify each item into exactly one of these kinds:
 Respond ONLY with a JSON object:
 {{"items": [{{"kind": str, "summary": str, "reasoning": str, "confidence": float, "author": str}}]}}
 Keep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{"items": []}}.
+""",
+    "standards": """You extract knowledge items from a REGULATORY / STANDARDS document.
+
+This document defines normative rules and procedures. Extract ONLY factual
+statements worth remembering:
+- note: a rule, requirement, definition, or procedural fact
+Do NOT extract:
+- decision (standards don't record organizational decisions)
+- action (procedural steps are rules, not assigned to-dos)
+- document (do not emit a summary for the document itself)
+
+Respond ONLY with a JSON object:
+{{"items": [{{"kind": "note", "summary": str, "reasoning": str, "confidence": float, "author": ""}}]}}
+Keep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{"items": []}}.
+""",
+    "runbook": """You extract knowledge items from a RUNBOOK / OPERATIONAL GUIDE.
+
+Extract ONLY factual statements worth remembering:
+- note: a step, prerequisite, escalation rule, or operational fact
+Do NOT extract:
+- decision (runbooks don't record organizational decisions)
+- action (steps are procedural notes, not assigned to-dos)
+- document (do not emit a summary for the document itself)
+
+Respond ONLY with a JSON object:
+{{"items": [{{"kind": "note", "summary": str, "reasoning": str, "confidence": float, "author": ""}}]}}
+Keep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{"items": []}}.
+""",
+    "meeting": """You extract knowledge items from MEETING NOTES.
+
+Classify each item into exactly one of these kinds:
+- decision: a choice made in the meeting, with reasoning
+- action: something someone agreed to do (owner + due date if stated)
+- document: a status update / factual report
+- note: anything else worth remembering
+
+Respond ONLY with a JSON object:
+{{"items": [{{"kind": str, "summary": str, "reasoning": str, "confidence": float, "author": str}}]}}
+Keep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{"items": []}}.
+""",
+    "decision_log": """You extract knowledge items from a DECISION LOG.
+
+Classify each item into exactly one of these kinds:
+- decision: a recorded choice, with reasoning
+- note: context, constraints, or revisit triggers
+- action: a follow-up someone owns
+Do NOT extract the document itself as an item.
+
+Respond ONLY with a JSON object:
+{{"items": [{{"kind": str, "summary": str, "reasoning": str, "confidence": float, "author": str}}]}}
+Keep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{"items": []}}.
+""",
+    "prd": """You extract knowledge items from a PRODUCT / REQUIREMENTS document.
+
+Classify each item into exactly one of these kinds:
+- decision: a scope or requirement choice, with reasoning
+- document: a factual description / requirement / spec fact
+- action: an explicitly assigned follow-up
+- note: anything else worth remembering
+Do NOT extract the document itself as an item.
+
+Respond ONLY with a JSON object:
+{{"items": [{{"kind": str, "summary": str, "reasoning": str, "confidence": float, "author": str}}]}}
+Keep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{"items": []}}.
+""",
+}
+
+TYPE_DETECT_PROMPT = """You identify what kind of document a piece of text is.
+Pick exactly one of: standards, runbook, meeting, decision_log, prd, general.
+- standards: regulatory/normative rules, requirements, procedures
+- runbook: operational steps, escalation rules, how-to guide
+- meeting: meeting notes, retros, planning notes
+- decision_log: a log of recorded decisions
+- prd: product requirements, specifications, scoping docs
+- general: anything else
+Respond ONLY with the single word, nothing else.
 """
 
 
@@ -30,20 +111,55 @@ class Classifier:
     def __init__(self, settings: SettingsService):
         self.settings = settings
 
-    async def classify(self, text: str, source_ref: str) -> list[dict[str, Any]]:
+    async def detect_document_type(self, text: str) -> str:
+        """Classify the document type once per document (1 call, cheap)."""
         try:
-            return await self._classify_llm(text, source_ref)
+            return await self._detect_llm(text)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("document-type detection failed (%s); defaulting to general", exc)
+            return "general"
+
+    async def classify(self, text: str, source_ref: str, doc_type: str = "general") -> list[dict[str, Any]]:
+        try:
+            return await self._classify_llm(text, source_ref, doc_type)
         except Exception as exc:  # noqa: BLE001
             logger.warning("LLM classification failed (%s); falling back to rules", exc)
             return self._classify_rules(text, source_ref)
 
-    async def _classify_llm(self, text: str, source_ref: str) -> list[dict[str, Any]]:
-        truncated = text[:12000] if len(text) > 12000 else text
+    async def _detect_llm(self, text: str) -> str:
+        truncated = text[:8000]
         payload = {
             "model": self.settings.get("classifier_model") or "llama3.2:3b",
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Source: {source_ref}\n\nContent:\n{truncated}"},
+                {"role": "system", "content": TYPE_DETECT_PROMPT},
+                {"role": "user", "content": f"Document text (beginning):\n{truncated}"},
+            ],
+            "temperature": 0.0,
+            "max_tokens": 10,
+        }
+        base_url = self._base_url()
+        api_key = self.settings.get("classifier_api_key") or ""
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        async with RetryClient(timeout=self.settings.get_float("classifier_timeout", 60.0)) as client:
+            resp = await client.post(
+                f"{base_url.rstrip('/')}/v1/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+            resp.raise_for_status()
+            raw = resp.json()["choices"][0]["message"]["content"].strip().lower()
+        for doc_type in DOC_TYPES:
+            if doc_type in raw:
+                return doc_type
+        return "general"
+
+    async def _classify_llm(self, text: str, source_ref: str, doc_type: str) -> list[dict[str, Any]]:
+        prompt = PROMPTS.get(doc_type, PROMPTS["general"])
+        payload = {
+            "model": self.settings.get("classifier_model") or "llama3.2:3b",
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": f"Source: {source_ref}\n\nContent:\n{text}"},
             ],
             "temperature": 0.1,
             "response_format": {"type": "json_object"},
@@ -121,6 +237,10 @@ class Classifier:
                 }
             )
         return [item for item in normalized if item["summary"]]
+
+
+def window_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _clamp_float(value: Any, default: float) -> float:
