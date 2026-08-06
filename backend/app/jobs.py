@@ -50,6 +50,16 @@ class JobManager:
             ).scalars().all()
         )
 
+    def cancel(self, job_id: int) -> bool:
+        """Request cancellation of a running job. The pipeline awaits inside
+        the task, so cancelling the asyncio task stops LLM calls mid-flight;
+        uncommitted DB writes roll back (pipeline commits once at the end)."""
+        task = self._tasks.get(job_id)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
+
     async def _run(self, job_id: int) -> None:
         async def progress(processed: int, total: int) -> None:
             with SessionLocal() as db:
@@ -89,6 +99,16 @@ class JobManager:
                 job.result = json.dumps(result)
                 job.finished_at = datetime.now(timezone.utc)
                 db.commit()
+        except asyncio.CancelledError:
+            logger.info("job %d (%s) cancelled", job_id, kind)
+            with SessionLocal() as db:
+                job = db.get(Job, job_id)
+                if job is None:
+                    return
+                job.status = "cancelled"
+                job.finished_at = datetime.now(timezone.utc)
+                db.commit()
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.error("job %d (%s) failed: %s", job_id, kind, exc)
             with SessionLocal() as db:
