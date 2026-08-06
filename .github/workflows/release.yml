@@ -1,0 +1,103 @@
+name: Release
+
+# Builds distributable executables on every tag push (e.g. v0.1.0).
+# Windows exe is built on a Windows runner; macOS needs a mac runner
+# (macos-latest works; see B24 for the free ad-hoc signing alternative).
+# Uploads artifacts to the GitHub Release for the tag.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows:
+    name: Windows exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend build
+        working-directory: frontend
+        run: npm ci && npm run build
+
+      - name: Install backend deps + pyinstaller
+        working-directory: backend
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: PyInstaller build
+        run: python -m PyInstaller --noconfirm packaging.spec
+
+      - name: Upload exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnchorCore-windows
+          path: dist/AnchorCore.exe
+
+  build-macos:
+    name: macOS app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend build
+        working-directory: frontend
+        run: npm ci && npm run build
+
+      - name: Install backend deps + pyinstaller
+        working-directory: backend
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: PyInstaller build
+        run: python -m PyInstaller --noconfirm packaging.spec
+
+      - name: Ad-hoc sign (free, no Apple account; approval needed on first launch)
+        run: codesign --force --deep --sign - dist/AnchorCore
+
+      - name: Zip app
+        run: |
+          cd dist
+          zip -r AnchorCore-macos.zip AnchorCore.app AnchorCore
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnchorCore-macos
+          path: dist/AnchorCore-macos.zip
+
+  release:
+    name: Attach artifacts to release
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*

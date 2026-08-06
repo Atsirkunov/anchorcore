@@ -379,6 +379,15 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** running `./build.sh` on a Mac produces a launchable AnchorCore.app; launching on a fresh Mac works after the one-time approval.
 
+### B25. Release step: rebuild executables on every release (P1 — process)
+**Problem:** the packaged exe embeds the frontend at build time, so stale builds silently miss UI changes (the B23 "missing API key field" incident). Rebuilds were manual and easy to forget.
+
+**Done:**
+- `.github/workflows/release.yml` — on every `v*` tag push: builds Windows exe (Windows runner) + macOS app (macOS runner, ad-hoc signed, zipped), attaches both to the GitHub Release
+- `docs/releasing.md` — release checklist (tests → version bump → tag → verify artifacts → hand off) and the "why rebuild is mandatory" note
+
+**DoD:** tagging `v0.x.0` produces downloadable Windows + macOS artifacts automatically, verified by a smoke test on a clean machine.
+
 ---
 
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md)*
