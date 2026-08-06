@@ -258,6 +258,11 @@ erDiagram
 - Secret values masked in logs, error responses, and API payloads (`***set***`).
 - `SecretStore` interface maps to cloud secret managers in hosted v2.
 - Tests never touch the real keychain (`ANCHOR_SECRETS_NO_KEYRING`).
+- **Data labels (B30, planned)**: sources carry a label (`public|internal|sensitive|pii`);
+  each model provider declares a trust tier (`local` vs user-confirmed `cloud`);
+  the pipeline gates routing by label×tier (PII → local-only, logged), and
+  sharing/answers/MCP exclude non-`public` content outside authorized sessions.
+  Every allow/block decision is audited in `system_events`.
 
 ## 8. Key Interfaces (Swap Points)
 
