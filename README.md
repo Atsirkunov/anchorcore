@@ -9,6 +9,7 @@ Connect your knowledge to any AI model. An AI memory layer / knowledge operating
 - [Packaging](./docs/packaging.md) — Windows exe (done), macOS plan
 - [Releasing](./docs/releasing.md) — release checklist: tag → CI builds both executables
 - [Agent connectivity (MCP)](./docs/mcp.md) — how harnesses (Claude Code, Codex, opencode) will use the memory
+- [v2/v3 business scoping](./docs/v2v3-scope.md) — website, hosting, sharing, pricing, free tier
 - [Sample dataset guide](./docs/sample-dataset.md) — what the demo corpus exercises
 
 ## Project layout
