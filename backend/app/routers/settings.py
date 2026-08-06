@@ -55,11 +55,50 @@ def make_router(settings_svc: SettingsService) -> APIRouter:
             return await _test_ollama(settings_svc)
         if provider == "classifier":
             return await _test_classifier(settings_svc)
+        if provider == "embedder":
+            return await _test_embedder(settings_svc)
         if provider == "answer":
             return await _test_answer(settings_svc)
         raise HTTPException(status_code=422, detail=f"unknown provider: {provider}")
 
     return router
+
+
+async def _test_embedder(settings_svc: SettingsService) -> dict:
+    """Verify the embedding provider (local Ollama or cloud OpenAI-compatible)."""
+    from ..embedder import Embedder
+
+    embedder = Embedder(settings_svc)
+    base_url = embedder._base_url()
+    is_local = base_url.startswith(("http://localhost", "http://127.0.0.1"))
+    api_key = settings_svc.get("embed_api_key") or ""
+    if not is_local and not api_key:
+        return {
+            "ok": False,
+            "provider": "embedder",
+            "message": "API key required for a cloud embedding provider",
+        }
+    try:
+        import httpx
+
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+            resp = await client.post(
+                f"{base_url.rstrip('/')}/v1/embeddings",
+                headers=headers,
+                json={
+                    "model": settings_svc.get("embed_model") or "nomic-embed-text",
+                    "input": ["ping"],
+                },
+            )
+            resp.raise_for_status()
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "provider": "embedder",
+            "message": f"request failed: {type(exc).__name__}",
+        }
+    return {"ok": True, "provider": "embedder", "message": "embedding provider responds"}
 
 
 async def _test_classifier(settings_svc: SettingsService) -> dict:

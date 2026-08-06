@@ -2,11 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import type { AppSettings } from "../types";
 
-const PROVIDERS = [
-  { id: "ollama", label: "Ollama (local, offline-first)" },
-  { id: "openai", label: "OpenAI-compatible cloud" },
-  { id: "custom", label: "Custom OpenAI-compatible" },
-];
+type ProviderId = "local" | "cloud";
+
+function isLocalUrl(url: string): boolean {
+  const u = (url || "").trim();
+  return u === "" || u.startsWith("http://localhost") || u.startsWith("http://127.0.0.1");
+}
 
 export function SettingsTab() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -29,29 +30,28 @@ export function SettingsTab() {
 
   useEffect(() => refresh(), [refresh]);
 
-  const provider = () => {
-    const base = form?.answer_base_url ?? "";
-    if (base.startsWith("http://localhost") || base.startsWith("http://127.0.0.1")) return "ollama";
-    if (base.includes("openai.com")) return "openai";
-    return "custom";
-  };
+  const keySet = (key: string) => (settings?.[key as keyof AppSettings] ?? "") === "***set***";
 
-  const isOllama = provider() === "ollama";
-  const apiKeySet = (settings?.answer_api_key ?? "") === "***set***";
-  const classifierKeySet = (settings?.classifier_api_key ?? "") === "***set***";
+  // each provider block is self-contained: provider select + key + base url + model
+  const classifierProvider: ProviderId = isLocalUrl(form?.classifier_base_url ?? "") ? "local" : "cloud";
+  const embedderProvider: ProviderId = isLocalUrl(form?.embed_base_url ?? "") ? "local" : "cloud";
+  const answerProvider: ProviderId = isLocalUrl(form?.answer_base_url ?? "") ? "local" : "cloud";
 
-  const classifierIsLocal = () => {
-    const base = (form?.classifier_base_url || form?.ollama_base_url || "").trim();
-    return base === "" || base.startsWith("http://localhost") || base.startsWith("http://127.0.0.1");
-  };
-
-  function applyClassifierProvider(providerId: string) {
+  function setClassifierProvider(p: ProviderId) {
     if (!form) return;
-    if (providerId === "local") {
-      setForm({ ...form, classifier_base_url: "" });
-    } else {
-      setForm({ ...form, classifier_base_url: "https://api.openai.com/v1" });
-    }
+    setForm({ ...form, classifier_base_url: p === "local" ? "" : "https://api.openai.com/v1" });
+  }
+  function setEmbedderProvider(p: ProviderId) {
+    if (!form) return;
+    setForm({ ...form, embed_base_url: p === "local" ? "" : "https://api.openai.com/v1" });
+  }
+  function setAnswerProvider(p: ProviderId) {
+    if (!form) return;
+    setForm({
+      ...form,
+      answer_base_url: p === "local" ? "http://localhost:11434/v1" : "https://api.openai.com/v1",
+      ...(p === "local" ? { answer_model: "llama3.2:3b" } : { answer_model: "gpt-4o-mini" }),
+    });
   }
 
   async function save() {
@@ -63,8 +63,9 @@ export function SettingsTab() {
       const payload: Partial<AppSettings> = { ...form };
       // never send the masked placeholder back — it would overwrite the real
       // secret with the literal string "***set***"
-      if (!payload.answer_api_key || payload.answer_api_key === "***set***") delete payload.answer_api_key;
-      if (!payload.classifier_api_key || payload.classifier_api_key === "***set***") delete payload.classifier_api_key;
+      for (const k of ["answer_api_key", "classifier_api_key", "embed_api_key"] as const) {
+        if (!payload[k] || payload[k] === "***set***") delete payload[k];
+      }
       const updated = await api.updateSettings(payload);
       setSettings(updated);
       setForm({ ...updated });
@@ -76,7 +77,7 @@ export function SettingsTab() {
     }
   }
 
-  async function testConnection(providerId: "ollama" | "classifier" | "answer") {
+  async function testConnection(providerId: "ollama" | "classifier" | "embedder" | "answer") {
     setTestBusy(providerId);
     setTestResult(null);
     setError(null);
@@ -90,21 +91,33 @@ export function SettingsTab() {
     }
   }
 
-  function applyPreset(providerId: string) {
-    if (!form) return;
-    const next = { ...form };
-    if (providerId === "ollama") {
-      next.ollama_base_url = "http://localhost:11434";
-      next.classifier_model = "llama3.2:3b";
-      next.embed_model = "nomic-embed-text";
-      next.answer_base_url = "http://localhost:11434/v1";
-      next.answer_model = "llama3.2:3b";
-    } else if (providerId === "openai") {
-      next.answer_base_url = "https://api.openai.com/v1";
-      next.answer_model = "gpt-4o-mini";
-    }
-    setForm(next);
-  }
+  const set = (key: keyof AppSettings) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm({ ...form!, [key]: e.target.value });
+
+  const providerSelect = (
+    value: ProviderId,
+    onChange: (p: ProviderId) => void,
+    localLabel: string,
+    cloudLabel: string
+  ) => (
+    <select style={styles.input} value={value} onChange={(e) => onChange(e.target.value as ProviderId)}>
+      <option value="local">{localLabel}</option>
+      <option value="cloud">{cloudLabel}</option>
+    </select>
+  );
+
+  const keyInput = (key: "answer_api_key" | "classifier_api_key" | "embed_api_key", provider: ProviderId, label: string) => (
+    <>
+      <label style={styles.label}>{label}</label>
+      <input
+        style={styles.input}
+        type="password"
+        value={form![key]}
+        onChange={set(key)}
+        placeholder={keySet(key) ? "•••••••• (stored — type to replace)" : provider === "local" ? "not needed for local" : "sk-…"}
+      />
+    </>
+  );
 
   if (!form) {
     return (
@@ -119,52 +132,24 @@ export function SettingsTab() {
     );
   }
 
-  const set = (key: keyof AppSettings) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setForm({ ...form, [key]: e.target.value });
-
   return (
     <div>
       <h2>Model settings</h2>
       <div style={{ display: "grid", gap: 8, maxWidth: 560 }}>
-        <div>
-          <label style={styles.label}>Provider preset</label>
-          <select value={provider()} onChange={(e) => applyPreset(e.target.value)} style={styles.input}>
-            {PROVIDERS.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
         <div style={styles.section}>
-          <div style={styles.sectionTitle}>Classifier provider (extracts entities)</div>
-          <select
-            style={styles.input}
-            value={classifierIsLocal() ? "local" : "cloud"}
-            onChange={(e) => applyClassifierProvider(e.target.value)}
-          >
-            <option value="local">Local Ollama (free, private — default)</option>
-            <option value="cloud">Cloud OpenAI-compatible (better for complex docs)</option>
-          </select>
-          <label style={styles.label}>API key (required for cloud; leave empty for local)</label>
-          <input
-            style={styles.input}
-            type="password"
-            value={form.classifier_api_key}
-            onChange={set("classifier_api_key")}
-            placeholder={classifierKeySet ? "•••••••• (stored — type to replace)" : classifierIsLocal() ? "optional — Ollama needs no key" : "sk-…"}
-          />
+          <div style={styles.sectionTitle}>Classification (extracts entities)</div>
+          {providerSelect(classifierProvider, setClassifierProvider, "Local Ollama (free, private)", "Cloud OpenAI-compatible")}
+          {keyInput("classifier_api_key", classifierProvider, "API key")}
           <label style={styles.label}>Base URL</label>
           <input
             style={styles.input}
-            value={form.classifier_base_url || (classifierIsLocal() ? form.ollama_base_url : "")}
+            value={form.classifier_base_url || (classifierProvider === "local" ? form.ollama_base_url : "")}
             onChange={set("classifier_base_url")}
-            placeholder={classifierIsLocal() ? "http://localhost:11434 (uses Ollama)" : "https://api.openai.com/v1"}
+            placeholder={classifierProvider === "local" ? "http://localhost:11434 (uses Ollama)" : "https://api.openai.com/v1"}
           />
           <label style={styles.label}>Model</label>
           <input style={styles.input} value={form.classifier_model} onChange={set("classifier_model")} placeholder="llama3.2:3b / gpt-4o-mini" />
-          {!classifierIsLocal() && (
+          {classifierProvider === "cloud" && (
             <div style={{ fontSize: 12, color: "#fbbf24", marginTop: 6 }}>
               Cost note: classification calls the model once per document window (a 274-page doc ≈ 160 calls). Cloud classification is token-heavy — reclassify a big source with a cloud model only when needed.
             </div>
@@ -175,34 +160,41 @@ export function SettingsTab() {
         </div>
 
         <div style={styles.section}>
-          <div style={styles.sectionTitle}>Ollama (embeddings)</div>
+          <div style={styles.sectionTitle}>Embeddings (retrieval)</div>
+          {providerSelect(embedderProvider, setEmbedderProvider, "Local Ollama (free, private)", "Cloud OpenAI-compatible")}
+          {keyInput("embed_api_key", embedderProvider, "API key")}
           <label style={styles.label}>Base URL</label>
-          <input style={styles.input} value={form.ollama_base_url} onChange={set("ollama_base_url")} placeholder="http://localhost:11434" />
-          <label style={styles.label}>Embed model</label>
-          <input style={styles.input} value={form.embed_model} onChange={set("embed_model")} placeholder="nomic-embed-text" />
-          <button style={styles.button} disabled={testBusy === "ollama"} onClick={() => testConnection("ollama")}>
-            {testBusy === "ollama" ? "Testing…" : "Test Ollama"}
+          <input
+            style={styles.input}
+            value={form.embed_base_url || (embedderProvider === "local" ? form.ollama_base_url : "")}
+            onChange={set("embed_base_url")}
+            placeholder={embedderProvider === "local" ? "http://localhost:11434 (uses Ollama)" : "https://api.openai.com/v1"}
+          />
+          <label style={styles.label}>Model</label>
+          <input style={styles.input} value={form.embed_model} onChange={set("embed_model")} placeholder="nomic-embed-text / text-embedding-3-small" />
+          {embedderProvider === "cloud" && (
+            <div style={{ fontSize: 12, color: "#fbbf24", marginTop: 6 }}>
+              Note: changing the embedding model means re-embedding all chunks (reclassify sources or wait for the backfill job).
+            </div>
+          )}
+          <button style={styles.button} disabled={testBusy === "embedder"} onClick={() => testConnection("embedder")}>
+            {testBusy === "embedder" ? "Testing…" : "Test embeddings"}
           </button>
         </div>
 
         <div style={styles.section}>
-          <div style={styles.sectionTitle}>Answer model</div>
-          {!isOllama && (
-            <>
-              <label style={styles.label}>API key</label>
-              <input
-                style={styles.input}
-                type="password"
-                value={form.answer_api_key}
-                onChange={set("answer_api_key")}
-                placeholder={apiKeySet ? "•••••••• (stored — type to replace)" : "sk-…"}
-              />
-            </>
-          )}
+          <div style={styles.sectionTitle}>Answer model (Q&A)</div>
+          {providerSelect(answerProvider, setAnswerProvider, "Local Ollama (free, private)", "Cloud OpenAI-compatible")}
+          {keyInput("answer_api_key", answerProvider, "API key")}
           <label style={styles.label}>Base URL</label>
-          <input style={styles.input} value={form.answer_base_url} onChange={set("answer_base_url")} placeholder="https://api.openai.com/v1" />
+          <input
+            style={styles.input}
+            value={form.answer_base_url}
+            onChange={set("answer_base_url")}
+            placeholder="http://localhost:11434/v1 / https://api.openai.com/v1"
+          />
           <label style={styles.label}>Model</label>
-          <input style={styles.input} value={form.answer_model} onChange={set("answer_model")} placeholder="gpt-4o-mini" />
+          <input style={styles.input} value={form.answer_model} onChange={set("answer_model")} placeholder="llama3.2:3b / gpt-4o-mini" />
           <label style={styles.label}>Reasoning effort (for reasoning-capable models)</label>
           <select
             style={styles.input}

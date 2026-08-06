@@ -24,20 +24,23 @@ def classifier_is_local(settings: SettingsService) -> bool:
     return base_url.startswith(("http://localhost", "http://127.0.0.1"))
 
 
+def embedder_is_local(settings: SettingsService) -> bool:
+    base_url = settings.get("embed_base_url") or settings.get("ollama_base_url") or ""
+    return base_url.startswith(("http://localhost", "http://127.0.0.1"))
+
+
 def missing_ollama_models(settings: SettingsService) -> list[str]:
     """Configured models (classifier + embed) absent from Ollama's tags.
 
     Compares base names so "nomic-embed-text" matches the ":latest" tag.
-    Returns both models when Ollama is unreachable. When the classifier runs
-    on a cloud provider (B23), only the embed model is checked against Ollama.
+    Returns both models when Ollama is unreachable. When a provider runs on
+    cloud (B23), only the models that actually use Ollama are checked.
     """
-    embed_model = settings.get("embed_model") or "nomic-embed-text"
     base_url = settings.get("ollama_base_url") or "http://localhost:11434"
     classifier_model = (
-        settings.get("classifier_model") or "llama3.2:3b"
-        if classifier_is_local(settings)
-        else None
+        (settings.get("classifier_model") or "llama3.2:3b") if classifier_is_local(settings) else None
     )
+    embed_model = (settings.get("embed_model") or "nomic-embed-text") if embedder_is_local(settings) else None
     try:
         with httpx.Client(timeout=httpx.Timeout(3.0, connect=2.0)) as client:
             resp = client.get(f"{base_url.rstrip('/')}/api/tags")

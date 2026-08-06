@@ -4,12 +4,14 @@ export type AppSettings = {
   embed_model: string;
   classifier_timeout: string;
   classifier_base_url: string;
+  embed_base_url: string;
   answer_model: string;
   answer_base_url: string;
   answer_timeout: string;
   answer_reasoning_effort: string; // none | low | medium | high
   answer_api_key: string; // masked as "***set***" when stored
   classifier_api_key: string; // masked as "***set***" when stored
+  embed_api_key: string; // masked as "***set***" when stored
 };
 
 export type TestConnectionResult = {
@@ -54,6 +56,12 @@ export type ClassifierStatus = ClassifierStats & {
   model: string;
 };
 
+export type EmbedderStatus = {
+  provider: "local" | "cloud";
+  base_url: string;
+  model: string;
+};
+
 export type SystemStatus = {
   version: string;
   data_dir: string;
@@ -66,6 +74,7 @@ export type SystemStatus = {
     missing_models: string[];
   };
   classifier: ClassifierStatus;
+  embedder: EmbedderStatus;
   answer: { provider: string; model: string; base_url: string };
   tasks: Record<string, string>;
   pending_embeddings: number;

@@ -24,11 +24,22 @@ class Embedder:
     def __init__(self, settings: SettingsService):
         self.settings = settings
 
+    def _base_url(self) -> str:
+        """Embedding endpoint: explicit embed_base_url wins; otherwise the
+        shared Ollama base URL (local default)."""
+        return (
+            self.settings.get("embed_base_url")
+            or self.settings.get("ollama_base_url")
+            or "http://localhost:11434"
+        )
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
         model = self.settings.get("embed_model") or "nomic-embed-text"
-        base_url = self.settings.get("ollama_base_url") or "http://localhost:11434"
+        base_url = self._base_url()
+        api_key = self.settings.get("embed_api_key") or ""
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         timeout = self.settings.get_float("classifier_timeout", 60.0)
         vectors: list[list[float]] = []
         for start in range(0, len(texts), BATCH_SIZE):
@@ -37,6 +48,7 @@ class Embedder:
             async with RetryClient(timeout=timeout) as client:
                 resp = await client.post(
                     f"{base_url.rstrip('/')}/v1/embeddings",
+                    headers=headers,
                     json=payload,
                 )
                 resp.raise_for_status()

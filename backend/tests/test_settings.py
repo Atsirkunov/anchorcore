@@ -154,6 +154,77 @@ def test_classifier_secret_masked(client):
     client.put("/settings", json={"classifier_api_key": None})
 
 
+def test_embedder_cloud_uses_bearer_and_own_url():
+    """A cloud embedder must post to embed_base_url with Bearer key; local
+    default uses Ollama base with no auth (B23 follow-up)."""
+    import asyncio
+
+    from app.app_settings import SettingsService
+    from app.config import settings
+    from app.embedder import Embedder
+    from app.secrets import SecretStore
+
+    svc = SettingsService(settings, SecretStore(settings.data_dir / "secrets.enc"))
+    svc.set("embed_base_url", "https://api.openai.com/v1")
+    svc.set("embed_api_key", "sk-embed-test")
+    svc.set("embed_model", "text-embedding-3-small")
+
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+
+            class _Resp:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {"data": [{"index": 0, "embedding": [0.1, 0.2]}]}
+
+            return _Resp()
+
+    import app.embedder as mod
+
+    original = mod.RetryClient
+    mod.RetryClient = _FakeClient
+    try:
+        asyncio.run(Embedder(svc).embed(["hello"]))
+
+        assert captured["url"].startswith("https://api.openai.com/v1")
+        assert "Bearer sk-embed-test" in (captured["headers"] or {}).get("Authorization", "")
+        assert captured["json"]["model"] == "text-embedding-3-small"
+
+        # local default: no embed_base_url → ollama base, no auth header
+        svc.clear("embed_base_url")
+        svc.clear("embed_api_key")
+        captured.clear()
+        asyncio.run(Embedder(svc).embed(["hello"]))
+        assert captured["url"].startswith("http://localhost:1"), captured["url"]
+        assert not (captured["headers"] or {}).get("Authorization")
+    finally:
+        mod.RetryClient = original
+
+
+def test_embed_api_key_masked(client):
+    client.put("/settings", json={"embed_api_key": "sk-embed-secret"})
+    body = client.get("/settings").json()
+    assert body["embed_api_key"] == "***set***"
+    assert "sk-embed-secret" not in str(body)
+    client.put("/settings", json={"embed_api_key": None})
+
+
 def test_reasoning_effort_setting_persists(client):
     client.put("/settings", json={"answer_reasoning_effort": "high"})
     body = client.get("/settings").json()

@@ -356,6 +356,8 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** a user points classification at a cloud model from the Settings tab; a complex document classifies with higher confidence than the local 3B, no restart. — met (runtime-mutable via SettingsService; reclassify a source to apply).
 
+**B23 follow-up (done):** embeddings got the same treatment — `embed_base_url` + `embed_api_key` (keychain), Settings "Embeddings" section with provider dropdown + always-visible API key + model, `Test embeddings` button, System tab Embeddings card. Settings tab restructured so every model section (classification / embeddings / answer) is self-contained: provider select (Local Ollama / Cloud), API key, base URL, model — no more conditional reveals. Changing the embed model requires re-embedding (reclassify or backfill).
+
 ### B14. Agent connectivity via MCP (P2 — see [mcp.md](./mcp.md))
 **Problem:** users want their own harnesses (Claude Code, Codex, opencode) to use AnchorCore's memory, but today only the browser UI can reach it.
 

@@ -13,7 +13,13 @@ from ..app_settings import SettingsService
 from ..config import settings
 from ..db import get_db
 from ..models import Chunk, Source, SystemEvent
-from ..status import answer_provider, classifier_is_local, missing_ollama_models, ollama_reachable
+from ..status import (
+    answer_provider,
+    classifier_is_local,
+    embedder_is_local,
+    missing_ollama_models,
+    ollama_reachable,
+)
 from ..throughput import throughput
 
 logger = logging.getLogger(__name__)
@@ -58,6 +64,15 @@ def make_router(scheduler, settings_svc: SettingsService) -> APIRouter:
                 "model": settings_svc.get("classifier_model") or "",
                 **throughput.snapshot(),
                 "concurrency": settings.classifier_concurrency,
+            },
+            "embedder": {
+                "provider": "local" if embedder_is_local(settings_svc) else "cloud",
+                "base_url": (
+                    settings_svc.get("embed_base_url")
+                    or settings_svc.get("ollama_base_url")
+                    or ""
+                ),
+                "model": settings_svc.get("embed_model") or "",
             },
             "answer": {
                 "provider": answer_provider(settings_svc),
