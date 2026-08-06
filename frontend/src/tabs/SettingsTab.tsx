@@ -61,7 +61,10 @@ export function SettingsTab() {
     setError(null);
     try {
       const payload: Partial<AppSettings> = { ...form };
-      if (!payload.answer_api_key) delete payload.answer_api_key;
+      // never send the masked placeholder back — it would overwrite the real
+      // secret with the literal string "***set***"
+      if (!payload.answer_api_key || payload.answer_api_key === "***set***") delete payload.answer_api_key;
+      if (!payload.classifier_api_key || payload.classifier_api_key === "***set***") delete payload.classifier_api_key;
       const updated = await api.updateSettings(payload);
       setSettings(updated);
       setForm({ ...updated });
@@ -144,18 +147,14 @@ export function SettingsTab() {
             <option value="local">Local Ollama (free, private — default)</option>
             <option value="cloud">Cloud OpenAI-compatible (better for complex docs)</option>
           </select>
-          {!classifierIsLocal() && (
-            <>
-              <label style={styles.label}>API key</label>
-              <input
-                style={styles.input}
-                type="password"
-                value={form.classifier_api_key}
-                onChange={set("classifier_api_key")}
-                placeholder={classifierKeySet ? "•••••••• (stored — type to replace)" : "sk-…"}
-              />
-            </>
-          )}
+          <label style={styles.label}>API key (required for cloud; leave empty for local)</label>
+          <input
+            style={styles.input}
+            type="password"
+            value={form.classifier_api_key}
+            onChange={set("classifier_api_key")}
+            placeholder={classifierKeySet ? "•••••••• (stored — type to replace)" : classifierIsLocal() ? "optional — Ollama needs no key" : "sk-…"}
+          />
           <label style={styles.label}>Base URL</label>
           <input
             style={styles.input}
