@@ -77,6 +77,15 @@ export function SourcesTab() {
     }
   }
 
+  async function cancelJob(job: Job) {
+    setError(null);
+    try {
+      await api.cancelJob(job.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   function runningJobFor(sourceId: number): Job | undefined {
     return Object.values(runningJobs).find((j) => j.source_id === sourceId);
   }
@@ -149,6 +158,11 @@ export function SourcesTab() {
                 <button onClick={() => startJob(s.id, "reclassify")} disabled={!!job} style={styles.button}>
                   {job?.kind === "reclassify" ? "Reclassifying…" : "Reclassify"}
                 </button>
+                {job && (
+                  <button onClick={() => cancelJob(job)} style={{ ...styles.button, background: "#3a1d1d", color: "#fca5a5" }} title="Stop this job">
+                    Stop
+                  </button>
+                )}
                 <button onClick={() => api.deleteSource(s.id).then(refresh)} disabled={!!job} style={{ ...styles.button, background: "#3a1d1d" }}>
                   Delete
                 </button>
