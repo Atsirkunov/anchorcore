@@ -81,6 +81,79 @@ def test_system_status_reflects_runtime_settings(client):
     assert status["answer"]["model"] == "runtime-status-model"
 
 
+def test_classifier_cloud_uses_bearer_and_own_url():
+    """A cloud classifier must post to classifier_base_url with Bearer key
+    (B23); local (default) uses Ollama base with no auth."""
+    import asyncio
+
+    from app.classifier import Classifier
+    from app.app_settings import SettingsService
+    from app.config import settings
+    from app.secrets import SecretStore
+
+    svc = SettingsService(settings, SecretStore(settings.data_dir / "secrets.enc"))
+    svc.set("classifier_base_url", "https://api.openai.com/v1")
+    svc.set("classifier_api_key", "sk-classifier-test")
+    svc.set("classifier_model", "gpt-4o-mini")
+
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+
+            class _Resp:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {"choices": [{"message": {"content": '{"items": []}'}}]}
+
+            return _Resp()
+
+    import app.classifier as mod
+
+    original = mod.RetryClient
+    mod.RetryClient = _FakeClient
+    try:
+        asyncio.run(Classifier(svc)._classify_llm("some text", "ref"))
+
+        assert captured["url"].startswith("https://api.openai.com/v1")
+        assert "Bearer sk-classifier-test" in (captured["headers"] or {}).get("Authorization", "")
+        assert captured["json"]["model"] == "gpt-4o-mini"
+
+        # local default: no classifier_base_url → ollama base, no auth header
+        svc.clear("classifier_base_url")
+        svc.clear("classifier_api_key")
+        captured.clear()
+        asyncio.run(Classifier(svc)._classify_llm("some text", "ref"))
+        assert captured["url"].startswith("http://localhost:1"), captured["url"]
+        assert not (captured["headers"] or {}).get("Authorization")
+    finally:
+        mod.RetryClient = original
+
+
+def test_classifier_secret_masked(client):
+    client.put("/settings", json={"classifier_api_key": "sk-classifier-secret"})
+    body = client.get("/settings").json()
+    assert body["classifier_api_key"] == "***set***"
+    assert "sk-classifier-secret" not in str(body)
+
+    # clean up so later tests stay deterministic
+    client.put("/settings", json={"classifier_api_key": None})
+
+
 def test_reasoning_effort_setting_persists(client):
     client.put("/settings", json={"answer_reasoning_effort": "high"})
     body = client.get("/settings").json()

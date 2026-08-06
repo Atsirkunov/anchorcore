@@ -53,11 +53,51 @@ def make_router(settings_svc: SettingsService) -> APIRouter:
         provider = payload.get("provider", "ollama")
         if provider == "ollama":
             return await _test_ollama(settings_svc)
+        if provider == "classifier":
+            return await _test_classifier(settings_svc)
         if provider == "answer":
             return await _test_answer(settings_svc)
         raise HTTPException(status_code=422, detail=f"unknown provider: {provider}")
 
     return router
+
+
+async def _test_classifier(settings_svc: SettingsService) -> dict:
+    """Verify the classifier provider (local Ollama or cloud OpenAI-compatible)."""
+    from ..classifier import Classifier
+
+    classifier = Classifier(settings_svc)
+    base_url = classifier._base_url()
+    is_local = base_url.startswith(("http://localhost", "http://127.0.0.1"))
+    api_key = settings_svc.get("classifier_api_key") or ""
+    if not is_local and not api_key:
+        return {
+            "ok": False,
+            "provider": "classifier",
+            "message": "API key required for a cloud classifier provider",
+        }
+    try:
+        import httpx
+
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+            resp = await client.post(
+                f"{base_url.rstrip('/')}/v1/chat/completions",
+                headers=headers,
+                json={
+                    "model": settings_svc.get("classifier_model") or "llama3.2:3b",
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 1,
+                },
+            )
+            resp.raise_for_status()
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "provider": "classifier",
+            "message": f"request failed: {type(exc).__name__}",
+        }
+    return {"ok": True, "provider": "classifier", "message": "classifier provider responds"}
 
 
 async def _test_ollama(settings_svc: SettingsService) -> dict:
