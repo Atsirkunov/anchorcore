@@ -13,7 +13,8 @@ Connect your knowledge to any AI model. An AI memory layer / knowledge operating
 ```
 backend/    FastAPI service (connectors, ingestion, classification, RAG Q&A)
 frontend/   React SPA (Vite) — Ask, Sources, Entities, Review
-sample/     Example docs for local testing
+sample/     Mini-company demo corpus — connect it as a folder source
+            (guide: docs/sample-dataset.md)
 docs/       Product plan and architecture
 ```
 

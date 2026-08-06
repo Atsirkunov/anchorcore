@@ -13,6 +13,6 @@ and 98% of test coverage is green as of today.
 
 ## Decision log
 
-Decision: Instant Payments MVP excludes incoming payments.
-Reason: Reconciliation complexity.
-Source: PRD v3.
+The Instant Payments MVP will NOT include incoming payments.
+Reason: reconciliation complexity (see PRD v3, section 4.2).
+
