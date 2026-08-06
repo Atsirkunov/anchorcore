@@ -2,8 +2,10 @@
 #   .\build.ps1
 # Produces dist/AnchorCore.exe — a single file for non-developer testers.
 # Requires: Python venv deps installed (backend/.venv), Node deps installed.
-
-$ErrorActionPreference = "Stop"
+#
+# NOTE: no $ErrorActionPreference = "Stop" here — native tools (npm,
+# pyinstaller) write logs to stderr, which PowerShell would treat as
+# terminating errors. Invoke-NativeStep checks exit codes instead.
 $Root = $PSScriptRoot
 
 function Invoke-NativeStep {
@@ -35,11 +37,13 @@ if (-not (Test-Path (Join-Path $Root "backend\.venv\Scripts\pyinstaller.exe"))) 
     Invoke-NativeStep { & $VenvPy -m pip install pyinstaller } "pyinstaller install"
 }
 
-# 3. PyInstaller
+# 3. PyInstaller (use the exe directly — `python -m PyInstaller` writes
+# progress to stderr and trips PowerShell's native-command error handling)
 Write-Host "==> Building AnchorCore.exe (this takes a minute)..."
+$PyInstaller = Join-Path $Root "backend\.venv\Scripts\pyinstaller.exe"
 Push-Location $Root
 try {
-    Invoke-NativeStep { & $VenvPy -m PyInstaller --noconfirm packaging.spec } "pyinstaller build"
+    Invoke-NativeStep { & $PyInstaller --noconfirm packaging.spec } "pyinstaller build"
 } finally {
     Pop-Location
 }
