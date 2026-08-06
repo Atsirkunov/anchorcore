@@ -170,6 +170,46 @@ def test_cancel_running_job(client, tmp_path):
     assert client.post("/sources/jobs/999999/cancel").status_code == 404
 
 
+def test_orphaned_running_job_is_cancelled(client):
+    """A job left 'running' by a dead process (no live task) is cancelled on
+    JobManager init and via the cancel endpoint — it must not 409 forever."""
+    from app.db import SessionLocal
+    from app.jobs import JobManager
+    from app.models import Job
+    from app.pipeline import IngestionPipeline
+    from app.app_settings import SettingsService
+    from app.classifier import Classifier
+    from app.config import settings
+    from app.embedder import Embedder
+    from app.secrets import SecretStore
+
+    # create a fake running job row with no task behind it
+    with SessionLocal() as db:
+        fake = Job(source_id=1, kind="reclassify", status="running")
+        db.add(fake)
+        db.commit()
+        job_id = fake.id
+
+    svc = SettingsService(settings, SecretStore(settings.data_dir / "secrets.enc"))
+    pipeline = IngestionPipeline(Classifier(svc), Embedder(svc), SecretStore(settings.data_dir / "secrets.enc"))
+    jobs = JobManager(pipeline)  # init marks orphans cancelled
+    with SessionLocal() as db:
+        job = db.get(Job, job_id)
+        assert job.status == "cancelled", "orphaned job must be marked cancelled on startup"
+
+    # and a fresh orphan (created after init) is cancelled via the endpoint
+    with SessionLocal() as db:
+        fake2 = Job(source_id=1, kind="reclassify", status="running")
+        db.add(fake2)
+        db.commit()
+        job2_id = fake2.id
+    resp = client.post(f"/sources/jobs/{job2_id}/cancel")
+    assert resp.status_code == 200, resp.text
+    with SessionLocal() as db:
+        job2 = db.get(Job, job2_id)
+        assert job2.status == "cancelled"
+
+
 def test_health_reports_components(client):
     health = client.get("/health").json()
     assert health["status"] == "ok"

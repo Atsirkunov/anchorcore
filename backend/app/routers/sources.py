@@ -81,7 +81,7 @@ def make_router(
             raise HTTPException(status_code=404, detail="Job not found")
         if job.status != "running":
             raise HTTPException(status_code=409, detail=f"Job is {job.status}, not running")
-        cancelled = jobs.cancel(job_id)
+        cancelled = jobs.cancel(job_id, db=db)
         if not cancelled:
             raise HTTPException(status_code=409, detail="Job is not cancellable")
         return {"cancelled": True, "job_id": job_id}

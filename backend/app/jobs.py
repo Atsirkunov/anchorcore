@@ -20,6 +20,23 @@ class JobManager:
     def __init__(self, pipeline):
         self.pipeline = pipeline
         self._tasks: dict[int, asyncio.Task] = {}
+        self._mark_orphans()
+
+    def _mark_orphans(self) -> None:
+        """Jobs left 'running' by a previous process (crash/restart) have no
+        task anymore — mark them cancelled so they don't stick forever."""
+        try:
+            with SessionLocal() as db:
+                stale = db.execute(select(Job).where(Job.status == "running")).scalars().all()
+                for job in stale:
+                    job.status = "cancelled"
+                    job.finished_at = datetime.now(timezone.utc)
+                if stale:
+                    db.commit()
+                    logger.warning("marked %d orphaned job(s) as cancelled", len(stale))
+        except Exception as exc:  # noqa: BLE001
+            # runs at import time, before migrations create the table
+            logger.debug("orphan sweep skipped (table not ready yet): %s", exc)
 
     def start(self, source_id: int, kind: str) -> int:
         """Create a job row and start it in the background. Returns the job id."""
@@ -50,12 +67,22 @@ class JobManager:
             ).scalars().all()
         )
 
-    def cancel(self, job_id: int) -> bool:
+    def cancel(self, job_id: int, db: Session | None = None) -> bool:
         """Request cancellation of a running job. The pipeline awaits inside
         the task, so cancelling the asyncio task stops LLM calls mid-flight;
-        uncommitted DB writes roll back (pipeline commits once at the end)."""
+        uncommitted DB writes roll back (pipeline commits once at the end).
+        Orphaned jobs (running in DB but no live task, e.g. after restart)
+        are marked cancelled directly."""
         task = self._tasks.get(job_id)
         if task is None or task.done():
+            with db or SessionLocal() as session:
+                job = session.get(Job, job_id)
+                if job is not None and job.status == "running":
+                    job.status = "cancelled"
+                    job.finished_at = datetime.now(timezone.utc)
+                    session.commit()
+                    logger.warning("job %d cancelled as orphan (no live task)", job_id)
+                    return True
             return False
         task.cancel()
         return True
