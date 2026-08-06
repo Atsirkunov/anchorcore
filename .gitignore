@@ -11,6 +11,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# Packaging (PyInstaller intermediates; the exe output lives in dist/)
+build/
+
 # Runtime
 backend/data/
 *.log
