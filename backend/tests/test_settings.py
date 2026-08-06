@@ -127,7 +127,7 @@ def test_classifier_cloud_uses_bearer_and_own_url():
     original = mod.RetryClient
     mod.RetryClient = _FakeClient
     try:
-        asyncio.run(Classifier(svc)._classify_llm("some text", "ref"))
+        asyncio.run(Classifier(svc)._classify_llm("some text", "ref", "general"))
 
         assert captured["url"].startswith("https://api.openai.com/v1")
         assert "Bearer sk-classifier-test" in (captured["headers"] or {}).get("Authorization", "")
@@ -137,7 +137,7 @@ def test_classifier_cloud_uses_bearer_and_own_url():
         svc.clear("classifier_base_url")
         svc.clear("classifier_api_key")
         captured.clear()
-        asyncio.run(Classifier(svc)._classify_llm("some text", "ref"))
+        asyncio.run(Classifier(svc)._classify_llm("some text", "ref", "general"))
         assert captured["url"].startswith("http://localhost:1"), captured["url"]
         assert not (captured["headers"] or {}).get("Authorization")
     finally:

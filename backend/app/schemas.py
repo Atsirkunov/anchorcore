@@ -36,6 +36,7 @@ class EntityOut(BaseModel):
     source_ref: str
     status: str
     owner: str
+    window_text: str = ""
     created_at: datetime
     updated_at: datetime
 
