@@ -179,16 +179,16 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** a tester connects their own model key from the UI in under 60s, no config file, no restart. — met.
 
-### B5. Full-document chunking (P1 — discovered)
+### B5. Full-document chunking (P1 — discovered) — DONE (commit: 4e9cdcc)
 **Problem:** today only *entity summaries* are chunked and embedded, and the classifier input is truncated at ~12k chars. A big PDF (like the current test file) loses most of its content — most of the document is never retrievable.
 
-**Scope:**
-- Chunk the full document text (section-aware, ~800 tokens with overlap — config already exists)
+**Done:**
+- Chunk the full document text (section-aware, ~800 tokens with overlap — config exists)
 - Embed all chunks, tag each with source ref + entity links
-- Classifier input: process long documents in sections instead of one truncated call
+- Classifier input: process long documents in windows instead of one truncated call (later deepened by B11 parallel + B26 16k windows)
 - QA retrieval uses full-document chunks (citations point to sections)
 
-**DoD:** a 300-page PDF is fully indexed; questions about content in page 250 return cited answers.
+**DoD:** a 300-page PDF is fully indexed; questions about content in page 250 return cited answers. — met (live rulebook probes).
 
 ### B6. Embedding backfill job — DONE (commit: add B1 troubleshooting pass)
 **Problem:** when embedding fails (Ollama down), chunks are stored unembedded — and nothing ever retries them unless the file changes. The memory silently stays keyword-only.
@@ -367,6 +367,30 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 - **Cheaper cloud classification**: default window 8k → 16k chars (~halves API calls); per-window content hashes (`item.window_hashes`) — incremental syncs and reclassify skip unchanged windows (force reclassify = full rebuild); no more hard 12k truncation.
 
 **DoD:** reclassifying the rulebook labels it standards and produces only note entities; a reviewer sees the source excerpt behind every low-confidence entity; a second reclassify of unchanged content makes ~0 classifier calls.
+
+### B27. Review page: real context, not just the window (P2 — tester feedback)
+**Problem:** even with `window_text`, the Review page still shows a raw classifier-window excerpt — no surrounding document context, no neighbouring sections, no file reference. Reviewing an entity still feels like judging a fragment in a vacuum ("small chunks, no value").
+
+**Scope:**
+- Review card shows: entity summary + kind + confidence + **source file name/link** + the section it came from (`source_ref`)
+- **Context expansion in review**: render the entity's window *plus* the neighbouring sections from the same item (reuse `_expand_context`-style logic / `chunk_document` sections), so the reviewer sees the whole surrounding passage
+- **Highlight the entity's summary text** within the source excerpt when it appears verbatim; if not verbatim, show the window with the summary quoted above it
+- Quick-actions stay on the card (Looks right / Dispute) but with a "full document" affordance — e.g. expandable full source text (collapsed by default, 16k windows are heavy)
+- Same treatment for the Entities tab card
+
+**DoD:** reviewing a low-confidence entity shows the file, section, surrounding paragraphs, and the exact text the classifier summarized — a reviewer can judge correctness without opening the source file.
+
+### B28. Google Drive connector (P2 — big real use case)
+**Problem:** most teams keep shared docs in Google Drive (folders, shared drives). AnchorCore's folder connector only watches local disks — Drive content requires manual download. Candidate simple path: "access the folder → download contents into a local sync folder".
+
+**Scope:**
+- **Simple path (recommended first): Drive → local sync folder.** Connector authenticates (OAuth or app password), maps a Drive folder/shared drive to a local mirror dir (e.g. `data/drive/<name>/`), downloads new/changed files on a poll, then the existing folder connector ingests the mirror. Incremental via Drive modifiedTime; deletions → stale
+- Native alternative (later, if needed): Drive API list+download directly into the pipeline without a local mirror
+- Auth: OAuth flow (needs Google Cloud project + client id) or service-account-less per-user token; store token in SecretStore
+- Supported types: Drive-native docs need export to .txt/.pdf (Google Docs → txt/pdf, Sheets → csv, Slides → pdf)
+- Troubleshooting/README: how to create a Google Cloud project + OAuth consent for personal use
+
+**DoD:** a user authorizes a Drive folder, AnchorCore syncs its docs (including Google-native formats), and Q&A answers cite Drive sources with working file links.
 
 ### B14. Agent connectivity via MCP (P2 — see [mcp.md](./mcp.md))
 **Problem:** users want their own harnesses (Claude Code, Codex, opencode) to use AnchorCore's memory, but today only the browser UI can reach it.
