@@ -13,20 +13,23 @@ One local process = the entire product. No Docker, no sidecar services, no setup
 
 ```mermaid
 flowchart TB
-    subgraph laptop["User's Laptop (macOS)"]
+    subgraph laptop["User's Laptop (Windows/macOS)"]
         direction TB
         browser["Browser UI<br/>(React SPA, localhost)"]
         api["AnchorCore App<br/>FastAPI (single process)"]
         api --- connectors["Connectors<br/>Folder watch · Jira poll"]
-        api --- pipeline["Ingestion Pipeline<br/>Extract → classify → entities"]
-        api --- rag["Answer Engine<br/>RAG + section citations"]
+        api --- pipeline["Ingestion Pipeline<br/>type detect → classify → entities"]
+        api --- rag["Answer Engine<br/>RRF hybrid RAG + citations"]
         api --- review["Review API<br/>low-confidence · duplicates"]
-        db[("Entity Graph<br/>SQLite + sqlite-vec")]
-        secrets["Secrets<br/>macOS Keychain"]
+        api --- jobs["Job Manager<br/>background jobs · cancel"]
+        db[("Entity Graph<br/>SQLite + sqlite-vec + FTS5")]
+        settings[("app_settings<br/>runtime overrides")]
+        secrets["Secrets<br/>OS Keychain"]
         api --- db
+        api --- settings
         api --- secrets
         browser --- api
-        ollama["Ollama<br/>3B classifier<br/>nomic-embed-text"]
+        ollama["Ollama<br/>classifier + embed models"]
         api --- ollama
     end
 
@@ -36,6 +39,7 @@ flowchart TB
 
     connectors --- folder
     connectors --- jira
+    pipeline --- cloud
     rag --- cloud
 ```
 
@@ -46,11 +50,13 @@ flowchart LR
     watcher["Folder watcher<br/>fs events + hourly scan"] --> extract["Extract text"]
     jira["Jira poll<br/>15 min, incremental"] --> extract
     extract --> hash["Hash dedup"]
-    hash --> classify["Classify<br/>(Ollama 3B)"]
-    classify --> entities["Entities + relationships<br/>(SQLite)"]
-    classify --> embed["Embed chunks<br/>(nomic-embed-text)"]
+    hash --> type["Document-type pre-pass<br/>(1 cheap call, cached)"]
+    type --> classify["Classify windows<br/>(local Ollama or cloud, parallel)"]
+    classify --> entities["Entities + window context<br/>(SQLite)"]
+    classify --> embed["Embed chunks<br/>(local or cloud)"]
     embed --> vec["sqlite-vec index"]
-    entities --> review["Review UI<br/>confirm / merge / reclassify"]
+    classify --> fts["FTS5 keyword index"]
+    entities --> review["Review UI<br/>context panel · confirm / merge / reclassify"]
 ```
 
 **Deletion policy:** sources removed → marked `stale`; knowledge is never auto-deleted.
@@ -62,15 +68,18 @@ sequenceDiagram
     participant U as User (browser)
     participant A as AnchorCore App
     participant V as sqlite-vec
+    participant F as FTS5 (chunks_fts)
     participant O as Ollama
     participant M as BYO LLM API
 
-    U->>A: "What was decided about X, and why?"
-    A->>O: embed question
+    U->>A: "What was decided about X, and why?" (+ chat history)
+    A->>A: rewrite follow-up into standalone query (if history)
+    A->>O: embed query
     O-->>A: query vector
     A->>V: top-k similarity
-    V-->>A: sections (tagged w/ source refs)
-    A->>M: answer prompt w/ retrieved sections
+    A->>F: FTS5 keyword (bm25)
+    A->>A: RRF fusion + age decay + diversity cap + context expansion
+    A->>M: answer prompt w/ sections (+ conversation)
     M-->>A: answer + citations
     A-->>U: answer + clickable source chips
 ```
@@ -86,13 +95,20 @@ we adopted (B12.1):
    lists. We fuse FTS5 (bm25) + cosine via **reciprocal rank fusion (RRF)**:
    `score = Σ weight / (60 + rank)`. Consensus across scorers beats a single
    strong vote; no score normalization needed.
-2. **Per-source diversity cap** — a document that matches broadly must not
-   monopolize the top-k. After fusion, cap results per source (default 3).
+2. **Per-file diversity cap** — a document that matches broadly must not
+   monopolize the top-k. After fusion, cap results per file (default 3);
+   relaxed for single-file corpora so a big document's sections can surface.
 3. **Age decay** — "Slack answers expire"; when relevance is otherwise equal,
    the newer hit wins. A recency multiplier is applied in fusion.
 4. **Context expansion** — once winners are picked, pull the neighboring
    sections (heading, preconditions, caveats) that chunking split apart, so
    the LLM sees a complete section instead of a lonely paragraph.
+5. **Near-duplicate chunk dedupe** — TOC entries duplicating body sections
+   keep only the best-scoring copy.
+
+Follow-up questions reuse retrieval with a **query-rewrite pass**: history is
+sent with the question, a cheap LLM call rewrites it standalone, and the
+conversation is included in generation.
 
 Further learnings parked in the backlog: scoped search via *projects* (bundles
 of sources with a per-user default — "search everything everywhere" stops
@@ -106,14 +122,29 @@ Everything is an entity. Contradictions stay external to the baseline object.
 
 ```mermaid
 erDiagram
+    INGESTED_ITEMS {
+        int id PK
+        int source_id FK
+        string external_id
+        string title
+        text text "raw content"
+        string content_hash
+        string doc_type "standards|runbook|meeting|decision_log|prd|general"
+        text window_hashes "JSON {index: sha256} — cheap reclassify"
+        bool stale
+        datetime created_at
+    }
     ENTITIES {
         int id PK
-        string type "decision|document|action|note|person|system|feature|customer"
+        int item_id FK
+        string kind "decision|document|action|note"
         string summary
         string reasoning
         float confidence
         string author
         string source_ref "source + section"
+        text window_text "classifier input window (review context)"
+        int window_index
         string status "unverified|verified|disputed|stale"
         string owner
         datetime created_at
@@ -131,15 +162,37 @@ erDiagram
     SOURCES {
         int id PK
         string connector "folder|jira|linear|upload"
-        string config_ref
+        string config
         string last_sync_cursor
+        datetime last_synced_at
+        string last_error
+        int error_count
+        bool enabled
     }
     CHUNKS {
         int id PK
-        int entity_id FK
+        int item_id FK "full-document chunk"
+        int entity_id FK "entity-summary chunk"
         string source_ref "section"
         string content
-        vector embedding
+        bytes embedding "float32 blob"
+        datetime created_at
+    }
+    CHUNKS_FTS {
+        int rowid "= chunks.id"
+        string content "FTS5, kept in sync by triggers"
+    }
+    JOBS {
+        int id PK
+        int source_id FK
+        string kind "sync|reclassify"
+        string status "running|done|failed|cancelled"
+        int total
+        int processed
+        text result
+        string error
+        datetime started_at
+        datetime finished_at
     }
     MERGE_ACTIONS {
         int id PK
@@ -149,9 +202,28 @@ erDiagram
         string user
         datetime created_at
     }
+    APP_SETTINGS {
+        string key PK
+        text value "runtime overrides of .env defaults"
+        datetime updated_at
+    }
+    SYSTEM_EVENTS {
+        int id PK
+        string component
+        string level "error|warning|info"
+        int source_id FK
+        string message
+        text detail "redacted"
+        datetime created_at
+    }
+    SOURCES ||--o{ INGESTED_ITEMS : "contains"
+    INGESTED_ITEMS ||--o{ ENTITIES : "classified into"
+    INGESTED_ITEMS ||--o{ CHUNKS : "chunked"
     ENTITIES ||--o{ RELATIONSHIPS : "participates"
-    ENTITIES ||--o{ CHUNKS : "chunked"
+    ENTITIES ||--o{ CHUNKS : "summarized into"
     ENTITIES ||--o{ MERGE_ACTIONS : "proposed"
+    CHUNKS ||--o| CHUNKS_FTS : "indexed"
+    SOURCES ||--o{ JOBS : "processed by"
 
     CONTRADICTIONS {
         int id PK
@@ -167,21 +239,25 @@ erDiagram
 
 | Container | Responsibility | Tech |
 |---|---|---|
-| Web UI | Connect sources, review queue, duplicate proposals, Q&A chat | React SPA (Vite, TS) |
+| Web UI | Connect sources, review queue, duplicate proposals, Q&A chat, model settings | React SPA (Vite, TS) |
 | API | All endpoints, orchestration, config | FastAPI |
-| Entity Store | Entities, relationships, provenance, sync state | SQLite + SQLAlchemy |
+| Entity Store | Entities, provenance, window context, sync state | SQLite + SQLAlchemy |
 | Vector Store | Chunk embeddings + similarity search | sqlite-vec (same SQLite file) |
-| Classifier | Entity kind extraction | Ollama 3B + rule fallback |
-| Embedder | Chunk embeddings | Ollama `nomic-embed-text` |
-| Answer Engine | RAG composition + citations | BYO cloud model (OpenAI-compatible) |
-| Secret Store | Credentials (Jira token, model keys) | macOS Keychain via `keyring` |
+| Keyword Store | FTS5 bm25 for hybrid retrieval | SQLite FTS5 (`chunks_fts`, trigger-synced) |
+| Classifier | Doc-type detection + entity extraction | Ollama or cloud OpenAI-compatible + rule fallback |
+| Embedder | Chunk embeddings | Ollama or cloud OpenAI-compatible |
+| Answer Engine | RRF hybrid RAG + citations + follow-up rewrite | BYO cloud model or Ollama |
+| Job Manager | Background sync/reclassify + cancel | asyncio tasks + `jobs` table |
+| Settings Service | Runtime-mutable model config | `app_settings` table + SecretStore |
+| Secret Store | Credentials (Jira token, model keys) | OS Keychain via `keyring` + encrypted-file fallback |
 
 ## 7. Security
 
-- Credentials: **macOS Keychain** (`keyring`), encrypted-file fallback; never in DB/config/logs.
+- Credentials: **OS Keychain** (`keyring`), encrypted-file fallback; never in DB/config/logs.
 - Local-only server binds 127.0.0.1.
-- Secret values masked in logs and error responses.
+- Secret values masked in logs, error responses, and API payloads (`***set***`).
 - `SecretStore` interface maps to cloud secret managers in hosted v2.
+- Tests never touch the real keychain (`ANCHOR_SECRETS_NO_KEYRING`).
 
 ## 8. Key Interfaces (Swap Points)
 
@@ -190,19 +266,20 @@ erDiagram
 | `VectorStore` | sqlite-vec | Qdrant / pgvector (hosted) |
 | `ModelClient` | Ollama + BYO OpenAI-compatible | Any provider |
 | `SecretStore` | Keychain | Cloud secret manager |
-| `Connector` | Folder, Jira | Linear, Slack, Notion, Drive |
+| `Connector` | Folder, Jira | Linear, Slack, Notion, Google Drive (B28) |
 | `AgentAdapter` | MCP server (stdio + HTTP) — see [mcp.md](./mcp.md) | MCP registry / deeper tool set |
+| `SettingsService` | DB-backed overrides + keychain secrets | Cloud config service |
 | `DB` | SQLite | PostgreSQL (hosted migration) |
 
 ## 9. Evolution Path
 
 ```
-v1: local-first, folder + Jira, classification + review + cited Q&A
-  -> v1.5: Linear connector, packaging (.dmg)
+v1: local-first, folder + Jira, document-aware classification + review + cited Q&A
+  -> v1.5: Linear/Drive connectors, Windows exe + macOS app, MCP access
   -> v2: team sharing, hosted option, Slack, contradictions, bundled models
   -> v3: agentic levels (draft, prepare-action-with-approval), enterprise compliance
 ```
 
 ---
 
-*Companion docs: [product-plan.md](./product-plan.md), [packaging.md](./packaging.md)*
+*Companion docs: [product-plan.md](./product-plan.md), [packaging.md](./packaging.md), [releasing.md](./releasing.md), [mcp.md](./mcp.md)*

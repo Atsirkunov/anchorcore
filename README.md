@@ -4,115 +4,123 @@ Connect your knowledge to any AI model. An AI memory layer / knowledge operating
 
 ## Docs
 
-- [Product Plan](./docs/product-plan.md) — what we're building, for whom, and why
+- [Product Plan](./docs/product-plan.md) — what we're building, for whom, and why (+ full backlog)
 - [Architecture](./docs/architecture.md) — system view + architecture diagram
-- [Packaging](./docs/packaging.md) — macOS distribution plan
+- [Packaging](./docs/packaging.md) — Windows exe (done), macOS plan
+- [Releasing](./docs/releasing.md) — release checklist: tag → CI builds both executables
+- [Agent connectivity (MCP)](./docs/mcp.md) — how harnesses (Claude Code, Codex, opencode) will use the memory
+- [Sample dataset guide](./docs/sample-dataset.md) — what the demo corpus exercises
 
 ## Project layout
 
 ```
 backend/    FastAPI service (connectors, ingestion, classification, RAG Q&A)
-frontend/   React SPA (Vite) — Ask, Sources, Entities, Review
+frontend/   React SPA (Vite) — Ask, Sources, Entities, Review, Settings, System
 sample/     Mini-company demo corpus — connect it as a folder source
             (guide: docs/sample-dataset.md)
-docs/       Product plan and architecture
+docs/       Product plan, architecture, packaging, releasing
 ```
 
-## Run locally
+## Run it
 
-**Prerequisites:** Python 3.12+, Node 20+, and [Ollama](https://ollama.com) (optional but recommended):
+**Easiest (testers):** build once, ship one file — `.\build.ps1` (Windows)
+produces `dist/AnchorCore.exe` (bundles the UI, auto-starts Ollama, data in
+`~/.anchorcore`). Pushing a `v*` tag builds Windows + macOS executables
+automatically (see `docs/releasing.md`).
+
+**Developers:** `.\start.ps1` (or `./start.sh`) — creates the venv + `.env`
+on first run, applies Alembic migrations, starts Ollama, boots the backend at
+http://localhost:8000. Add `-Dev` for the Vite dev server at :5173.
+
+**Prerequisites:** Python 3.12+, Node 20+, [Ollama](https://ollama.com):
 
 ```bash
 ollama pull llama3.2:3b       # classifier
 ollama pull nomic-embed-text  # embeddings
 ```
 
-**Large-document throughput (B11):** classification windows run in parallel
-(4 by default, configurable via `ANCHOR_CLASSIFIER_CONCURRENCY`). For the
-parallelism to actually speed things up, the Ollama server must agree:
+**Tests** (from `backend/`): `python -m pytest tests -q` — catalog:
+[backend/tests/README.md](./backend/tests/README.md)
 
-```bash
-# Windows: set as user env vars, then restart Ollama
-setx OLLAMA_NUM_PARALLEL 4
-setx OLLAMA_CONTEXT_LENGTH 8192   # windows need ~2.5k tokens; default wastes KV cache
-setx OLLAMA_KEEP_ALIVE 30m        # avoid model unload churn between long jobs
-# macOS/Linux: export the same vars before running `ollama serve`
+## Model configuration (Settings tab — no restart)
+
+All model providers are configured in-app (runtime-mutable, DB-backed
+`app_settings` overriding `.env` defaults; secrets in the OS keychain, never
+in DB/logs):
+
+| Section | Local | Cloud |
+|---|---|---|
+| Classification | Ollama (`llama3.2:3b`) | any OpenAI-compatible + key |
+| Embeddings | Ollama (`nomic-embed-text`) | any OpenAI-compatible + key |
+| Answer (Q&A) | Ollama | any OpenAI-compatible + key, reasoning effort (none/low/medium/high) |
+
+Each section: provider dropdown, API key, base URL, model, **Test connection**.
+`.env` remains the default layer — see `backend/.env.example` for all keys.
+
+## How knowledge is built
+
+```
+Sources (folder, Jira) -> extract text -> classify -> entities + window context
+                                          -> embed chunks (sqlite-vec)
+                                          -> FTS5 keyword index (chunks_fts)
 ```
 
-Throughput (windows processed, avg latency) is visible in the System tab.
+- **Document-aware classification**: one cheap call per document detects its
+  type (standards/runbook/meeting/decision_log/prd/general); the extraction
+  prompt adapts — e.g. regulatory standards produce only `note` entities
+  (rules/definitions), never spurious "decision"/"action" labels.
+- **Reviewable entities**: every entity stores the exact classifier input
+  window (`window_text`) — the Review tab shows "what the classifier saw"
+  behind each low-confidence item.
+- **Cheap reclassification**: 16k-char windows + per-window content hashes —
+  unchanged windows are skipped (a reclassify of unchanged content makes ~0
+  classifier calls). Jobs are cancellable via **Stop** in the Sources tab.
+- **Parallel throughput (B11)**: classifier windows run concurrently
+  (`ANCHOR_CLASSIFIER_CONCURRENCY`, default 4); throughput stats in System tab.
 
-**Retrieval (B12):** chunks are cleaned (page numbers, repeated headers,
+**Retrieval (B12/B12.1):** chunks are cleaned (page numbers, repeated headers,
 encoding artifacts) and split at section headings; Q&A fuses vector search
 with SQLite FTS5 keyword scores via **reciprocal rank fusion** (RRF, k=60),
-then applies age decay and a per-source diversity cap, and expands winning
-chunks with neighboring sections. Config: `ANCHOR_RETRIEVAL_KEYWORD_WEIGHT`
-(list weight, default 1.0), `ANCHOR_RETRIEVAL_MAX_PER_SOURCE` (3),
+then applies age decay and a per-file diversity cap, expands winning chunks
+with neighboring sections, and dedupes near-identical chunks. Config:
+`ANCHOR_RETRIEVAL_KEYWORD_WEIGHT` (1.0), `ANCHOR_RETRIEVAL_MAX_PER_SOURCE` (3),
 `ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS` (365), `ANCHOR_RETRIEVAL_CONTEXT_WINDOW`
-(1). After upgrading, run **Reclassify** on existing sources to rebuild chunks
-with cleaning + heading boundaries (`chunks_fts` is created by the Alembic
-migration automatically).
+(1).
 
-**One command** (Windows `.\start.ps1` / macOS+Linux `./start.sh`):
-
-```bash
-./start.ps1       # Windows — or ./start.sh on mac/linux
-```
-
-This is the single supported entry point: it kills orphaned processes on the
-port, starts the local Ollama server if it isn't running (skip with
-`-NoOllama` / `--no-ollama`), creates the venv and `backend/.env` on first
-run, applies Alembic migrations, and boots the backend (serving the built UI
-at http://localhost:8000). The app prints its effective config at boot (DB
-path, models, Ollama reachability). Add `-Dev` / `--dev` to also start the
-Vite dev server at http://localhost:5173.
-
-Manual steps (equivalent, for reference):
-
-**Backend** (from `backend/`):
-
-```bash
-python -m venv .venv
-.venv/Scripts/activate        # Windows (.venv/bin/activate on mac/linux)
-pip install -r requirements.txt
-cp .env.example .env          # set ANCHOR_ANSWER_API_KEY for cloud answers,
-                              # or point ANCHOR_ANSWER_BASE_URL at Ollama for local answers
-alembic upgrade head          # schema migrations (SQLite history in alembic/versions)
-uvicorn app.main:app --port 8000
-```
-
-**Frontend** (from `frontend/`):
-
-```bash
-npm install
-npm run dev                   # dev server on :5173, proxies API to :8000
-```
-
-Or `npm run build` — the built `dist/` is served automatically by the backend at http://localhost:8000.
-
-**Tests** (from `backend/`): `python -m pytest tests -q` — catalog: [backend/tests/README.md](./backend/tests/README.md)
-
-**CI:** GitHub Actions runs backend tests + frontend build on every push
-(see `.github/workflows/ci.yml`).
-
-## Sync & jobs
-
-`POST /sources/{id}/sync` and `/reclassify` are asynchronous: they return
-`202` with a job immediately, run in the background, and report progress via
-`GET /sources/jobs/{id}` (status, processed/total, result, error) and history
-via `GET /sources/jobs?source_id=N`. Long operations never block or look
-frozen.
+**Follow-up questions:** the Ask tab is a chat — follow-ups ("show the
+movements for it") are rewritten into standalone queries using conversation
+history, and the conversation is passed to generation. **Clear context**
+resets the thread.
 
 ## Behavior without models
 
 - No Ollama → classification falls back to rule-based; answers fall back to keyword context.
 - No `ANCHOR_ANSWER_API_KEY` and cloud base URL → answers return matching context instead of LLM text.
-- Everything degrades gracefully; add Ollama + a model key (or point the answer engine at Ollama) to unlock the full experience.
+- Everything degrades gracefully; add Ollama or a model key (Settings tab) to unlock the full experience.
 
 ## API surface (v1)
 
 - `POST /sources` — connect a folder (path) or Jira (base_url, email, token, project)
-- `POST /sources/{id}/sync`, `POST /sources/{id}/reclassify` — run ingestion now (returns 202 + job id; polls/syncs run in background)
-- `GET /sources/jobs`, `GET /sources/jobs/{id}` — job progress + history (running/done/failed, processed/total, result)
+- `POST /sources/{id}/sync`, `POST /sources/{id}/reclassify` — run ingestion now (returns 202 + job id)
+- `GET /sources/jobs`, `GET /sources/jobs/{id}`, `GET /sources/jobs/running` — job progress + history (running/done/failed/cancelled)
+- `POST /sources/jobs/{id}/cancel` — stop a running job
 - `GET /entities`, `PATCH /entities/{id}` — browse and review (verify/dispute/reclassify)
-- `GET /review/low-confidence`, `GET /review/duplicates`, `POST /review/merge` — review queue
-- `POST /qa` — ask, get answer with section-level citations
+- `GET /review/low-confidence`, `GET /review/duplicates`, `POST /review/merge` — review queue (entities carry `window_text` for review context)
+- `POST /qa` — ask (optionally with `history` turns), get answer with section-level citations
+- `GET /settings`, `PUT /settings` — runtime model config (secrets masked)
+- `POST /settings/test-connection` — verify ollama/classifier/embedder/answer providers
+- `GET /system/status`, `GET /system/errors`, `GET /system/logs[/{file}]` — health, errors, log download
+
+## Data model (SQLite + Alembic migrations)
+
+| Table | Notes |
+|---|---|
+| `sources` / `ingested_items` | connectors; items carry `doc_type` + `window_hashes` (cheap reclassify) |
+| `entities` | kinds decision/document/action/note; `window_text`/`window_index` = classifier input; status verified/disputed/stale |
+| `relationships` | typed links (supersedes/depends_on/owns/blocks) |
+| `chunks` | full-doc + entity chunks, embeddings (float32 blobs) |
+| `chunks_fts` | FTS5 keyword index, kept in sync by triggers |
+| `merge_actions` | duplicate proposals + decisions |
+| `jobs` | sync/reclassify progress + history |
+| `system_events` | structured error/audit trail |
+| `app_settings` | runtime overrides (secrets live in the OS keychain, not here) |
