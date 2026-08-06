@@ -82,7 +82,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
-  testConnection: (provider: "ollama" | "answer") =>
+  testConnection: (provider: "ollama" | "classifier" | "answer") =>
     request<TestConnectionResult>("/settings/test-connection", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

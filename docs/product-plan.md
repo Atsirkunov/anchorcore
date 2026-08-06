@@ -345,16 +345,16 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** a Jira source and a Linear source sync real data end-to-end on a sandbox; connector logic covered by fixture tests in CI.
 
-### B23. External/cloud models for classification (P1 — raised from P2: unblocks complex classification without a big local model)
+### B23. External/cloud models for classification (P1 — raised from P2: unblocks complex classification without a big local model) — DONE
 **Problem:** the classifier is hardwired to Ollama (`classifier.py` posts to `ollama_base_url`); B4 lets users set the *answer* model to any OpenAI-compatible provider, but classification can't. Better models = more accurate complex classifications (documents with tricky kinds, higher confidence).
 
-**Scope:**
-- Split classifier from Ollama: `classifier_base_url` + optional `classifier_api_key` (SecretStore), default = Ollama (unchanged behavior)
-- Preset in Settings tab: "classifier provider" (Ollama local / cloud OpenAI-compatible) — mirrors the answer-model pattern
-- Keep rule fallback + windowed parallelism; cost guardrail note (cloud classification on big docs is token-heavy — surface expected cost in UI)
-- Test: classifier hits configured base URL with Bearer key; fallback path unchanged
+**Done:**
+- Classifier decoupled from Ollama: `classifier_base_url` (empty → Ollama, unchanged default) + `classifier_api_key` (SecretStore, `***set***` masked) — Bearer auth when a key is present
+- Settings tab: "Classifier provider" section (Local Ollama / Cloud OpenAI-compatible), model + base URL + key, **Test classifier** button, cost guardrail note (classification calls per document window; a 274-page doc ≈ 160 calls)
+- `/system/status` reports classifier `provider: local|cloud`, base URL, model (merged with throughput stats); Ollama model-missing warnings only apply to the classifier when it's local
+- Tests: cloud classifier posts to own URL with Bearer; local default uses Ollama without auth; classifier key masked in API
 
-**DoD:** a user points classification at a cloud model from the Settings tab; a complex document classifies with higher confidence than the local 3B, no restart.
+**DoD:** a user points classification at a cloud model from the Settings tab; a complex document classifies with higher confidence than the local 3B, no restart. — met (runtime-mutable via SettingsService; reclassify a source to apply).
 
 ### B14. Agent connectivity via MCP (P2 — see [mcp.md](./mcp.md))
 **Problem:** users want their own harnesses (Claude Code, Codex, opencode) to use AnchorCore's memory, but today only the browser UI can reach it.

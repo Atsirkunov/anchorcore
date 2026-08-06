@@ -38,6 +38,21 @@ export function SettingsTab() {
 
   const isOllama = provider() === "ollama";
   const apiKeySet = (settings?.answer_api_key ?? "") === "***set***";
+  const classifierKeySet = (settings?.classifier_api_key ?? "") === "***set***";
+
+  const classifierIsLocal = () => {
+    const base = (form?.classifier_base_url || form?.ollama_base_url || "").trim();
+    return base === "" || base.startsWith("http://localhost") || base.startsWith("http://127.0.0.1");
+  };
+
+  function applyClassifierProvider(providerId: string) {
+    if (!form) return;
+    if (providerId === "local") {
+      setForm({ ...form, classifier_base_url: "" });
+    } else {
+      setForm({ ...form, classifier_base_url: "https://api.openai.com/v1" });
+    }
+  }
 
   async function save() {
     if (!form) return;
@@ -58,7 +73,7 @@ export function SettingsTab() {
     }
   }
 
-  async function testConnection(providerId: "ollama" | "answer") {
+  async function testConnection(providerId: "ollama" | "classifier" | "answer") {
     setTestBusy(providerId);
     setTestResult(null);
     setError(null);
@@ -120,19 +135,52 @@ export function SettingsTab() {
         </div>
 
         <div style={styles.section}>
-          <div style={styles.sectionTitle}>Ollama (classification + embeddings)</div>
+          <div style={styles.sectionTitle}>Classifier provider (extracts entities)</div>
+          <select
+            style={styles.input}
+            value={classifierIsLocal() ? "local" : "cloud"}
+            onChange={(e) => applyClassifierProvider(e.target.value)}
+          >
+            <option value="local">Local Ollama (free, private — default)</option>
+            <option value="cloud">Cloud OpenAI-compatible (better for complex docs)</option>
+          </select>
+          {!classifierIsLocal() && (
+            <>
+              <label style={styles.label}>API key</label>
+              <input
+                style={styles.input}
+                type="password"
+                value={form.classifier_api_key}
+                onChange={set("classifier_api_key")}
+                placeholder={classifierKeySet ? "•••••••• (stored — type to replace)" : "sk-…"}
+              />
+            </>
+          )}
+          <label style={styles.label}>Base URL</label>
+          <input
+            style={styles.input}
+            value={form.classifier_base_url || (classifierIsLocal() ? form.ollama_base_url : "")}
+            onChange={set("classifier_base_url")}
+            placeholder={classifierIsLocal() ? "http://localhost:11434 (uses Ollama)" : "https://api.openai.com/v1"}
+          />
+          <label style={styles.label}>Model</label>
+          <input style={styles.input} value={form.classifier_model} onChange={set("classifier_model")} placeholder="llama3.2:3b / gpt-4o-mini" />
+          {!classifierIsLocal() && (
+            <div style={{ fontSize: 12, color: "#fbbf24", marginTop: 6 }}>
+              Cost note: classification calls the model once per document window (a 274-page doc ≈ 160 calls). Cloud classification is token-heavy — reclassify a big source with a cloud model only when needed.
+            </div>
+          )}
+          <button style={styles.button} disabled={testBusy === "classifier"} onClick={() => testConnection("classifier")}>
+            {testBusy === "classifier" ? "Testing…" : "Test classifier"}
+          </button>
+        </div>
+
+        <div style={styles.section}>
+          <div style={styles.sectionTitle}>Ollama (embeddings)</div>
           <label style={styles.label}>Base URL</label>
           <input style={styles.input} value={form.ollama_base_url} onChange={set("ollama_base_url")} placeholder="http://localhost:11434" />
-          <div style={{ display: "flex", gap: 8 }}>
-            <div style={{ flex: 1 }}>
-              <label style={styles.label}>Classifier model</label>
-              <input style={styles.input} value={form.classifier_model} onChange={set("classifier_model")} placeholder="llama3.2:3b" />
-            </div>
-            <div style={{ flex: 1 }}>
-              <label style={styles.label}>Embed model</label>
-              <input style={styles.input} value={form.embed_model} onChange={set("embed_model")} placeholder="nomic-embed-text" />
-            </div>
-          </div>
+          <label style={styles.label}>Embed model</label>
+          <input style={styles.input} value={form.embed_model} onChange={set("embed_model")} placeholder="nomic-embed-text" />
           <button style={styles.button} disabled={testBusy === "ollama"} onClick={() => testConnection("ollama")}>
             {testBusy === "ollama" ? "Testing…" : "Test Ollama"}
           </button>

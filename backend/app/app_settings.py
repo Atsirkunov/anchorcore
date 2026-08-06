@@ -27,12 +27,13 @@ SETTING_KEYS = (
     "classifier_model",
     "embed_model",
     "classifier_timeout",
+    "classifier_base_url",
     "answer_model",
     "answer_base_url",
     "answer_timeout",
     "answer_reasoning_effort",
 )
-SECRET_KEYS = ("answer_api_key",)
+SECRET_KEYS = ("answer_api_key", "classifier_api_key")
 ALL_KEYS = SETTING_KEYS + SECRET_KEYS
 
 SECRET_PREFIX = "app:"
