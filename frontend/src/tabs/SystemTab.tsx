@@ -109,6 +109,16 @@ export function SystemTab() {
             </div>
           </div>
           <div style={styles.card}>
+            <div style={styles.cardTitle}>Embeddings</div>
+            <div style={{ fontSize: 12 }}>
+              provider:{" "}
+              <span style={{ color: status.embedder.provider === "cloud" ? "#fbbf24" : "#4ade80" }}>
+                {status.embedder.provider}
+              </span>{" "}
+              · {status.embedder.model}
+            </div>
+          </div>
+          <div style={styles.card}>
             <div style={styles.cardTitle}>Scheduler tasks</div>
             <div style={{ fontSize: 12 }}>
               {Object.entries(status.tasks).map(([name, state]) => (
