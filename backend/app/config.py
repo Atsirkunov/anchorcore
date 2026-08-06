@@ -1,4 +1,5 @@
 import logging
+import sys
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -8,6 +9,13 @@ logger = logging.getLogger(__name__)
 
 def _env_file_path() -> Path:
     return Path(".env")
+
+
+def _default_data_dir() -> Path:
+    """Frozen apps (PyInstaller) keep data per-user, outside the exe dir."""
+    if getattr(sys, "frozen", False):
+        return Path.home() / ".anchorcore"
+    return Path("data")
 
 
 def validate_env_file() -> list[str]:
@@ -38,7 +46,7 @@ def validate_env_file() -> list[str]:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="ANCHOR_", extra="ignore")
 
-    data_dir: Path = Path("data")
+    data_dir: Path = Path(_default_data_dir())
     database_url: str = ""
     cors_origins: str = "http://localhost:5173"
 

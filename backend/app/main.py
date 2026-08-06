@@ -1,4 +1,5 @@
 import logging
+import sys
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -150,7 +151,12 @@ async def health(db: Session = Depends(get_db)) -> dict:
     }
 
 
-# Serve built frontend if present (must be last — catches everything else)
-frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
-if frontend_dist.exists():
+# Serve built frontend if present (must be last — catches everything else).
+# Resolves in both dev (repo layout) and frozen (PyInstaller) modes.
+_frontend_candidates = [
+    Path(__file__).resolve().parents[2] / "frontend" / "dist",  # dev repo
+    Path(sys._MEIPASS) / "frontend_dist",  # PyInstaller onefile
+]
+frontend_dist = next((p for p in _frontend_candidates if p.exists()), None)
+if frontend_dist is not None:
     app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="ui")

@@ -1,78 +1,62 @@
-# AnchorCore — macOS Packaging Plan (draft)
+# AnchorCore — Packaging Plan
 
-> Goal: ship AnchorCore as a distributable macOS desktop app.
-> Status: plan only — no implementation yet.
+> Goal: ship AnchorCore as a runnable app a non-developer can launch.
+> Status: **Windows implemented (B20)** — `dist/AnchorCore.exe`; macOS later.
 
 ---
 
-## 1. What We're Shipping
+## 1. What We're Shipping (current)
 
-Three runtime pieces today:
-
-| Piece | Current form | Ship form |
+| Piece | Form | Notes |
 |---|---|---|
-| API backend | Python + FastAPI (uvicorn) | Native binary (`PyInstaller`) |
-| UI | Next.js dev server | Static build served by backend |
-| Classifier model | External Ollama | Bundled inference **or** Ollama prerequisite |
+| API backend | Python + FastAPI (uvicorn in-process) | Single-file exe via PyInstaller |
+| UI | Vite static build (`frontend/dist`) | Bundled into the exe; served at `127.0.0.1:8000` |
+| Classifier/embed model | External Ollama | Auto-started by the exe; models pulled via Settings/sync |
+| Data | SQLite + sqlite-vec | Per-user: `~/.anchorcore` (frozen mode) |
 
-SQLite is already embedded — no external database runtime to ship.
+## 2. Building (Windows)
 
-## 2. Recommended Approach (Option B — pragmatic, offline-capable path first)
+One command from the repo root:
 
-**Backend → single binary**
-- `PyInstaller` bundles Python, FastAPI, SQLAlchemy, pypdf, httpx, and app code into one `.app`.
-- uvicorn runs in-process; the app serves both the API and the static UI on `127.0.0.1`.
+```powershell
+.\build.ps1
+```
 
-**Frontend → static export**
-- `next build` with `output: "export"` produces plain HTML/JS/CSS.
-- FastAPI serves it as static files. No Node runtime in the shipped product.
+Steps it runs: `npm run build` → ensure venv + pyinstaller → `pyinstaller packaging.spec`
+→ `dist/AnchorCore.exe` (~24 MB, single file).
 
-**Model → first launch checks for Ollama**
-- App detects Ollama at startup; if missing, offers guided install (`ollama pull llama3.2`).
-- No inference code changes — the OpenAI-compatible endpoint already works.
+Spec details (`packaging.spec`):
+- Bundles `frontend/dist` → `_MEIPASS/frontend_dist` (mounted by `main.py` when frozen)
+- Bundles `backend/alembic/` + `alembic.ini` → startup migrations work
+- Collects the `sqlite_vec` native DLL (PyInstaller doesn't auto-find it)
+- Entry: `backend/run_app.py` — sets `ANCHOR_DATA_DIR=~/.anchorcore` when frozen,
+  auto-starts the local Ollama server, opens the browser, boots uvicorn
 
-**Data directory**
-- SQLite DB + uploads under `~/Library/Application Support/AnchorCore/`.
+## 3. Tester experience (first run)
 
-## 3. Model Strategy Decision (pick later, affects scope)
+1. Double-click `AnchorCore.exe`
+2. Ollama starts (if installed), browser opens `http://127.0.0.1:8000`
+3. Sources tab → connect a folder (e.g. the bundled `sample/`)
+4. Sync; ask questions with citations
 
-| Option | Self-contained | Effort | Notes |
-|---|---|---|---|
-| **B. Ship with Ollama** | No (one prerequisite) | ~2–3 days total | Zero inference changes; recommended first |
-| **A. Embedded llama.cpp** | Yes, fully offline | +2–3 days | Bundle `llama3.2:3b` GGUF (~2GB); replace HTTP classifier with local inference |
-| **C. Cloud API only** | No (needs key) | Lowest | Contradicts offline/privacy positioning; not recommended |
+`~/.anchorcore/` holds the DB, logs, secrets. Deleting it = fresh start.
 
-Keep the `Classifier` abstraction so the inference backend can swap without touching the API surface.
+## 4. Open work (later)
 
-## 4. macOS-Specific Work (1–3 days)
-
-- **Code signing + notarization** — required for Gatekeeper to run the `.app` normally. Requires Apple Developer account ($99/yr).
-- **First-launch flow** — model location check, data dir creation, port binding.
-- **Menu bar / tray** — optional polish; app runs as localhost server with browser UI.
-- **Auto-update** — defer; later via Sparkle or Tauri updater.
-
-## 5. Platform Strategy
-
-- `PyInstaller` builds are per-OS → separate artifacts for macOS, Windows, Linux.
-- Mac = primary target (per this plan); Windows/Linux later.
-
-## 6. Deliverables / Milestones
-
-| Milestone | Output | Rough effort |
+| Item | Why | Effort |
 |---|---|---|
-| 1. Static UI + served by FastAPI | Local dev runs UI from backend | 0.5 day |
-| 2. PyInstaller `.app` | Launchable app bundle | 1 day |
-| 3. First-launch + Ollama check | Guided setup flow | 1 day |
-| 4. Sign + notarize + `.dmg` | Distributable | 1–2 days |
-| 5. (Later) Embedded inference | Fully offline app | +2–3 days |
+| `console=False` in the spec | hide the terminal window (cosmetic) | 10 min |
+| Ollama installer check | exe assumes Ollama present; add guided install/first-run (B8 overlap) | 0.5 day |
+| macOS `.app` + signing/notarization | Gatekeeper; needs Apple Developer account ($99/yr) | 1–2 days |
+| Windows installer (Inno Setup/NSIS) | nicer than a raw exe | 0.5 day |
+| Auto-update | Sparkle/tauri-updater | later |
+| Bundled inference (llama.cpp) | fully offline, no Ollama prerequisite | +2–3 days |
 
-## 7. Open Questions
+## 5. Platform strategy
 
-- [ ] Target macOS version floor (10.15 Catalina+ vs Sonoma+)?
-- [ ] Ship as `.app` zip or `.dmg`?
-- [ ] Apple Developer account in place?
-- [ ] Do we bundle Ollama at all, or link to installer?
-- [ ] Windows/Linux timing?
+- Windows first (implemented). macOS next (PyInstaller works the same; only
+  signing/notarization and the Ollama path differ). Linux after.
+- One exe per platform; data always per-user outside the binary.
 
 ---
 
