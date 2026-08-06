@@ -89,6 +89,7 @@ def _run_migrations() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     _run_migrations()
+    jobs._mark_orphans()  # now that the table exists, sweep stale 'running' jobs
     scheduler.start()
     for line in settings.banner():
         logger.info("%s", line)
