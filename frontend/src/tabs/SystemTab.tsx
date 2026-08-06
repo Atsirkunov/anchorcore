@@ -100,6 +100,13 @@ export function SystemTab() {
                 <span style={{ color: "#6b7280" }}>no windows classified yet</span>
               )}
             </div>
+            <div style={{ fontSize: 12, marginTop: 4 }}>
+              provider:{" "}
+              <span style={{ color: status.classifier.provider === "cloud" ? "#fbbf24" : "#4ade80" }}>
+                {status.classifier.provider}
+              </span>{" "}
+              · {status.classifier.model}
+            </div>
           </div>
           <div style={styles.card}>
             <div style={styles.cardTitle}>Scheduler tasks</div>
