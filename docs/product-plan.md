@@ -416,6 +416,27 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** a tester points Claude Code at their AnchorCore memory (local or centralized), asks a question, and gets a cited answer; every MCP call appears in the audit trail.
 
+### B30. Data labeling: PII/sensitive gating of models, sharing, and answers (P1 for PII — v1 risk, P2 rest)
+**Problem:** cloud classification exists (B23) — but nothing stops PII or sensitive content from being sent to a cloud model, or surfaced in shared/agent-facing answers. For team use (v2) this is a hard blocker; even locally it's a trust story ("what leaves my machine?").
+
+**Concept — labels on sources, gates on everything else:**
+
+1. **Labels** (`sources.label`, default `internal`):
+   - `public` — safe to share/answer via links, MCP, agents
+   - `internal` — default; local + trusted-cloud models OK, not shareable
+   - `sensitive` — local models only (no cloud classifier/embedder/answer), never shareable
+   - `pii` — local models only; contents may contain personal data; redaction emphasis
+   - (v2.5: per-item/per-entity labels, auto-detection via NER as a stretch)
+
+2. **Provider trust tiers** (Settings tab): each provider (classifier/embedder/answer) declares a trust level — `local` (Ollama = highest) vs `cloud` (user-confirmed "I accept sending data to this provider"). A source label requires a minimum trust tier for each model step.
+
+3. **Gates:**
+   - **Model routing**: pipeline refuses to classify/embed `sensitive`/`pii` content with a provider below the required trust tier → falls back to local Ollama or rule-based, records a `system_event` warning ("blocked cloud classify on pii source X")
+   - **Sharing/answers**: Q&A, share links (B15/B29), and MCP tools exclude non-`public` sources unless the session is authenticated + authorized (single-user local = everything visible; hosted/team = label-scoped)
+   - **Audit**: every gate decision (allow/block) lands in `system_events` with source + label + provider
+
+**DoD:** label a folder `pii` → cloud classifier/embedder/answer never touch it (local-only, verified in logs + a `system_event`); a shared link (v2) answers only from `public` sources; the UI shows each source's label and what it allows.
+
 ### B24. macOS build + ad-hoc signing (P2 — free path, no $99)
 **Problem:** Windows has a distributable exe (B20); macOS has none. The paid Apple Developer account ($99/yr) is only needed for *notarization* (silent Gatekeeper approval); for personal use and testers who accept one-time approval, a free path exists.
 
