@@ -13,6 +13,6 @@ and 98% of test coverage is green as of today.
 
 ## Decision log
 
-Decision: Security Transfers MVP excludes incoming transfers.
-Reason: Reconciliation complexity.
-Source: PRD v3.
+The Security Transfers MVP will NOT include incoming transfers.
+Reason: reconciliation complexity (see PRD v3, section 4.2).
+
