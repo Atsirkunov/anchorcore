@@ -70,6 +70,13 @@ ask it questions" — not raw file transfer.
 | Write access (agents) | — | ✅ | MCP `ingest` (B14.3) |
 | Permissions (owner/editor/viewer) | — | ✅ | v2 Teams tier trigger |
 
+**Label-scoped sharing (B30):** sharing isn't all-or-nothing. Sources carry a
+label (`public|internal|sensitive|pii`); share links, MCP tools, and hosted
+workspaces only expose `public` content by default, and `sensitive`/`pii`
+content never leaves the local machine (local models only). This makes
+"share my team memory" safe *and* is the governance story enterprise buyers
+will ask about first.
+
 **The hook:** sharing a workspace is the natural "try the paid tier" moment —
 local stays free, shared = hosted + paid.
 
