@@ -109,6 +109,7 @@ export type Entity = {
   source_ref: string;
   status: string;
   owner: string;
+  window_text: string;
   created_at: string;
   updated_at: string;
 };

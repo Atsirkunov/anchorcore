@@ -8,6 +8,7 @@ export function ReviewTab() {
   const [error, setError] = useState<string | null>(null);
   const [busyEntity, setBusyEntity] = useState<number | null>(null);
   const [busyProposal, setBusyProposal] = useState<number | null>(null);
+  const [expanded, setExpanded] = useState<number | null>(null);
 
   const refresh = useCallback(() => {
     api.lowConfidence().then(setLow).catch((e) => setError(String(e)));
@@ -53,7 +54,26 @@ export function ReviewTab() {
           <article key={e.id} style={{ background: "#171a21", border: "1px solid #2d333b", borderRadius: 8, padding: "0.75rem 1rem" }}>
             <div style={{ fontSize: 12, color: "#9ca3af" }}>[{e.kind}] conf {(e.confidence * 100).toFixed(0)}% · {e.source_ref}</div>
             <p style={{ margin: "0.3rem 0", fontWeight: 600 }}>{e.summary}</p>
-            <div style={{ display: "flex", gap: 8 }}>
+            {e.reasoning && <p style={{ margin: 0, color: "#9ca3af", fontSize: 13 }}>{e.reasoning}</p>}
+            {e.window_text && (
+              <div style={{ marginTop: 8 }}>
+                <button
+                  onClick={() => setExpanded(expanded === e.id ? null : e.id)}
+                  style={styles.contextButton}
+                >
+                  {expanded === e.id ? "Hide classifier context ▲" : "Show what the classifier saw ▼"}
+                </button>
+                {expanded === e.id && (
+                  <div style={styles.contextBox}>
+                    <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 4, textTransform: "uppercase" }}>
+                      Classifier input window (source excerpt)
+                    </div>
+                    <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontSize: 12, lineHeight: 1.5, color: "#d1d5db" }}>{e.window_text}</pre>
+                  </div>
+                )}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
               <button
                 style={{ ...styles.button, ...(busyEntity !== null ? styles.disabled : {}) }}
                 disabled={busyEntity !== null}
@@ -116,4 +136,22 @@ const styles: Record<string, React.CSSProperties> = {
     opacity: 1,
   },
   disabled: { opacity: 0.5, cursor: "not-allowed" },
+  contextButton: {
+    background: "none",
+    border: "none",
+    color: "#7dd3fc",
+    cursor: "pointer",
+    fontSize: 12,
+    padding: 0,
+    textDecoration: "underline",
+  },
+  contextBox: {
+    marginTop: 6,
+    padding: "0.6rem 0.75rem",
+    background: "#14171d",
+    border: "1px solid #2d333b",
+    borderRadius: 6,
+    maxHeight: 300,
+    overflowY: "auto",
+  },
 };

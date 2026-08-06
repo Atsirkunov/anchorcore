@@ -358,6 +358,16 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **B23 follow-up (done):** embeddings got the same treatment — `embed_base_url` + `embed_api_key` (keychain), Settings "Embeddings" section with provider dropdown + always-visible API key + model, `Test embeddings` button, System tab Embeddings card. Settings tab restructured so every model section (classification / embeddings / answer) is self-contained: provider select (Local Ollama / Cloud), API key, base URL, model — no more conditional reveals. Changing the embed model requires re-embedding (reclassify or backfill).
 
+### B26. Reviewable, document-aware classification (P1 — tester feedback) — DONE
+**Problem (live feedback on the 274-page rulebook):** (1) the classifier was type-agnostic — a regulatory standard produced spurious "decision"/"action" labels for procedural steps ("Notify Account Owner", "Cancel"); (2) the Review tab showed only a one-line summary with no source context, so it was impossible to judge correctness; (3) 8k-char windows meant ~160 cloud LLM calls per reclassify.
+
+**Done:**
+- **Document-type pre-pass**: one cheap call per document detects `standards|runbook|meeting|decision_log|prd|general`, cached on the item (`doc_type`); the extraction prompt adapts per type — standards/runbook prompts explicitly suppress decision/action and extract only `note` (rules, definitions). Live check: the 237-page rulebook now classifies as `standards` → **99 note entities, zero decision/action** (was ~40% action/decision).
+- **Reviewable entities**: `entities.window_text` + `window_index` store the exact classifier input window; Review tab shows "Show what the classifier saw" — an expandable source-excerpt panel per entity (migration `b26a0c2`).
+- **Cheaper cloud classification**: default window 8k → 16k chars (~halves API calls); per-window content hashes (`item.window_hashes`) — incremental syncs and reclassify skip unchanged windows (force reclassify = full rebuild); no more hard 12k truncation.
+
+**DoD:** reclassifying the rulebook labels it standards and produces only note entities; a reviewer sees the source excerpt behind every low-confidence entity; a second reclassify of unchanged content makes ~0 classifier calls.
+
 ### B14. Agent connectivity via MCP (P2 — see [mcp.md](./mcp.md))
 **Problem:** users want their own harnesses (Claude Code, Codex, opencode) to use AnchorCore's memory, but today only the browser UI can reach it.
 

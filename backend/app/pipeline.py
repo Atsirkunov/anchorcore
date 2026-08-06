@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import re
 import time
@@ -7,7 +8,7 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
-from .classifier import Classifier
+from .classifier import Classifier, window_hash
 from .cleaning import clean_text, repeated_lines, strip_repeated
 from .config import settings
 from .connectors import ConnectorError, IngestionDoc, build_connector
@@ -189,7 +190,7 @@ class IngestionPipeline:
                 # stalls the whole event loop).
                 db.commit()
                 created_items += 1
-                new_entities += await self._classify_and_store(db, source, doc)
+                new_entities += await self._classify_and_store(db, source, doc, force_reclassify)
 
         if cursor:
             source.last_sync_cursor = cursor
@@ -234,24 +235,17 @@ class IngestionPipeline:
         db.flush()
         return True
 
-    async def _classify_and_store(self, db: Session, source: Source, doc: IngestionDoc) -> int:
+    async def _classify_and_store(
+        self,
+        db: Session,
+        source: Source,
+        doc: IngestionDoc,
+        force_reclassify: bool = False,
+    ) -> int:
         # Classify BEFORE touching the DB: LLM calls are slow and must never
         # hold a write lock on SQLite (blocks syncs/requests concurrently).
         base_ref = doc.source_ref or doc.title
         windows = classify_windows(doc.text)
-        sem = asyncio.Semaphore(settings.classifier_concurrency)
-
-        async def classify_one(window: str, ref: str) -> list[dict]:
-            async with sem:
-                started = time.monotonic()
-                try:
-                    return await self.classifier.classify(window, ref)
-                finally:
-                    throughput.record(time.monotonic() - started)
-
-        refs = [f"{base_ref} §{index}" if len(windows) > 1 else base_ref for index in range(1, len(windows) + 1)]
-        results = await asyncio.gather(*(classify_one(w, r) for w, r in zip(windows, refs)))
-        classified: list[dict] = [item for batch in results for item in batch]
 
         item = db.execute(
             select(IngestedItem).where(
@@ -260,44 +254,104 @@ class IngestionPipeline:
             )
         ).scalar_one()
 
-        # drop stale classifications from previous content, keep the item row
-        old_entities = db.execute(select(Entity).where(Entity.item_id == item.id)).scalars().all()
-        _detach_entity_refs(db, [e.id for e in old_entities])
-        for entity in old_entities:
-            db.delete(entity)
-        db.flush()
+        # document-type pre-pass (B26): one cheap call per document, cached on
+        # the item so reclassify doesn't re-detect
+        doc_type = item.doc_type or "general"
+        if not item.doc_type:
+            doc_type = await self.classifier.detect_document_type(doc.text[:12000])
+            item.doc_type = doc_type
+            db.commit()
 
-        count = 0
-        seen: set[str] = set()
-        for item_data in classified:
-            key = item_data["summary"].lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            entity = Entity(
-                item_id=item.id,
-                kind=item_data["kind"],
-                summary=item_data["summary"],
-                reasoning=item_data["reasoning"],
-                confidence=item_data["confidence"],
-                author=item_data["author"] or doc.author,
-                source_ref=item_data["source_ref"],
-            )
-            db.add(entity)
+        # per-window: skip unchanged windows on reclassify (cheaper cloud calls).
+        # force_reclassify → classify everything; incremental (sync) → skip
+        # windows whose content hash is unchanged since last run.
+        prev_hashes = json.loads(item.window_hashes or "{}")
+        sem = asyncio.Semaphore(settings.classifier_concurrency)
+
+        if force_reclassify:
+            # drop ALL entities for the item (full rebuild — also clears
+            # pre-migration entities that have no window_index)
+            old_all = db.execute(select(Entity).where(Entity.item_id == item.id)).scalars().all()
+            _detach_entity_refs(db, [e.id for e in old_all])
+            for entity in old_all:
+                db.delete(entity)
             db.flush()
 
-            for chunk_content in chunk_text(item_data["summary"]):
-                db.add(
-                    Chunk(
-                        entity_id=entity.id,
-                        source_ref=item_data["source_ref"],
-                        content=chunk_content,
-                    )
+        async def classify_one(window: str, ref: str, index: int) -> list[dict] | None:
+            h = window_hash(window)
+            if not force_reclassify and prev_hashes.get(str(index)) == h:
+                return None  # unchanged since last classification
+            async with sem:
+                started = time.monotonic()
+                try:
+                    classified = await self.classifier.classify(window, ref, doc_type)
+                    for entity_data in classified:
+                        entity_data["window_text"] = window
+                        entity_data["window_index"] = index
+                    return classified
+                finally:
+                    throughput.record(time.monotonic() - started)
+
+        refs = [f"{base_ref} §{index}" if len(windows) > 1 else base_ref for index in range(1, len(windows) + 1)]
+        results = await asyncio.gather(
+            *(classify_one(w, r, i) for i, (w, r) in enumerate(zip(windows, refs), start=1))
+        )
+
+        new_hashes = dict(prev_hashes)
+        for index, (window, batch) in enumerate(zip(windows, results), start=1):
+            new_hashes[str(index)] = window_hash(window)
+            if batch is None:
+                continue  # window unchanged — keep existing entities
+            # drop entities that came from this window, keep the rest
+            stale = db.execute(
+                select(Entity).where(Entity.item_id == item.id, Entity.window_index == index)
+            ).scalars().all()
+            _detach_entity_refs(db, [e.id for e in stale])
+            for entity in stale:
+                db.delete(entity)
+            db.flush()
+
+            seen: set[str] = set()
+            for item_data in batch:
+                key = item_data["summary"].lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                entity = Entity(
+                    item_id=item.id,
+                    kind=item_data["kind"],
+                    summary=item_data["summary"],
+                    reasoning=item_data["reasoning"],
+                    confidence=item_data["confidence"],
+                    author=item_data["author"] or doc.author,
+                    source_ref=item_data["source_ref"],
+                    window_text=item_data.get("window_text", "")[:4000],
+                    window_index=item_data.get("window_index"),
                 )
-            count += 1
+                db.add(entity)
+                db.flush()
+
+                for chunk_content in chunk_text(item_data["summary"]):
+                    db.add(
+                        Chunk(
+                            entity_id=entity.id,
+                            source_ref=item_data["source_ref"],
+                            content=chunk_content,
+                        )
+                    )
+
+        item.window_hashes = json.dumps(new_hashes)
 
         # full-document chunks so long content is fully retrievable;
-        # clean BEFORE chunking so boundaries/embeddings/FTS tokens are clean
+        # clean BEFORE chunking so boundaries/embeddings/FTS tokens are clean.
+        # Rebuild them each pass (hash-skip applies to classification only) —
+        # drop the previous doc chunks first so re-syncs don't duplicate.
+        old_doc_chunks = db.execute(
+            select(Chunk).where(Chunk.item_id == item.id, Chunk.entity_id.is_(None))
+        ).scalars().all()
+        for chunk in old_doc_chunks:
+            db.delete(chunk)
+        db.flush()
         cleaned = strip_repeated(clean_text(doc.text), repeated_lines(doc.text))
         doc_chunks = chunk_document(cleaned)
         for index, chunk_content in enumerate(doc_chunks, start=1):
@@ -307,7 +361,7 @@ class IngestionPipeline:
         db.commit()
 
         await self._embed_item(db, item)
-        return count
+        return sum(1 for batch in results if batch)
 
     async def _embed_item(self, db: Session, item: IngestedItem) -> None:
         chunks = db.execute(
