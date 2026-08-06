@@ -392,6 +392,19 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** a user authorizes a Drive folder, AnchorCore syncs its docs (including Google-native formats), and Q&A answers cite Drive sources with working file links.
 
+### B29. v2/v3 business & platform scoping (P3 — see [v2v3-scope.md](./v2v3-scope.md))
+**Problem:** v1 is local-first and free; there's no website, hosted path, pricing, or changelog discipline — nothing for people to find/try/pay for.
+
+**Scope (per [v2v3-scope.md](./v2v3-scope.md)):**
+- Website: landing (60s demo), download, docs site, pricing, changelog page
+- Hosting: same code, env-driven — Postgres + object storage + server-side connectors; single-region VPS first
+- File sharing: read-only share links (project tokens) → collaborators → permissions (the Teams tier trigger)
+- Release mgmt: mandatory CHANGELOG.md + SemVer; update-checker later
+- Free tier + pricing: local forever free (privacy moat); hosted paid; small hosted free tier as the no-install demo
+- Enterprise (v3 stretch): SSO, audit logs, on-prem
+
+**DoD:** a stranger lands on the website, downloads the app (or starts the hosted free tier), and asks a cited question in under 3 minutes; a changelog accompanies every release.
+
 ### B14. Agent connectivity via MCP (P2 — see [mcp.md](./mcp.md))
 **Problem:** users want their own harnesses (Claude Code, Codex, opencode) to use AnchorCore's memory, but today only the browser UI can reach it.
 
