@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     classifier_base_url: str = ""  # empty → ollama_base_url (local)
     classifier_api_key: str = ""
     embed_model: str = "nomic-embed-text"
+    embed_base_url: str = ""  # empty → ollama_base_url (local)
+    embed_api_key: str = ""
     classifier_timeout: float = 60.0
     classifier_concurrency: int = 4
     http_retries: int = 3
