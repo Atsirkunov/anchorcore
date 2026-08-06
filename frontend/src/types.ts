@@ -145,7 +145,7 @@ export type Job = {
   id: number;
   source_id: number;
   kind: "sync" | "reclassify";
-  status: "running" | "done" | "failed";
+  status: "running" | "done" | "failed" | "cancelled";
   total: number;
   processed: number;
   result: { items?: number; entities?: number };

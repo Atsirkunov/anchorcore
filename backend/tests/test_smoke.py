@@ -129,6 +129,47 @@ def test_job_404(client):
     assert client.get("/sources/jobs/999999").status_code == 404
 
 
+def test_cancel_running_job(client, tmp_path):
+    """A long reclassify can be cancelled; the job ends 'cancelled' and the
+    cancel endpoint rejects non-running jobs."""
+    from app.db import SessionLocal
+    from app.models import IngestedItem
+    from sqlalchemy import select
+
+    # a big doc so classification takes long enough to cancel mid-flight
+    (tmp_path / "big.md").write_text(
+        "We decided to ship the platform in June. " * 400, encoding="utf-8"
+    )
+    source = client.post(
+        "/sources",
+        json={"connector": "folder", "name": "cancel", "config": {"path": str(tmp_path)}},
+    ).json()
+    start_and_wait(client, source["id"])
+
+    resp = client.post(f"/sources/{source['id']}/reclassify")
+    assert resp.status_code == 202
+    job_id = resp.json()["id"]
+
+    cancel = client.post(f"/sources/jobs/{job_id}/cancel")
+    assert cancel.status_code == 200, cancel.text
+    assert cancel.json()["cancelled"] is True
+
+    # job must reach a terminal state within the deadline
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        job = client.get(f"/sources/jobs/{job_id}").json()
+        if job["status"] != "running":
+            break
+        time.sleep(0.2)
+    assert job["status"] == "cancelled", job
+
+    # cancelling a finished job → 409
+    again = client.post(f"/sources/jobs/{job_id}/cancel")
+    assert again.status_code == 409
+    # unknown job → 404
+    assert client.post("/sources/jobs/999999/cancel").status_code == 404
+
+
 def test_health_reports_components(client):
     health = client.get("/health").json()
     assert health["status"] == "ok"

@@ -170,7 +170,7 @@ export function SystemTab() {
       ) : (
         <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 6, marginBottom: 20 }}>
           {jobs.map((j) => (
-            <li key={j.id} style={{ ...styles.row, borderLeft: `3px solid ${j.status === "failed" ? "#f87171" : j.status === "running" ? "#7dd3fc" : "#4ade80"}` }}>
+            <li key={j.id} style={{ ...styles.row, borderLeft: `3px solid ${j.status === "failed" ? "#f87171" : j.status === "cancelled" ? "#fbbf24" : j.status === "running" ? "#7dd3fc" : "#4ade80"}` }}>
               <div style={{ fontSize: 12, color: "#9ca3af" }}>
                 #{j.id} {j.kind} · {new Date(j.created_at).toLocaleString()} · {j.processed}/{j.total}
               </div>
