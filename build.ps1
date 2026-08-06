@@ -17,6 +17,10 @@ function Invoke-NativeStep {
     }
 }
 
+# 0. Kill a running app so the exe file isn't locked (WinError 5 otherwise).
+Get-Process -Name "AnchorCore" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 500
+
 # 1. Frontend build (bundled into the exe)
 Write-Host "==> Building frontend (npm run build)..."
 Push-Location (Join-Path $Root "frontend")
