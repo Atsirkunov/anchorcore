@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
 import type { Health, Job, Project } from "./types";
+import { OnboardingWizard } from "./OnboardingWizard";
 import { AskTab } from "./tabs/AskTab";
 import { EntitiesTab } from "./tabs/EntitiesTab";
 import { ReviewTab } from "./tabs/ReviewTab";
@@ -27,6 +28,7 @@ export default function App() {
   const [runningJobs, setRunningJobs] = useState<Job[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
+  const [showWizard, setShowWizard] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -37,6 +39,13 @@ export default function App() {
         setProjects(list);
         const def = list.find((p) => p.is_default);
         setSelectedProject((prev) => prev ?? def?.id ?? null);
+      })
+      .catch(() => {});
+    api
+      .onboarding()
+      .then((o) => {
+        if (cancelled) return;
+        if (o.needs_wizard && !localStorage.getItem("wizard-dismissed")) setShowWizard(true);
       })
       .catch(() => {});
     return () => {
@@ -93,6 +102,14 @@ export default function App() {
 
   return (
     <div style={styles.wrap}>
+      {showWizard && (
+        <OnboardingWizard
+          onClose={() => {
+            localStorage.setItem("wizard-dismissed", "1");
+            setShowWizard(false);
+          }}
+        />
+      )}
       <header style={styles.header}>
         <h1 style={styles.title}>AnchorCore</h1>
         <nav style={styles.nav}>

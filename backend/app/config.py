@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     top_k: int = 8
     low_confidence_threshold: float = 0.6
     duplicate_threshold: float = 0.92
+    qa_exclude_disputed: bool = True  # B3: never cite disputed entities by default
 
     @property
     def resolved_database_url(self) -> str:

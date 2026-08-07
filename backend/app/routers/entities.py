@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 from .. import schemas
 from ..config import settings
 from ..db import get_db
-from ..models import Chunk, Entity, IngestedItem, MergeAction, Relationship
+from ..models import Chunk, Dispute, Entity, IngestedItem, MergeAction, Relationship
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,42 @@ def make_router() -> APIRouter:
         if not ids:
             return []
         return list(db.execute(select(Entity).where(Entity.id.in_(ids))).scalars().all())
+
+    @router.post("/{entity_id}/dispute", response_model=schemas.EntityOut)
+    def dispute_entity(
+        entity_id: int, payload: schemas.DisputeCreate, db: Session = Depends(get_db)
+    ) -> Entity:
+        """B3: record a dispute (who/when/why), increment the counter, and
+        mark the entity disputed so answers stop citing it."""
+        entity = db.get(Entity, entity_id)
+        if entity is None:
+            raise HTTPException(status_code=404, detail="Entity not found")
+        db.add(
+            Dispute(
+                entity_id=entity.id,
+                reason=payload.reason.strip(),
+                user=payload.user.strip(),
+            )
+        )
+        entity.dispute_count = (entity.dispute_count or 0) + 1
+        entity.status = "disputed"
+        db.commit()
+        db.refresh(entity)
+        return entity
+
+    @router.get("/{entity_id}/disputes", response_model=list[schemas.DisputeOut])
+    def dispute_history(entity_id: int, db: Session = Depends(get_db)) -> list[Dispute]:
+        """B3: the audit trail for an entity, newest first."""
+        entity = db.get(Entity, entity_id)
+        if entity is None:
+            raise HTTPException(status_code=404, detail="Entity not found")
+        return list(
+            db.execute(
+                select(Dispute)
+                .where(Dispute.entity_id == entity_id)
+                .order_by(Dispute.created_at.desc())
+            ).scalars()
+        )
 
     return router
 

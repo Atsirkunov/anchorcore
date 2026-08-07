@@ -146,6 +146,19 @@ class AnswerEngine:
         self.embedder = embedder
         self.settings = settings
 
+    @staticmethod
+    def _status_ok(entity) -> bool:
+        """Retrieval filter applied uniformly across all tools: stale entities
+        are always excluded; disputed entities (B3) are excluded by default
+        (ANCHOR_QA_EXCLUDE_DISPUTED). Document chunks carry no entity → allowed."""
+        if entity is None:
+            return True
+        if entity.status == "stale":
+            return False
+        if entity.status == "disputed" and settings.qa_exclude_disputed:
+            return False
+        return True
+
     async def ask(
         self, db: Session, question: str, history: list | None = None, project_id: int | None = None
     ) -> AskResponse:
@@ -380,7 +393,7 @@ class AnswerEngine:
         out = []
         for eid, score in ranked:
             ent = entities.get(eid)
-            if ent is None or ent.status == "stale":
+            if ent is None or not self._status_ok(ent):
                 continue
             chunk = chunk_by_entity.get(eid)
             out.append(
@@ -466,7 +479,7 @@ class AnswerEngine:
         hits: list[dict] = []
         halflife = self.settings.get_float("retrieval_age_halflife_days", 365.0)
         for chunk, entity, item in rows:
-            if entity is None or entity.status == "stale":
+            if not self._status_ok(entity):
                 continue
             blob = " ".join([entity.owner, entity.author, entity.summary]).lower()
             overlap = sum(1 for t in terms if t in blob)
@@ -518,7 +531,7 @@ class AnswerEngine:
 
         scored = []
         for chunk, entity, item in rows:
-            if entity is not None and entity.status == "stale":
+            if not self._status_ok(entity):
                 continue
             vector = unpack_f32(chunk.embedding, len(query_embedding))
             score = _cosine(query_embedding, vector)
@@ -561,7 +574,7 @@ class AnswerEngine:
         ).all()
         hits = []
         for chunk, entity, item in chunks:
-            if entity is not None and entity.status == "stale":
+            if not self._status_ok(entity):
                 continue
             # bm25 returns negative scores; more negative = better match
             hits.append(
@@ -589,7 +602,7 @@ class AnswerEngine:
                 "score": 0.0,
             }
             for chunk, entity, item in rows
-            if entity is None or entity.status != "stale"
+            if self._status_ok(entity)
         ]
 
     def _project_source_ids(self, db: Session, project_id: int | None) -> set[int] | None:
