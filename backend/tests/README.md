@@ -8,7 +8,7 @@ from `backend/`. CI runs this plus the frontend build on every push
 - New functionality ships with tests in the matching file (see below).
 - Keep tests fast-failing and hermetic: the fixture points Ollama at
   `http://localhost:1` (unreachable), so tests exercise degradation paths
-  locally. Tests that need real models are run manually as probes (see §5).
+  locally. Tests that need real models are run manually as probes (see §10).
 - `client` fixture = FastAPI TestClient with app lifespan (migrations run,
   scheduler starts).
 
@@ -120,16 +120,26 @@ from `backend/`. CI runs this plus the frontend build on every push
 | `test_project_scopes_qa_results` | DoD: overlapping projects return project-scoped citations |
 | `test_project_sources_relationship` | many-to-many source membership |
 
+## 10. `tests/test_distillation.py` — B18 distillation + IDF gating (5 tests)
+
+| Test | Covers |
+|---|---|
+| `test_distillation_produces_units` | chat-like source → normalized Q&A units (`kind='distilled'`) |
+| `test_distilled_unit_is_embed_min_signal` | distilled units are substantive (not gated out of embedding) |
+| `test_filler_stays_unembedded_and_keyword_findable` | low-signal filler: `embedding=NULL`, still FTS-findable |
+| `test_distillation_hash_skips_on_resync` | unchanged content re-syncs without duplicating units |
+| `test_distilled_chunks_do_not_duplicate_on_reclassify` | reclassify drops old units before re-adding |
+
 ---
 
-## 10. Shared helpers
+## 11. Shared helpers
 
 - `tests/conftest.py` — temp DB + data dir env vars, unreachable Ollama,
   TestClient fixture.
 - `tests/test_smoke.py::start_and_wait` / `wait_job` — poll a background job
   to completion (used by retrieval tests too).
 
-## 10. Manual probes (not automated — need real Ollama + data)
+## 12. Manual probes (not automated — need real Ollama + data)
 
 Run with the app booted and models pulled to validate retrieval quality
 against real corpora (e.g. the 237-page rulebook):
@@ -142,9 +152,9 @@ against real corpora (e.g. the 237-page rulebook):
 
 ---
 
-## 11. Adding tests (checklist)
+## 13. Adding tests (checklist)
 
-- [ ] Pick the right file (smoke = flows, system = B1/events/redaction, retrieval = B12+, graph = B32, planner = B17)
+- [ ] Pick the right file (smoke = flows, system = B1/events/redaction, retrieval = B12+, graph = B32, planner = B17, projects = B15, distillation = B18)
 - [ ] Reuse `client` + `tmp_path` + `start_and_wait`; don't touch shared DB state assumptions
 - [ ] If asserting exact math (RRF/decay), keep tolerance `< 1e-9` style where deterministic
 - [ ] Remember the suite runs **without** Ollama — end-to-end tests must pass degraded
@@ -152,7 +162,7 @@ against real corpora (e.g. the 237-page rulebook):
 
 ---
 
-## 12. Future logic validation tests (by backlog item)
+## 14. Future logic validation tests (by backlog item)
 
 Tests to write **when the backlog feature lands** — each validates the
 invariant in the DoD, not the happy path. Add the new test file to the
@@ -170,7 +180,7 @@ tables above as they land and mark the item `— DONE`.
 | **B12 optional** LLM rerank | reranker rescoring changes top-k order per spec; candidates capped; rerank failure falls back to RRF order |
 | **B2/B11/B13 regressions** | job polling survives scheduler restart (watchdog); parallel classification preserves window order (results concatenated in ref order); orphan-kill on port works on Windows/macOS |
 
-## 13. Test-to-backlog traceability
+## 15. Test-to-backlog traceability
 
 Tests in the suite today map to shipped features:
 
@@ -188,9 +198,11 @@ Tests in the suite today map to shipped features:
 | B15 scoped search / projects | test_projects.py (all 5) |
 | B17 planner/executor/who_knows | test_planner.py (all 6) |
 | B18 distillation / IDF gating | test_distillation.py (all 5) |
-| B20/B21 packaged app + sample data | test_smoke.py ingest flows + sample corpus |
-| B23/B26 cloud models + doc-aware classification | test_settings.py (cloud providers) + test_classification.py (all 8) |
-| B24/B25 macOS build + release workflow | CI release.yml + build.sh (manual) |
-| B26 reviewable window context | test_smoke.py (`test_review_endpoints`) + test_classification.py |
-| B30 source deletion / FK cascade | test_smoke.py (`test_delete_source_cascades_entities`) |
+| B20 packaged app | CI release.yml + build.ps1 (manual) |
+| B21 sample dataset | test_smoke.py ingest flows + sample corpus |
+| B23 cloud classification | test_settings.py (cloud providers) |
+| B24 macOS build | CI release.yml + build.sh (manual) |
+| B25 release workflow | CI release.yml (tag → artifacts) |
+| B26 doc-aware classification + window context | test_classification.py (all 8) + test_smoke.py (`test_review_endpoints`) |
 | B32 graph retrieval | test_graph_retrieval.py (all 5) |
+| — source deletion (FK cascade + watcher fix) | test_smoke.py (`test_delete_source_cascades_entities`) |

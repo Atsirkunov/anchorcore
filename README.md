@@ -144,11 +144,11 @@ resets the thread.
 
 | Table | Notes |
 |---|---|
-| `sources` / `ingested_items` | connectors; items carry `doc_type` + `window_hashes` (cheap reclassify) |
+| `sources` / `ingested_items` | connectors; items carry `doc_type` + `window_hashes` (cheap reclassify) + `distill_hashes` (B18) |
 | `projects` / `project_sources` | source bundles for scoped search (B15) |
 | `entities` | kinds decision/document/action/note; `window_text`/`window_index` = classifier input; status verified/disputed/stale |
 | `relationships` | typed links (supersedes/depends_on/owns/blocks) |
-| `chunks` | full-doc + entity chunks, embeddings (float32 blobs) |
+| `chunks` | `kind` = document/entity/distilled; full-doc + entity + Q&A-unit chunks, embeddings (float32 blobs) |
 | `chunks_fts` | FTS5 keyword index, kept in sync by triggers |
 | `merge_actions` | duplicate proposals + decisions |
 | `jobs` | sync/reclassify progress + history |
