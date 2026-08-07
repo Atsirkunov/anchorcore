@@ -78,6 +78,8 @@ class Settings(BaseSettings):
     retrieval_max_per_source: int = 3
     retrieval_age_halflife_days: int = 365
     retrieval_context_window: int = 1
+    retrieval_graph_hops: int = 2
+    retrieval_graph_max: int = 3
     top_k: int = 8
     low_confidence_threshold: float = 0.6
     duplicate_threshold: float = 0.92
@@ -103,7 +105,8 @@ class Settings(BaseSettings):
             f"  classifier conc : {self.classifier_concurrency}",
             f"  embed model     : {self.embed_model}",
             f"  retrieval       : RRF fusion (keyword weight {self.retrieval_keyword_weight}, "
-            f"max {self.retrieval_max_per_source}/source, age halflife {self.retrieval_age_halflife_days}d)",
+            f"max {self.retrieval_max_per_source}/source, age halflife {self.retrieval_age_halflife_days}d, "
+            f"graph {self.retrieval_graph_hops}hops/{self.retrieval_graph_max}cap)",
             f"  answer model    : {answer_provider}",
             "-------------------------",
         ]
