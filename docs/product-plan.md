@@ -437,6 +437,14 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** label a folder `pii` → cloud classifier/embedder/answer never touch it (local-only, verified in logs + a `system_event`); a shared link (v2) answers only from `public` sources; the UI shows each source's label and what it allows.
 
+**B30 open question (needs product input before implementation — agreed 2026-08-07):**
+What counts as PII, and how do we map labels onto content? Proposed default to ratify:
+- **Hard PII (never leaves local)** — anything mappable to an identifiable person: names + contact (email, phone, address), government IDs (SSN/passport/driver's license), financial identifiers (account/card numbers), HR/medical data, credentials/secrets. Source label `pii` → local models only, excluded from sharing/answers/MCP.
+- **Sensitive (soft PII)** — data that isn't person-identifying but is commercially/strategically sensitive: customer lists, pricing, unreleased plans, legal drafts, security posture. Label `sensitive` → local-only, not shareable, but may be answerable to an authenticated local session.
+- **Internal** — default; local + trusted-cloud OK; not shareable.
+- **Public** — safe to share/answer via links, MCP, agents.
+- **Mapping question**: do we label at the **source level** only (folder = `pii`, so everything inside is gated — simple, safe, coarse), or allow **per-file/per-item overrides** (a docs folder containing one HR file)? Recommendation: source-level first (v1 semantics are "trust the source label"), per-item auto-detection (NER for emails/IDs/names) as a v2.5 stretch — never auto-*downgrade* to a less-restrictive label.
+
 ### B24. macOS build + ad-hoc signing (P2 — free path, no $99)
 **Problem:** Windows has a distributable exe (B20); macOS has none. The paid Apple Developer account ($99/yr) is only needed for *notarization* (silent Gatekeeper approval); for personal use and testers who accept one-time approval, a free path exists.
 
@@ -464,6 +472,62 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** tagging `v0.x.0` produces downloadable Windows + macOS artifacts automatically, verified by a smoke test on a clean machine.
 
+### B31. Backend port to Rust (P3 — deferred; see [rust-port.md](./rust-port.md))
+**Problem:** Python fully packaged is rough for non-technical testers — PyInstaller/venv
+fragility (we've shipped two packaging bugs: `.dylib` glob, toolcache-Python lacking
+loadable sqlite extensions), no cross-compile, cold start. The question keeps coming up:
+*"would Rust make it easier to run and faster?"* — this is the standing evaluation + plan.
+
+**Short answer (in [rust-port.md](./rust-port.md)):**
+- **Easier to run: yes.** One static binary, no runtime, cross-compiles. This is Rust's
+  real win and it removes exactly the failures that reach testers.
+- **Faster: mostly no.** LLM inference (Ollama/cloud) dominates latency and is
+  language-independent. Rust only speeds retrieval/chunking — which is achievable in
+  Python via the bundled sqlite-vec `vec0` index (~10–100x, ~1 day).
+- **Ease of support:** Rust trades iteration speed for runtime reliability. Fair for a
+  solo maintainer *only if* the port is incremental (same API + SQLite schema contract,
+  both sides run the shared test suite) — never a big-bang rewrite.
+
+**Do cheaper wins first (any language):** bundled llama.cpp inference (the *actual*
+"works for non-techies" fix, already on `packaging.md` open work), `vec0` retrieval index,
+first-run wizard (B8). If those satisfy testers and releases stop breaking, don't port.
+
+**When the port IS worth it:** testers can't install Ollama (fix with bundled inference,
+not a rewrite); releases keep breaking on packaging (2 incidents already — Rust's biggest
+win); retrieval latency on real corpora matters after vec0.
+
+**DoD:** Phase 3 of the plan — a Rust binary serving the same REST API and SQLite file
+as the Python backend, with the existing test suite green against it, demoable and
+rollback-safe — OR a documented decision to stay on Python.
+
+### B32. Graph-based retrieval: relationship-aware rerank + expansion (P2 — internal-tool parity)
+**Problem:** AnchorCore builds the entity graph (`entities` + `relationships`: supersedes/depends_on/owns/blocks) but never consults it during Q&A — retrieval is vector + FTS5 RRF only. An internally comparable tool does vector *and* graph-based retrieval, so questions that RRF alone answers poorly ("what supersedes this?", "what depends on this decision?") fall through because the words don't co-occur. The graph already exists; it's just not wired into the answer path.
+
+**Scope (one phase, fits the existing pipeline — graph walk is pure Python, no model calls):**
+- **Graph-aware rerank/expansion after RRF**: after vector+keyword fusion picks top-k entities, do a 1–2 hop traversal over `relationships` from those entities, pulling the connected entities' summaries/chunks into the answer context (parallels the existing same-item `context expansion`, but across entities)
+- **Traversal weighting**: prefer strong relationship kinds (`supersedes`, `depends_on`, `owns`) over weak (`related`); cap hops + fan-out so a hub entity can't flood context
+- **Surfaces as citations**: connected entities render as additional citation chips ("superseded by X", "depends on Y"), so the answer shows *why* related context was included
+- Respect status/dispute filtering exactly like the existing retrieval (stale/disputed never injected)
+- Tests: two decisions connected by `supersedes` — a question about the old one surfaces the new one's summary with a `supersedes` citation; hub entity fan-out capped; disputed connected entities excluded
+
+**DoD:** asking "what superseded the security-transfers decision?" (or a natural phrasing the model paraphrases) returns the newer decision's summary as a cited, connected result without the words co-occurring in both documents.
+
 ---
 
-*Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md)*
+## Current execution priorities (agreed 2026-08-07)
+
+Explicit order — the retrieval/answer architecture is the focus while tokens are cheap;
+B30 is large and cross-cutting so it sits last in line but is **flagged for design input
+before implementation** (see [B30 open question](#b30-data-labeling-piisensitive-gating-of-models-sharing-and-answers-p1-for-pii--v1-risk-p2-rest)).
+
+> **B32 > B17 > B18 > B15 > B30**
+
+| # | Item | Why here |
+|---|---|---|
+| 1 | **B32 Graph-based retrieval** | quick, high demo value, internal-tool parity; graph already built, pure Python, no model calls |
+| 2 | **B17 Planner→Executor→Synthesis** | restructures Q&A into the agentic path; biggest architecture lift, shares answer-engine code with B32 |
+| 3 | **B18 Distillation** | normalized embeddings = retrieval quality win; touches pipeline + retrieval after B17 settles the shape |
+| 4 | **B15 Scoped search / projects** | cross-cutting (Q&A + MCP + UI) — relevance at scale; builds on the retrieval work above |
+| 5 | **B30 Data labeling / PII gating** | large + cross-cutting; **needs product input first** (see below), then lands last |
+
+*Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md)*
