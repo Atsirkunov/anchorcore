@@ -3,7 +3,7 @@ from .classifier import Classifier
 from .config import Settings
 from .db import Base, SessionLocal, engine, get_db
 from .embedder import Embedder
-from .models import Chunk, Entity, IngestedItem, MergeAction, Relationship, Source
+from .models import Chunk, Entity, IngestedItem, MergeAction, Project, Relationship, Source
 from .pipeline import IngestionPipeline
 from .scheduler import Scheduler
 from .secrets import SecretStore
@@ -18,6 +18,7 @@ __all__ = [
     "IngestedItem",
     "IngestionPipeline",
     "MergeAction",
+    "Project",
     "Relationship",
     "Scheduler",
     "SecretStore",

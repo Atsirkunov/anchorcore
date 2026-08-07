@@ -109,6 +109,10 @@ blocks/related) 1-2 hops and pulls connected entities into the answer context
 and citations — so "what supersedes this?" answers even when the words don't
 co-occur in both documents.
 
+**Scoped search via projects (B15):** group sources into named projects (a
+source can be in several); pick one in the header to scope every question to
+that project's sources, or "All sources". The default project is marked ★.
+
 **Follow-up questions:** the Ask tab is a chat — follow-ups ("show the
 movements for it") are rewritten into standalone queries using conversation
 history, and the conversation is passed to generation. **Clear context**
@@ -130,7 +134,8 @@ resets the thread.
 - `DELETE /sources/{id}` — remove a source and cascade-delete its items/entities/chunks
 - `GET /entities`, `PATCH /entities/{id}` — browse and review (verify/dispute/reclassify)
 - `GET /review/low-confidence`, `GET /review/duplicates`, `POST /review/merge` — review queue (entities carry `window_text` for review context)
-- `POST /qa` — ask (optionally with `history` turns), get answer with section-level citations
+- `POST /qa` — ask (optionally with `history` turns and a `project_id` scope), get answer with section-level citations
+- `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`, `GET /projects/default` — project bundles for scoped search
 - `GET /settings`, `PUT /settings` — runtime model config (secrets masked)
 - `POST /settings/test-connection` — verify ollama/classifier/embedder/answer providers
 - `GET /system/status`, `GET /system/errors`, `GET /system/logs[/{file}]` — health, errors, log download
@@ -140,6 +145,7 @@ resets the thread.
 | Table | Notes |
 |---|---|
 | `sources` / `ingested_items` | connectors; items carry `doc_type` + `window_hashes` (cheap reclassify) |
+| `projects` / `project_sources` | source bundles for scoped search (B15) |
 | `entities` | kinds decision/document/action/note; `window_text`/`window_index` = classifier input; status verified/disputed/stale |
 | `relationships` | typed links (supersedes/depends_on/owns/blocks) |
 | `chunks` | full-doc + entity chunks, embeddings (float32 blobs) |
