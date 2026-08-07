@@ -23,7 +23,7 @@ v1 today = the middle two boxes. This doc scopes the rest.
 | Page | Content | Notes |
 |---|---|---|
 | Home | hero + 60s demo (video or interactive), the "AI memory" positioning, 3-step how-it-works, download CTA | Message: *"Preserve company knowledge and make every AI model smarter."* |
-| Download | Windows exe + macOS app (B24), checksums, changelog link | direct artifact links from GitHub Releases (B25) |
+| Download | Windows exe + macOS app (both exist — B20/B24), checksums, changelog link | direct artifact links from GitHub Releases (B25) |
 | Docs | README + docs/ rendered | could be a static site built from the repo (VitePress/Docusaurus/Mintlify) |
 | Pricing | free tier + paid tiers (see §6) | only once hosted exists; until then "free during validation" |
 | Changelog | release notes per version | see §5 |

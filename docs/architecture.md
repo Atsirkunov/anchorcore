@@ -128,11 +128,11 @@ This answers "what supersedes this?" / "what depends on this decision?" that
 lexical+vector fusion alone misses, because the connected knowledge doesn't
 need to co-occur in the question's words. Pure SQL — no model calls.
 
-Further learnings parked in the backlog: scoped search via *projects* (bundles
+Remaining learnings parked in the backlog: scoped search via *projects* (bundles
 of sources with a per-user default — "search everything everywhere" stops
-being useful at scale), *who_knows* expertise queries, planner→executor→
-synthesis query architecture, and distillation of raw content into
-question/summary/resolution fields before embedding.
+being useful at scale), a full *who_knows* ranking (B16; B17 ships a minimal
+owner/author tool already), and distillation of raw content into
+question/summary/resolution fields before embedding (B18).
 
 ## 5. Data Model — Uniform Entity Graph
 
@@ -264,7 +264,8 @@ erDiagram
 | Keyword Store | FTS5 bm25 for hybrid retrieval | SQLite FTS5 (`chunks_fts`, trigger-synced) |
 | Classifier | Doc-type detection + entity extraction | Ollama or cloud OpenAI-compatible + rule fallback |
 | Embedder | Chunk embeddings | Ollama or cloud OpenAI-compatible |
-| Answer Engine | RRF hybrid RAG + citations + follow-up rewrite | BYO cloud model or Ollama |
+| Answer Engine | Planner (tool selection) → Executor (hybrid + who_knows) → RRF fusion → graph walk → cited answer | BYO cloud model or Ollama |
+| Retrieval (retrievers) | Vector cosine + FTS5 bm25, who_knows owner/author ranking, `relationships` graph walk (B32) | sqlite-vec + FTS5 + SQL |
 | Job Manager | Background sync/reclassify + cancel | asyncio tasks + `jobs` table |
 | Settings Service | Runtime-mutable model config | `app_settings` table + SecretStore |
 | Secret Store | Credentials (Jira token, model keys) | OS Keychain via `keyring` + encrypted-file fallback |
@@ -298,7 +299,8 @@ erDiagram
 
 ```
 v1: local-first, folder + Jira, document-aware classification + review + cited Q&A
-  -> v1.5: Linear/Drive connectors, Windows exe + macOS app, MCP access
+    (done: hybrid RRF retrieval + planner/executor + graph walk + Windows/macOS apps)
+  -> v1.5: Linear/Drive connectors, MCP access, projects/scoped search, distillation
   -> v2: team sharing, hosted option, Slack, contradictions, bundled models
   -> v3: agentic levels (draft, prepare-action-with-approval), enterprise compliance
 ```

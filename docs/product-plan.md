@@ -314,26 +314,26 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** after 5+ follow-ups, the newest answer is visible without scrolling.
 
-### B20. Launchable package for others (P1 — "usable by others" blocker)
+### B20. Launchable package for others (P1 — "usable by others" blocker) — DONE
 **Problem:** today AnchorCore runs from a repo checkout (`start.ps1`); a non-developer can't install and launch it. `packaging.md` is a plan only, stale (references Next.js; we're Vite), and macOS-only.
 
-**Scope:**
-- Windows first (this machine): PyInstaller single-file backend exe bundling the built `frontend/dist` — one process serves UI + API on 127.0.0.1:8000
-- Installer/launcher script: checks/starts Ollama, pulls models if missing, opens the browser, first-run data dir under `%LOCALAPPDATA%`
-- Update `packaging.md` to reality (Vite, current stack, Windows-first, macOS later); keep macOS `.app` + signing as the stretch milestone
-- CI artifact: build the exe on tag/push so testers get a download
+**Done:**
+- PyInstaller single-file backend exe bundling the built `frontend/dist` — one process serves UI + API on 127.0.0.1:8000 (`dist/AnchorCore.exe`; macOS `dist/AnchorCore` via `build.sh`, B24)
+- Launcher (`backend/run_app.py`): sets `ANCHOR_DATA_DIR=~/.anchorcore` when frozen, auto-starts the local Ollama server, opens the browser, boots uvicorn
+- `packaging.md` updated to reality (Vite, current stack, both platforms); `.app` bundle + notarization deferred as the stretch milestone
+- CI artifact: `.github/workflows/release.yml` builds the exe/app on every `v*` tag (B25) so testers get a download
 
-**DoD:** a non-developer downloads one file, runs it, and lands in the Ask tab with models working — no terminal, no repo.
+**DoD:** a non-developer downloads one file, runs it, and lands in the Ask tab with models working — no terminal, no repo. — met (v1.0.0+ Windows exe + macOS app released to GitHub).
 
-### B21. Sample dataset for variety and complexity (P1 — first, per agreed prio)
+### B21. Sample dataset for variety and complexity (P1 — first, per agreed prio) — DONE
 **Problem:** `sample/` has one 18-line sprint note. Can't demo or validate variety (classification kinds, relationships, duplicates, review, follow-ups, people) on real-shaped data.
 
-**Scope:**
-- Mini-company corpus: `decisions/` (PRD cuts, architecture tradeoffs w/ reasoning), `meetings/` (retro + planning notes with action items + owners), `specs/` (feature doc with cross-references), `people.md` (who owns what — feeds future who_knows)
-- Deliberately include: one duplicate pair (review/merge), one low-confidence item (review), one disputed-worthy claim, and follow-up-friendly topics (e.g. a decision whose movements/steps are asked about second)
-- Docs/README update: how to point a folder source at `sample/` and what each file exercises
+**Done:**
+- Mini-company corpus: `decisions/` (PRD cuts, architecture tradeoffs w/ reasoning), `meetings/` (retro + planning notes with action items + owners), `specs/` (feature doc with cross-references), `people.md` (who owns what — feeds who_knows)
+- Deliberately includes: one duplicate pair (review/merge), one low-confidence item (review), one disputed-worthy claim, and follow-up-friendly topics
+- `docs/sample-dataset.md` — how to point a folder source at `sample/` and what each file exercises + demo scripts
 
-**DoD:** connecting `sample/` exercises every Review tab state, produces multiple entity kinds with owners, and supports a 3+ turn follow-up demo.
+**DoD:** connecting `sample/` exercises every Review tab state, produces multiple entity kinds with owners, and supports a 3+ turn follow-up demo. — met (live demo flows).
 
 ### B22. Live integration validation: Jira / Linear (P2)
 **Problem:** the Jira connector has never hit a real instance; Linear doesn't exist. "Connects to your tools" is claimed but unproven.
@@ -446,7 +446,7 @@ What counts as PII, and how do we map labels onto content? Proposed default to r
 - **Public** — safe to share/answer via links, MCP, agents.
 - **Mapping question**: do we label at the **source level** only (folder = `pii`, so everything inside is gated — simple, safe, coarse), or allow **per-file/per-item overrides** (a docs folder containing one HR file)? Recommendation: source-level first (v1 semantics are "trust the source label"), per-item auto-detection (NER for emails/IDs/names) as a v2.5 stretch — never auto-*downgrade* to a less-restrictive label.
 
-### B24. macOS build + ad-hoc signing (P2 — free path, no $99)
+### B24. macOS build + ad-hoc signing (P2 — free path, no $99) — DONE
 **Problem:** Windows has a distributable exe (B20); macOS has none. The paid Apple Developer account ($99/yr) is only needed for *notarization* (silent Gatekeeper approval); for personal use and testers who accept one-time approval, a free path exists.
 
 **Scope (build runs on the Mac — PyInstaller doesn't cross-compile):**
@@ -464,7 +464,7 @@ What counts as PII, and how do we map labels onto content? Proposed default to r
 
 **DoD:** running `./build.sh` on a Mac produces a launchable, ad-hoc signed `dist/AnchorCore`; launching on a fresh Mac works after the one-time approval.
 
-### B25. Release step: rebuild executables on every release (P1 — process)
+### B25. Release step: rebuild executables on every release (P1 — process) — DONE
 **Problem:** the packaged exe embeds the frontend at build time, so stale builds silently miss UI changes (the B23 "missing API key field" incident). Rebuilds were manual and easy to forget.
 
 **Done:**
@@ -517,18 +517,19 @@ rollback-safe — OR a documented decision to stay on Python.
 
 ## Current execution priorities (agreed 2026-08-07)
 
-Explicit order — the retrieval/answer architecture is the focus while tokens are cheap;
+Explicit order — the retrieval/answer architecture is the focus while tokens are cheap.
+**B32 and B17 are DONE** (released in v1.0.3/v1.0.4); the queue below is what remains.
 B30 is large and cross-cutting so it sits last in line but is **flagged for design input
 before implementation** (see [B30 open question](#b30-data-labeling-piisensitive-gating-of-models-sharing-and-answers-p1-for-pii--v1-risk-p2-rest)).
 
-> **B32 > B17 > B18 > B15 > B30**
+> **B18 > B15 > B30**
 
-| # | Item | Why here |
-|---|---|---|
-| 1 | **B32 Graph-based retrieval** | quick, high demo value, internal-tool parity; graph already built, pure Python, no model calls |
-| 2 | **B17 Planner→Executor→Synthesis** | restructures Q&A into the agentic path; biggest architecture lift, shares answer-engine code with B32 |
-| 3 | **B18 Distillation** | normalized embeddings = retrieval quality win; touches pipeline + retrieval after B17 settles the shape |
-| 4 | **B15 Scoped search / projects** | cross-cutting (Q&A + MCP + UI) — relevance at scale; builds on the retrieval work above |
-| 5 | **B30 Data labeling / PII gating** | large + cross-cutting; **needs product input first** (see below), then lands last |
+| # | Item | Status | Why here |
+|---|---|---|---|
+| 1 | B32 Graph-based retrieval | ✅ DONE (v1.0.3) | graph walk after RRF → connected entities in context + citations |
+| 2 | B17 Planner→Executor→Synthesis | ✅ DONE (v1.0.4) | tool planner + executor + evidence fusion; who_knows tool |
+| 3 | **B18 Distillation** | **next** | normalized embeddings = retrieval quality win; touches pipeline + retrieval now that B17 settled the shape |
+| 4 | B15 Scoped search / projects | open | cross-cutting (Q&A + MCP + UI) — relevance at scale; builds on the retrieval work above |
+| 5 | B30 Data labeling / PII gating | open | large + cross-cutting; **needs product input first** (see below), then lands last |
 
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md)*

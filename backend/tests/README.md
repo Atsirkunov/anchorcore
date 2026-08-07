@@ -14,12 +14,13 @@ from `backend/`. CI runs this plus the frontend build on every push
 
 ---
 
-## 1. `tests/test_smoke.py` — end-to-end flows (13 tests)
+## 1. `tests/test_smoke.py` — end-to-end flows (15 tests)
 
 | Test | Covers |
 |---|---|
 | `test_health` | `/health` responds 200 |
 | `test_folder_ingest_flow` | folder source → sync job → entities; hash dedup on re-sync; QA degrades gracefully |
+| `test_delete_source_cascades_entities` | deleting a source removes its items + entities + chunks (NOT NULL FK + watcher unschedule fix) |
 | `test_job_history_and_progress` | background job: total/processed counts, history listing |
 | `test_reclassify_runs_as_job` | reclassify as async job, entities rebuilt |
 | `test_review_endpoints` | low-confidence list, PATCH verify |
@@ -30,6 +31,8 @@ from `backend/`. CI runs this plus the frontend build on every push
 | `test_reclassify_rebuilds_entities` | reclassify keeps entity surface |
 | `test_merge_cleans_references` | merge with relationship/merge rows doesn't 500 (NOT NULL FK bug) |
 | `test_full_document_chunking` | long doc → ≥2 full-doc chunks; tail content chunked; QA returns citations |
+| `test_cancel_running_job` | long reclassify cancellable; cancelling finished job → 409; unknown → 404 |
+| `test_orphaned_running_job_is_cancelled` | job left 'running' by a dead process is swept on JobManager init + via endpoint |
 
 ## 2. `tests/test_system.py` — B1 error transparency + redaction (8 tests)
 
@@ -44,7 +47,7 @@ from `backend/`. CI runs this plus the frontend build on every push
 | `test_logs_list_and_download` | log listing + sanitized download, 404 on bad name |
 | `test_health_reports_pending_embedding_count` | pending-embedding counter in `/health` |
 
-## 3. `tests/test_retrieval.py` — B12 + B12.1 retrieval quality (10 tests)
+## 3. `tests/test_retrieval.py` — B12 + B12.1 retrieval quality (11 tests)
 
 | Test | Covers |
 |---|---|
@@ -57,9 +60,31 @@ from `backend/`. CI runs this plus the frontend build on every push
 | `test_rrf_consensus_beats_single_vote` | RRF: chunk in both lists outranks single-list #1; exact 1/(60+rank) math |
 | `test_rrf_keyword_weight_scales_list` | RRF: keyword list weight scales contribution |
 | `test_age_decay_favors_recent` | age decay: 0.5^age/halflife math, recent > old |
-| `test_diversity_cap_limits_per_source` | per-source cap: one source can't monopolize results |
+| `test_diversity_cap_limits_per_item` | per-item cap: one file can't monopolize results |
+| `test_diversity_cap_relaxed_for_single_file` | single-file corpus isn't capped below top_k |
 
-## 4. `tests/test_settings.py` — B4 runtime LLM config (8 tests)
+## 4. `tests/test_graph_retrieval.py` — B32 graph-based retrieval (5 tests)
+
+| Test | Covers |
+|---|---|
+| `test_graph_expand_surfaces_connected_entities` | supersedes/depends_on/owns neighbors pulled in |
+| `test_graph_expand_ranks_strong_kinds_first` | supersedes beats related in ranking |
+| `test_graph_expand_excludes_stale_and_caps_fanout` | stale connected entities excluded; fan-out ≤ cap |
+| `test_graph_kind_weights_are_sane` | weight ordering (supersedes > depends_on > related) |
+| `test_qa_includes_graph_citations` | Q&A returns connected-entity citations |
+
+## 5. `tests/test_planner.py` — B17 Planner→Executor→Synthesis (6 tests)
+
+| Test | Covers |
+|---|---|
+| `test_planner_hybrid_always` | hybrid tool always selected |
+| `test_planner_adds_who_knows_for_ownership_questions` | who/owns/responsible → who_knows tool |
+| `test_who_knows_surfaces_owner_entities` | who_knows ranks owner/author entities (no embeddings needed) |
+| `test_executor_runs_planned_tools` | executor returns evidence bundle; hybrid hits non-empty |
+| `test_multi_tool_evidence_fusion` | who_knows + hybrid fuse into one ranked list |
+| `test_qa_multi_source_cited` | DoD: decision + person evidence both cited |
+
+## 6. `tests/test_settings.py` — B4 runtime LLM config (14 tests)
 
 | Test | Covers |
 |---|---|
@@ -71,29 +96,45 @@ from `backend/`. CI runs this plus the frontend build on every push
 | `test_test_connection_ollama_unreachable` | Ollama down → graceful failure result |
 | `test_test_connection_answer_requires_key` | answer provider validation path |
 | `test_system_status_reflects_runtime_settings` | `/system/status` reads live (runtime) values |
+| (classifier/embedder provider + key storage + masked-config variants) | cloud classifier/embedder config paths |
+
+## 7. `tests/test_classification.py` — document-aware classification (8 tests)
+
+| Test | Covers |
+|---|---|
+| rule vs LLM fallback, window hashing, doc-type pre-pass, per-type prompts | B26 classification surface |
+
+## 8. `tests/test_followups.py` — follow-up questions (5 tests)
+
+| Test | Covers |
+|---|---|
+| history payload accepted; rewrite used for retrieval; no-key → raw question; pydantic turns; conversation in generation | follow-up rewrite + context pass-through |
 
 ---
 
-## 5. Shared helpers
+## 9. Shared helpers
 
 - `tests/conftest.py` — temp DB + data dir env vars, unreachable Ollama,
   TestClient fixture.
 - `tests/test_smoke.py::start_and_wait` / `wait_job` — poll a background job
   to completion (used by retrieval tests too).
 
-## 6. Manual probes (not automated — need real Ollama + data)Run with the app booted and models pulled to validate retrieval quality
+## 10. Manual probes (not automated — need real Ollama + data)
+
+Run with the app booted and models pulled to validate retrieval quality
 against real corpora (e.g. the 237-page rulebook):
 
 - Ask: `What are the DVCA movement rules?` → expect §4.25 DVCA sections top-ranked.
 - Ask: `What are the movement rules for Merger and related movements?` → expect §4.39 MRGR + no unrelated §457 PLAC.
+- Ask: `Who owns the billing migration?` → expect the planner to run `['hybrid', 'who_knows']` and cite person + decision evidence (B17/B32).
 - System tab → Classifier throughput shows windows + avg latency.
 - Reclassify a source after retrieval changes; probe again.
 
 ---
 
-## 6. Adding tests (checklist)
+## 11. Adding tests (checklist)
 
-- [ ] Pick the right file (smoke = flows, system = B1/events/redaction, retrieval = B12+)
+- [ ] Pick the right file (smoke = flows, system = B1/events/redaction, retrieval = B12+, graph = B32, planner = B17)
 - [ ] Reuse `client` + `tmp_path` + `start_and_wait`; don't touch shared DB state assumptions
 - [ ] If asserting exact math (RRF/decay), keep tolerance `< 1e-9` style where deterministic
 - [ ] Remember the suite runs **without** Ollama — end-to-end tests must pass degraded
@@ -101,39 +142,45 @@ against real corpora (e.g. the 237-page rulebook):
 
 ---
 
-## 7. Future logic validation tests (by backlog item)
+## 12. Future logic validation tests (by backlog item)
 
 Tests to write **when the backlog feature lands** — each validates the
-invariant in the DoD, not the happy path. Add the new test file to §1–§3
+invariant in the DoD, not the happy path. Add the new test file to the
 tables above as they land and mark the item `— DONE`.
 
 | Backlog item | Tests to write |
 |---|---|
 | **B3** Dispute tracking | dispute entity → `disputes` row written (entity_id, reason, user, timestamp); counter increments; disputed entities excluded from Q&A citations; re-verify clears counter? (per spec) |
-| **B4** LLM config in-app | settings write persists to `app_settings` and overrides env; secret fields never returned by GET (masked); "test connection" success + failure paths; runtime change takes effect without restart (no stale singleton) |
 | **B7** Source config editing | PUT updates config/name/enabled; secret fields stay keychain-backed (not echoed); invalid config rejected; watcher/scheduler reloads after edit |
 | **B8** First-run wizard | wizard state transitions (no sources → guided → connected); Ollama-missing path offers instructions; sample question flow works end-to-end |
 | **B9** Document type coverage | `.docx`/`.pptx`/`.odt` extract text; encrypted/corrupt file fails gracefully (recorded event, no crash); mixed-folder sync handles all types |
 | **B14** MCP agent access | local stdio server: tool list exposed (`ask`, `search`, `get_entity`, `get_source`, `list_sources`, `memory_status`); `search` respects dispute/stale filters; HTTP transport: no token on remote → 401, valid token → 200, every call audited in `system_events` (component `mcp`); `ingest` (v2) creates `unverified` items authored `mcp:<token>` routed to review |
 | **B15** Projects / scoped search | project = bundle of sources; same source in 2 projects (no duplication); default project scopes queries (Q&A + MCP search); out-of-project source never returned |
-| **B16** who_knows | ranking: more entities + higher confidence + recency wins; every surfaced person has cited evidence entities; no evidence → not surfaced |
-| **B17** Planner→Executor→Synthesis | planner selects tools per query; executor fans out in parallel and normalizes evidence; synthesis cites both source types for cross-source questions; search-only path (no planner) still answers |
+| **B16** who_knows (full) | ranking: more entities + higher confidence + recency wins; every surfaced person has cited evidence entities; no evidence → not surfaced (B17 ships a minimal tool already) |
 | **B18** Distillation / IDF gating | distilled units (question/summary/resolution) findable; filler messages absent from vector results (below IDF threshold) but present in FTS; full-doc chunks still embedded (B12 DoD holds) |
+| **B30** Data labeling / PII gating | label a source `pii` → cloud classifier/embedder/answer never touch it; shared link answers only from `public`; every gate decision audited |
 | **B12 optional** LLM rerank | reranker rescoring changes top-k order per spec; candidates capped; rerank failure falls back to RRF order |
 | **B2/B11/B13 regressions** | job polling survives scheduler restart (watchdog); parallel classification preserves window order (results concatenated in ref order); orphan-kill on port works on Windows/macOS |
 
-## 8. Test-to-backlog traceability
+## 13. Test-to-backlog traceability
 
 Tests in the suite today map to shipped features:
 
 | Backlog item | Test file (§) |
 |---|---|
 | B1 error transparency | test_system.py (all 8) |
-| B2 jobs/progress | test_smoke.py (jobs, history, reclassify, 404) |
-| B4 runtime LLM config | test_settings.py (all 8) |
+| B2 jobs/progress | test_smoke.py (jobs, history, reclassify, cancel, orphan sweep, 404) |
+| B4 runtime LLM config | test_settings.py (all 14) |
 | B5 full-doc chunking | test_smoke.py (`test_full_document_chunking`) |
 | B6 embedding backfill | test_system.py (`test_health_reports_pending_embedding_count`) |
 | B11 parallel classification | manual probes only (throughput in System tab) — consider automated latency-order test |
 | B12 hybrid + cleaning + heading chunking | test_retrieval.py (first 6) |
-| B12.1 RRF/decay/diversity/context | test_retrieval.py (last 4) |
+| B12.1 RRF/decay/diversity/context | test_retrieval.py (last 5) |
 | B13 dev hardening | CI itself (pytest + frontend build on push) |
+| B17 planner/executor/who_knows | test_planner.py (all 6) |
+| B20/B21 packaged app + sample data | test_smoke.py ingest flows + sample corpus |
+| B23/B26 cloud models + doc-aware classification | test_settings.py (cloud providers) + test_classification.py (all 8) |
+| B24/B25 macOS build + release workflow | CI release.yml + build.sh (manual) |
+| B26 reviewable window context | test_smoke.py (`test_review_endpoints`) + test_classification.py |
+| B30 source deletion / FK cascade | test_smoke.py (`test_delete_source_cascades_entities`) |
+| B32 graph retrieval | test_graph_retrieval.py (all 5) |

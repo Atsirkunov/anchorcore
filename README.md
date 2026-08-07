@@ -6,10 +6,11 @@ Connect your knowledge to any AI model. An AI memory layer / knowledge operating
 
 - [Product Plan](./docs/product-plan.md) — what we're building, for whom, and why (+ full backlog)
 - [Architecture](./docs/architecture.md) — system view + architecture diagram
-- [Packaging](./docs/packaging.md) — Windows exe (done), macOS plan
+- [Packaging](./docs/packaging.md) — Windows exe + macOS app (both built from one spec)
 - [Releasing](./docs/releasing.md) — release checklist: tag → CI builds both executables
 - [Agent connectivity (MCP)](./docs/mcp.md) — how harnesses (Claude Code, Codex, opencode) will use the memory
 - [v2/v3 business scoping](./docs/v2v3-scope.md) — website, hosting, sharing, pricing, free tier
+- [Rust port evaluation](./docs/rust-port.md) — is a Rust backend worth it? (distribution vs LLM latency)
 - [Sample dataset guide](./docs/sample-dataset.md) — what the demo corpus exercises
 
 ## Project layout
@@ -25,9 +26,10 @@ docs/       Product plan, architecture, packaging, releasing
 ## Run it
 
 **Easiest (testers):** build once, ship one file — `.\build.ps1` (Windows)
-produces `dist/AnchorCore.exe` (bundles the UI, auto-starts Ollama, data in
-`~/.anchorcore`). Pushing a `v*` tag builds Windows + macOS executables
-automatically (see `docs/releasing.md`).
+produces `dist/AnchorCore.exe`, or `./build.sh` (macOS) produces
+`dist/AnchorCore` (ad-hoc signed). Each bundles the UI, auto-starts Ollama,
+data in `~/.anchorcore`. Pushing a `v*` tag builds Windows + macOS
+executables automatically (see `docs/releasing.md`).
 
 **Developers:** `.\start.ps1` (or `./start.sh`) — creates the venv + `.env`
 on first run, applies Alembic migrations, starts Ollama, boots the backend at
@@ -88,6 +90,20 @@ with neighboring sections, and dedupes near-identical chunks. Config:
 `ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS` (365), `ANCHOR_RETRIEVAL_CONTEXT_WINDOW`
 (1).
 
+**Planner → Executor → Synthesis (B17):** a lightweight planner picks the
+retrieval tools per query — `hybrid` (vector + keyword) always, plus a
+`who_knows` tool for ownership/expertise questions ("who owns X?"). The
+executor runs them (one shared embedding call), normalizes each tool's hits
+into one evidence bundle, and synthesis RRF-fuses them into the final context.
+An LLM planner can replace the heuristic rules later without changing the
+contract.
+
+**Graph-based retrieval (B32):** after RRF picks the winning entities, the
+pipeline walks the entity graph (`relationships`: supersedes/depends_on/owns/
+blocks/related) 1-2 hops and pulls connected entities into the answer context
+and citations — so "what supersedes this?" answers even when the words don't
+co-occur in both documents.
+
 **Follow-up questions:** the Ask tab is a chat — follow-ups ("show the
 movements for it") are rewritten into standalone queries using conversation
 history, and the conversation is passed to generation. **Clear context**
@@ -102,9 +118,11 @@ resets the thread.
 ## API surface (v1)
 
 - `POST /sources` — connect a folder (path) or Jira (base_url, email, token, project)
+- `GET /sources/{id}/config` — source config (secrets masked) — shown as folder path / Jira details in the Sources tab
 - `POST /sources/{id}/sync`, `POST /sources/{id}/reclassify` — run ingestion now (returns 202 + job id)
 - `GET /sources/jobs`, `GET /sources/jobs/{id}`, `GET /sources/jobs/running` — job progress + history (running/done/failed/cancelled)
 - `POST /sources/jobs/{id}/cancel` — stop a running job
+- `DELETE /sources/{id}` — remove a source and cascade-delete its items/entities/chunks
 - `GET /entities`, `PATCH /entities/{id}` — browse and review (verify/dispute/reclassify)
 - `GET /review/low-confidence`, `GET /review/duplicates`, `POST /review/merge` — review queue (entities carry `window_text` for review context)
 - `POST /qa` — ask (optionally with `history` turns), get answer with section-level citations
