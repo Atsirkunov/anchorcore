@@ -2,7 +2,7 @@ import json
 import hashlib
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Table, Text, Column
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -10,6 +10,28 @@ from .db import Base
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+project_sources = Table(
+    "project_sources",
+    Base.metadata,
+    Column("project_id", ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True),
+    Column("source_id", ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+class Project(Base):
+    """A named bundle of sources (B15) — scoped search. A source can belong to
+    multiple projects; one project is the user's default scope."""
+
+    __tablename__ = "projects"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(300))
+    is_default: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    sources: Mapped[list["Source"]] = relationship(secondary=project_sources, back_populates="projects")
 
 
 class Source(Base):
@@ -27,6 +49,7 @@ class Source(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     items: Mapped[list["IngestedItem"]] = relationship(back_populates="source", cascade="all, delete-orphan")
+    projects: Mapped[list["Project"]] = relationship(secondary=project_sources, back_populates="sources")
 
     def config_dict(self) -> dict:
         return json.loads(self.config or "{}")
