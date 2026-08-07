@@ -1,4 +1,4 @@
-import type { AppSettings, AskResponse, AskTurn, Entity, Health, Job, LogFile, MergeProposal, Project, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
+import type { AppSettings, AskResponse, AskTurn, Dispute, Entity, Health, Job, LogFile, MergeProposal, OnboardingState, Project, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
@@ -47,6 +47,12 @@ export const api = {
   },
   runningJobs: () => request<Job[]>("/sources/jobs/running"),
   deleteSource: (id: number) => request<{ deleted: boolean }>(`/sources/${id}`, { method: "DELETE" }),
+  updateSource: (id: number, payload: { name?: string; enabled?: boolean; config?: Record<string, string> }) =>
+    request<Source>(`/sources/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
   sourceConfig: (id: number) => request<Record<string, string>>(`/sources/${id}/config`),
 
   listProjects: () => request<Project[]>("/projects"),
@@ -73,6 +79,13 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
+  disputeEntity: (id: number, reason: string) =>
+    request<Entity>(`/entities/${id}/dispute`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason }),
+    }),
+  entityDisputes: (id: number) => request<Dispute[]>(`/entities/${id}/disputes`),
 
   lowConfidence: () => request<Entity[]>("/review/low-confidence"),
   duplicates: () => request<MergeProposal[]>("/review/duplicates"),
@@ -95,6 +108,7 @@ export const api = {
     }),
 
   systemStatus: () => request<SystemStatus>("/system/status"),
+  onboarding: () => request<OnboardingState>("/system/onboarding"),
   getSettings: () => request<AppSettings>("/settings"),
   updateSettings: (payload: Partial<AppSettings>) =>
     request<AppSettings>("/settings", {

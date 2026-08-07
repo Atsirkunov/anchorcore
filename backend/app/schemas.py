@@ -23,6 +23,15 @@ class SourceCreate(BaseModel):
     config: dict = {}
 
 
+class SourceUpdate(BaseModel):
+    """B7: editable source fields. Omitted fields are left unchanged; secret
+    config values sent as the '***set***' placeholder keep the stored secret."""
+
+    name: str | None = None
+    enabled: bool | None = None
+    config: dict | None = None
+
+
 class ProjectCreate(BaseModel):
     name: str
     source_ids: list[int] = []
@@ -58,6 +67,7 @@ class EntityOut(BaseModel):
     status: str
     owner: str
     window_text: str = ""
+    dispute_count: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -66,6 +76,21 @@ class EntityUpdate(BaseModel):
     kind: str | None = None
     status: str | None = None
     owner: str | None = None
+
+
+class DisputeCreate(BaseModel):
+    reason: str = ""
+    user: str = ""
+
+
+class DisputeOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    entity_id: int
+    reason: str
+    user: str
+    created_at: datetime
 
 
 class MergeProposal(BaseModel):

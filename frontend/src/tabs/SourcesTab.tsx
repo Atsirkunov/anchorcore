@@ -16,6 +16,11 @@ export function SourcesTab() {
   const [runningJobs, setRunningJobs] = useState<Record<number, Job>>({});
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectName, setProjectName] = useState("");
+  const [editing, setEditing] = useState<number | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editEnabled, setEditEnabled] = useState(true);
+  const [editPath, setEditPath] = useState("");
+  const [editJira, setEditJira] = useState({ base_url: "", email: "", token: "", project: "" });
   const pollRef = useRef<number | null>(null);
 
   const refresh = useCallback(() => {
@@ -114,6 +119,43 @@ export function SourcesTab() {
     if (source.connector === "folder") return cfg.path ? `📁 ${cfg.path}` : "folder source";
     const parts = [cfg.base_url, cfg.project].filter(Boolean);
     return parts.length ? `🔗 ${parts.join(" · ")}` : "Jira source";
+  }
+
+  function openEdit(source: Source) {
+    const cfg = configs[source.id] ?? {};
+    setEditing(source.id);
+    setEditName(source.name);
+    setEditEnabled(source.enabled);
+    if (source.connector === "folder") {
+      setEditPath(cfg.path ?? "");
+    } else {
+      setEditJira({
+        base_url: cfg.base_url ?? "",
+        email: cfg.email ?? "",
+        token: cfg.token ?? "",
+        project: cfg.project ?? "",
+      });
+    }
+  }
+
+  async function saveEdit(source: Source) {
+    setError(null);
+    try {
+      const payload: { name: string; enabled: boolean; config?: Record<string, string> } = {
+        name: editName.trim(),
+        enabled: editEnabled,
+      };
+      if (source.connector === "folder") {
+        payload.config = { path: editPath };
+      } else {
+        payload.config = { ...editJira };
+      }
+      await api.updateSource(source.id, payload);
+      setEditing(null);
+      refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   async function createProject() {
@@ -276,6 +318,9 @@ export function SourcesTab() {
                 )}
               </div>
               <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => openEdit(s)} style={styles.button}>
+                  {editing === s.id ? "Editing…" : "Edit"}
+                </button>
                 <button onClick={() => startJob(s.id, "sync")} disabled={!!job} style={styles.button}>
                   {job?.kind === "sync" ? "Syncing…" : "Sync now"}
                 </button>
@@ -291,6 +336,39 @@ export function SourcesTab() {
                   Delete
                 </button>
               </div>
+              {editing === s.id && (
+                <div style={{ display: "grid", gap: 6, marginTop: 10, paddingTop: 10, borderTop: "1px solid #2d333b" }}>
+                  <input style={styles.input} placeholder="Source name" value={editName} onChange={(e) => setEditName(e.target.value)} />
+                  {s.connector === "folder" ? (
+                    <input style={styles.input} placeholder="Folder path (absolute)" value={editPath} onChange={(e) => setEditPath(e.target.value)} />
+                  ) : (
+                    <>
+                      <input style={styles.input} placeholder="Jira base URL" value={editJira.base_url} onChange={(e) => setEditJira({ ...editJira, base_url: e.target.value })} />
+                      <input style={styles.input} placeholder="Email" value={editJira.email} onChange={(e) => setEditJira({ ...editJira, email: e.target.value })} />
+                      <input
+                        style={styles.input}
+                        type="password"
+                        placeholder={editJira.token === "***set***" ? "•••••••• (stored — type to replace)" : "API token"}
+                        value={editJira.token}
+                        onChange={(e) => setEditJira({ ...editJira, token: e.target.value })}
+                      />
+                      <input style={styles.input} placeholder="Project key, e.g. PM" value={editJira.project} onChange={(e) => setEditJira({ ...editJira, project: e.target.value })} />
+                    </>
+                  )}
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#9ca3af" }}>
+                    <input type="checkbox" checked={editEnabled} onChange={(e) => setEditEnabled(e.target.checked)} />
+                    Enabled (syncs and watchers respect this)
+                  </label>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => saveEdit(s)} style={{ ...styles.button, background: "#6366f1", color: "#fff" }}>
+                      Save
+                    </button>
+                    <button onClick={() => setEditing(null)} style={styles.button}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
             </li>
           );
         })}

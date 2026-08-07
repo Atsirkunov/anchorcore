@@ -71,7 +71,7 @@ export function AskTab({ projectId }: { projectId?: number }) {
 
       {turns.length > 0 && (
         <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
-          {turns.map((t, i) =>
+          {[...turns].reverse().map((t, i) =>
             t.role === "user" ? (
               <div key={i} style={{ ...styles.bubble, background: "#1e2430", marginLeft: 48 }}>
                 <div style={{ fontSize: 11, color: "#7dd3fc", textTransform: "uppercase", marginBottom: 4 }}>You</div>
