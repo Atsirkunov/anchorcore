@@ -39,11 +39,16 @@ jobs:
       - name: PyInstaller build
         run: python -m PyInstaller --noconfirm packaging.spec
 
+      - name: Zip exe (onedir output)
+        run: |
+          cd dist
+          Compress-Archive -Path AnchorCore -DestinationPath AnchorCore-windows.zip -Force
+
       - name: Upload exe
         uses: actions/upload-artifact@v4
         with:
           name: AnchorCore-windows
-          path: dist/AnchorCore.exe
+          path: dist/AnchorCore-windows.zip
 
   build-macos:
     name: macOS app
@@ -80,12 +85,13 @@ jobs:
         run: backend/.venv/bin/python -m PyInstaller --noconfirm packaging.spec
 
       - name: Ad-hoc sign (free, no Apple account; approval needed on first launch)
-        run: codesign --force --deep --sign - dist/AnchorCore
+        run: codesign --force --deep --sign - dist/AnchorCore.app
 
       - name: Zip app
         run: |
           cd dist
-          zip -r AnchorCore-macos.zip AnchorCore
+          rm -f AnchorCore-macos.zip
+          zip -r AnchorCore-macos.zip AnchorCore.app
 
       - name: Upload app
         uses: actions/upload-artifact@v4
