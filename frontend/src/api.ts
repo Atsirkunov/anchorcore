@@ -47,6 +47,7 @@ export const api = {
   },
   runningJobs: () => request<Job[]>("/sources/jobs/running"),
   deleteSource: (id: number) => request<{ deleted: boolean }>(`/sources/${id}`, { method: "DELETE" }),
+  sourceConfig: (id: number) => request<Record<string, string>>(`/sources/${id}/config`),
 
   listEntities: (params?: { kind?: string }) =>
     request<Entity[]>(`/entities${params?.kind ? `?kind=${params.kind}` : ""}`),

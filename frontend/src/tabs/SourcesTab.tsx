@@ -6,6 +6,7 @@ const POLL_MS = 1000;
 
 export function SourcesTab() {
   const [sources, setSources] = useState<Source[]>([]);
+  const [configs, setConfigs] = useState<Record<number, Record<string, string>>>({});
   const [connector, setConnector] = useState("folder");
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
@@ -16,7 +17,16 @@ export function SourcesTab() {
   const pollRef = useRef<number | null>(null);
 
   const refresh = useCallback(() => {
-    api.listSources().then(setSources).catch((e) => setError(String(e)));
+    api.listSources().then((list) => {
+      setSources(list);
+      Promise.all(
+        list.map((s) => api.sourceConfig(s.id).then((cfg) => ({ id: s.id, cfg })).catch(() => null)),
+      ).then((all) => {
+        const map: Record<number, Record<string, string>> = {};
+        for (const entry of all) if (entry) map[entry.id] = entry.cfg;
+        setConfigs(map);
+      }).catch(() => {});
+    }).catch((e) => setError(String(e)));
   }, []);
 
   const stopPolling = useCallback(() => {
@@ -96,6 +106,13 @@ export function SourcesTab() {
     return `${verb}…`;
   }
 
+  function configSummary(source: Source): string {
+    const cfg = configs[source.id] ?? {};
+    if (source.connector === "folder") return cfg.path ? `📁 ${cfg.path}` : "folder source";
+    const parts = [cfg.base_url, cfg.project].filter(Boolean);
+    return parts.length ? `🔗 ${parts.join(" · ")}` : "Jira source";
+  }
+
   return (
     <div>
       <h2>Sources</h2>
@@ -136,6 +153,9 @@ export function SourcesTab() {
                 </div>
                 <div style={{ fontSize: 12, color: "#9ca3af" }}>
                   {s.connector} · last sync: {s.last_synced_at ? new Date(s.last_synced_at).toLocaleString() : "never"}
+                </div>
+                <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 2 }} title={configSummary(s)}>
+                  {configSummary(s)}
                 </div>
                 {job && (
                   <div style={{ marginTop: 6 }}>
