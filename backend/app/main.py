@@ -106,7 +106,7 @@ async def lifespan(_app: FastAPI):
     await scheduler.stop()
 
 
-app = FastAPI(title="AnchorCore", version="1.0.6", lifespan=lifespan)
+app = FastAPI(title="AnchorCore", version="1.0.7", lifespan=lifespan)
 
 origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 app.add_middleware(
