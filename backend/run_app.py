@@ -3,6 +3,10 @@
 Used by the PyInstaller build (B20). The launcher sets ANCHOR_DATA_DIR and
 auto-starts the local Ollama server (models are pulled at first use via the
 Settings tab / sync flow).
+
+The build is `console=False` (no terminal window), so in windowed mode
+PyInstaller leaves sys.stdout/sys.stderr unset — redirect them to devnull
+before importing anything that prints or logs, or the app crashes on startup.
 """
 
 import os
@@ -13,6 +17,16 @@ import time
 import urllib.request
 import webbrowser
 from pathlib import Path
+
+
+def _guard_windowed_stdio() -> None:
+    """Windowed (console=False) builds have no stdout/stderr — point them at
+    devnull so print()/logging don't crash. Real logs still go to the file
+    handler set up in app.main (ANCHOR_DATA_DIR/anchorcore.log)."""
+    if getattr(sys, "frozen", False):
+        for name in ("stdout", "stderr"):
+            if getattr(sys, name, None) is None:
+                setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
 
 
 def _ollama_up() -> bool:
@@ -65,6 +79,7 @@ def _browser_launcher(url: str) -> None:
 
 
 def main() -> None:
+    _guard_windowed_stdio()
     if getattr(sys, "frozen", False):
         os.environ.setdefault("ANCHOR_DATA_DIR", str(Path.home() / ".anchorcore"))
 

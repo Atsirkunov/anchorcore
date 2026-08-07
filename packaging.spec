@@ -1,7 +1,14 @@
 # AnchorCore packaged app spec (B20). Build from repo root:
 #   backend\.venv\Scripts\pyinstaller.exe --noconfirm packaging.spec
 # Requires: frontend built (npm run build) and venv deps installed.
+#
+# onedir + console=False → GUI-subsystem app: no terminal window. On Windows
+# this produces dist/AnchorCore/ (zip it); on macOS a windowed AnchorCore.app
+# bundle that Finder launches without opening Terminal (see run_app.py for the
+# windowed-mode stdio guard). Onedir avoids the onefile/.app conflict PyInstaller
+# rejects from v7.0.
 
+import sys
 from pathlib import Path
 
 import sqlite_vec  # noqa: E402  (spec runs inside the build venv)
@@ -54,20 +61,20 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# onedir: EXE is just the bootloader; binaries/datas ship next to it in the
+# COLLECT folder (_internal on Windows / Contents/Frameworks on macOS).
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="AnchorCore",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
-    runtime_tmpdir=None,
-    console=True,  # keep console for logs in v1; set False when UI is polished
+    console=False,  # GUI subsystem — no terminal window (launcher redirects stdio)
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -75,3 +82,23 @@ exe = EXE(
     entitlements_file=None,
     icon=None,
 )
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name="AnchorCore",
+)
+
+# macOS: wrap the onedir folder in a proper .app bundle so Finder launches it
+# without opening Terminal. Skipped on Windows (BUNDLE is macOS-only).
+if sys.platform == "darwin":
+    app = BUNDLE(
+        coll,
+        name="AnchorCore.app",
+        icon=None,
+        bundle_identifier="com.anchorcore.app",
+    )
