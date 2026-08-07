@@ -21,7 +21,7 @@ from .jobs import JobManager
 from .models import Chunk, Source
 from .pipeline import IngestionPipeline
 from .redact import RedactingFormatter
-from .routers import entities, qa, settings as settings_router, sources, system
+from .routers import entities, projects, qa, settings as settings_router, sources, system
 from .scheduler import Scheduler
 from .secrets import SecretStore
 from .status import answer_provider, missing_ollama_models, ollama_reachable
@@ -119,6 +119,7 @@ app.add_middleware(
 app.include_router(sources.make_router(pipeline, secrets, scheduler, jobs))
 app.include_router(entities.make_router())
 app.include_router(entities.review_router())
+app.include_router(projects.make_router())
 app.include_router(qa.make_router(answer_engine))
 app.include_router(system.make_router(scheduler, settings_svc))
 app.include_router(settings_router.make_router(settings_svc))

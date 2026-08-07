@@ -23,6 +23,27 @@ class SourceCreate(BaseModel):
     config: dict = {}
 
 
+class ProjectCreate(BaseModel):
+    name: str
+    source_ids: list[int] = []
+
+
+class ProjectOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    is_default: bool
+    created_at: datetime
+    source_ids: list[int] = []
+
+
+class ProjectUpdate(BaseModel):
+    name: str | None = None
+    is_default: bool | None = None
+    source_ids: list[int] | None = None
+
+
 class EntityOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -67,6 +88,7 @@ class AskTurn(BaseModel):
 class AskRequest(BaseModel):
     question: str
     history: list[AskTurn] = []  # previous turns, oldest first
+    project_id: int | None = None  # B15: scope retrieval to a project's sources
 
 
 class Citation(BaseModel):

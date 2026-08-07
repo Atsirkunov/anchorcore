@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
-import type { Health, Job } from "./types";
+import type { Health, Job, Project } from "./types";
 import { AskTab } from "./tabs/AskTab";
 import { EntitiesTab } from "./tabs/EntitiesTab";
 import { ReviewTab } from "./tabs/ReviewTab";
@@ -25,6 +25,24 @@ export default function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [runningJobs, setRunningJobs] = useState<Job[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [selectedProject, setSelectedProject] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listProjects()
+      .then((list) => {
+        if (cancelled) return;
+        setProjects(list);
+        const def = list.find((p) => p.is_default);
+        setSelectedProject((prev) => prev ?? def?.id ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -101,6 +119,20 @@ export default function App() {
             {runningJobs.length} running
           </button>
         )}
+        <select
+          value={selectedProject ?? ""}
+          onChange={(e) => setSelectedProject(e.target.value ? Number(e.target.value) : null)}
+          style={styles.projectPicker}
+          title="Scope questions to a project (B15)"
+        >
+          <option value="">All sources</option>
+          {projects.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+              {p.is_default ? " ★" : ""}
+            </option>
+          ))}
+        </select>
         <span style={{ color: online === false ? "#f87171" : online ? "#4ade80" : "#6b7280", fontSize: 12 }}>
           {online === false ? "API offline" : online ? "API online" : "checking…"}
         </span>
@@ -118,7 +150,7 @@ export default function App() {
         </div>
       )}
       <main style={styles.main}>
-        {tab === "ask" && <AskTab />}
+        {tab === "ask" && <AskTab projectId={selectedProject ?? undefined} />}
         {tab === "sources" && <SourcesTab />}
         {tab === "entities" && <EntitiesTab />}
         {tab === "review" && <ReviewTab />}
@@ -174,6 +206,15 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 999,
     fontSize: 12,
     cursor: "pointer",
+  },
+  projectPicker: {
+    background: "#171a21",
+    border: "1px solid #2d333b",
+    color: "#e6e8eb",
+    borderRadius: 6,
+    padding: "0.3rem 0.6rem",
+    fontSize: 13,
+    maxWidth: 180,
   },
   spinner: {
     width: 10,

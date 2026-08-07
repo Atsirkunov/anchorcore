@@ -133,10 +133,9 @@ This answers "what supersedes this?" / "what depends on this decision?" that
 lexical+vector fusion alone misses, because the connected knowledge doesn't
 need to co-occur in the question's words. Pure SQL — no model calls.
 
-Remaining learnings parked in the backlog: scoped search via *projects* (bundles
-of sources with a per-user default — "search everything everywhere" stops
-being useful at scale), a full *who_knows* ranking (B16; B17 ships a minimal
-owner/author tool already), and data labeling / PII gating (B30).
+Remaining learnings parked in the backlog: a full *who_knows* ranking (B16;
+B17 ships a minimal owner/author tool already), and data labeling / PII
+gating (B30). Scoped search via *projects* shipped in B15.
 
 ## 5. Data Model — Uniform Entity Graph
 
@@ -239,6 +238,16 @@ erDiagram
         text detail "redacted"
         datetime created_at
     }
+    PROJECTS {
+        int id PK
+        string name
+        bool is_default "user's default query scope"
+        datetime created_at
+    }
+    PROJECT_SOURCES {
+        int project_id FK
+        int source_id FK "many-to-many"
+    }
     SOURCES ||--o{ INGESTED_ITEMS : "contains"
     INGESTED_ITEMS ||--o{ ENTITIES : "classified into"
     INGESTED_ITEMS ||--o{ CHUNKS : "chunked"
@@ -247,6 +256,8 @@ erDiagram
     ENTITIES ||--o{ MERGE_ACTIONS : "proposed"
     CHUNKS ||--o| CHUNKS_FTS : "indexed"
     SOURCES ||--o{ JOBS : "processed by"
+    PROJECTS ||--o{ PROJECT_SOURCES : "contains"
+    SOURCES ||--o{ PROJECT_SOURCES : "belongs to"
 
     CONTRADICTIONS {
         int id PK
@@ -304,8 +315,8 @@ erDiagram
 
 ```
 v1: local-first, folder + Jira, document-aware classification + review + cited Q&A
-    (done: hybrid RRF retrieval + planner/executor + graph walk + distillation + Windows/macOS apps)
-  -> v1.5: Linear/Drive connectors, MCP access, projects/scoped search
+    (done: hybrid RRF retrieval + planner/executor + graph walk + distillation + projects + Windows/macOS apps)
+  -> v1.5: Linear/Drive connectors, MCP access, data labeling (PII gates)
   -> v2: team sharing, hosted option, Slack, contradictions, bundled models
   -> v3: agentic levels (draft, prepare-action-with-approval), enterprise compliance
 ```

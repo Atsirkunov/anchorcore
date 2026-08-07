@@ -1,4 +1,4 @@
-import type { AppSettings, AskResponse, AskTurn, Entity, Health, Job, LogFile, MergeProposal, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
+import type { AppSettings, AskResponse, AskTurn, Entity, Health, Job, LogFile, MergeProposal, Project, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
@@ -49,6 +49,22 @@ export const api = {
   deleteSource: (id: number) => request<{ deleted: boolean }>(`/sources/${id}`, { method: "DELETE" }),
   sourceConfig: (id: number) => request<Record<string, string>>(`/sources/${id}/config`),
 
+  listProjects: () => request<Project[]>("/projects"),
+  createProject: (payload: { name: string; source_ids?: number[] }) =>
+    request<Project>("/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  updateProject: (id: number, payload: { name?: string; is_default?: boolean; source_ids?: number[] }) =>
+    request<Project>(`/projects/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  deleteProject: (id: number) => request<{ deleted: boolean }>(`/projects/${id}`, { method: "DELETE" }),
+  defaultProject: () => request<Project | null>("/projects/default"),
+
   listEntities: (params?: { kind?: string }) =>
     request<Entity[]>(`/entities${params?.kind ? `?kind=${params.kind}` : ""}`),
   updateEntity: (id: number, payload: Partial<Pick<Entity, "kind" | "status" | "owner">>) =>
@@ -67,13 +83,14 @@ export const api = {
       body: JSON.stringify({ proposal_id: proposalId, decision }),
     }),
 
-  ask: (question: string, history: AskTurn[] = []) =>
+  ask: (question: string, history: AskTurn[] = [], projectId?: number) =>
     request<AskResponse>("/qa", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         question,
         history: history.map((t) => ({ role: t.role, content: t.content })),
+        project_id: projectId ?? null,
       }),
     }),
 

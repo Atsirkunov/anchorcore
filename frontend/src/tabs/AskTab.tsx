@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api } from "../api";
 import type { AskTurn } from "../types";
 
-export function AskTab() {
+export function AskTab({ projectId }: { projectId?: number }) {
   const [turns, setTurns] = useState<AskTurn[]>([]);
   const [question, setQuestion] = useState("");
   const [busy, setBusy] = useState(false);
@@ -14,7 +14,7 @@ export function AskTab() {
     setError(null);
     const history = turns.slice(-6); // bound context; rewrite uses last 6 turns
     try {
-      const response = await api.ask(question, history);
+      const response = await api.ask(question, history, projectId);
       setTurns((prev) => [
         ...prev,
         { role: "user", content: question },

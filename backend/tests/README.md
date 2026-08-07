@@ -110,9 +110,19 @@ from `backend/`. CI runs this plus the frontend build on every push
 |---|---|
 | history payload accepted; rewrite used for retrieval; no-key → raw question; pydantic turns; conversation in generation | follow-up rewrite + context pass-through |
 
+## 9. `tests/test_projects.py` — B15 scoped search (5 tests)
+
+| Test | Covers |
+|---|---|
+| `test_project_crud` | create/read/patch/delete + default project |
+| `test_project_rejects_unknown_source` | unknown source id → 422 (no DB write) |
+| `test_default_project_is_singleton` | setting a new default clears the old one |
+| `test_project_scopes_qa_results` | DoD: overlapping projects return project-scoped citations |
+| `test_project_sources_relationship` | many-to-many source membership |
+
 ---
 
-## 9. Shared helpers
+## 10. Shared helpers
 
 - `tests/conftest.py` — temp DB + data dir env vars, unreachable Ollama,
   TestClient fixture.
@@ -155,9 +165,7 @@ tables above as they land and mark the item `— DONE`.
 | **B8** First-run wizard | wizard state transitions (no sources → guided → connected); Ollama-missing path offers instructions; sample question flow works end-to-end |
 | **B9** Document type coverage | `.docx`/`.pptx`/`.odt` extract text; encrypted/corrupt file fails gracefully (recorded event, no crash); mixed-folder sync handles all types |
 | **B14** MCP agent access | local stdio server: tool list exposed (`ask`, `search`, `get_entity`, `get_source`, `list_sources`, `memory_status`); `search` respects dispute/stale filters; HTTP transport: no token on remote → 401, valid token → 200, every call audited in `system_events` (component `mcp`); `ingest` (v2) creates `unverified` items authored `mcp:<token>` routed to review |
-| **B15** Projects / scoped search | project = bundle of sources; same source in 2 projects (no duplication); default project scopes queries (Q&A + MCP search); out-of-project source never returned |
 | **B16** who_knows (full) | ranking: more entities + higher confidence + recency wins; every surfaced person has cited evidence entities; no evidence → not surfaced (B17 ships a minimal tool already) |
-| **B18** Distillation / IDF gating | distilled units (question/summary/resolution) findable; filler messages absent from vector results (below IDF threshold) but present in FTS; full-doc chunks still embedded (B12 DoD holds) |
 | **B30** Data labeling / PII gating | label a source `pii` → cloud classifier/embedder/answer never touch it; shared link answers only from `public`; every gate decision audited |
 | **B12 optional** LLM rerank | reranker rescoring changes top-k order per spec; candidates capped; rerank failure falls back to RRF order |
 | **B2/B11/B13 regressions** | job polling survives scheduler restart (watchdog); parallel classification preserves window order (results concatenated in ref order); orphan-kill on port works on Windows/macOS |
@@ -177,7 +185,9 @@ Tests in the suite today map to shipped features:
 | B12 hybrid + cleaning + heading chunking | test_retrieval.py (first 6) |
 | B12.1 RRF/decay/diversity/context | test_retrieval.py (last 5) |
 | B13 dev hardening | CI itself (pytest + frontend build on push) |
+| B15 scoped search / projects | test_projects.py (all 5) |
 | B17 planner/executor/who_knows | test_planner.py (all 6) |
+| B18 distillation / IDF gating | test_distillation.py (all 5) |
 | B20/B21 packaged app + sample data | test_smoke.py ingest flows + sample corpus |
 | B23/B26 cloud models + doc-aware classification | test_settings.py (cloud providers) + test_classification.py (all 8) |
 | B24/B25 macOS build + release workflow | CI release.yml + build.sh (manual) |

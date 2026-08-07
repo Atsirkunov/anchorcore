@@ -31,6 +31,14 @@ export type Source = {
   created_at: string;
 };
 
+export type Project = {
+  id: number;
+  name: string;
+  is_default: boolean;
+  created_at: string;
+  source_ids: number[];
+};
+
 export type ClassifierStats = {
   windows: number;
   avg_latency_ms: number;

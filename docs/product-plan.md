@@ -261,15 +261,17 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 ### B10. Model configuration via UI — superseded by B4. (see B4)
 
-### B15. Scoped search via projects (P2 — Cerebras learning)
+### B15. Scoped search via projects (P2 — Cerebras learning) — DONE
 **Problem:** as the corpus grows, "search everything everywhere" stops being useful — compiler engineers don't want infrastructure runbooks in their results. Cerebras found projects are how search stays relevant by default.
 
-**Scope:**
-- A **project** = named bundle of sources (folders, Jira, later Slack channels); a source can belong to multiple projects without duplication
-- Per-user default project, persisted on profile, scopes queries automatically (Q&A + MCP `search`)
-- UI: project picker in the header + Sources tab grouping; optional "all" scope
+**Done:**
+- **Schema**: `projects` + `project_sources` (many-to-many; a source belongs to multiple projects; `is_default` marks the user's default scope) — migration `b15a0d1`
+- **API**: `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`, `GET /projects/default`; sources validated before any write (a 422 leaves the DB untouched)
+- **Retrieval scoping**: `POST /qa` accepts `project_id`; `AnswerEngine` threads a project's source ids through all tools (vector, FTS, who_knows, graph, fallback) so only that project's sources are retrieved
+- **UI**: project picker in the header (scopes Ask; ★ marks the default), plus a Projects manager in the Sources tab (create / assign sources / make default / delete)
+- **Tests** (`tests/test_projects.py`): CRUD, default singleton, unknown-source 422, and the **DoD** — two projects with an overlapping source return project-scoped citations
 
-**DoD:** connect 3+ sources, create two projects with overlapping sources, and confirm the same question returns project-scoped results.
+**DoD:** connect 3+ sources, create two projects with overlapping sources, and confirm the same question returns project-scoped results. — met (live: a "Payments only" project excludes an unrelated parking source from citations).
 
 ### B16. who_knows — expertise queries (P2 — Cerebras learning)
 **Problem:** a top question in every org is "who is the expert in Y?" Cerebras surfaces people with demonstrated expertise from the index.
@@ -518,18 +520,18 @@ rollback-safe — OR a documented decision to stay on Python.
 ## Current execution priorities (agreed 2026-08-07)
 
 Explicit order — the retrieval/answer architecture is the focus while tokens are cheap.
-**B32, B17 and B18 are DONE** (released in v1.0.3–v1.0.5); the queue below is what remains.
+**B32, B17, B18 and B15 are DONE** (released in v1.0.3–v1.0.6); the queue below is what remains.
 B30 is large and cross-cutting so it sits last in line but is **flagged for design input
 before implementation** (see [B30 open question](#b30-data-labeling-piisensitive-gating-of-models-sharing-and-answers-p1-for-pii--v1-risk-p2-rest)).
 
-> **B15 > B30**
+> **B30 (needs product input on the PII taxonomy)**
 
 | # | Item | Status | Why here |
 |---|---|---|---|
 | 1 | B32 Graph-based retrieval | ✅ DONE (v1.0.3) | graph walk after RRF → connected entities in context + citations |
 | 2 | B17 Planner→Executor→Synthesis | ✅ DONE (v1.0.4) | tool planner + executor + evidence fusion; who_knows tool |
 | 3 | B18 Distillation | ✅ DONE (v1.0.5) | normalized Q&A units + IDF-gated embedding |
-| 4 | **B15 Scoped search / projects** | **next** | cross-cutting (Q&A + MCP + UI) — relevance at scale |
-| 5 | B30 Data labeling / PII gating | open | large + cross-cutting; **needs product input first** (see below), then lands last |
+| 4 | B15 Scoped search / projects | ✅ DONE (v1.0.6) | project bundles of sources; QA scoped via project picker |
+| 5 | B30 Data labeling / PII gating | **next** | large + cross-cutting; **needs product input first** (see below) |
 
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md)*
