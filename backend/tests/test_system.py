@@ -97,3 +97,31 @@ def test_logs_list_and_download(client):
 def test_health_reports_pending_embedding_count(client):
     health = client.get("/health").json()
     assert isinstance(health["components"]["pending_embeddings"], int)
+
+
+def test_onboarding_state(client, tmp_path):
+    """B8: the wizard trigger — shape is stable and the source count reflects
+    newly connected sources (the shared test DB is never globally empty, so we
+    assert the delta, not absolute emptiness)."""
+    before = client.get("/system/onboarding").json()
+    assert "needs_wizard" in before
+    assert "sources_count" in before
+    assert "reachable" in before["ollama"]
+    assert "missing_models" in before["ollama"]
+    assert before["answer_provider"] in {"ollama", "configured", "missing"}
+    assert "sample" in before
+    assert isinstance(before["sample"]["available"], bool)
+    if before["sample"]["available"]:
+        assert before["sample"]["path"]
+
+    (tmp_path / "d.md").write_text("We decided to keep going.", encoding="utf-8")
+    client.post(
+        "/sources",
+        json={"connector": "folder", "name": "wiz", "config": {"path": str(tmp_path)}},
+    ).json()
+
+    after = client.get("/system/onboarding").json()
+    assert after["sources_count"] >= before["sources_count"] + 1
+    # needs_wizard is defined as "no sources at all" — once a source exists it
+    # must be false
+    assert after["needs_wizard"] is (after["sources_count"] == 0)
