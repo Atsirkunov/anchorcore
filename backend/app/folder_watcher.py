@@ -48,6 +48,7 @@ class FolderWatcher:
         self._observer: Observer | None = None
         self._sink: queue.Queue[tuple[int, float]] = queue.Queue()
         self._handlers: dict[int, _SyncHandler] = {}
+        self._watches: dict[int, object] = {}
         self._debounce_seconds = debounce_seconds
         self._pending: dict[int, float] = {}
 
@@ -62,15 +63,17 @@ class FolderWatcher:
             logger.warning("watcher: folder not found for source %s: %s", source_id, path)
             return False
         handler = _SyncHandler(source_id, self._sink)
-        self._ensure_observer().schedule(handler, str(path_obj), recursive=True)
+        watch = self._ensure_observer().schedule(handler, str(path_obj), recursive=True)
         self._handlers[source_id] = handler
+        self._watches[source_id] = watch
         logger.info("watcher: watching %s for source %s", path_obj, source_id)
         return True
 
     def remove(self, source_id: int) -> None:
-        handler = self._handlers.pop(source_id, None)
-        if handler is not None and self._observer is not None:
-            self._observer.unschedule(handler)
+        self._handlers.pop(source_id, None)
+        watch = self._watches.pop(source_id, None)
+        if watch is not None and self._observer is not None:
+            self._observer.unschedule(watch)
 
     def current_ids(self) -> set[int]:
         return set(self._handlers)

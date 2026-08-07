@@ -49,8 +49,8 @@ class IngestedItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     source: Mapped[Source] = relationship(back_populates="items")
-    entities: Mapped[list["Entity"]] = relationship(back_populates="item")
-    chunks: Mapped[list["Chunk"]] = relationship(back_populates="item")
+    entities: Mapped[list["Entity"]] = relationship(back_populates="item", cascade="all, delete-orphan")
+    chunks: Mapped[list["Chunk"]] = relationship(back_populates="item", cascade="all, delete-orphan")
 
 
 class Entity(Base):

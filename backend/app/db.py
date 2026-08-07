@@ -53,6 +53,10 @@ def _sqlite_optimize(dbapi_connection, _record):  # noqa: ANN001
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA busy_timeout=5000")
         cursor.execute("PRAGMA synchronous=NORMAL")
+        # Without this, ondelete=... on FK columns never fires, and ORM
+        # deletions that rely on it (source -> items -> entities) try to NULL
+        # NOT NULL columns instead of cascading.
+        cursor.execute("PRAGMA foreign_keys=ON")
     finally:
         cursor.close()
 
