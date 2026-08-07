@@ -43,7 +43,7 @@ if (-not (Test-Path (Join-Path $Root "backend\.venv\Scripts\pyinstaller.exe"))) 
 
 # 3. PyInstaller (use the exe directly — `python -m PyInstaller` writes
 # progress to stderr and trips PowerShell's native-command error handling)
-Write-Host "==> Building AnchorCore.exe (this takes a minute)..."
+Write-Host "==> Building AnchorCore (this takes a minute)..."
 $PyInstaller = Join-Path $Root "backend\.venv\Scripts\pyinstaller.exe"
 Push-Location $Root
 try {
@@ -52,7 +52,13 @@ try {
     Pop-Location
 }
 
+# 4. Zip the onedir output for distribution (windowed exe — no cmd window)
+Write-Host "==> Zipping dist/AnchorCore..."
+$ZipPath = Join-Path $Root "dist\AnchorCore-windows.zip"
+Remove-Item $ZipPath -ErrorAction SilentlyContinue
+Compress-Archive -Path (Join-Path $Root "dist\AnchorCore") -DestinationPath $ZipPath -Force
+
 Write-Host ""
-Write-Host "Done: $Root\dist\AnchorCore.exe"
-Write-Host "Ship this single file. First run creates ~/.anchorcore data dir,"
-Write-Host "starts Ollama if present, and opens http://127.0.0.1:8000"
+Write-Host "Done: $Root\dist\AnchorCore-windows.zip"
+Write-Host "Unzip it, then run AnchorCore.exe. First run creates ~/.anchorcore"
+Write-Host "data dir, starts Ollama if present, and opens http://127.0.0.1:8000"
