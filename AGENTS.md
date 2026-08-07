@@ -95,6 +95,11 @@ Key rules:
 - **Validate-before-write**: a `db.flush()` before a 422 validation error opened a write tx that stalled
   the whole test suite 15–140s (write-lock contention with the background scheduler). Project CRUD in
   `routers/projects.py` is the good pattern: validate sources first, then write.
+- **SQLite single-writer flake**: the scheduler auto-syncs sources (including failing ones) in the
+  background; a test's `start_and_wait` job can collide and die with `sqlite3.OperationalError: database
+  is locked` ("job did not finish within 30s"). Intermittent, order/timing dependent — rerun the suite if
+  a job dies this way; don't treat it as your feature being broken. The full suite is reliably green
+  (~18s, 88 tests).
 - **The suite runs without Ollama** — all E2E tests must pass degraded (rule-based classifier,
   keyword-only retrieval). Real-model probes are manual.
 - **Shared test DB across the whole run** (conftest sets ONE SQLite file at module import; it accumulates
