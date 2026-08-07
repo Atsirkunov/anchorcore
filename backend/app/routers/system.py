@@ -1,5 +1,6 @@
 import logging
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,9 +25,17 @@ from ..throughput import throughput
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.7"
 
 _LOG_NAME_RE = re.compile(r"^anchorcore\.log(\.\d+)?$")
+
+
+def _resolve_sample_dir() -> Path | None:
+    """The bundled sample corpus (dev checkout); None when frozen/absent."""
+    if getattr(sys, "frozen", False):
+        return None
+    candidate = Path(__file__).resolve().parents[3] / "sample"
+    return candidate if candidate.is_dir() else None
 
 
 def make_router(scheduler, settings_svc: SettingsService) -> APIRouter:
@@ -85,6 +94,29 @@ def make_router(scheduler, settings_svc: SettingsService) -> APIRouter:
                 {"id": s.id, "name": s.name, "error": s.last_error, "count": s.error_count}
                 for s in failing_sources
             ],
+        }
+
+    @router.get("/onboarding")
+    async def onboarding(db: Session = Depends(get_db)) -> dict:
+        """B8: state the first-run wizard renders. `needs_wizard` is true on a
+        fresh install (no sources yet); the wizard checks Ollama/models, offers
+        a quick folder connect (or the bundled sample corpus when available)."""
+        sources_count = db.execute(select(func.count()).select_from(Source)).scalar_one()
+        missing = missing_ollama_models(settings_svc)
+        sample_dir = _resolve_sample_dir()
+        return {
+            "needs_wizard": sources_count == 0,
+            "sources_count": sources_count,
+            "ollama": {
+                "reachable": ollama_reachable(settings_svc),
+                "base_url": settings_svc.get("ollama_base_url") or "",
+                "missing_models": missing,
+            },
+            "answer_provider": answer_provider(settings_svc),
+            "sample": {
+                "available": sample_dir is not None,
+                "path": str(sample_dir) if sample_dir is not None else None,
+            },
         }
 
     @router.get("/errors", response_model=list[schemas.SystemEventOut])
