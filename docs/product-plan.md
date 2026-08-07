@@ -280,16 +280,17 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** ask "who knows about migrations" and get a ranked person list with cited evidence.
 
-### B17. Planner → Executor → Synthesis query architecture (P2 — Cerebras learning)
+### B17. Planner → Executor → Synthesis query architecture (P2 — Cerebras learning) — DONE
 **Problem:** today Q&A is single-pass RAG (one retriever set, one synthesis call). Cerebras runs a light planner pass that picks which retrieval tools matter for the query, fans them out in parallel, normalizes evidence, then synthesizes.
 
-**Scope:**
-- Planner: small LLM pass over query + source catalog → tool selection (`search`, `search_keyword`, `who_knows`, source-restricted search)
-- Executor: parallel tool calls, normalized evidence bundle (scores, recency, source hints)
-- Synthesis: final LLM pass over evidence bundle (current behavior becomes the "search-only" path)
-- Same pipeline exposed to MCP clients as raw primitives (per mcp.md) — the client becomes the orchestrator
+**Done:**
+- **Planner** (`AnswerEngine._plan_tools`): deterministic, model-free tool selection — `hybrid` (vector + FTS5) always; query signals (`who/whom/owns/owner/responsible/expert/knows`) add the `who_knows` specialist tool. CI-safe; an LLM planner can be layered on later without changing the executor contract.
+- **Executor** (`_execute_tools`): runs the planned tools, batching the shared embedding into one call, and normalizes each tool's hits into a shared evidence shape (chunk/entity/item/source_id/score).
+- **`who_knows` tool**: surfaces entities whose owner/author/summary matches the query, ranked by confidence × recency × term overlap — person + ownership evidence a plain keyword search doesn't weight.
+- **Synthesis** (`_fuse_evidence`): RRF-fuses the tools' ranked lists (hybrid internally fused; who_knows at weight 0.8; graph-connected entities at 0.5), dedupes, tops off at top_k. `_rrf_fuse_multi` generalizes the two-list RRF to N lists.
+- Tests (`tests/test_planner.py`): planner always hybrid; who_knows for ownership questions; who_knows surfaces owner entities; executor returns evidence bundle; multi-tool fusion; **DoD test** — a decision+person question returns both cited.
 
-**DoD:** a question that needs two source types (e.g. decision + person) is answered with evidence from both, cited.
+**DoD:** a question that needs two source types (e.g. decision + person) is answered with evidence from both, cited. — met (live: "Who owns the billing migration?" → planner runs `['hybrid', 'who_knows']`; answer cites Sarah's ownership + the billing decision/action).
 
 ### B18. Distillation of raw content before embedding (P2 — Cerebras learning)
 **Problem:** Cerebras found embedding raw text underperforms a normalized form: "accuracy increased significantly when the thread was normalized into a consistent format." They extract question/summary/resolution/system refs from threads; short filler messages beat detailed ones in cosine similarity.

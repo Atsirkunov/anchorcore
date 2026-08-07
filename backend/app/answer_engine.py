@@ -28,6 +28,14 @@ GRAPH_KIND_WEIGHTS = {
 }
 GRAPH_DEFAULT_WEIGHT = 0.5
 
+# B17 planner: tool names the executor can run, and the keyword-signal rules
+# that pick extra tools beyond the always-on hybrid vector+keyword search.
+TOOL_HYBRID = "hybrid"
+TOOL_WHO_KNOWS = "who_knows"
+WHO_KNOWS_WEIGHT = 0.8  # RRF weight for the who_knows tool's ranked list
+
+_WHO_KNOWS_RE = re.compile(r"\b(who|whom|owns?|owner|responsible|expert|knows?)\b", re.IGNORECASE)
+
 SYSTEM_PROMPT = """You are AnchorCore, the memory of an organization.
 Answer the user's question using ONLY the provided context sections.
 Each section is tagged with a section ID like [S1], [S2]...
@@ -79,13 +87,25 @@ def _rrf_fuse(
     Consensus across retrievers beats a single strong vote; needs no score
     normalization (Cerebras KB design, k=60).
     """
+    return _rrf_fuse_multi([vector_hits, keyword_hits], [1.0, keyword_weight])
+
+
+def _rrf_fuse_multi(lists: list[list[dict]], weights: list[float]) -> list[dict]:
+    """RRF over an arbitrary number of ranked lists (B17: planner/executor).
+
+    Each list contributes `weight / (k + rank)`; hits found by multiple tools
+    accumulate consensus votes exactly like the two-list case."""
     fused: dict[int, dict] = {}
-    for rank, hit in enumerate(vector_hits, start=1):
-        entry = fused.setdefault(hit["chunk"].id, {**hit, "score": 0.0})
-        entry["score"] += 1.0 / (RRF_K + rank)
-    for rank, hit in enumerate(keyword_hits, start=1):
-        entry = fused.setdefault(hit["chunk"].id, {**hit, "score": 0.0})
-        entry["score"] += keyword_weight / (RRF_K + rank)
+
+    def _key(hit: dict) -> int:
+        if hit["chunk"] is not None:
+            return hit["chunk"].id
+        return -hit["entity"].id  # graph hits may carry no chunk
+
+    for hits, weight in zip(lists, weights):
+        for rank, hit in enumerate(hits, start=1):
+            entry = fused.setdefault(_key(hit), {**hit, "score": 0.0})
+            entry["score"] += weight / (RRF_K + rank)
     return list(fused.values())
 
 
@@ -140,78 +160,52 @@ class AnswerEngine:
                 logger.info("follow-up rewritten: %r -> %r", question, rewritten)
                 query = rewritten
 
-        vector_hits: list[dict] | None = None
-        try:
-            query_embedding = (await self.embedder.embed([query]))[0]
-            vector_hits = self._vector_search(db, query_embedding)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("embedding/search failed (%s); keyword-only retrieval", exc)
-            record_event(
-                "qa",
-                "embedding failed; retrieval degraded to keyword-only",
-                level="warning",
-                detail=f"{type(exc).__name__}: {exc}",
-            )
+        # B17: planner picks the tools, executor runs them, fusion synthesizes
+        # the evidence bundle (hybrid vector+keyword, who_knows, graph).
+        tools = self._plan_tools(query)
+        logger.info("planner tools for %r: %s", query, tools)
+        evidence = await self._execute_tools(db, query, tools)
 
-        keyword_hits = self._keyword_search(db, query)
-        if not keyword_hits and vector_hits is None:
-            # embedding AND FTS both unavailable (e.g. pre-migration DB):
-            # keep the old newest-chunks fallback so degraded mode still answers
-            keyword_hits = self._keyword_fallback(db)
-        hits = self._fuse_and_rank(db, vector_hits, keyword_hits)
+        hits = evidence.get(TOOL_HYBRID) or []
+        # B32: graph-based retrieval — connected entities join the evidence
+        graph_hits = self._graph_expand(db, hits)
 
-        if not hits:
+        all_hits = self._fuse_evidence(evidence, graph_hits)
+        if not all_hits:
             return AskResponse(
                 answer="No relevant knowledge found yet. Ingest sources first.",
                 citations=[],
             )
 
-        # B32: graph-based retrieval — connected entities (supersedes/depends_on/
-        # owns/blocks/related) join the context as supporting sections + citations
-        graph_hits = self._graph_expand(db, hits)
-
         sections = []
-        for idx, hit in enumerate(hits, start=1):
-            content = hit["chunk"].content[:2000]
-            extra = hit.get("expanded", [])
-            if extra:
-                content = content + "\n\n[continued]\n\n" + "\n\n".join(e[:800] for e in extra[:3])
+        for idx, hit in enumerate(all_hits, start=1):
+            if hit["chunk"] is not None:
+                content = hit["chunk"].content[:2000]
+                extra = hit.get("expanded", [])
+                if extra:
+                    content = content + "\n\n[continued]\n\n" + "\n\n".join(e[:800] for e in extra[:3])
+            else:
+                content = (hit["entity"].summary if hit.get("entity") else "")[:2000]
             sections.append(f"[S{idx}] {content}")
-        for idx, hit in enumerate(graph_hits, start=len(hits) + 1):
-            content = hit["chunk"].content[:2000] if hit["chunk"] is not None else hit["entity"].summary[:2000]
-            sections.append(f"[S{idx}] [related] {content}")
         context = "\n\n".join(sections)
 
         answer_text = await self._generate(query, context, history=history)
 
         citations = []
-        for hit in hits[:5]:
+        for hit in all_hits[:5]:
             chunk, entity, item = hit["chunk"], hit["entity"], hit["item"]
             if entity is not None:
                 kind, summary = entity.kind, entity.summary[:200]
             else:
                 kind = "document"
                 summary = (item.title if item is not None else chunk.source_ref)[:200]
+            source_ref = chunk.source_ref if chunk is not None else entity.source_ref
+            snippet = chunk.content[:300] if chunk is not None else entity.summary[:300]
             citations.append(
                 Citation(
                     entity_id=entity.id if entity is not None else None,
                     kind=kind,
                     summary=summary,
-                    source_ref=chunk.source_ref,
-                    score=round(hit["score"], 3),
-                    snippet=chunk.content[:300],
-                )
-            )
-        for hit in graph_hits:
-            entity = hit["entity"]
-            chunk = hit["chunk"]
-            source_ref = chunk.source_ref if chunk is not None else entity.source_ref
-            snippet = chunk.content[:300] if chunk is not None else entity.summary[:300]
-            citations.append(
-                Citation(
-                    entity_id=entity.id,
-                    kind=entity.kind,
-                    summary=entity.summary[:200],
                     source_ref=source_ref,
                     score=round(hit["score"], 3),
                     snippet=snippet,
@@ -385,6 +379,123 @@ class AnswerEngine:
                 }
             )
         return out
+
+    # --- B17: Planner → Executor → Synthesis ---------------------------------
+
+    def _plan_tools(self, query: str) -> list[str]:
+        """Planner: choose which retrieval tools to run for this query.
+
+        The always-on `hybrid` tool (vector + FTS5 keyword) covers the default
+        path; query signals add specialist tools. Heuristic rules here are the
+        cheap, deterministic planner (works without a model — CI-safe); a
+        language-model planner can be layered on later without changing the
+        executor contract."""
+        tools = [TOOL_HYBRID]
+        if _WHO_KNOWS_RE.search(query):
+            tools.append(TOOL_WHO_KNOWS)
+        return tools
+
+    async def _execute_tools(
+        self, db: Session, query: str, tools: list[str]
+    ) -> dict[str, list[dict]]:
+        """Executor: run the planned tools and normalize each tool's ranked
+        hits into a shared evidence shape (chunk/entity/item/source_id/score).
+
+        Tools that share the same vector embedding are batched into one embed
+        call; each tool's hits are a ranked list ready for RRF fusion."""
+        evidence: dict[str, list[dict]] = {}
+
+        vector_hits: list[dict] | None = None
+        if TOOL_HYBRID in tools or TOOL_WHO_KNOWS in tools:
+            try:
+                query_embedding = (await self.embedder.embed([query]))[0]
+                if TOOL_HYBRID in tools:
+                    vector_hits = self._vector_search(db, query_embedding)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("embedding failed (%s); keyword-only retrieval", exc)
+                record_event(
+                    "qa",
+                    "embedding failed; retrieval degraded to keyword-only",
+                    level="warning",
+                    detail=f"{type(exc).__name__}: {exc}",
+                )
+
+        if TOOL_HYBRID in tools:
+            keyword_hits = self._keyword_search(db, query)
+            if not keyword_hits and vector_hits is None:
+                # embedding AND FTS both unavailable (e.g. pre-migration DB):
+                # keep the oldest fallback so degraded mode still answers
+                keyword_hits = self._keyword_fallback(db)
+            evidence[TOOL_HYBRID] = self._fuse_and_rank(db, vector_hits, keyword_hits)
+
+        if TOOL_WHO_KNOWS in tools:
+            evidence[TOOL_WHO_KNOWS] = self._who_knows_search(db, query)
+
+        return evidence
+
+    def _who_knows_search(self, db: Session, query: str) -> list[dict]:
+        """`who_knows` tool: surface entities whose owner/author or summary
+        matches the query, ranked by confidence × recency × term overlap.
+
+        Answers "who knows/owns X?" — person + ownership evidence that a plain
+        keyword search doesn't weight. Stale entities excluded; results are a
+        ranked hit list in the shared evidence shape (empty when no models/DB)."""
+        terms = [t for t in _FTS_WORD_RE.findall(query.lower()) if t not in _FTS_STOPWORDS and len(t) >= 3]
+        # candidates: entities with an owner/author, or whose summary shares a
+        # query term — the "who knows/owns X" surface
+        filters = [or_(Entity.author != "", Entity.owner != "")]
+        for t in terms:
+            filters.append(Entity.summary.contains(t))
+        rows = db.execute(self._chunk_query().where(or_(*filters))).all()
+        hits: list[dict] = []
+        halflife = self.settings.get_float("retrieval_age_halflife_days", 365.0)
+        for chunk, entity, item in rows:
+            if entity is None or entity.status == "stale":
+                continue
+            blob = " ".join([entity.owner, entity.author, entity.summary]).lower()
+            overlap = sum(1 for t in terms if t in blob)
+            if overlap == 0:
+                continue
+            score = entity.confidence * (1.0 + 0.5 * min(overlap, 4)) * _age_decay(entity.created_at, halflife)
+            hits.append(
+                {
+                    "chunk": chunk,
+                    "entity": entity,
+                    "item": item,
+                    "source_id": item.source_id if item is not None else None,
+                    "score": score,
+                }
+            )
+        hits.sort(key=lambda r: r["score"], reverse=True)
+        return hits[: settings.top_k * 2]
+
+    def _fuse_evidence(
+        self, evidence: dict[str, list[dict]], graph_hits: list[dict]
+    ) -> list[dict]:
+        """Synthesis input: RRF-fuse the planned tools' ranked lists (the hybrid
+        list is already internally fused), append graph-connected entities, then
+        dedupe. Stale entities were already filtered by each tool."""
+        lists: list[list[dict]] = []
+        weights: list[float] = []
+        if evidence.get(TOOL_HYBRID):
+            lists.append(evidence[TOOL_HYBRID])
+            weights.append(1.0)
+        if evidence.get(TOOL_WHO_KNOWS):
+            lists.append(evidence[TOOL_WHO_KNOWS])
+            weights.append(WHO_KNOWS_WEIGHT)
+        if graph_hits:
+            lists.append(graph_hits)
+            weights.append(GRAPH_DEFAULT_WEIGHT)
+
+        if not lists:
+            return []
+        if len(lists) == 1:
+            # the hybrid tool's list is already fused + age-decayed + expanded
+            fused = sorted(lists[0], key=lambda r: r["score"], reverse=True)
+        else:
+            fused = _rrf_fuse_multi(lists, weights)
+            fused.sort(key=lambda r: r["score"], reverse=True)
+        return fused[: settings.top_k]
 
     def _vector_search(self, db: Session, query_embedding: list[float]) -> list[dict]:
         rows = db.execute(self._chunk_query().where(Chunk.embedding.is_not(None))).all()
