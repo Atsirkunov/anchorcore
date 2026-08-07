@@ -106,6 +106,29 @@ Pick exactly one of: standards, runbook, meeting, decision_log, prd, general.
 Respond ONLY with the single word, nothing else.
 """
 
+DISTILL_PROMPT = """You distill a conversation / chat-log excerpt into searchable Q&A units.
+
+A unit is a question someone asked AND its substantive answer. Normalize the
+exchange into a consistent format so it can be found later by either side.
+
+For each distinct Q&A exchange in the text, output exactly one unit with:
+- question: the question, normalized to a standalone one-liner
+- answer: the substantive answer, normalized (no filler, greetings, or chit-chat)
+- terms: 1-5 searchable key terms / acronyms the unit is about
+- systems: any systems, teams, or components mentioned (empty if none)
+
+Ignore filler: greetings, small talk, acknowledgements ("got it", "thanks"),
+and messages with no information. If the text contains no real Q&A exchange,
+return {{"units": []}}.
+
+Respond ONLY with a JSON object:
+{{"units": [{{"question": str, "answer": str, "terms": [str], "systems": [str]}}]}}
+"""
+
+# doc types where the distillation pass runs (chat-like content); standards and
+# runbooks are already clean prose and don't need Q&A normalization
+DISTILL_DOC_TYPES = {"meeting", "decision_log", "general"}
+
 
 class Classifier:
     def __init__(self, settings: SettingsService):
@@ -125,6 +148,81 @@ class Classifier:
         except Exception as exc:  # noqa: BLE001
             logger.warning("LLM classification failed (%s); falling back to rules", exc)
             return self._classify_rules(text, source_ref)
+
+    async def distill(self, text: str, source_ref: str) -> list[dict[str, Any]]:
+        """Distill a chat-like window into normalized Q&A units (B18).
+
+        Returns a list of {question, answer, terms, systems} dicts. Falls back
+        to a heuristic rule splitter when the LLM is unavailable (CI-safe)."""
+        try:
+            return await self._distill_llm(text, source_ref)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LLM distillation failed (%s); falling back to rules", exc)
+            return self._distill_rules(text)
+
+    async def _distill_llm(self, text: str, source_ref: str) -> list[dict[str, Any]]:
+        payload = {
+            "model": self.settings.get("classifier_model") or "llama3.2:3b",
+            "messages": [
+                {"role": "system", "content": DISTILL_PROMPT},
+                {"role": "user", "content": f"Source: {source_ref}\n\nContent:\n{text}"},
+            ],
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"},
+        }
+        base_url = self._base_url()
+        api_key = self.settings.get("classifier_api_key") or ""
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        timeout = self.settings.get_float("classifier_timeout", 60.0)
+        async with RetryClient(timeout=timeout) as client:
+            resp = await client.post(
+                f"{base_url.rstrip('/')}/v1/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+            resp.raise_for_status()
+            raw = resp.json()["choices"][0]["message"]["content"]
+            data = json.loads(raw)
+        units: list[dict[str, Any]] = []
+        for unit in data.get("units", []):
+            if not isinstance(unit, dict):
+                continue
+            question = str(unit.get("question", "")).strip()
+            answer = str(unit.get("answer", "")).strip()
+            if not question or not answer:
+                continue
+            terms = [str(t).strip() for t in unit.get("terms", []) if str(t).strip()]
+            systems = [str(s).strip() for s in unit.get("systems", []) if str(s).strip()]
+            units.append(
+                {
+                    "question": question[:500],
+                    "answer": answer[:1200],
+                    "terms": terms[:5],
+                    "systems": systems[:5],
+                }
+            )
+        return units
+
+    def _distill_rules(self, text: str) -> list[dict[str, Any]]:
+        """Heuristic fallback: pair a question sentence with the following
+        answer sentence, skipping greeting-only filler."""
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+        units: list[dict[str, Any]] = []
+        for i, sentence in enumerate(sentences):
+            if not sentence.endswith("?") or i + 1 >= len(sentences):
+                continue
+            answer = sentences[i + 1]
+            if len(answer) < 5 or re.fullmatch(r"(got it|ok|thanks|thx|yes|no|sure)[.!]*", answer, re.IGNORECASE):
+                continue
+            units.append(
+                {
+                    "question": sentence[:500],
+                    "answer": answer[:1200],
+                    "terms": [t.lower() for t in re.findall(r"[A-Za-z][A-Za-z0-9_\-]{2,}", sentence + " " + answer)[:5]],
+                    "systems": [],
+                }
+            )
+        return units
 
     async def _detect_llm(self, text: str) -> str:
         truncated = text[:8000]
