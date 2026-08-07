@@ -61,6 +61,11 @@ flowchart LR
 
 **Deletion policy:** sources removed → marked `stale`; knowledge is never auto-deleted.
 
+**Distillation (B18):** chat-like windows (meeting/decision_log/general) are
+normalized into searchable Q&A units (`Q: … A: …` + terms/systems) stored as
+`kind='distilled'` chunks. An IDF gate skips low-signal content (filler,
+sparse vocabulary) from vector embedding — it stays keyword-findable in FTS5.
+
 ## 4. Data Flow — Q&A
 
 ```mermaid
@@ -131,8 +136,7 @@ need to co-occur in the question's words. Pure SQL — no model calls.
 Remaining learnings parked in the backlog: scoped search via *projects* (bundles
 of sources with a per-user default — "search everything everywhere" stops
 being useful at scale), a full *who_knows* ranking (B16; B17 ships a minimal
-owner/author tool already), and distillation of raw content into
-question/summary/resolution fields before embedding (B18).
+owner/author tool already), and data labeling / PII gating (B30).
 
 ## 5. Data Model — Uniform Entity Graph
 
@@ -191,6 +195,7 @@ erDiagram
         int id PK
         int item_id FK "full-document chunk"
         int entity_id FK "entity-summary chunk"
+        string kind "document|entity|distilled"
         string source_ref "section"
         string content
         bytes embedding "float32 blob"
@@ -299,8 +304,8 @@ erDiagram
 
 ```
 v1: local-first, folder + Jira, document-aware classification + review + cited Q&A
-    (done: hybrid RRF retrieval + planner/executor + graph walk + Windows/macOS apps)
-  -> v1.5: Linear/Drive connectors, MCP access, projects/scoped search, distillation
+    (done: hybrid RRF retrieval + planner/executor + graph walk + distillation + Windows/macOS apps)
+  -> v1.5: Linear/Drive connectors, MCP access, projects/scoped search
   -> v2: team sharing, hosted option, Slack, contradictions, bundled models
   -> v3: agentic levels (draft, prepare-action-with-approval), enterprise compliance
 ```
