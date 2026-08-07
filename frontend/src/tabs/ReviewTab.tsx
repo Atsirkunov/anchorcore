@@ -9,6 +9,8 @@ export function ReviewTab() {
   const [busyEntity, setBusyEntity] = useState<number | null>(null);
   const [busyProposal, setBusyProposal] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
+  const [disputeFor, setDisputeFor] = useState<number | null>(null);
+  const [disputeReason, setDisputeReason] = useState("");
 
   const refresh = useCallback(() => {
     api.lowConfidence().then(setLow).catch((e) => setError(String(e)));
@@ -43,6 +45,21 @@ export function ReviewTab() {
     }
   }
 
+  async function recordDispute(entityId: number) {
+    setBusyEntity(entityId);
+    setError(null);
+    try {
+      await api.disputeEntity(entityId, disputeReason);
+      setDisputeFor(null);
+      setDisputeReason("");
+      refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyEntity(null);
+    }
+  }
+
   return (
     <div>
       <h2>Review</h2>
@@ -52,7 +69,14 @@ export function ReviewTab() {
       <div style={{ display: "grid", gap: 8, marginBottom: 24 }}>
         {low.map((e) => (
           <article key={e.id} style={{ background: "#171a21", border: "1px solid #2d333b", borderRadius: 8, padding: "0.75rem 1rem" }}>
-            <div style={{ fontSize: 12, color: "#9ca3af" }}>[{e.kind}] conf {(e.confidence * 100).toFixed(0)}% · {e.source_ref}</div>
+            <div style={{ fontSize: 12, color: "#9ca3af" }}>
+              [{e.kind}] conf {(e.confidence * 100).toFixed(0)}% · {e.source_ref}
+              {e.dispute_count > 0 && (
+                <span title={`Disputed ${e.dispute_count}× — excluded from Q&A`} style={{ marginLeft: 6, color: "#fca5a5" }}>
+                  ⚑ disputed ×{e.dispute_count}
+                </span>
+              )}
+            </div>
             <p style={{ margin: "0.3rem 0", fontWeight: 600 }}>{e.summary}</p>
             {e.reasoning && <p style={{ margin: 0, color: "#9ca3af", fontSize: 13 }}>{e.reasoning}</p>}
             {e.window_text && (
@@ -81,13 +105,45 @@ export function ReviewTab() {
               >
                 {busyEntity === e.id ? "…" : "Looks right"}
               </button>
-              <button
-                style={{ ...styles.button, ...(busyEntity !== null ? styles.disabled : {}) }}
-                disabled={busyEntity !== null}
-                onClick={() => updateEntity(e.id, { status: "disputed" })}
-              >
-                {busyEntity === e.id ? "…" : "Dispute"}
-              </button>
+              {disputeFor !== e.id ? (
+                <button
+                  style={{ ...styles.button, ...(busyEntity !== null ? styles.disabled : {}) }}
+                  disabled={busyEntity !== null}
+                  onClick={() => {
+                    setDisputeFor(e.id);
+                    setDisputeReason("");
+                  }}
+                >
+                  {busyEntity === e.id ? "…" : "Dispute"}
+                </button>
+              ) : (
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input
+                    style={{ ...styles.input, width: 260 }}
+                    autoFocus
+                    placeholder="Why is this disputed? (recorded for the audit trail)"
+                    value={disputeReason}
+                    onChange={(ev) => setDisputeReason(ev.target.value)}
+                    onKeyDown={(ev) => ev.key === "Enter" && recordDispute(e.id)}
+                  />
+                  <button
+                    style={{ ...styles.button, background: "#3a1d1d", color: "#fca5a5", ...(busyEntity !== null ? styles.disabled : {}) }}
+                    disabled={busyEntity !== null}
+                    onClick={() => recordDispute(e.id)}
+                  >
+                    {busyEntity === e.id ? "…" : "Record dispute"}
+                  </button>
+                  <button
+                    style={styles.button}
+                    onClick={() => {
+                      setDisputeFor(null);
+                      setDisputeReason("");
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
             </div>
           </article>
         ))}
@@ -136,6 +192,14 @@ const styles: Record<string, React.CSSProperties> = {
     opacity: 1,
   },
   disabled: { opacity: 0.5, cursor: "not-allowed" },
+  input: {
+    padding: "0.35rem 0.6rem",
+    borderRadius: 6,
+    border: "1px solid #2d333b",
+    background: "#14171d",
+    color: "#e6e8eb",
+    fontSize: 12,
+  },
   contextButton: {
     background: "none",
     border: "none",

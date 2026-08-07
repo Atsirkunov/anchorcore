@@ -92,10 +92,14 @@ class Entity(Base):
     window_index: Mapped[int | None] = mapped_column(Integer, nullable=True)  # window ordinal
     status: Mapped[str] = mapped_column(String(50), default="unverified", index=True)
     owner: Mapped[str] = mapped_column(String(300), default="")
+    dispute_count: Mapped[int] = mapped_column(Integer, default=0)  # B3: increment on each dispute
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     item: Mapped[IngestedItem] = relationship(back_populates="entities")
+    disputes: Mapped[list["Dispute"]] = relationship(
+        back_populates="entity", cascade="all, delete-orphan", order_by="Dispute.created_at.desc()"
+    )
     chunks: Mapped[list["Chunk"]] = relationship(back_populates="entity", cascade="all, delete-orphan")
     outgoing: Mapped[list["Relationship"]] = relationship(
         back_populates="from_entity", foreign_keys="Relationship.from_entity_id", passive_deletes=True
@@ -197,6 +201,24 @@ class AppSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class Dispute(Base):
+    """B3: audit trail of who disputed an entity, when, and why.
+
+    Disputing increments `entities.dispute_count` and flips the status to
+    'disputed'; disputed entities are excluded from Q&A retrieval by default.
+    """
+
+    __tablename__ = "disputes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entity_id: Mapped[int] = mapped_column(ForeignKey("entities.id", ondelete="CASCADE"), index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    user: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    entity: Mapped[Entity] = relationship(back_populates="disputes")
 
 
 class MergeAction(Base):

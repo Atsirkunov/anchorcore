@@ -30,6 +30,28 @@ def make_router(
     def list_sources(db: Session = Depends(get_db)) -> list[Source]:
         return list(db.execute(select(Source).order_by(Source.created_at.desc())).scalars().all())
 
+    @router.put("/{source_id}", response_model=schemas.SourceOut)
+    def update_source(
+        source_id: int, payload: schemas.SourceUpdate, db: Session = Depends(get_db)
+    ) -> Source:
+        """B7: edit a source's name, enabled flag and/or connector config.
+        Secret config fields stay keychain-backed ('***set***' keeps them)."""
+        source = db.get(Source, source_id)
+        if source is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        if payload.name is not None:
+            if not payload.name.strip():
+                raise HTTPException(status_code=422, detail="source name cannot be empty")
+            source.name = payload.name.strip()
+        if payload.enabled is not None:
+            source.enabled = payload.enabled
+        if payload.config is not None:
+            store_source_config(db, source, payload.config, secrets)
+        db.commit()
+        db.refresh(source)
+        scheduler.reload_sources()
+        return source
+
     @router.delete("/{source_id}")
     def delete_source(source_id: int, db: Session = Depends(get_db)) -> dict:
         source = db.get(Source, source_id)

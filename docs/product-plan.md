@@ -155,16 +155,17 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** reclassify of a large source shows live progress and completion, never a browser timeout. — met.
 
-### B3. Entity dispute tracking (P2)
+### B3. Entity dispute tracking (P2) — DONE
 **Problem:** "dispute" currently just flips a status flag — no record of who disputed, when, or why. The trust story needs an audit trail.
 
-**Scope:**
-- `disputes` table: entity_id, timestamp, reason (optional), user
-- Dispute counter on the entity + activity timeline in the UI
-- Disputed entities excluded from Q&A context by default (configurable) — the "never present contested facts as truth" behavior
-- (v2: full verification workflow per product plan)
+**Done:**
+- `disputes` table (entity_id, reason, user, created_at) + `entities.dispute_count` — migration `b3a0c1`
+- `POST /entities/{id}/dispute` records who/when/why, increments the counter, marks the entity disputed; `GET /entities/{id}/disputes` returns the audit trail (newest first)
+- Review tab "Dispute" now asks for a reason inline and shows a `⚑ disputed ×N` badge
+- **Disputed entities excluded from Q&A retrieval by default** — `AnswerEngine._status_ok` filters `stale` always and `disputed` unless `ANCHOR_QA_EXCLUDE_DISPUTED=false`; applied uniformly across vector, FTS, who_knows, fallback and graph expansion
+- Tests (`tests/test_disputes.py`): audit trail + counter increments, and the DoD — the entity is cited before the dispute and stops being cited after
 
-**DoD:** dispute an entity → counter increments, reason stored, answers stop citing it.
+**DoD:** dispute an entity → counter increments, reason stored, answers stop citing it. — met.
 
 ### B4. LLM configuration in app (P1) — DONE
 **Problem:** model settings live in `backend/.env` — restart required, invisible, blocked testers ("how do I connect my key?").
@@ -197,13 +198,24 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** after Ollama comes back, all pending chunks get embedded without user action, and health reports the catch-up.
 
-### B7. Source configuration editing in UI (P2)
+### B7. Source configuration editing in UI (P2) — DONE
 **Problem:** editing a folder path or Jira credentials requires delete + recreate.
 
-**Scope:** `PUT /sources/{id}` (config, name, enabled), edit form in Sources tab; secret fields stay keychain-backed.
+**Done:**
+- `PUT /sources/{id}` (name, enabled, config) — partial updates; unknown/empty-name → 422; scheduler reloads watchers after a change
+- Edit form per source in the Sources tab (folder path / Jira fields pre-filled from the masked config); secret fields stay keychain-backed — the `***set***` placeholder keeps the stored value, an explicit empty string clears it
+- **Fixed a latent SecretStore fallback bug**: the fallback was a single encrypted blob, so `delete(key)` wiped *every* stored secret; it is now per-key files (`secrets.enc.<sha256(key)>`)
+- Tests (`tests/test_source_edit.py`): name/enabled edits, config change + re-sync against the new path, secret keep/replace/clear
 
-### B8. First-run wizard (P2)
-**Scope:** on first launch: check Ollama → offer install/pull instructions, model selection, quick folder connect, sample question. Turns the 60-second wow into the onboarding path.
+**DoD:** editing a folder path or Jira credentials no longer requires delete + recreate. — met.
+
+### B8. First-run wizard (P2) — DONE
+**Done:**
+- `GET /system/onboarding` — the wizard trigger: `needs_wizard` (true with zero sources), Ollama reachability + missing models, answer-provider state, and the bundled `sample/` corpus path when resolvable (None when frozen)
+- `OnboardingWizard` overlay in the UI (auto-shown on first launch, dismissible): step 1 setup checks (Ollama install/pull instructions per platform), step 2 connect a folder or the sample corpus with live sync progress, step 3 ask a question and see the cited answer
+- Tests: onboarding endpoint shape + source-count delta
+
+**DoD:** on first launch a new user is guided from "install Ollama" to a cited answer in a few clicks, no config file. — met (dev; frozen apps hide the sample button).
 
 ### B9. Document type coverage (P2)
 **Scope:** add `.docx`/`.pptx`/`.odt` extraction (small deps); revisit after real tester file types are known — the watched folder currently only ingests a subset of formats.
@@ -305,16 +317,12 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** a chat-log-style source produces findable distilled Q&A units; filler messages don't pollute vector results. — met.
 
-### B19. Chat: newest answer on top (P2 — UX)
+### B19. Chat: newest answer on top (P2 — UX) — DONE
 **Problem:** in long follow-up conversations the latest answer renders at the bottom of the page, off-screen; the user has to scroll down to see the new response (or misses that it arrived).
 
-**Scope:**
-- Render the chat newest-first (latest turn at the top of the page, below the input), so the current answer is always immediately visible
-- Input stays pinned near the top; older context scrolls down
-- Keep "Clear context" visible regardless of ordering
-- (Alternative considered: auto-scroll to newest at bottom — rejected: fights the user's reading position on long threads)
+**Done:** Ask tab renders turns newest-first (latest turn at the top, below the input); input stays pinned near the top, older context scrolls down, "Clear context" stays visible.
 
-**DoD:** after 5+ follow-ups, the newest answer is visible without scrolling.
+**DoD:** after 5+ follow-ups, the newest answer is visible without scrolling. — met.
 
 ### B20. Launchable package for others (P1 — "usable by others" blocker) — DONE
 **Problem:** today AnchorCore runs from a repo checkout (`start.ps1`); a non-developer can't install and launch it. `packaging.md` is a plan only, stale (references Next.js; we're Vite), and macOS-only.
@@ -532,6 +540,10 @@ before implementation** (see [B30 open question](#b30-data-labeling-piisensitive
 | 2 | B17 Planner→Executor→Synthesis | ✅ DONE (v1.0.4) | tool planner + executor + evidence fusion; who_knows tool |
 | 3 | B18 Distillation | ✅ DONE (v1.0.5) | normalized Q&A units + IDF-gated embedding |
 | 4 | B15 Scoped search / projects | ✅ DONE (v1.0.6) | project bundles of sources; QA scoped via project picker |
+| — | B19 newest answer on top | ✅ DONE (v1.0.7) | Ask renders newest-first |
+| — | B3 Dispute tracking | ✅ DONE (v1.0.7) | audit trail + counter; disputed excluded from Q&A |
+| — | B7 Source config editing | ✅ DONE (v1.0.7) | PUT /sources/{id} + edit form; keychain-backed secrets |
+| — | B8 First-run wizard | ✅ DONE (v1.0.7) | onboarding overlay: Ollama checks → connect → ask |
 | 5 | B30 Data labeling / PII gating | **next** | large + cross-cutting; **needs product input first** (see below) |
 
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md)*
