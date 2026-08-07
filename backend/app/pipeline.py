@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 from datetime import datetime, timezone
@@ -8,7 +9,7 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
-from .classifier import Classifier, window_hash
+from .classifier import DISTILL_DOC_TYPES, Classifier, window_hash
 from .cleaning import clean_text, repeated_lines, strip_repeated
 from .config import settings
 from .connectors import ConnectorError, IngestionDoc, build_connector
@@ -335,6 +336,7 @@ class IngestionPipeline:
                     db.add(
                         Chunk(
                             entity_id=entity.id,
+                            kind="entity",
                             source_ref=item_data["source_ref"],
                             content=chunk_content,
                         )
@@ -342,12 +344,19 @@ class IngestionPipeline:
 
         item.window_hashes = json.dumps(new_hashes)
 
+        # B18: distillation pass — normalize chat-like windows into searchable
+        # Q&A units (kind='distilled'). Runs only for chat-like doc types, keyed
+        # on the same window hashes so unchanged windows are skipped. Units are
+        # stored as a first-class embeddable chunk alongside the raw content.
+        if settings.distill_enabled and doc_type in DISTILL_DOC_TYPES:
+            await self._distill_and_store(db, item, doc, windows, force_reclassify)
+
         # full-document chunks so long content is fully retrievable;
         # clean BEFORE chunking so boundaries/embeddings/FTS tokens are clean.
         # Rebuild them each pass (hash-skip applies to classification only) —
         # drop the previous doc chunks first so re-syncs don't duplicate.
         old_doc_chunks = db.execute(
-            select(Chunk).where(Chunk.item_id == item.id, Chunk.entity_id.is_(None))
+            select(Chunk).where(Chunk.item_id == item.id, Chunk.entity_id.is_(None), Chunk.kind != "distilled")
         ).scalars().all()
         for chunk in old_doc_chunks:
             db.delete(chunk)
@@ -356,12 +365,80 @@ class IngestionPipeline:
         doc_chunks = chunk_document(cleaned)
         for index, chunk_content in enumerate(doc_chunks, start=1):
             ref = f"{base_ref} §{index}" if len(doc_chunks) > 1 else base_ref
-            db.add(Chunk(item_id=item.id, source_ref=ref, content=chunk_content))
+            db.add(Chunk(item_id=item.id, kind="document", source_ref=ref, content=chunk_content))
 
         db.commit()
 
         await self._embed_item(db, item)
         return sum(1 for batch in results if batch)
+
+    async def _distill_and_store(
+        self,
+        db: Session,
+        item: IngestedItem,
+        doc: IngestionDoc,
+        windows: list[str],
+        force_reclassify: bool,
+    ) -> None:
+        """B18: normalize chat-like windows into searchable Q&A units.
+
+        Mirrors the classification hash-skip: unchanged windows don't re-distill
+        (cheap on re-sync/reclassify). Distilled units are stored as chunks with
+        kind='distilled' and a normalized 'Q: … A: …' content so they embed well.
+        Old distilled chunks are dropped first so re-runs don't duplicate."""
+        prev_hashes = json.loads(item.distill_hashes or "{}")
+        base_ref = doc.source_ref or doc.title
+        refs = [f"{base_ref} §{index}" if len(windows) > 1 else base_ref for index in range(1, len(windows) + 1)]
+        sem = asyncio.Semaphore(settings.classifier_concurrency)
+
+        async def distill_one(window: str, ref: str, index: int) -> list[dict] | None:
+            h = window_hash(window)
+            if not force_reclassify and prev_hashes.get(str(index)) == h:
+                return None
+            async with sem:
+                try:
+                    return await self.classifier.distill(window, ref)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("distillation failed for window %s (%s)", index, exc)
+                    return None
+
+        results = await asyncio.gather(
+            *(distill_one(w, r, i) for i, (w, r) in enumerate(zip(windows, refs), start=1))
+        )
+
+        new_hashes = dict(prev_hashes)
+        old_distilled = db.execute(
+            select(Chunk).where(Chunk.item_id == item.id, Chunk.kind == "distilled")
+        ).scalars().all()
+        for chunk in old_distilled:
+            db.delete(chunk)
+        db.flush()
+
+        max_units = settings.distill_max_units
+        total = 0
+        for index, (window, batch) in enumerate(zip(windows, results), start=1):
+            new_hashes[str(index)] = window_hash(window)
+            if batch is None:
+                continue
+            for unit in batch[:max_units]:
+                total += 1
+                content = f"Q: {unit['question']}\nA: {unit['answer']}"
+                if unit.get("terms"):
+                    content += f"\nTerms: {', '.join(unit['terms'])}"
+                if unit.get("systems"):
+                    content += f"\nSystems: {', '.join(unit['systems'])}"
+                db.add(
+                    Chunk(
+                        item_id=item.id,
+                        kind="distilled",
+                        source_ref=refs[index - 1],
+                        content=content,
+                    )
+                )
+        item.distill_hashes = json.dumps(new_hashes)
+        db.commit()
+        if total:
+            logger.info("distilled %d unit(s) from %s", total, doc.title)
 
     async def _embed_item(self, db: Session, item: IngestedItem) -> None:
         chunks = db.execute(
@@ -372,7 +449,17 @@ class IngestionPipeline:
             )
         ).scalars().all()
 
-        texts = [c.content for c in chunks if c.embedding is None]
+        pending = [c for c in chunks if c.embedding is None]
+        if not pending:
+            return
+        # B18 IDF gating: skip low-signal content (short filler, greeting-only,
+        # rare-token sparse) from vector search — keep it in FTS for keyword.
+        # Compute token document-frequencies across this item's chunks.
+        embeddable = [c for c in pending if self._signal(c.content, pending) >= settings.embed_min_signal]
+        skipped = len(pending) - len(embeddable)
+        if skipped:
+            logger.info("IDF gate: skipping embeddings for %d low-signal chunk(s) of %s", skipped, item.title)
+        texts = [c.content for c in embeddable]
         if not texts:
             return
         try:
@@ -380,7 +467,32 @@ class IngestionPipeline:
         except Exception as exc:  # noqa: BLE001
             logger.warning("embedding failed (%s); chunks stored unembedded", exc)
             return
-        for chunk, vector in zip(chunks, vectors):
+        for chunk, vector in zip(embeddable, vectors):
             if chunk.embedding is None:
                 chunk.embedding = pack_f32([vector])
         db.commit()
+
+    @staticmethod
+    def _signal(content: str, chunks: list[Chunk]) -> float:
+        """B18 IDF-gated signal score: mean inverse document frequency of the
+        chunk's tokens across the corpus (here: the item's chunks). Short filler
+        and sparse/rare-token content score low and are skipped from embedding."""
+        from collections import Counter
+
+        doc_freq: Counter[str] = Counter()
+        for c in chunks:
+            doc_freq.update(re.findall(r"[a-z0-9_]{3,}", c.content.lower()))
+        n = max(1, len(chunks))
+        tokens = re.findall(r"[a-z0-9_]{3,}", content.lower())
+        if not tokens:
+            return 0.0
+        # idf = log(n / df); rare tokens (df small) → higher idf. We want the
+        # *signal* = how distinctive this chunk's vocabulary is. Common filler
+        # words shared across chunks contribute ~0 idf.
+        total = 0.0
+        for t in set(tokens):
+            df = doc_freq.get(t, 0)
+            if df == 0:
+                continue
+            total += max(0.0, math.log((n + 1) / (df + 1)))
+        return total / len(set(tokens))

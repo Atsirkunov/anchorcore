@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     chunk_overlap: int = 100
     chunk_max_chars: int = 1600
     classify_window_chars: int = 16000
+    distill_enabled: bool = True
+    distill_max_units: int = 8
+    embed_min_signal: float = 0.15
     retrieval_keyword_weight: float = 1.0
     retrieval_max_per_source: int = 3
     retrieval_age_halflife_days: int = 365

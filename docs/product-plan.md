@@ -292,16 +292,16 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** a question that needs two source types (e.g. decision + person) is answered with evidence from both, cited. — met (live: "Who owns the billing migration?" → planner runs `['hybrid', 'who_knows']`; answer cites Sarah's ownership + the billing decision/action).
 
-### B18. Distillation of raw content before embedding (P2 — Cerebras learning)
+### B18. Distillation of raw content before embedding (P2 — Cerebras learning) — DONE
 **Problem:** Cerebras found embedding raw text underperforms a normalized form: "accuracy increased significantly when the thread was normalized into a consistent format." They extract question/summary/resolution/system refs from threads; short filler messages beat detailed ones in cosine similarity.
 
-**Scope:**
-- Distillation pass over doc items: extract searchable one-line question/summary + key terms + systems mentioned (reuses classifier infra)
-- IDF-gated embedding: skip low-signal content (rare-token IDF < threshold, short filler) from embedding; keep in FTS
-- Full-document chunks stay embedded (B12 DoD) but distilled summaries become a first-class embeddable unit
-- Age decay makes old answers rank lower when relevance ties (B12.1)
+**Done:**
+- **Distillation pass** (`Classifier.distill` + `pipeline._distill_and_store`): chat-like windows (doc_type `meeting|decision_log|general`) are normalized into searchable Q&A units — `{question, answer, terms, systems}` — stored as first-class chunks with `kind='distilled'` and a normalized `Q: … A: …` content. Hash-skipped per window (re-sync/reclassify of unchanged content makes ~0 distillation calls). LLM path with a rule-based fallback (CI-safe).
+- **IDF-gated embedding** (`_signal` + `embed_min_signal`): chunks whose vocabulary is low-signal (short filler, rare-token sparse) are skipped from vector embedding — they stay `embedding = NULL` so FTS5 keyword search still finds them.
+- **Chunk discriminator**: new `chunks.kind` (`document`|`entity`|`distilled`) — migration `b18d0c1` backfills existing entity chunks.
+- **DoD met live**: a Slack-export chat produced 3 distilled units; "How long does the idempotency key last?" answered from the distilled unit ("the idempotency key expires after 24 hours") even though the raw thread phrased it as "what's the timeout on the idempotency key?"
 
-**DoD:** a chat-log-style source produces findable distilled Q&A units; filler messages don't pollute vector results.
+**DoD:** a chat-log-style source produces findable distilled Q&A units; filler messages don't pollute vector results. — met.
 
 ### B19. Chat: newest answer on top (P2 — UX)
 **Problem:** in long follow-up conversations the latest answer renders at the bottom of the page, off-screen; the user has to scroll down to see the new response (or misses that it arrived).
@@ -518,18 +518,18 @@ rollback-safe — OR a documented decision to stay on Python.
 ## Current execution priorities (agreed 2026-08-07)
 
 Explicit order — the retrieval/answer architecture is the focus while tokens are cheap.
-**B32 and B17 are DONE** (released in v1.0.3/v1.0.4); the queue below is what remains.
+**B32, B17 and B18 are DONE** (released in v1.0.3–v1.0.5); the queue below is what remains.
 B30 is large and cross-cutting so it sits last in line but is **flagged for design input
 before implementation** (see [B30 open question](#b30-data-labeling-piisensitive-gating-of-models-sharing-and-answers-p1-for-pii--v1-risk-p2-rest)).
 
-> **B18 > B15 > B30**
+> **B15 > B30**
 
 | # | Item | Status | Why here |
 |---|---|---|---|
 | 1 | B32 Graph-based retrieval | ✅ DONE (v1.0.3) | graph walk after RRF → connected entities in context + citations |
 | 2 | B17 Planner→Executor→Synthesis | ✅ DONE (v1.0.4) | tool planner + executor + evidence fusion; who_knows tool |
-| 3 | **B18 Distillation** | **next** | normalized embeddings = retrieval quality win; touches pipeline + retrieval now that B17 settled the shape |
-| 4 | B15 Scoped search / projects | open | cross-cutting (Q&A + MCP + UI) — relevance at scale; builds on the retrieval work above |
+| 3 | B18 Distillation | ✅ DONE (v1.0.5) | normalized Q&A units + IDF-gated embedding |
+| 4 | **B15 Scoped search / projects** | **next** | cross-cutting (Q&A + MCP + UI) — relevance at scale |
 | 5 | B30 Data labeling / PII gating | open | large + cross-cutting; **needs product input first** (see below), then lands last |
 
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md)*
