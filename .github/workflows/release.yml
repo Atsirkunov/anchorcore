@@ -71,11 +71,13 @@ jobs:
       - name: Install backend deps + pyinstaller
         working-directory: backend
         run: |
-          python3.12 -m pip install -r requirements.txt
-          python3.12 -m pip install pyinstaller
+          python3.12 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements.txt
+          .venv/bin/python -m pip install pyinstaller
 
       - name: PyInstaller build
-        run: python3.12 -m PyInstaller --noconfirm packaging.spec
+        run: backend/.venv/bin/python -m PyInstaller --noconfirm packaging.spec
 
       - name: Ad-hoc sign (free, no Apple account; approval needed on first launch)
         run: codesign --force --deep --sign - dist/AnchorCore
