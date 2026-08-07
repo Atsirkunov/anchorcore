@@ -328,12 +328,12 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 **Problem:** today AnchorCore runs from a repo checkout (`start.ps1`); a non-developer can't install and launch it. `packaging.md` is a plan only, stale (references Next.js; we're Vite), and macOS-only.
 
 **Done:**
-- PyInstaller single-file backend exe bundling the built `frontend/dist` — one process serves UI + API on 127.0.0.1:8000 (`dist/AnchorCore.exe`; macOS `dist/AnchorCore` via `build.sh`, B24)
-- Launcher (`backend/run_app.py`): sets `ANCHOR_DATA_DIR=~/.anchorcore` when frozen, auto-starts the local Ollama server, opens the browser, boots uvicorn
-- `packaging.md` updated to reality (Vite, current stack, both platforms); `.app` bundle + notarization deferred as the stretch milestone
+- PyInstaller onedir windowed backend app bundling the built `frontend/dist` — one process serves UI + API on 127.0.0.1:8000 (`dist/AnchorCore-windows.zip` → `AnchorCore.exe`; macOS `dist/AnchorCore-macos.zip` → `AnchorCore.app` via `build.sh`, B24)
+- Launcher (`backend/run_app.py`): sets `ANCHOR_DATA_DIR=~/.anchorcore` when frozen, auto-starts the local Ollama server, opens the browser, boots uvicorn; windowed-mode guard redirects stdout/stderr (no terminal)
+- `packaging.md` updated to reality (Vite, current stack, both platforms); notarization deferred as the stretch milestone
 - CI artifact: `.github/workflows/release.yml` builds the exe/app on every `v*` tag (B25) so testers get a download
 
-**DoD:** a non-developer downloads one file, runs it, and lands in the Ask tab with models working — no terminal, no repo. — met (v1.0.0+ Windows exe + macOS app released to GitHub).
+**DoD:** a non-developer downloads one archive, runs it, and lands in the Ask tab with models working — no terminal, no repo. — met (v1.0.0+ Windows + macOS releases on GitHub).
 
 ### B21. Sample dataset for variety and complexity (P1 — first, per agreed prio) — DONE
 **Problem:** `sample/` has one 18-line sprint note. Can't demo or validate variety (classification kinds, relationships, duplicates, review, follow-ups, people) on real-shaped data.
@@ -469,7 +469,7 @@ What counts as PII, and how do we map labels onto content? Proposed default to r
 **Done:**
 - `build.sh` — mirrors `build.ps1` (frontend build → venv/pyinstaller → `dist/AnchorCore` → ad-hoc sign)
 - `packaging.spec` — sqlite_vec glob picks up `.dll` *or* `.dylib` (Windows + macOS from one spec); verified `vec0.dylib` bundles correctly
-- `.github/workflows/release.yml` — macOS job zips `dist/AnchorCore` (single-file binary, not `.app`) so the tag build doesn't fail
+- `.github/workflows/release.yml` — macOS job zips `dist/AnchorCore.app` (windowed onedir bundle) so the tag build doesn't fail
 - Smoke-tested on a Mac (arm64): boots, migrations run, syncs the `sample/` corpus (10 files → 47 entities), QA returns cited answers, Settings switch to local Ollama produces generated answers
 
 **DoD:** running `./build.sh` on a Mac produces a launchable, ad-hoc signed `dist/AnchorCore`; launching on a fresh Mac works after the one-time approval.
