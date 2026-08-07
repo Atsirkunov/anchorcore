@@ -18,9 +18,10 @@ flowchart TB
         browser["Browser UI<br/>(React SPA, localhost)"]
         api["AnchorCore App<br/>FastAPI (single process)"]
         api --- connectors["Connectors<br/>Folder watch · Jira poll"]
-        api --- pipeline["Ingestion Pipeline<br/>type detect → classify → entities"]
-        api --- rag["Answer Engine<br/>RRF hybrid RAG + citations"]
+        api --- pipeline["Ingestion Pipeline<br/>type detect → classify → distill → entities"]
+        api --- rag["Answer Engine<br/>planner → executor → RRF → graph → cited answer"]
         api --- review["Review API<br/>low-confidence · duplicates"]
+        api --- projects["Projects API<br/>scoped search (B15)"]
         api --- jobs["Job Manager<br/>background jobs · cancel"]
         db[("Entity Graph<br/>SQLite + sqlite-vec + FTS5")]
         settings[("app_settings<br/>runtime overrides")]
@@ -77,13 +78,14 @@ sequenceDiagram
     participant O as Ollama
     participant M as BYO LLM API
 
-    U->>A: "What was decided about X, and why?" (+ chat history)
+    U->>A: "What was decided about X, and why?" (+ chat history, project scope)
     A->>A: rewrite follow-up into standalone query (if history)
+    A->>A: resolve project scope (B15) → source ids
     A->>A: planner (B17) — pick retrieval tools (hybrid, who_knows)
     A->>O: embed query
     O-->>A: query vector
-    A->>V: top-k similarity
-    A->>F: FTS5 keyword (bm25)
+    A->>V: top-k similarity (scoped to project sources)
+    A->>F: FTS5 keyword (bm25, scoped)
     A->>A: who_knows tool (B17) — owner/expertise entities
     A->>A: RRF fusion + age decay + diversity cap + context expansion
     A->>A: graph walk (B32) — connected entities join context + citations
@@ -273,7 +275,7 @@ erDiagram
 
 | Container | Responsibility | Tech |
 |---|---|---|
-| Web UI | Connect sources, review queue, duplicate proposals, Q&A chat, model settings | React SPA (Vite, TS) |
+| Web UI | Connect sources, project scoping, review queue, duplicate proposals, Q&A chat, model settings | React SPA (Vite, TS) |
 | API | All endpoints, orchestration, config | FastAPI |
 | Entity Store | Entities, provenance, window context, sync state | SQLite + SQLAlchemy |
 | Vector Store | Chunk embeddings + similarity search | sqlite-vec (same SQLite file) |

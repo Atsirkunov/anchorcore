@@ -92,7 +92,8 @@ Python runtime surface.
    Kills the Ollama prerequisite → the *actual* "works for non-techies" fix. ~2–3 days.
 2. **`vec0` index for retrieval** — `_vector_search` scans every chunk and computes
    cosine in Python. sqlite-vec (already bundled) has a `vec0` virtual table; using it
-   is ~10–100x faster retrieval, ~1 day, zero rewrite.
+   is ~10–100x faster retrieval, ~1 day, zero rewrite. (Partial progress: B18's IDF gate
+   already skips low-signal chunks from the scan.)
 3. **First-run wizard (B8)** — guided Ollama install / model pull, so the remaining
    prerequisite is a click-through, not an unknown.
 
@@ -127,7 +128,7 @@ Rust answers queries. Both read the same DB. This is where the user-visible perf
 (if any) shows up and where a rollback is trivial (point the API back at Python).
 
 ### Phase 4 — full port (2–3 weeks)
-Port connectors, ingestion, jobs, settings, secrets. Python backend retires. The 61
+Port connectors, ingestion, jobs, settings, secrets. Python backend retires. The 82
 tests now run green against the Rust binary. Frontend unchanged.
 
 **Total single-dev estimate: ~5–8 weeks end-to-end; ~3–4 weeks to a genuine
