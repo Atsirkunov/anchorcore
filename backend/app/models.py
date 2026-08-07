@@ -46,6 +46,7 @@ class IngestedItem(Base):
     stale: Mapped[bool] = mapped_column(default=False)
     doc_type: Mapped[str] = mapped_column(String(50), default="")  # standards|meeting|decision_log|prd|runbook|general
     window_hashes: Mapped[str] = mapped_column(Text, default="{}")  # JSON {index: sha256}
+    distill_hashes: Mapped[str] = mapped_column(Text, default="{}")  # JSON {index: sha256} — B18 distillation
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     source: Mapped[Source] = relationship(back_populates="items")
@@ -112,6 +113,7 @@ class Chunk(Base):
     entity_id: Mapped[int | None] = mapped_column(
         ForeignKey("entities.id", ondelete="CASCADE"), nullable=True
     )  # set for entity-summary chunks
+    kind: Mapped[str] = mapped_column(String(20), default="document", server_default="document")  # document|entity|distilled
     source_ref: Mapped[str] = mapped_column(String(500), default="")
     content: Mapped[str] = mapped_column(Text, default="")
     embedding: Mapped[bytes | None] = mapped_column(nullable=True)  # float32 blob

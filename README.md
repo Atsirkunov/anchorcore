@@ -80,6 +80,11 @@ Sources (folder, Jira) -> extract text -> classify -> entities + window context
   classifier calls). Jobs are cancellable via **Stop** in the Sources tab.
 - **Parallel throughput (B11)**: classifier windows run concurrently
   (`ANCHOR_CLASSIFIER_CONCURRENCY`, default 4); throughput stats in System tab.
+- **Distillation (B18)**: chat-like sources (meetings, Slack exports) are
+  normalized into searchable Q&A units (`Q: … A: …`) that embed well — so
+  "how long does the idempotency key last?" is answered even when the raw
+  thread phrased it as "what's the timeout?". An IDF gate skips low-signal
+  filler from vector search (it stays keyword-findable in FTS5).
 
 **Retrieval (B12/B12.1):** chunks are cleaned (page numbers, repeated headers,
 encoding artifacts) and split at section headings; Q&A fuses vector search
