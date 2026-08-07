@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -16,6 +17,11 @@ class SecretStore:
 
     Set ANCHOR_SECRETS_NO_KEYRING=1 to force the encrypted-file fallback
     (used by tests so they never touch the real OS keychain).
+
+    The fallback is a per-key set of encrypted files under the data dir (one
+    file per key), NOT a single blob — `delete(key)` must only remove that
+    key's secret (the original single-file design wiped every stored secret
+    on any delete).
     """
 
     SERVICE = "AnchorCore"
@@ -38,6 +44,10 @@ class SecretStore:
             pass
         return Fernet(key)
 
+    def _fallback_file(self, key: str) -> Path:
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+        return self.fallback_path.with_name(f"{self.fallback_path.name}.{digest}")
+
     def set(self, key: str, value: str) -> None:
         if self._use_keyring:
             try:
@@ -47,9 +57,9 @@ class SecretStore:
                 return
             except Exception as exc:  # noqa: BLE001
                 logger.warning("keyring unavailable (%s); using encrypted fallback file", exc)
-        encrypted = self._fernet.encrypt(value.encode())
-        self.fallback_path.parent.mkdir(parents=True, exist_ok=True)
-        self.fallback_path.write_bytes(encrypted)
+        path = self._fallback_file(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(self._fernet.encrypt(value.encode()))
 
     def get(self, key: str) -> str | None:
         if self._use_keyring:
@@ -61,10 +71,11 @@ class SecretStore:
                     return value
             except Exception:  # noqa: BLE001
                 pass
-        if not self.fallback_path.exists():
+        path = self._fallback_file(key)
+        if not path.exists():
             return None
         try:
-            return self._fernet.decrypt(self.fallback_path.read_bytes()).decode()
+            return self._fernet.decrypt(path.read_bytes()).decode()
         except InvalidToken:
             return None
 
@@ -76,11 +87,10 @@ class SecretStore:
                 keyring.delete_password(self.SERVICE, key)
             except Exception:  # noqa: BLE001
                 pass
-        if self.fallback_path.exists():
-            try:
-                self.fallback_path.unlink()
-            except OSError:
-                pass
+        try:
+            self._fallback_file(key).unlink()
+        except OSError:
+            pass
 
 
 def source_secret_key(source: Source, field: str) -> str:
@@ -90,12 +100,20 @@ def source_secret_key(source: Source, field: str) -> str:
 def store_source_config(
     db: Session, source: Source, config: dict, secrets: SecretStore
 ) -> None:
-    """Persist config, moving secret values into the SecretStore."""
+    """Persist config, moving secret values into the SecretStore.
+
+    The '***set***' sentinel (sent by the UI for a field whose stored value
+    should stay) is skipped; an absent field is left untouched; an explicitly
+    empty string clears the stored secret."""
     safe = dict(config)
     for field in ("token", "api_key", "password"):
         value = safe.pop(field, None)
+        if value is None or value == "***set***":
+            continue  # not provided / UI placeholder — keep the stored secret
         if value:
             secrets.set(source_secret_key(source, field), str(value))
+        else:
+            secrets.delete(source_secret_key(source, field))
     source.config = json.dumps(safe)
 
 

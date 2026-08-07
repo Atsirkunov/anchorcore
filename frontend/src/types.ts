@@ -70,6 +70,21 @@ export type EmbedderStatus = {
   model: string;
 };
 
+export type OnboardingState = {
+  needs_wizard: boolean;
+  sources_count: number;
+  ollama: {
+    reachable: boolean;
+    base_url: string;
+    missing_models: string[];
+  };
+  answer_provider: "ollama" | "configured" | "missing";
+  sample: {
+    available: boolean;
+    path: string | null;
+  };
+};
+
 export type SystemStatus = {
   version: string;
   data_dir: string;
@@ -118,8 +133,17 @@ export type Entity = {
   status: string;
   owner: string;
   window_text: string;
+  dispute_count: number;
   created_at: string;
   updated_at: string;
+};
+
+export type Dispute = {
+  id: number;
+  entity_id: number;
+  reason: string;
+  user: string;
+  created_at: string;
 };
 
 export type Citation = {
