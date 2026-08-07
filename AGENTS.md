@@ -78,6 +78,23 @@ Key rules:
 - Evidence hit shape: `{"chunk", "entity", "item", "source_id", "score"}` (+ optional `"graph": True`,
   `"expanded"`).
 
+## Packaging (PyInstaller)
+
+- **onedir + `console=False`** in `packaging.spec` — windowed GUI app, **no terminal window**.
+  macOS: EXE→`COLLECT`→`BUNDLE` yields `dist/AnchorCore.app`; Windows: `COLLECT` yields
+  `dist/AnchorCore/` (zip the folder). Do NOT go back to onefile — PyInstaller rejects
+  onefile+`.app` from v7.0.
+- `dist/AnchorCore-macos.zip` (macOS) / `dist/AnchorCore-windows.zip` (Windows) are the ship artifacts;
+  `build.sh`/`build.ps1` produce them; `release.yml` rebuilds on every `v*` tag.
+- **`backend/run_app.py`** is the frozen entry: `_guard_windowed_stdio()` redirects stdout/stderr to
+  devnull before importing `app.main` (windowed builds have no stdio — printing/logging would crash).
+  Real logs go to `ANCHOR_DATA_DIR/anchorcore.log`.
+- macOS CI must use **Homebrew Python** (loadable sqlite extensions) or sqlite_vec crashes at startup.
+- Ad-hoc sign with `codesign --force --deep --sign - dist/AnchorCore.app` (free; notarization = $99/yr,
+  deferred). Recipients right-click → Open once.
+- Smoke-test a build with: `ANCHOR_PORT=8123 ANCHOR_OPEN_BROWSER=0 ANCHOR_DATA_DIR=/tmp/ac-smoke
+  dist/AnchorCore.app/Contents/MacOS/AnchorCore` then curl `/health` (kills cleanly with pkill).
+
 ## Contract-first feature workflow (match existing conventions)
 
 1. Schema: `models.py` + new Alembic migration in `backend/alembic/versions/` (down_revision = current head).
