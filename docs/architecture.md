@@ -74,10 +74,12 @@ sequenceDiagram
 
     U->>A: "What was decided about X, and why?" (+ chat history)
     A->>A: rewrite follow-up into standalone query (if history)
+    A->>A: planner (B17) — pick retrieval tools (hybrid, who_knows)
     A->>O: embed query
     O-->>A: query vector
     A->>V: top-k similarity
     A->>F: FTS5 keyword (bm25)
+    A->>A: who_knows tool (B17) — owner/expertise entities
     A->>A: RRF fusion + age decay + diversity cap + context expansion
     A->>A: graph walk (B32) — connected entities join context + citations
     A->>M: answer prompt w/ sections (+ conversation)
@@ -110,6 +112,13 @@ we adopted (B12.1):
 Follow-up questions reuse retrieval with a **query-rewrite pass**: history is
 sent with the question, a cheap LLM call rewrites it standalone, and the
 conversation is included in generation.
+
+**Planner → Executor → Synthesis (B17):** a lightweight planner picks the
+retrieval tools for each query (`hybrid` vector+FTS always; `who_knows` for
+ownership/expertise questions). The executor runs them (one shared embedding
+call), each tool returns a ranked hit list in a normalized evidence shape, and
+synthesis RRF-fuses them into the final context. An LLM planner can replace the
+heuristic rules later without changing the executor contract.
 
 **Graph-based retrieval (B32):** after RRF picks the winning entities, the
 pipeline walks `relationships` 1–2 hops (`supersedes` > `depends_on` > `owns` >
