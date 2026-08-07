@@ -79,7 +79,7 @@ jobs:
       - name: Zip app
         run: |
           cd dist
-          zip -r AnchorCore-macos.zip AnchorCore.app AnchorCore
+          zip -r AnchorCore-macos.zip AnchorCore
 
       - name: Upload app
         uses: actions/upload-artifact@v4
