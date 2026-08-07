@@ -442,12 +442,18 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **Scope (build runs on the Mac — PyInstaller doesn't cross-compile):**
 - `build.sh` mirroring `build.ps1` (npm build → pyinstaller → output)
-- Spec adjustments for macOS: sqlite_vec glob picks up `.dylib` (not just `.dll`); bundle as `.app`; Ollama path candidates already handled in `run_app.py` (`/usr/local/bin/ollama`, `/opt/homebrew/bin/ollama`)
-- **Ad-hoc sign**: `codesign --force --deep --sign - dist/AnchorCore.app` (free, no account)
+- Spec adjustments for macOS: sqlite_vec glob picks up `.dylib` (not just `.dll`); Ollama path candidates already handled in `run_app.py` (`/usr/local/bin/ollama`, `/opt/homebrew/bin/ollama`)
+- **Ad-hoc sign**: `codesign --force --deep --sign - dist/AnchorCore` (free, no account)
 - Distribution as zip (or dmg later); README note: recipients approve once via right-click Open / System Settings → Privacy & Security → Open Anyway / `xattr -d com.apple.quarantine`
 - Free tier = "approve once per machine"; defer notarization ($99) until real distribution is needed
 
-**DoD:** running `./build.sh` on a Mac produces a launchable AnchorCore.app; launching on a fresh Mac works after the one-time approval.
+**Done:**
+- `build.sh` — mirrors `build.ps1` (frontend build → venv/pyinstaller → `dist/AnchorCore` → ad-hoc sign)
+- `packaging.spec` — sqlite_vec glob picks up `.dll` *or* `.dylib` (Windows + macOS from one spec); verified `vec0.dylib` bundles correctly
+- `.github/workflows/release.yml` — macOS job zips `dist/AnchorCore` (single-file binary, not `.app`) so the tag build doesn't fail
+- Smoke-tested on a Mac (arm64): boots, migrations run, syncs the `sample/` corpus (10 files → 47 entities), QA returns cited answers, Settings switch to local Ollama produces generated answers
+
+**DoD:** running `./build.sh` on a Mac produces a launchable, ad-hoc signed `dist/AnchorCore`; launching on a fresh Mac works after the one-time approval.
 
 ### B25. Release step: rebuild executables on every release (P1 — process)
 **Problem:** the packaged exe embeds the frontend at build time, so stale builds silently miss UI changes (the B23 "missing API key field" incident). Rebuilds were manual and easy to forget.

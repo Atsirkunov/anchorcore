@@ -45,9 +45,7 @@ remembered.
 
 ```powershell
 .\build.ps1          # Windows: dist/AnchorCore.exe
-# macOS (run on the Mac): build.sh after B24 lands, or:
-#   python -m PyInstaller --noconfirm packaging.spec
-#   codesign --force --deep --sign - dist/AnchorCore
+./build.sh           # macOS: dist/AnchorCore (ad-hoc signed)
 ```
 
 ## Troubleshooting
