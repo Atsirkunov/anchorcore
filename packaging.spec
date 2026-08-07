@@ -22,9 +22,13 @@ if alembic_dir.exists():
     datas.append((str(alembic_dir), "alembic"))
 datas.append((str(ROOT / "backend" / "alembic.ini"), "."))
 
-# sqlite_vec native DLL — PyInstaller doesn't collect it automatically
+# sqlite_vec native library — PyInstaller doesn't collect it automatically.
+# Windows ships .dll, macOS ships .dylib.
 _sqlite_vec_dir = Path(sqlite_vec.__file__).resolve().parent
-binaries = [(str(dll), "sqlite_vec") for dll in _sqlite_vec_dir.glob("*.dll")]
+_sqlite_vec_lib = list(_sqlite_vec_dir.glob("*.dll")) + list(_sqlite_vec_dir.glob("*.dylib"))
+if not _sqlite_vec_lib:
+    raise SystemExit("sqlite_vec native library not found")
+binaries = [(str(lib), "sqlite_vec") for lib in _sqlite_vec_lib]
 
 a = Analysis(
     [str(ROOT / "backend" / "run_app.py")],
