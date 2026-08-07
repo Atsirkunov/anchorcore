@@ -147,11 +147,13 @@ class AnswerEngine:
         self.settings = settings
 
     async def ask(
-        self, db: Session, question: str, history: list | None = None
+        self, db: Session, question: str, history: list | None = None, project_id: int | None = None
     ) -> AskResponse:
         """Answer a question; `history` (previous user/assistant turns) enables
         follow-ups: the question is rewritten into a standalone query before
-        retrieval, and the conversation is passed to generation."""
+        retrieval, and the conversation is passed to generation. `project_id`
+        (B15) scopes retrieval to a project's sources."""
+        source_ids = self._project_source_ids(db, project_id)
         history = [t for t in (history or []) if t.content and t.content.strip()]
         query = question
         if history:
@@ -164,11 +166,11 @@ class AnswerEngine:
         # the evidence bundle (hybrid vector+keyword, who_knows, graph).
         tools = self._plan_tools(query)
         logger.info("planner tools for %r: %s", query, tools)
-        evidence = await self._execute_tools(db, query, tools)
+        evidence = await self._execute_tools(db, query, tools, source_ids=source_ids)
 
         hits = evidence.get(TOOL_HYBRID) or []
         # B32: graph-based retrieval — connected entities join the evidence
-        graph_hits = self._graph_expand(db, hits)
+        graph_hits = self._graph_expand(db, hits, source_ids=source_ids)
 
         all_hits = self._fuse_evidence(evidence, graph_hits)
         if not all_hits:
@@ -310,7 +312,7 @@ class AnswerEngine:
                 hit["expanded"] = neighbors
         return hits
 
-    def _graph_expand(self, db: Session, hits: list[dict]) -> list[dict]:
+    def _graph_expand(self, db: Session, hits: list[dict], source_ids: set[int] | None = None) -> list[dict]:
         """B32: after RRF fusion, walk the entity graph from the winning entities
         1-2 hops and pull connected entities' summaries into context + citations.
 
@@ -318,7 +320,8 @@ class AnswerEngine:
         blocks > related); further hops decay; fan-out is capped so a hub entity
         can't flood the answer. Pure SQL over `relationships` — no model calls.
         Returns extra hit dicts (marked ``graph``) for entities NOT already in
-        the fused list (stale entities excluded)."""
+        the fused list (stale entities excluded). `source_ids` (B15) restricts
+        graph-connected entities to the project's sources."""
         hops = max(1, int(settings.retrieval_graph_hops))
         cap = max(0, int(settings.retrieval_graph_max))
         if cap == 0 or not hits:
@@ -356,8 +359,20 @@ class AnswerEngine:
             return []
         ranked = sorted(candidates.items(), key=lambda kv: kv[1], reverse=True)[:cap]
         entity_ids = [eid for eid, _score in ranked]
-        entities = {e.id: e for e in db.execute(select(Entity).where(Entity.id.in_(entity_ids))).scalars().all()}
-        chunks = db.execute(select(Chunk).where(Chunk.entity_id.in_(entity_ids))).scalars().all()
+        entities_q = select(Entity).where(Entity.id.in_(entity_ids))
+        chunks_q = select(Chunk).where(Chunk.entity_id.in_(entity_ids))
+        if source_ids is not None:
+            # only pull graph-connected entities that live inside the project
+            entities_q = entities_q.where(Entity.item_id.in_(
+                select(IngestedItem.id).where(IngestedItem.source_id.in_(source_ids))
+            ))
+            chunks_q = chunks_q.where(Chunk.entity_id.in_(
+                select(Entity.id).where(Entity.item_id.in_(
+                    select(IngestedItem.id).where(IngestedItem.source_id.in_(source_ids))
+                ))
+            ))
+        entities = {e.id: e for e in db.execute(entities_q).scalars().all()}
+        chunks = db.execute(chunks_q).scalars().all()
         chunk_by_entity: dict[int, Chunk] = {}
         for c in chunks:
             if c.entity_id not in chunk_by_entity:
@@ -396,13 +411,14 @@ class AnswerEngine:
         return tools
 
     async def _execute_tools(
-        self, db: Session, query: str, tools: list[str]
+        self, db: Session, query: str, tools: list[str], source_ids: set[int] | None = None
     ) -> dict[str, list[dict]]:
         """Executor: run the planned tools and normalize each tool's ranked
         hits into a shared evidence shape (chunk/entity/item/source_id/score).
 
         Tools that share the same vector embedding are batched into one embed
-        call; each tool's hits are a ranked list ready for RRF fusion."""
+        call; each tool's hits are a ranked list ready for RRF fusion.
+        `source_ids` (B15) restricts all tools to a project's sources."""
         evidence: dict[str, list[dict]] = {}
 
         vector_hits: list[dict] | None = None
@@ -410,7 +426,7 @@ class AnswerEngine:
             try:
                 query_embedding = (await self.embedder.embed([query]))[0]
                 if TOOL_HYBRID in tools:
-                    vector_hits = self._vector_search(db, query_embedding)
+                    vector_hits = self._vector_search(db, query_embedding, source_ids=source_ids)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("embedding failed (%s); keyword-only retrieval", exc)
                 record_event(
@@ -421,19 +437,19 @@ class AnswerEngine:
                 )
 
         if TOOL_HYBRID in tools:
-            keyword_hits = self._keyword_search(db, query)
+            keyword_hits = self._keyword_search(db, query, source_ids=source_ids)
             if not keyword_hits and vector_hits is None:
                 # embedding AND FTS both unavailable (e.g. pre-migration DB):
                 # keep the oldest fallback so degraded mode still answers
-                keyword_hits = self._keyword_fallback(db)
+                keyword_hits = self._keyword_fallback(db, source_ids=source_ids)
             evidence[TOOL_HYBRID] = self._fuse_and_rank(db, vector_hits, keyword_hits)
 
         if TOOL_WHO_KNOWS in tools:
-            evidence[TOOL_WHO_KNOWS] = self._who_knows_search(db, query)
+            evidence[TOOL_WHO_KNOWS] = self._who_knows_search(db, query, source_ids=source_ids)
 
         return evidence
 
-    def _who_knows_search(self, db: Session, query: str) -> list[dict]:
+    def _who_knows_search(self, db: Session, query: str, source_ids: set[int] | None = None) -> list[dict]:
         """`who_knows` tool: surface entities whose owner/author or summary
         matches the query, ranked by confidence × recency × term overlap.
 
@@ -446,7 +462,7 @@ class AnswerEngine:
         filters = [or_(Entity.author != "", Entity.owner != "")]
         for t in terms:
             filters.append(Entity.summary.contains(t))
-        rows = db.execute(self._chunk_query().where(or_(*filters))).all()
+        rows = db.execute(self._chunk_query(source_ids).where(or_(*filters))).all()
         hits: list[dict] = []
         halflife = self.settings.get_float("retrieval_age_halflife_days", 365.0)
         for chunk, entity, item in rows:
@@ -497,8 +513,8 @@ class AnswerEngine:
             fused.sort(key=lambda r: r["score"], reverse=True)
         return fused[: settings.top_k]
 
-    def _vector_search(self, db: Session, query_embedding: list[float]) -> list[dict]:
-        rows = db.execute(self._chunk_query().where(Chunk.embedding.is_not(None))).all()
+    def _vector_search(self, db: Session, query_embedding: list[float], source_ids: set[int] | None = None) -> list[dict]:
+        rows = db.execute(self._chunk_query(source_ids).where(Chunk.embedding.is_not(None))).all()
 
         scored = []
         for chunk, entity, item in rows:
@@ -519,7 +535,7 @@ class AnswerEngine:
         scored.sort(key=lambda r: r["score"], reverse=True)
         return [hit for hit in scored[: settings.top_k * 4] if hit["score"] > 0.2]
 
-    def _keyword_search(self, db: Session, question: str) -> list[dict]:
+    def _keyword_search(self, db: Session, question: str, source_ids: set[int] | None = None) -> list[dict]:
         """FTS5 keyword search over chunks (bm25 ranking). Returns [] when
         the FTS table is missing or the query has no useful terms."""
         match = _fts_match_query(question)
@@ -541,7 +557,7 @@ class AnswerEngine:
         by_id = {row[0]: row[1] for row in rows}  # rowid -> bm25 rank (more negative = better)
 
         chunks = db.execute(
-            self._chunk_query().where(Chunk.id.in_(list(by_id)))
+            self._chunk_query(source_ids).where(Chunk.id.in_(list(by_id)))
         ).all()
         hits = []
         for chunk, entity, item in chunks:
@@ -560,9 +576,9 @@ class AnswerEngine:
         hits.sort(key=lambda r: r["score"], reverse=True)
         return hits
 
-    def _keyword_fallback(self, db: Session) -> list[dict]:
+    def _keyword_fallback(self, db: Session, source_ids: set[int] | None = None) -> list[dict]:
         rows = db.execute(
-            self._chunk_query().order_by(Chunk.created_at.desc()).limit(settings.top_k)
+            self._chunk_query(source_ids).order_by(Chunk.created_at.desc()).limit(settings.top_k)
         ).all()
         return [
             {
@@ -576,9 +592,23 @@ class AnswerEngine:
             if entity is None or entity.status != "stale"
         ]
 
-    def _chunk_query(self):
-        """Chunks of type: entity-summary (entity set) or full-document (item set)."""
-        return (
+    def _project_source_ids(self, db: Session, project_id: int | None) -> set[int] | None:
+        """B15: resolve a project to its source ids; None = scope to everything."""
+        if project_id is None:
+            return None
+        from .models import Project, project_sources
+
+        rows = db.execute(
+            select(project_sources.c.source_id).where(project_sources.c.project_id == project_id)
+        ).all()
+        if not rows:
+            return set()
+        return {r[0] for r in rows}
+
+    def _chunk_query(self, source_ids: set[int] | None = None):
+        """Chunks of type: entity-summary (entity set) or full-document (item set).
+        `source_ids` (B15) restricts to a project's sources."""
+        q = (
             select(Chunk, Entity, IngestedItem)
             .outerjoin(Entity, Chunk.entity_id == Entity.id)
             .outerjoin(
@@ -586,6 +616,9 @@ class AnswerEngine:
                 or_(Chunk.item_id == IngestedItem.id, Entity.item_id == IngestedItem.id),
             )
         )
+        if source_ids is not None:
+            q = q.where(IngestedItem.source_id.in_(source_ids))
+        return q
 
     async def _rewrite_followup(self, question: str, history: list) -> str | None:
         """Rewrite a follow-up ('show the movements for it') into a standalone
