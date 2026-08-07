@@ -50,10 +50,14 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
+      # Homebrew's CPython builds the sqlite3 module with loadable-extension
+      # support (PY_SQLITE_ENABLE_LOAD_EXTENSION). The GitHub hosted-toolcache
+      # and python.org builds do NOT, so a binary built with them can't load
+      # sqlite_vec and crashes at startup.
+      - name: Install Homebrew Python 3.12
+        run: |
+          brew install python@3.12
+          echo "/opt/homebrew/opt/python@3.12/libexec/bin" >> "$GITHUB_PATH"
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -67,11 +71,11 @@ jobs:
       - name: Install backend deps + pyinstaller
         working-directory: backend
         run: |
-          pip install -r requirements.txt
-          pip install pyinstaller
+          python3.12 -m pip install -r requirements.txt
+          python3.12 -m pip install pyinstaller
 
       - name: PyInstaller build
-        run: python -m PyInstaller --noconfirm packaging.spec
+        run: python3.12 -m PyInstaller --noconfirm packaging.spec
 
       - name: Ad-hoc sign (free, no Apple account; approval needed on first launch)
         run: codesign --force --deep --sign - dist/AnchorCore
