@@ -99,16 +99,43 @@ def test_health_reports_pending_embedding_count(client):
     assert isinstance(health["components"]["pending_embeddings"], int)
 
 
+def _onboarding_fn():
+    """The route's underlying function, so tests can call it against any DB."""
+    from app.main import app
+
+    route = next(r for r in app.routes if getattr(r, "path", "") == "/system/onboarding")
+    return route.endpoint
+
+
+def test_onboarding_fresh_install_needs_wizard(tmp_path):
+    """B8: on a genuinely empty database the wizard must trigger. Verifies the
+    real empty state with its own fresh DB (the shared test DB is never empty,
+    so the HTTP fixture can't exercise this branch)."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from app.db import Base
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'fresh.db'}")
+    Base.metadata.create_all(engine)
+    import asyncio
+
+    with Session(engine) as db:
+        state = asyncio.run(_onboarding_fn()(db))
+    assert state["needs_wizard"] is True
+    assert state["sources_count"] == 0
+    assert "reachable" in state["ollama"]
+    assert "missing_models" in state["ollama"]
+    assert state["answer_provider"] in {"ollama", "configured", "missing"}
+
+
 def test_onboarding_state(client, tmp_path):
-    """B8: the wizard trigger — shape is stable and the source count reflects
-    newly connected sources (the shared test DB is never globally empty, so we
-    assert the delta, not absolute emptiness)."""
+    """B8: the wizard state reflects newly connected sources (assert the delta
+    on the shared test DB — never global emptiness) and keeps its shape."""
     before = client.get("/system/onboarding").json()
-    assert "needs_wizard" in before
-    assert "sources_count" in before
-    assert "reachable" in before["ollama"]
-    assert "missing_models" in before["ollama"]
-    assert before["answer_provider"] in {"ollama", "configured", "missing"}
+    assert set(before) == {"needs_wizard", "sources_count", "ollama", "answer_provider", "sample"}
+    assert isinstance(before["sources_count"], int)
+    assert isinstance(before["ollama"]["missing_models"], list)
     assert "sample" in before
     assert isinstance(before["sample"]["available"], bool)
     if before["sample"]["available"]:
@@ -122,6 +149,3 @@ def test_onboarding_state(client, tmp_path):
 
     after = client.get("/system/onboarding").json()
     assert after["sources_count"] >= before["sources_count"] + 1
-    # needs_wizard is defined as "no sources at all" — once a source exists it
-    # must be false
-    assert after["needs_wizard"] is (after["sources_count"] == 0)

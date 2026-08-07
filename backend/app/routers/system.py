@@ -38,6 +38,28 @@ def _resolve_sample_dir() -> Path | None:
     return candidate if candidate.is_dir() else None
 
 
+def _onboarding_state(db: Session, settings_svc: SettingsService) -> dict:
+    """The first-run wizard state (B8): whether to show the wizard (no sources
+    yet), Ollama reachability + missing models, answer-provider state, and the
+    bundled sample corpus path when resolvable."""
+    sources_count = db.execute(select(func.count()).select_from(Source)).scalar_one()
+    sample_dir = _resolve_sample_dir()
+    return {
+        "needs_wizard": sources_count == 0,
+        "sources_count": sources_count,
+        "ollama": {
+            "reachable": ollama_reachable(settings_svc),
+            "base_url": settings_svc.get("ollama_base_url") or "",
+            "missing_models": missing_ollama_models(settings_svc),
+        },
+        "answer_provider": answer_provider(settings_svc),
+        "sample": {
+            "available": sample_dir is not None,
+            "path": str(sample_dir) if sample_dir is not None else None,
+        },
+    }
+
+
 def make_router(scheduler, settings_svc: SettingsService) -> APIRouter:
     router = APIRouter(prefix="/system", tags=["system"])
 
@@ -101,23 +123,7 @@ def make_router(scheduler, settings_svc: SettingsService) -> APIRouter:
         """B8: state the first-run wizard renders. `needs_wizard` is true on a
         fresh install (no sources yet); the wizard checks Ollama/models, offers
         a quick folder connect (or the bundled sample corpus when available)."""
-        sources_count = db.execute(select(func.count()).select_from(Source)).scalar_one()
-        missing = missing_ollama_models(settings_svc)
-        sample_dir = _resolve_sample_dir()
-        return {
-            "needs_wizard": sources_count == 0,
-            "sources_count": sources_count,
-            "ollama": {
-                "reachable": ollama_reachable(settings_svc),
-                "base_url": settings_svc.get("ollama_base_url") or "",
-                "missing_models": missing,
-            },
-            "answer_provider": answer_provider(settings_svc),
-            "sample": {
-                "available": sample_dir is not None,
-                "path": str(sample_dir) if sample_dir is not None else None,
-            },
-        }
+        return _onboarding_state(db, settings_svc)
 
     @router.get("/errors", response_model=list[schemas.SystemEventOut])
     def list_errors(
