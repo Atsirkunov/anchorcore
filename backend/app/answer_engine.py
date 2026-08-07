@@ -10,11 +10,23 @@ from .app_settings import SettingsService
 from .config import settings
 from .embedder import Embedder, unpack_f32
 from .http import RetryClient
-from .models import Chunk, Entity, IngestedItem
+from .models import Chunk, Entity, IngestedItem, Relationship
 from .schemas import AskResponse, Citation
 from .system_events import record as record_event
 
 logger = logging.getLogger(__name__)
+
+# Graph-based retrieval (B32): relationship kinds ranked by how strongly they
+# connect two entities — supersedes/depends_on are the highest-value links for
+# answer context; plain "related" is the weakest.
+GRAPH_KIND_WEIGHTS = {
+    "supersedes": 1.0,
+    "depends_on": 0.9,
+    "owns": 0.8,
+    "blocks": 0.7,
+    "related": 0.4,
+}
+GRAPH_DEFAULT_WEIGHT = 0.5
 
 SYSTEM_PROMPT = """You are AnchorCore, the memory of an organization.
 Answer the user's question using ONLY the provided context sections.
@@ -154,6 +166,10 @@ class AnswerEngine:
                 citations=[],
             )
 
+        # B32: graph-based retrieval — connected entities (supersedes/depends_on/
+        # owns/blocks/related) join the context as supporting sections + citations
+        graph_hits = self._graph_expand(db, hits)
+
         sections = []
         for idx, hit in enumerate(hits, start=1):
             content = hit["chunk"].content[:2000]
@@ -161,6 +177,9 @@ class AnswerEngine:
             if extra:
                 content = content + "\n\n[continued]\n\n" + "\n\n".join(e[:800] for e in extra[:3])
             sections.append(f"[S{idx}] {content}")
+        for idx, hit in enumerate(graph_hits, start=len(hits) + 1):
+            content = hit["chunk"].content[:2000] if hit["chunk"] is not None else hit["entity"].summary[:2000]
+            sections.append(f"[S{idx}] [related] {content}")
         context = "\n\n".join(sections)
 
         answer_text = await self._generate(query, context, history=history)
@@ -181,6 +200,21 @@ class AnswerEngine:
                     source_ref=chunk.source_ref,
                     score=round(hit["score"], 3),
                     snippet=chunk.content[:300],
+                )
+            )
+        for hit in graph_hits:
+            entity = hit["entity"]
+            chunk = hit["chunk"]
+            source_ref = chunk.source_ref if chunk is not None else entity.source_ref
+            snippet = chunk.content[:300] if chunk is not None else entity.summary[:300]
+            citations.append(
+                Citation(
+                    entity_id=entity.id,
+                    kind=entity.kind,
+                    summary=entity.summary[:200],
+                    source_ref=source_ref,
+                    score=round(hit["score"], 3),
+                    snippet=snippet,
                 )
             )
         return AskResponse(answer=answer_text, citations=citations)
@@ -281,6 +315,76 @@ class AnswerEngine:
             if neighbors:
                 hit["expanded"] = neighbors
         return hits
+
+    def _graph_expand(self, db: Session, hits: list[dict]) -> list[dict]:
+        """B32: after RRF fusion, walk the entity graph from the winning entities
+        1-2 hops and pull connected entities' summaries into context + citations.
+
+        Strong relationship kinds rank higher (supersedes > depends_on > owns >
+        blocks > related); further hops decay; fan-out is capped so a hub entity
+        can't flood the answer. Pure SQL over `relationships` — no model calls.
+        Returns extra hit dicts (marked ``graph``) for entities NOT already in
+        the fused list (stale entities excluded)."""
+        hops = max(1, int(settings.retrieval_graph_hops))
+        cap = max(0, int(settings.retrieval_graph_max))
+        if cap == 0 or not hits:
+            return []
+        seed_ids = {h["entity"].id for h in hits if h.get("entity") is not None}
+        if not seed_ids:
+            return []
+        visited: set[int] = set(seed_ids)
+        frontier: set[int] = seed_ids
+        candidates: dict[int, float] = {}
+        for hop in range(hops):
+            if not frontier:
+                break
+            rows = db.execute(
+                select(Relationship.from_entity_id, Relationship.to_entity_id, Relationship.kind).where(
+                    or_(
+                        Relationship.from_entity_id.in_(frontier),
+                        Relationship.to_entity_id.in_(frontier),
+                    )
+                )
+            ).all()
+            next_frontier: set[int] = set()
+            for from_id, to_id, kind in rows:
+                for a, b in ((from_id, to_id), (to_id, from_id)):
+                    if a not in frontier or b in visited:
+                        continue
+                    weight = GRAPH_KIND_WEIGHTS.get(kind, GRAPH_DEFAULT_WEIGHT) * (0.5**hop)
+                    if weight > candidates.get(b, -1.0):
+                        candidates[b] = weight
+                    next_frontier.add(b)
+            visited.update(next_frontier)
+            frontier = next_frontier
+
+        if not candidates:
+            return []
+        ranked = sorted(candidates.items(), key=lambda kv: kv[1], reverse=True)[:cap]
+        entity_ids = [eid for eid, _score in ranked]
+        entities = {e.id: e for e in db.execute(select(Entity).where(Entity.id.in_(entity_ids))).scalars().all()}
+        chunks = db.execute(select(Chunk).where(Chunk.entity_id.in_(entity_ids))).scalars().all()
+        chunk_by_entity: dict[int, Chunk] = {}
+        for c in chunks:
+            if c.entity_id not in chunk_by_entity:
+                chunk_by_entity[c.entity_id] = c
+        out = []
+        for eid, score in ranked:
+            ent = entities.get(eid)
+            if ent is None or ent.status == "stale":
+                continue
+            chunk = chunk_by_entity.get(eid)
+            out.append(
+                {
+                    "chunk": chunk,
+                    "entity": ent,
+                    "item": ent.item,
+                    "source_id": ent.item.source_id if ent.item is not None else None,
+                    "score": score,
+                    "graph": True,
+                }
+            )
+        return out
 
     def _vector_search(self, db: Session, query_embedding: list[float]) -> list[dict]:
         rows = db.execute(self._chunk_query().where(Chunk.embedding.is_not(None))).all()

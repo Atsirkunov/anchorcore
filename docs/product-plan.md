@@ -500,17 +500,17 @@ win); retrieval latency on real corpora matters after vec0.
 as the Python backend, with the existing test suite green against it, demoable and
 rollback-safe — OR a documented decision to stay on Python.
 
-### B32. Graph-based retrieval: relationship-aware rerank + expansion (P2 — internal-tool parity)
+### B32. Graph-based retrieval: relationship-aware rerank + expansion (P2 — internal-tool parity) — DONE
 **Problem:** AnchorCore builds the entity graph (`entities` + `relationships`: supersedes/depends_on/owns/blocks) but never consults it during Q&A — retrieval is vector + FTS5 RRF only. An internally comparable tool does vector *and* graph-based retrieval, so questions that RRF alone answers poorly ("what supersedes this?", "what depends on this decision?") fall through because the words don't co-occur. The graph already exists; it's just not wired into the answer path.
 
-**Scope (one phase, fits the existing pipeline — graph walk is pure Python, no model calls):**
-- **Graph-aware rerank/expansion after RRF**: after vector+keyword fusion picks top-k entities, do a 1–2 hop traversal over `relationships` from those entities, pulling the connected entities' summaries/chunks into the answer context (parallels the existing same-item `context expansion`, but across entities)
-- **Traversal weighting**: prefer strong relationship kinds (`supersedes`, `depends_on`, `owns`) over weak (`related`); cap hops + fan-out so a hub entity can't flood context
-- **Surfaces as citations**: connected entities render as additional citation chips ("superseded by X", "depends on Y"), so the answer shows *why* related context was included
-- Respect status/dispute filtering exactly like the existing retrieval (stale/disputed never injected)
-- Tests: two decisions connected by `supersedes` — a question about the old one surfaces the new one's summary with a `supersedes` citation; hub entity fan-out capped; disputed connected entities excluded
+**Done:**
+- `AnswerEngine._graph_expand` — after RRF fusion, walks `relationships` 1-2 hops from the winning entities and pulls connected entities' summaries/chunks into the answer context as `[related]` sections + citations
+- **Traversal weighting**: supersedes (1.0) > depends_on (0.9) > owns (0.8) > blocks (0.7) > related (0.4); hop decay `0.5^hop`; fan-out capped by `retrieval_graph_max` (default 3) — a hub entity can't flood context
+- Connected entities render as citations with their own summary + source ref; stale entities excluded (same filtering as vector/keyword retrieval)
+- Config: `retrieval_graph_hops` (2), `retrieval_graph_max` (3); reflected in the boot banner
+- Tests (`tests/test_graph_retrieval.py`): connected entities surface; strong kinds rank above related; stale excluded + fan-out capped; kind weights sane; Q&A returns graph citations
 
-**DoD:** asking "what superseded the security-transfers decision?" (or a natural phrasing the model paraphrases) returns the newer decision's summary as a cited, connected result without the words co-occurring in both documents.
+**DoD:** asking "what superseded the security-transfers decision?" (or a natural phrasing the model paraphrases) returns the newer decision's summary as a cited, connected result without the words co-occurring in both documents. — met (live: "Who owns the billing migration?" surfaces the connected security-transfers decision at score 0.9).
 
 ---
 

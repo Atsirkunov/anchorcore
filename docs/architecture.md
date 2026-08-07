@@ -79,6 +79,7 @@ sequenceDiagram
     A->>V: top-k similarity
     A->>F: FTS5 keyword (bm25)
     A->>A: RRF fusion + age decay + diversity cap + context expansion
+    A->>A: graph walk (B32) — connected entities join context + citations
     A->>M: answer prompt w/ sections (+ conversation)
     M-->>A: answer + citations
     A-->>U: answer + clickable source chips
@@ -109,6 +110,14 @@ we adopted (B12.1):
 Follow-up questions reuse retrieval with a **query-rewrite pass**: history is
 sent with the question, a cheap LLM call rewrites it standalone, and the
 conversation is included in generation.
+
+**Graph-based retrieval (B32):** after RRF picks the winning entities, the
+pipeline walks `relationships` 1–2 hops (`supersedes` > `depends_on` > `owns` >
+`blocks` > `related`, hop decay, fan-out cap) and pulls connected entities'
+summaries/chunks into the answer context as `[related]` sections + citations.
+This answers "what supersedes this?" / "what depends on this decision?" that
+lexical+vector fusion alone misses, because the connected knowledge doesn't
+need to co-occur in the question's words. Pure SQL — no model calls.
 
 Further learnings parked in the backlog: scoped search via *projects* (bundles
 of sources with a per-user default — "search everything everywhere" stops
