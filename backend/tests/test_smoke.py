@@ -58,6 +58,44 @@ def test_folder_ingest_flow(client, tmp_path):
     assert qa.json()["answer"]
 
 
+def test_delete_source_cascades_entities(client, tmp_path):
+    """Deleting a source must remove its items, entities and chunks (NOT NULL FK bug:
+    the ORM used to NULL entities.item_id instead of cascading, then the watcher's
+    unschedule raised KeyError)."""
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import Chunk, Entity, IngestedItem
+
+    (tmp_path / "d.md").write_text(
+        "We decided to delete this source. Action: clean up afterwards.",
+        encoding="utf-8",
+    )
+    source = client.post(
+        "/sources",
+        json={"connector": "folder", "name": "doomed", "config": {"path": str(tmp_path)}},
+    ).json()
+    job = start_and_wait(client, source["id"])
+    assert job["status"] == "done"
+    assert job["result"]["entities"] >= 1
+
+    with SessionLocal() as db:
+        item = db.execute(select(IngestedItem).where(IngestedItem.source_id == source["id"])).scalar_one()
+        entity_count = len(db.execute(select(Entity).where(Entity.item_id == item.id)).scalars().all())
+        assert entity_count >= 1
+        chunk_count = len(db.execute(select(Chunk).where(Chunk.item_id == item.id)).scalars().all())
+        assert chunk_count >= 1
+
+    resp = client.delete(f"/sources/{source['id']}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"deleted": True}
+
+    with SessionLocal() as db:
+        assert db.get(IngestedItem, item.id) is None
+        assert db.execute(select(Entity).where(Entity.item_id == item.id)).scalars().all() == []
+        assert db.execute(select(Chunk).where(Chunk.item_id == item.id)).scalars().all() == []
+
+
 def test_job_history_and_progress(client, tmp_path):
     (tmp_path / "a.md").write_text("We decided to ship v1 in June.", encoding="utf-8")
     (tmp_path / "b.md").write_text("Action: document the release process.", encoding="utf-8")
