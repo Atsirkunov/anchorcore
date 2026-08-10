@@ -125,6 +125,14 @@ from `backend/`. CI runs this plus the frontend build on every push
 | Test | Covers |
 |---|---|
 | `test_distillation_produces_units` | chat-like source → normalized Q&A units (`kind='distilled'`) |
+
+## 10b. `tests/test_mcp.py` — B14 agent connectivity (6 tests)
+
+Drives the real app via ASGITransport (no live server); covers the REST layer
+the stdio sidecar uses (`/qa/search`, `/sources/{id}`, `/sources`,
+`/entities/{id}`, `/system/status`), status filtering (disputed excluded),
+project scoping, and the FastMCP tool surface (`call_tool`; errors surface as
+`ToolError`).
 | `test_distilled_unit_is_embed_min_signal` | distilled units are substantive (not gated out of embedding) |
 | `test_filler_stays_unembedded_and_keyword_findable` | low-signal filler: `embedding=NULL`, still FTS-findable |
 | `test_distillation_hash_skips_on_resync` | unchanged content re-syncs without duplicating units |
