@@ -8,6 +8,7 @@ Connect your knowledge to any AI model. An AI memory layer / knowledge operating
 - [Architecture](./docs/architecture.md) — system view + architecture diagram
 - [Packaging](./docs/packaging.md) — Windows exe + macOS app (both built from one spec)
 - [Releasing](./docs/releasing.md) — release checklist: tag → CI builds both executables
+- [Hosting](./docs/hosting.md) — hosted infra topology (locked): one VPS + Cloudflare Tunnel + R2 + Stripe
 - [Agent connectivity (MCP)](./docs/mcp.md) — how harnesses (Claude Code, Codex, opencode) will use the memory
 - [v2/v3 business scoping](./docs/v2v3-scope.md) — website, hosting, sharing, pricing, free tier
 - [Rust port evaluation](./docs/rust-port.md) — is a Rust backend worth it? (distribution vs LLM latency)
