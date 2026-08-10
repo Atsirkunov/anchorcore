@@ -608,6 +608,18 @@ rollback-safe — OR a documented decision to stay on Python.
 
 **DoD:** a client deploys with one docker command; SSO + audit export work; the contract is a renewal conversation, not a hosting bill.
 
+### B38. Design & brand work (P1 — GTM, feeds B33)
+**Problem:** everything discussed so far is strategy and product; none of it is *design*. A landing page that looks template-y and a functional-but-plain UI undercut the positioning ("AI memory layer") and the 60-second wow. This item owns the visual layer that B33's landing, the demo, and the download page all depend on.
+
+**Scope:**
+- **Brand identity**: name/wordmark, logo (anchor motif fits "AnchorCore" + memory positioning), color palette, typography, tagline lock-up. Positioning reference: *"Connect your knowledge to any AI model."* Deliverables in `design/` in the repo (or Figma — decide once).
+- **Landing page visual design** (input to B33): hero, 3-step how-it-works visual (connect → it learns → ask with citations), pricing card design, privacy line treatment.
+- **60-second demo**: screen-recording script of the sample-corpus flow (B21) — connect `sample/` → ask "what was decided about X, and why?" → cited answer with section references. The landing page's primary asset.
+- **App UI polish pass**: the React SPA is functional (B8 wizard, Ask/Sources/Review tabs); a design pass on visual hierarchy, empty states, spacing/typography so in-app screenshots used on the site look credible and the download CTA converts.
+- **Download page assets**: clean app screenshots + checksums table for the GitHub Releases artifacts.
+
+**DoD:** a logo + visual system exist and are applied; the landing page and in-app screenshots look intentional, not template-y; the 60s demo video is produced; B33 ships with B38 assets.
+
 ---
 
 ## Current execution priorities (agreed 2026-08-07)
@@ -640,5 +652,6 @@ before implementation** (see [B30 open question](#b30-data-labeling-piisensitive
 | 8 | B34 Opt-in telemetry | **new** | validation signals before pricing is set |
 | 9 | B35 Hosted tier + pricing (sub-only) | **new** | design locked; build when hosted pilot starts |
 | 10 | B37 Enterprise on-prem platform | **new** | v3; sells the platform, not hosting |
+| 11 | B38 Design & brand work | **new** | visual layer B33/demo/download page depend on |
 
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md)*
