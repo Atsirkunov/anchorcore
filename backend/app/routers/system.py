@@ -25,7 +25,7 @@ from ..throughput import throughput
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "1.0.8"
+APP_VERSION = "1.0.9"
 
 _LOG_NAME_RE = re.compile(r"^anchorcore\.log(\.\d+)?$")
 

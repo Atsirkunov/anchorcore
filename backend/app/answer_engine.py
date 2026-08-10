@@ -228,6 +228,47 @@ class AnswerEngine:
             )
         return AskResponse(answer=answer_text, citations=citations)
 
+    async def search(
+        self, db: Session, query: str, k: int | None = None, project_id: int | None = None
+    ) -> list[dict]:
+        """B14: raw retrieval for agents/harnesses — the same hybrid pipeline as
+        `ask`, but returns the ranked evidence bundle (chunks/entities + scores
+        + provenance) instead of a generated answer. Respects the same status
+        filters (`_status_ok`: stale always out, disputed by default) and B15
+        project scoping. No LLM calls — keyword fallback covers degraded mode."""
+        source_ids = self._project_source_ids(db, project_id)
+        evidence = await self._execute_tools(db, query, [TOOL_HYBRID], source_ids=source_ids)
+        hits = evidence.get(TOOL_HYBRID) or []
+        limit = k if k and k > 0 else settings.top_k
+        out: list[dict] = []
+        for hit in hits[:limit]:
+            chunk, entity, item = hit["chunk"], hit["entity"], hit["item"]
+            if entity is not None:
+                kind = entity.kind
+                summary = entity.summary[:500]
+                content = chunk.content[:1000] if chunk is not None else entity.summary[:1000]
+                source_ref = chunk.source_ref if chunk is not None else entity.source_ref
+            else:
+                kind = "document"
+                summary = ""
+                content = (chunk.content if chunk is not None else "")[:1000]
+                source_ref = chunk.source_ref if chunk is not None else ""
+            out.append(
+                {
+                    "chunk_id": chunk.id if chunk is not None else None,
+                    "entity_id": entity.id if entity is not None else None,
+                    "kind": kind,
+                    "summary": summary,
+                    "content": content,
+                    "source_ref": source_ref,
+                    "source_id": hit["source_id"],
+                    "item_id": item.id if item is not None else None,
+                    "item_title": item.title if item is not None else "",
+                    "score": round(hit["score"], 4),
+                }
+            )
+        return out
+
     def _fuse_and_rank(
         self, db: Session, vector_hits: list[dict] | None, keyword_hits: list[dict] | None
     ) -> list[dict]:

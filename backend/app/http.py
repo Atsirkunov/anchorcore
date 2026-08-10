@@ -20,7 +20,7 @@ class RetryClient:
     """Async httpx client with exponential backoff for transient failures."""
 
     def __init__(self, timeout: float, max_retries: int | None = None, **kwargs):
-        timeout_obj = httpx.Timeout(timeout=timeout, connect=5.0)
+        timeout_obj = httpx.Timeout(timeout=timeout, connect=settings.http_connect_timeout)
         self._client = httpx.AsyncClient(timeout=timeout_obj, **kwargs)
         self.max_retries = settings.http_retries if max_retries is None else max_retries
 
