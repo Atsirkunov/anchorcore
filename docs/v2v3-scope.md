@@ -90,6 +90,9 @@ autoscaling, managed DBs. One box, ~€10–15/mo fixed + model tokens
 (~$2–3/active workspace). When the box gets small, the app/db/storage split is
 already clean: Postgres moves to a managed service (Neon/Supabase), R2 stays.
 
+Full operational reference: [hosting.md](./hosting.md) — topology, provisioning,
+deploy, security posture, backups, scale-out path.
+
 **Auth:** self-serve signup first (email+password or Google), SSO deferred to
 Enterprise (§7).
 
