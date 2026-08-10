@@ -564,6 +564,7 @@ rollback-safe — OR a documented decision to stay on Python.
 
 **Cost bounds (the circuit breakers):**
 - Storage quota per workspace (e.g. 500 MB); sync frequency cap; ingest quota shared between sync + webhooks.
+- **Object storage: Cloudflare R2 (locked 2026-08-10)** — S3-compatible (existing swap point), free tier: 10 GB storage, 1M Class A (write) + 10M Class B (read) operations/mo, **$0 egress** (read-only share links serve from R2 at zero bandwidth cost). At the 500 MB/workspace quota that's ~20 free workspaces; overage is cheap (~$0.015/GB/mo). R2 is storage only — compute + Postgres live on the VPS (D9).
 - **Metered monthly token allowance** (~2–3M tokens) with **cheap-tier bundled models only** (Flash/Haiku class — never Sonnet/o-series bundled; expensive models = BYO key, existing B4 pattern).
 - Embedding content-hash cache (reuse the window-hash dedupe from B26) so re-syncs don't re-embed.
 - Per-workspace + per-MCP-token rate caps — a misbehaving agent script can't rack up €50 in a night.
