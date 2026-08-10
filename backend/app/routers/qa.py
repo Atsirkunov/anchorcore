@@ -15,6 +15,13 @@ def make_router(answer_engine: AnswerEngine) -> APIRouter:
     async def ask(payload: schemas.AskRequest, db: Session = Depends(get_db)) -> schemas.AskResponse:
         return await answer_engine.ask(db, payload.question, history=payload.history, project_id=payload.project_id)
 
+    @router.post("/search", response_model=schemas.SearchResponse)
+    async def search(payload: schemas.SearchRequest, db: Session = Depends(get_db)) -> schemas.SearchResponse:
+        """B14: raw retrieval for agents/harnesses — ranked chunks/entities with
+        provenance and scores, no LLM generation."""
+        hits = await answer_engine.search(db, payload.query, k=payload.k, project_id=payload.project_id)
+        return schemas.SearchResponse(hits=[schemas.SearchHit(**h) for h in hits])
+
     @router.get("/context", response_model=list[schemas.EntityOut])
     def context_snapshot(db: Session = Depends(get_db)) -> list[Entity]:
         """What the memory currently contains — useful for the UI state view."""

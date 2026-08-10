@@ -12,3 +12,6 @@ watchdog==6.0.0
 pypdf==5.1.0
 python-multipart==0.0.20
 pytest==8.3.4
+# B14: MCP agent connectivity. Pin to the 1.x line — mcp 2.x pulls starlette
+# >=1.0, incompatible with fastapi 0.115 (needs <0.42).
+mcp==1.29.0
