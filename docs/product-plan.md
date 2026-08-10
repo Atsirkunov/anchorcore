@@ -416,6 +416,8 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** a stranger lands on the website, downloads the app (or starts the hosted free tier), and asks a cited question in under 3 minutes; a changelog accompanies every release.
 
+**Decisions 2026-08-10:** B29 is operationalized by B33–B37 — website (B33), telemetry (B34), hosted tier + pricing (B35), BSL licensing (B36), on-prem enterprise (B37).
+
 ### B14. Agent connectivity via MCP (P2 — see [mcp.md](./mcp.md))
 **Problem:** users want their own harnesses (Claude Code, Codex, opencode) to use AnchorCore's memory, but today only the browser UI can reach it.
 
@@ -523,6 +525,89 @@ rollback-safe — OR a documented decision to stay on Python.
 
 **DoD:** asking "what superseded the security-transfers decision?" (or a natural phrasing the model paraphrases) returns the newer decision's summary as a cited, connected result without the words co-occurring in both documents. — met (live: "Who owns the billing migration?" surfaces the connected security-transfers decision at score 0.9).
 
+### B33. Website: landing page + docs + changelog (P1 — GTM, decided 2026-08-10)
+**Problem:** v1 has no findable presence — a stranger can't find AnchorCore, understand the 60-second wow, or download the artifacts. B29 scoped it; this locks the decisions.
+
+**Decisions (2026-08-10):**
+- Domain: **`anchorcore.dev` registered** (~$12/yr, Cloudflare Registrar). `anchorcore.ai`/`.com`/`.app` are taken but parked (squatters) — no premium paid.
+- Stack: static Astro/Vite site on Cloudflare Pages (free) — no CMS, no backend. Docs site later via VitePress or rendered repo docs.
+
+**Scope:**
+- Landing (one page): hero *"Connect your knowledge to any AI model"* + a 60s screen recording of the sample-corpus demo (connect → ask → cited answer), 3-step how-it-works (connect a folder/Jira → it learns: classify, graph, citations → ask with cited answers), download CTAs (Windows exe + macOS app from GitHub Releases), pricing skeleton (local free / hosted later), docs + changelog links, and the privacy line: *"local-first — your data never leaves your machine."*
+- Changelog discipline (B29 §5): mandatory `CHANGELOG.md` per release, rendered on the site.
+- Pricing page: "Free during validation" until hosted exists; becomes the B35 tier skeleton later.
+
+**DoD:** a stranger lands on anchorcore.dev, downloads the app, and asks a cited question in under 3 minutes; every release updates the changelog page.
+
+### B34. Opt-in usage telemetry (P2 — validation signals)
+**Problem:** we can't retroactively learn who'd pay (which features get used, where the value cliff is), and "local forever private" vs "collect usage" look contradictory.
+
+**Decisions (2026-08-10):** telemetry sends **counts, never content**. Off by default; one explicit first-launch prompt (default unchecked). The contract: "anonymous usage stats — never your content, sources, queries, or answers."
+
+**Scope:**
+- Counts-only events: source types connected, questions/week, errors by type, feature engagement (MCP enabled, share links created, quota caps hit), app version. Zero entity text, zero file paths, zero queries/answers — if a field could contain content, don't send it.
+- Pseudonymous random UUID per install, reset-able ("reset my telemetry ID" button); aggregates only, no per-user tracking.
+- Transparency as a feature: Settings screen listing the last events and every field they contain. Local-only stats view available even when sending is off (reuses `system_events`).
+- Public-signal complement: GitHub release downloads, repo stars, docs analytics — funnel shape without touching user data.
+- Enterprise: instance-health reporting becomes a paid support feature (B37), not consumer telemetry.
+
+**DoD:** a user sees exactly what would be sent, can decline by default, and still gets value from local stats; we get aggregate feature-usage counts (e.g. "8 users connected a Jira source this week").
+
+### B35. Hosted tier: low-risk features, cost bounds, security (P3 — when hosted is real)
+**Problem:** hosting risks unbounded costs; only some features have predictable cost curves. We narrowed v2v3-scope §6 into a concrete, quota-bounded offering.
+
+**Decisions (2026-08-10):**
+- **Sub-only pricing — one dial, no double-billing.** The sub includes everything local + hosted; there is no separate fixed license for the app (two revenue models confuse buyers). Prices: Individual **€19/mo**, Teams **€25/user/mo** (narrowed from v2v3-scope §6's €15–50 / €20–50).
+- Local app stays **free forever** (privacy moat + word of mouth); free tier exists to cross the download → value gap, not to subsidize heavy hosted use.
+
+**Low-risk hosted features** (quota-bounded by design — nothing here is real-time multi-user compute): hosted sync (Jira/Drive poll), public MCP endpoint (B14.2 — agents can't hit a laptop behind NAT), webhook ingest, read-only share links (B15 projects + token links), collaborative review (storage-only, no model calls).
+
+**Cost bounds (the circuit breakers):**
+- Storage quota per workspace (e.g. 500 MB); sync frequency cap; ingest quota shared between sync + webhooks.
+- **Metered monthly token allowance** (~2–3M tokens) with **cheap-tier bundled models only** (Flash/Haiku class — never Sonnet/o-series bundled; expensive models = BYO key, existing B4 pattern).
+- Embedding content-hash cache (reuse the window-hash dedupe from B26) so re-syncs don't re-embed.
+- Per-workspace + per-MCP-token rate caps — a misbehaving agent script can't rack up €50 in a night.
+- Rough math: ~1,000 questions/mo on a cheap model ≈ $2–3/workspace/mo → €19 is 4–7× margin.
+
+**Security/privacy:**
+- **B30 label gating is the privacy answer**: hosted workspace ingests `public`/`internal` sources only; `sensitive`/`pii` stay local-only (hard pipeline rule, not policy).
+- Per-workspace row isolation (generalize the `projects`/`source_ids` scoping), no cross-tenant leaks.
+- Scoped MCP API tokens: read-only vs write, per-token revocation, every call in `system_events` audit trail.
+- Encryption in transit + at rest; secrets in a real secret manager (SecretStore interface swaps cleanly); GDPR export + delete workspace endpoints **before** the first EU customer.
+
+**DoD:** a hosted workspace's worst-case monthly cost is bounded by its allowance and quotas; a heavy user cannot blow up infra; a `pii` source never reaches the hosted tier.
+
+### B36. Commercial licensing: BSL 1.1 + signed license keys (P1 — legal prerequisite)
+**Problem:** the repo has no LICENSE — legally "all rights reserved", so nobody (including testers) can use it, and there is no mechanism to sell on-prem deployments. This is upstream of B37 and the pricing story.
+
+**Decisions (2026-08-10):**
+- **BSL 1.1** (the MariaDB/Sentry pattern): `LICENSE` file at repo root — Additional Use Grant = non-commercial + orgs <10 employees / <€1M revenue use free; any other commercial use requires a license from the Licensor; Change Date = 4 years after first publish; Change License = Apache 2.0.
+- **Ed25519-signed license keys, verified locally — works offline** (air-gapped enterprises are the best customers; they can't phone-home). The signing private key never ships; the app embeds only the public key, so keys can't be forged even by extracting the binary.
+- Enforcement is friction for the honest 90%, not a fortress; big enterprises have legal departments that won't run an unlicensed deployment.
+
+**Scope:**
+- `LICENSE` (root, BSL 1.1 template filled in).
+- `tools/make_license.py` — private keygen: `--edition enterprise --licensee "Acme" --expires 2027-01-01` → base64 key (keep out of the repo / private repo / CI secret).
+- `backend/app/licensing.py` — verify key against embedded public key, parse claims (edition/licensee/expires/features), expose `is_enterprise()`.
+- `GET /system/license` — edition, expires, unlocked features (mirrors `APP_VERSION` in `routers/system.py`).
+- Settings tab "License" section — paste key, runtime-mutable (B4 pattern), no restart.
+- Feature gates `if licensing.is_enterprise():` for future enterprise routes (SSO, audit export, RBAC — B37).
+- Tests: valid key unlocks; tampered/expired key rejected; community build works keyless.
+
+**DoD:** a client's signed key unlocks the enterprise edition offline; a tampered/expired key is rejected; the community build runs without a key; the LICENSE file makes commercial use require a license.
+
+### B37. Enterprise on-prem platform (P3 — v3)
+**Problem:** big clients won't run a PyInstaller exe — they want turnkey server deployment. Strategy: **sell the platform, don't host it** (zero infra risk for us; a sales-led annual contract instead of a hosting bill).
+
+**Scope:**
+- Docker image + compose (Postgres + object storage swap per v2v3-scope §3), one-command deploy.
+- Managed updates via license-key phone-home ("update available, one click"); health/metrics endpoint (`/health` + counters) their ops can wire into their stack.
+- **Multi-user login + RBAC** (biggest gap — the app is single-user today; MCP bearer tokens from B14.2 are the scaffolding), SSO (SAML/OIDC), audit log export.
+- **Enterprise telemetry = SLA feature**: instance-health reporting as part of the support contract (consumer telemetry stays minimal, B34).
+- Pricing: **flat annual per deployment** (not per-seat at first — one sales conversation beats a pricing page): €2.5k–5k/yr core (deploy + updates + support), €15k+/yr with SSO/audit/RBAC unlocked, bespoke €20k–100k/yr.
+
+**DoD:** a client deploys with one docker command; SSO + audit export work; the contract is a renewal conversation, not a hosting bill.
+
 ---
 
 ## Current execution priorities (agreed 2026-08-07)
@@ -545,5 +630,15 @@ before implementation** (see [B30 open question](#b30-data-labeling-piisensitive
 | — | B7 Source config editing | ✅ DONE (v1.0.7) | PUT /sources/{id} + edit form; keychain-backed secrets |
 | — | B8 First-run wizard | ✅ DONE (v1.0.7) | onboarding overlay: Ollama checks → connect → ask |
 | 5 | B30 Data labeling / PII gating | **next** | large + cross-cutting; **needs product input first** (see below) |
+
+**GTM tracks (decided 2026-08-10) — run in parallel with B30, not in its critical path:**
+
+| # | Item | Status | Why here |
+|---|---|---|---|
+| 6 | B36 Commercial licensing (BSL 1.1 + key gate) | **new** | unblocks testers legally + on-prem sales; prerequisite for B37 |
+| 7 | B33 Website + docs + changelog | **new** | findability; landing CTA → GitHub Releases |
+| 8 | B34 Opt-in telemetry | **new** | validation signals before pricing is set |
+| 9 | B35 Hosted tier + pricing (sub-only) | **new** | design locked; build when hosted pilot starts |
+| 10 | B37 Enterprise on-prem platform | **new** | v3; sells the platform, not hosting |
 
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md)*
