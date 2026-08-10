@@ -4,6 +4,21 @@
 > try, and pay for. Status: **scoping only — decisions needed, nothing built.**
 > Everything here builds on the v1 memory core (see [product-plan.md](./product-plan.md)).
 
+## Decisions log (2026-08-10)
+
+Locked decisions from the publishing-strategy review; each maps to a backlog item
+(B-numbers in [product-plan.md](./product-plan.md)):
+
+| # | Decision | Backlog |
+|---|---|---|
+| D1 | Domain: **`anchorcore.dev`** registered (~$12/yr, Cloudflare Registrar). `anchorcore.ai`/`.com`/`.app` are taken but parked — no squatter premium | B33 |
+| D2 | Website: static Astro/Vite on Cloudflare Pages (free); landing + docs + changelog; "free during validation" until hosted exists | B33 |
+| D3 | Pricing: **sub-only, one dial** — local free forever; sub includes everything (no separate fixed license). Individual €19/mo, Teams €25/user/mo | B35 |
+| D4 | Hosted = low-risk, quota-bounded features only (hosted sync, MCP endpoint, webhooks, share links, review); cheap-tier metered bundled models; per-workspace caps | B35 |
+| D5 | License: **BSL 1.1** + Ed25519-signed keys, verified offline (air-gapped capable); community carve-out for non-commercial + small orgs | B36 |
+| D6 | Enterprise: **sell the platform, don't host it** — Docker + SSO/RBAC/audit, flat annual per deployment + support; enterprise telemetry = SLA feature | B37 |
+| D7 | Telemetry: **opt-in, off by default, counts-only** (never content), pseudonymous reset-able ID, transparency screen; public signals (release downloads, stars) complement | B34 |
+
 ---
 
 ## 1. The funnel we're designing
@@ -144,14 +159,14 @@ heavy hosted use.
 
 ## 9. Open questions
 
-- [ ] Domain + name check (`anchorcore.ai` vs alternatives)?
+- [x] ~~Domain + name check~~ — **resolved 2026-08-10: `anchorcore.dev`** (B33)
 - [ ] Hosting provider (Hetzner/Fly/Render/self-managed)?
 - [ ] Hosted free tier size (storage/sources/workspaces)?
 - [ ] Signup: email+password vs Google OAuth first?
-- [ ] Bundled model access — which provider(s), how metered?
-- [ ] Is file sharing = workspace sharing only, or actual file download too?
-- [ ] Update-checker opt-in from day one or later?
-- [ ] Changelog: manual curated vs generated?
+- [x] ~~Bundled model access — which provider(s), how metered?~~ — **partially resolved 2026-08-10**: cheap-tier metered allowance (~2–3M tokens), expensive models BYO (B35); provider choice TBD
+- [x] ~~File sharing: workspace sharing only, or file download too?~~ — **resolved 2026-08-10**: workspace/share-link sharing only (B35)
+- [x] ~~Update-checker opt-in from day one or later?~~ — **resolved 2026-08-10**: later, as part of the on-prem managed-update story (B37)
+- [x] ~~Changelog: manual curated vs generated?~~ — **resolved 2026-08-10**: manual, Keep a Changelog format (B33)
 
 ---
 
