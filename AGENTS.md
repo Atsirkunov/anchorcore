@@ -17,7 +17,8 @@ Repo: `git@github.com:Atsirkunov/anchorcore.git`. Backend under `backend/`, UI u
 ## How to run / test / release
 
 - Dev: `./start.sh` (venv, migrations, Ollama, backend :8000)
-- Backend tests: `cd backend && .venv/bin/python -m pytest tests -q` (88+ tests, ~18s; CI-safe, no LLM needed)
+- Backend tests: `cd backend && .venv/bin/python -m pytest tests -q` (95 tests, ~2.5 min on Windows;
+  CI-safe, no LLM needed). If a job dies with `database is locked`, rerun (scheduler write-lock flake).
 - Frontend: `cd frontend && npm run build` (tsc + vite; must pass before a UI change is done)
 - Release: bump `APP_VERSION` in `backend/app/routers/system.py` + `version=` in `backend/app/main.py` → commit → tag → push
 - **The packaged app embeds `frontend/dist` at build time** — after any UI change you must rebuild, or the exe ships stale UI.
@@ -37,10 +38,17 @@ Repo: `git@github.com:Atsirkunov/anchorcore.git`. Backend under `backend/`, UI u
   distill (B18), embed (IDF-gated). Runs as background jobs via `JobManager`.
 - `backend/app/classifier.py` — per-doc-type extraction prompts, `detect_document_type`, `classify`,
   `distill`; rule-based fallbacks for all (tests must pass without Ollama).
-- `backend/app/routers/` — `sources.py` (create/list/update/delete + config + jobs),
+- `backend/app/routers/` — `sources.py` (create/list/update/delete + config + jobs + `GET /sources/{id}`
+  detail incl. masked config, B14 — **registered last** so literal `/sources/jobs` routes win),
   `entities.py` (+ `review_router` for low-confidence/duplicates/merge; B3: `POST /entities/{id}/dispute`,
-  `GET /entities/{id}/disputes`), `qa.py`, `projects.py`, `settings.py`, `system.py`
-  (status/errors/logs/**onboarding** for the B8 first-run wizard).
+  `GET /entities/{id}/disputes`), `qa.py` (+ `POST /qa/search` raw retrieval for agents, B14), `projects.py`,
+  `settings.py`, `system.py` (status/errors/logs/**onboarding** for the B8 first-run wizard).
+- `backend/app/mcp/` — B14 MCP server: `backend.py` (`HttpBackend` REST adapter; sidecar uses it, HTTP
+  transport in-process later), `tools.py` (ask/search/get_entity/get_source/list_sources/memory_status —
+  thin adapters, status filters apply), `server.py` (`build_server(backend)` → FastMCP).
+  `backend/anchorcore_mcp.py` is the stdio sidecar (`python anchorcore_mcp.py`, talks to the running
+  backend on `ANCHOR_BACKEND_URL` default 127.0.0.1:8000). **mcp is pinned to 1.x in requirements.txt —
+  mcp 2.x pulls starlette >=1.0, incompatible with fastapi 0.115 (<0.42).**
 - `backend/app/secrets.py` — `SecretStore` (OS keychain, encrypted-file fallback when
   `ANCHOR_SECRETS_NO_KEYRING=1`); `store_source_config`/`resolve_source_config` handle source
   config secret fields (`token`, `api_key`, `password`). Never ship secrets to the UI.
@@ -116,7 +124,16 @@ Key rules:
   background; a test's `start_and_wait` job can collide and die with `sqlite3.OperationalError: database
   is locked` ("job did not finish within 30s"). Intermittent, order/timing dependent — rerun the suite if
   a job dies this way; don't treat it as your feature being broken. The full suite is reliably green
-  (~18s, 88 tests).
+  (~2.5 min on Windows, 95 tests).
+- **Windows localhost connect quirk (biggest test-suite cost)**: Windows does NOT RST closed localhost
+  ports — every dead-port connect waits the full connect timeout, twice (IPv6 ::1 + IPv4 attempts).
+  On macOS the same calls fail instantly. Symptoms: suite hung 10+ min; each lifespan's Ollama probe
+  took ~4.2s; each classifier/embed call ~2s. Fix shipped: `ANCHOR_HTTP_CONNECT_TIMEOUT` (default 2.0)
+  used by `RetryClient` (`http.py`) and the `status.py` probes; conftest sets 0.2. Never hardcode
+  `httpx.Timeout(connect=...)` per-call again — read `settings.http_connect_timeout`.
+- **Route order matters**: `GET /sources/{id}` (B14) is registered LAST in `sources.py` — a `{id}`
+  segment registered earlier shadows the literal `/sources/jobs` routes (422s). Same for any future
+  catch-all segments.
 - **The suite runs without Ollama** — all E2E tests must pass degraded (rule-based classifier,
   keyword-only retrieval). Real-model probes are manual.
 - **Shared test DB across the whole run** (conftest sets ONE SQLite file at module import; it accumulates

@@ -17,6 +17,12 @@ class SourceOut(BaseModel):
     created_at: datetime
 
 
+class SourceDetailOut(SourceOut):
+    """B14: source + resolved config with secrets masked (MCP get_source)."""
+
+    config: dict = {}
+
+
 class SourceCreate(BaseModel):
     connector: str
     name: str
@@ -128,6 +134,32 @@ class Citation(BaseModel):
 class AskResponse(BaseModel):
     answer: str
     citations: list[Citation]
+
+
+class SearchRequest(BaseModel):
+    """B14: raw retrieval for agents/harnesses — ranked context, not a final
+    answer. `k` caps the number of hits; `project_id` scopes retrieval (B15)."""
+
+    query: str
+    k: int = 8
+    project_id: int | None = None
+
+
+class SearchHit(BaseModel):
+    chunk_id: int | None
+    entity_id: int | None
+    kind: str  # decision|document|action|note — or "document" for raw chunks
+    summary: str
+    content: str
+    source_ref: str
+    source_id: int | None
+    item_id: int | None
+    item_title: str
+    score: float
+
+
+class SearchResponse(BaseModel):
+    hits: list[SearchHit]
 
 
 class SystemEventOut(BaseModel):

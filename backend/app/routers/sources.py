@@ -115,6 +115,21 @@ def make_router(
             raise HTTPException(status_code=404, detail="Job not found")
         return job
 
+    # Registered LAST on purpose: the literal /jobs routes above must win over
+    # this catch-all {source_id} segment.
+    @router.get("/{source_id}", response_model=schemas.SourceDetailOut)
+    def get_source(source_id: int, db: Session = Depends(get_db)) -> dict:
+        """B14: single source with its config (secrets masked) — what the MCP
+        `get_source` tool surfaces to harnesses."""
+        source = db.get(Source, source_id)
+        if source is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        config = resolve_source_config(source, secrets)
+        for field in ("token", "api_key", "password"):
+            if field in config:
+                config[field] = "***set***"
+        return {**schemas.SourceOut.model_validate(source).model_dump(), "config": config}
+
     return router
 
 

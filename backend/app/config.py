@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     classifier_timeout: float = 60.0
     classifier_concurrency: int = 4
     http_retries: int = 3
+    # Per-connection timeout for model/status HTTP calls. Windows does not RST
+    # closed localhost ports, so each dead-port attempt waits the full connect
+    # timeout (twice: IPv6 + IPv4) — keep it small; the total timeout still caps
+    # the request. Tests set this low (conftest) to keep the suite fast.
+    http_connect_timeout: float = 2.0
 
     answer_model: str = "gpt-4o-mini"
     answer_api_key: str = ""
@@ -87,6 +92,13 @@ class Settings(BaseSettings):
     low_confidence_threshold: float = 0.6
     duplicate_threshold: float = 0.92
     qa_exclude_disputed: bool = True  # B3: never cite disputed entities by default
+
+    # B14: MCP agent connectivity. `backend_url` is where the stdio sidecar
+    # (`anchorcore_mcp.py`) finds the running backend; `mcp_enabled`/`mcp_token`
+    # govern the HTTP transport mounted on the app itself (B14.2).
+    backend_url: str = "http://127.0.0.1:8000"
+    mcp_enabled: bool = False
+    mcp_token: str = ""
 
     @property
     def resolved_database_url(self) -> str:

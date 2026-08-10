@@ -422,7 +422,7 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 **Problem:** users want their own harnesses (Claude Code, Codex, opencode) to use AnchorCore's memory, but today only the browser UI can reach it.
 
 **Scope (per [mcp.md](./mcp.md)):**
-- B14.1 Local stdio MCP server, read-only: `ask`, `search`, `get_entity`, `get_source`, `list_sources`, `memory_status` — thin adapters over existing services; results respect status/dispute filtering
+- B14.1 Local stdio MCP server, read-only: `ask`, `search`, `get_entity`, `get_source`, `list_sources`, `memory_status` — thin adapters over existing services; results respect status/dispute filtering — **DONE (v1.0.9)**
 - B14.2 Streamable HTTP transport mounted on the FastAPI app (`/mcp`), bearer-token auth (opt-in, disabled on localhost), calls audited in `system_events` — the "centralized dataset for agents" story
 - B14.3 Write-back `ingest` tool (items stored `unverified`, author `mcp:<token>`, routed to the review UI)
 - B14.4 Registry publishing for one-command harness installs

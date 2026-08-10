@@ -3,7 +3,8 @@
 > Goal: let any AI harness (Claude Code, Codex, opencode, Cursor, …) connect
 > to AnchorCore's memory — locally or against a centralized instance — and
 > consume it with full provenance.
-> Status: plan only — no implementation yet.
+> Status: **B14.1 shipped (v1.0.9)** — stdio sidecar + 6 read-only tools;
+> B14.2 (HTTP transport) and B14.3 (write-back) planned.
 
 ---
 
@@ -57,13 +58,25 @@ as Q&A — so agents never cite contested facts.
 A sidecar process `anchorcore-mcp` (Python, `mcp` SDK) spawned by the harness:
 
 ```bash
-claude mcp add anchorcore -- /path/to/anchorcore-mcp
-codex mcp add anchorcore -- /path/to/anchorcore-mcp
+# dev checkout (backend must be running first — ./start.ps1 / ./start.sh)
+claude mcp add anchorcore -- python /path/to/backend/anchorcore_mcp.py
+codex mcp add anchorcore -- python /path/to/backend/anchorcore_mcp.py
 # opencode: "mcp" entry in opencode.json with local stdio command
 ```
 
-The sidecar talks to the running backend over `127.0.0.1` — the backend stays
-the single owner of the DB and Ollama, exactly like the browser UI does today.
+The sidecar talks to the running backend over `127.0.0.1` (`ANCHOR_BACKEND_URL`,
+default `http://127.0.0.1:8000`) — the backend stays the single owner of the
+DB and Ollama, exactly like the browser UI does today. **Shipped as B14.1**:
+`backend/anchorcore_mcp.py` + `backend/app/mcp/` (`server.py`, `tools.py`,
+`backend.py`). Six read-only tools: `ask`, `search` (raw retrieval, the
+harness workhorse), `get_entity`, `get_source`, `list_sources`,
+`memory_status`. `search` maps to `POST /qa/search` (same hybrid pipeline as
+`ask`, no LLM; status filters apply — agents never cite disputed/stale facts).
+Tests: `backend/tests/test_mcp.py` (drives the real app via ASGITransport).
+
+Not yet packaged into the frozen apps (no PyInstaller entry) — the dev-checkout
+command above is the documented path until B14.2 ships HTTP, which removes the
+sidecar need entirely.
 
 ### 4.2 Centralized — streamable HTTP (v1.5+, the "centralized dataset")
 
@@ -153,8 +166,8 @@ codex mcp add anchorcore -- http https://your-host/mcp --auth-token <token>
 
 | # | Scope | Output | Effort |
 |---|---|---|---|
-| B14.1 | Local stdio MCP, read-only (`ask`, `search`, inspect) | Testers' harnesses see memory with citations | 1–2 days |
-| B14.2 | HTTP transport + token auth + audit | Centralized "connect agents to shared memory" demo | 1–2 days |
+| B14.1 | Local stdio MCP, read-only (`ask`, `search`, inspect) | ✅ **DONE (v1.0.9)** — sidecar + 6 tools + `/qa/search`; testers' harnesses see memory with citations | 1–2 days |
+| B14.2 | HTTP transport + token auth + audit | Centralized "connect agents to shared memory" demo (config already added: `mcp_enabled`/`mcp_token`) | 1–2 days |
 | B14.3 | Write-back `ingest` (unverified + review queue) | Agents feed memory; humans confirm | 1–2 days |
 | B14.4 | Registry publishing (Claude Code marketplace etc.) | One-command install | 0.5 day + review |
 

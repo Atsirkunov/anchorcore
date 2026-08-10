@@ -133,9 +133,12 @@ resets the thread.
 - `GET /sources/jobs`, `GET /sources/jobs/{id}`, `GET /sources/jobs/running` — job progress + history (running/done/failed/cancelled)
 - `POST /sources/jobs/{id}/cancel` — stop a running job
 - `DELETE /sources/{id}` — remove a source and cascade-delete its items/entities/chunks
+- `GET /sources/{id}` — single source + config (secrets masked) — used by the MCP `get_source` tool
 - `GET /entities`, `PATCH /entities/{id}` — browse and review (verify/dispute/reclassify)
 - `GET /review/low-confidence`, `GET /review/duplicates`, `POST /review/merge` — review queue (entities carry `window_text` for review context)
 - `POST /qa` — ask (optionally with `history` turns and a `project_id` scope), get answer with section-level citations
+- `POST /qa/search` — raw ranked retrieval for agents/harnesses (B14: same pipeline, no LLM; chunks/entities + provenance + scores)
+- **MCP (B14)**: `python backend/anchorcore_mcp.py` runs a stdio MCP server (`ask`, `search`, `get_entity`, `get_source`, `list_sources`, `memory_status`) — point Claude Code/Codex/opencode at it; see [docs/mcp.md](./docs/mcp.md)
 - `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`, `GET /projects/default` — project bundles for scoped search
 - `GET /settings`, `PUT /settings` — runtime model config (secrets masked)
 - `POST /settings/test-connection` — verify ollama/classifier/embedder/answer providers
