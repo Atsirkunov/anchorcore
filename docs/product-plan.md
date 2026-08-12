@@ -621,6 +621,18 @@ rollback-safe — OR a documented decision to stay on Python.
 
 **DoD:** a logo + visual system exist and are applied; the landing page and in-app screenshots look intentional, not template-y; the 60s demo video is produced; B33 ships with B38 assets.
 
+### B39. Scale hardening: search-backend seam + stage-0 fixes (P1 — code-review findings 2026-08-11)
+**Problem:** the codebase is clean but has three scale assumptions that break at exactly the "point it at the company wiki" moment: O(N) pure-Python vector scan per query, O(n²) duplicate detection on a GET, and sync HTTP probes inside async endpoints that block the whole event loop while Ollama is down. None of them are visible at demo scale; all three are cheap to fix now and expensive to retrofit after a hosted tier exists.
+
+**Scope:**
+- **S0a — async status probes** (`status.py`): `ollama_reachable`/`missing_ollama_models` use sync `httpx.Client` inside async endpoints → dead Ollama blocks *every* request ~2–4s. Make them async (or add a short TTL cache keyed on base_url).
+- **S0b — cap duplicate detection** (`routers/entities.py` review `duplicates`): restrict candidates to low-confidence + recency-capped entities (not all-vs-all); add a unique index on `merge_actions(entity_a_id, entity_b_id)`; move proposal generation off the GET (job or lazy render) so concurrent requests can't double-write.
+- **S0c — native KNN**: `AnswerEngine._vector_search` unpacks every embedding blob into Python lists per query. Move the search into sqlite-vec `vec0` KNN (exact, in C/SIMD) behind a **`SearchBackend` seam** (`vector_search`/`keyword_search`/`who_knows`), keeping the pure-Python path as fallback for extension-less builds. Exact KNN in C is fine to ~1M chunks — no ANN needed for the local product.
+- **S1 (deferred)** — local at 100k+ chunks: single asyncio writer queue if write contention shows up; embed cache keyed by `content_hash` (cost lever); FTS5 is fine as-is.
+- **S2 (deferred, hosted only)** — track A: SQLite per-tenant + litestream→R2 (small teams); track B: Postgres + pgvector + object storage behind the same `SearchBackend` seam (multi-region/heavy writers). Ingestion workers split from the API process; `team_id` tenant boundary. See [v2v3-scope.md](./v2v3-scope.md).
+
+**DoD:** `/health` never blocks other requests; duplicate review stays responsive past 10k entities; vector search runs natively in sqlite-vec with the seam in place so the hosted Postgres track becomes additive, not a rewrite. Telemetry hooks (B34) log chunk count + query latency to make the S1/S2 triggers measurable.
+
 ---
 
 ## Current execution priorities (agreed 2026-08-07)
@@ -643,16 +655,17 @@ before implementation** (see [B30 open question](#b30-data-labeling-piisensitive
 | — | B7 Source config editing | ✅ DONE (v1.0.7) | PUT /sources/{id} + edit form; keychain-backed secrets |
 | — | B8 First-run wizard | ✅ DONE (v1.0.7) | onboarding overlay: Ollama checks → connect → ask |
 | 5 | B30 Data labeling / PII gating | **next** | large + cross-cutting; **needs product input first** (see below) |
+| 6 | B39 Scale hardening (S0: async probes, dup cap, native KNN + SearchBackend seam) | **new** | code-review findings 2026-08-11; small + high-leverage, unblocks hosted tracks |
 
 **GTM tracks (decided 2026-08-10) — run in parallel with B30, not in its critical path:**
 
 | # | Item | Status | Why here |
 |---|---|---|---|
-| 6 | B36 Commercial licensing (BSL 1.1 + key gate) | **new** | unblocks testers legally + on-prem sales; prerequisite for B37 |
-| 7 | B33 Website + docs + changelog | **new** | findability; landing CTA → GitHub Releases |
-| 8 | B34 Opt-in telemetry | **new** | validation signals before pricing is set |
-| 9 | B35 Hosted tier + pricing (sub-only) | **new** | design locked; build when hosted pilot starts |
-| 10 | B37 Enterprise on-prem platform | **new** | v3; sells the platform, not hosting |
-| 11 | B38 Design & brand work | **new** | visual layer B33/demo/download page depend on |
+| 7 | B36 Commercial licensing (BSL 1.1 + key gate) | **new** | unblocks testers legally + on-prem sales; prerequisite for B37 |
+| 8 | B33 Website + docs + changelog | **new** | findability; landing CTA → GitHub Releases |
+| 9 | B34 Opt-in telemetry | **new** | validation signals before pricing is set |
+| 10 | B35 Hosted tier + pricing (sub-only) | **new** | design locked; build when hosted pilot starts |
+| 11 | B37 Enterprise on-prem platform | **new** | v3; sells the platform, not hosting |
+| 12 | B38 Design & brand work | **new** | visual layer B33/demo/download page depend on |
 
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md)*
