@@ -1,6 +1,6 @@
 # AnchorCore
 
-Connect your knowledge to any AI model. An AI memory layer / knowledge operating system for teams.
+Connect your knowledge to any AI model. Your memory — finally searchable. — personal or team, same local app (see [Design system](./docs/design-system.md#51-website-hero--a-chosen--personal--company-split) for the two-track language).
 
 ## Docs
 
@@ -10,6 +10,7 @@ Connect your knowledge to any AI model. An AI memory layer / knowledge operating
 - [Releasing](./docs/releasing.md) — release checklist: tag → CI builds both executables
 - [Agent connectivity (MCP)](./docs/mcp.md) — how harnesses (Claude Code, Codex, opencode) will use the memory
 - [v2/v3 business scoping](./docs/v2v3-scope.md) — website, hosting, sharing, pricing, free tier
+- [Design system](./docs/design-system.md) — color tokens, typography, messaging, website approach (single source for app + site)
 - [Rust port evaluation](./docs/rust-port.md) — is a Rust backend worth it? (distribution vs LLM latency)
 - [Sample dataset guide](./docs/sample-dataset.md) — what the demo corpus exercises
 
@@ -20,6 +21,8 @@ backend/    FastAPI service (connectors, ingestion, classification, RAG Q&A)
 frontend/   React SPA (Vite) — Ask, Sources, Entities, Review, Settings, System
 sample/     Mini-company demo corpus — connect it as a folder source
             (guide: docs/sample-dataset.md)
+hosting/    Hosted skeleton — same image, Postgres (docker-compose), env-driven
+            (guide: hosting/README.md)
 docs/       Product plan, architecture, packaging, releasing
 ```
 
@@ -34,6 +37,8 @@ executables automatically (see `docs/releasing.md`).
 **Developers:** `.\start.ps1` (or `./start.sh`) — creates the venv + `.env`
 on first run, applies Alembic migrations, starts Ollama, boots the backend at
 http://localhost:8000. Add `-Dev` for the Vite dev server at :5173.
+
+**Hosted (skeleton):** `docker compose -f hosting/docker-compose.yml up --build` — same app against Postgres (`pgvector/pg16`, see `hosting/README.md`).
 
 **Prerequisites:** Python 3.12+, Node 20+, [Ollama](https://ollama.com):
 
@@ -124,33 +129,37 @@ resets the thread.
 - No `ANCHOR_ANSWER_API_KEY` and cloud base URL → answers return matching context instead of LLM text.
 - Everything degrades gracefully; add Ollama or a model key (Settings tab) to unlock the full experience.
 
-## API surface (v1)
+## API surface (v1 — env-driven: SQLite local, Postgres hosted via `hosting/`)
 
-- `POST /sources` — connect a folder (path) or Jira (base_url, email, token, project)
+- `POST /sources` — connect a folder (path, `label` internal|public|sensitive|pii B39) or Jira (base_url, email, token, project)
 - `GET /sources/{id}/config` — source config (secrets masked) — shown as folder path / Jira details in the Sources tab
 - `POST /sources/{id}/sync`, `POST /sources/{id}/reclassify` — run ingestion now (returns 202 + job id)
 - `GET /sources/jobs`, `GET /sources/jobs/{id}`, `GET /sources/jobs/running` — job progress + history (running/done/failed/cancelled)
 - `POST /sources/jobs/{id}/cancel` — stop a running job
 - `DELETE /sources/{id}` — remove a source and cascade-delete its items/entities/chunks
-- `GET /entities`, `PATCH /entities/{id}` — browse and review (verify/dispute/reclassify)
-- `GET /review/low-confidence`, `GET /review/duplicates`, `POST /review/merge` — review queue (entities carry `window_text` for review context)
-- `POST /qa` — ask (optionally with `history` turns and a `project_id` scope), get answer with section-level citations
+- `GET /entities`, `GET /entities/{id}`, `PATCH /entities/{id}` — browse and review (verify/dispute/reclassify)
+- `GET /entities/{id}/related`, `GET /entities/{id}/disputes`, `GET /entities/{id}/context` — related graph, dispute audit (B3), expanded review context with neighbours + highlight (B27)
+- `GET /review/low-confidence`, `GET /review/duplicates` (paginated `limit`/`offset`/`kind` B38), `POST /review/merge` — review queue (entities carry `window_text` for review context)
+- `POST /qa` — ask (optionally with `history` turns, `project_id` scope, `public_only` B30), get answer with section-level citations; `POST /qa/public` — share-safe, public sources only (B30)
 - `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`, `GET /projects/default` — project bundles for scoped search
+- `GET /pii/config`, `PUT /pii/config`, `GET /pii/review`, `POST /pii/review/{id}`, `POST /pii/scan/{source}` — PII config + review (B30, Direct= pii / Indirect= sensitive, source-level for v1)
+- `GET /auth/status`, `POST /auth/signup`, `POST /auth/login`, `GET /auth/me` — hosted auth (B40, `ANCHOR_AUTH_SECRET` enables JWT; local stays no-auth)
 - `GET /settings`, `PUT /settings` — runtime model config (secrets masked)
 - `POST /settings/test-connection` — verify ollama/classifier/embedder/answer providers
-- `GET /system/status`, `GET /system/errors`, `GET /system/logs[/{file}]` — health, errors, log download
+- `GET /system/status`, `GET /system/errors`, `GET /system/logs[/{file}]`, `GET /system/onboarding` — health, errors, log download, wizard trigger (B8, skippable)
 
-## Data model (SQLite + Alembic migrations)
+## Data model (SQLite local / Postgres hosted + Alembic migrations)
 
 | Table | Notes |
 |---|---|
-| `sources` / `ingested_items` | connectors; items carry `doc_type` + `window_hashes` (cheap reclassify) + `distill_hashes` (B18) |
+| `sources` / `ingested_items` | connectors; items carry `doc_type` + `window_hashes` (cheap reclassify) + `distill_hashes` (B18); `sources.label` B39 (internal|public|sensitive|pii) |
 | `projects` / `project_sources` | source bundles for scoped search (B15) |
 | `entities` | kinds decision/document/action/note; `window_text`/`window_index` = classifier input; status verified/disputed/stale |
 | `relationships` | typed links (supersedes/depends_on/owns/blocks) |
-| `chunks` | `kind` = document/entity/distilled; full-doc + entity + Q&A-unit chunks, embeddings (float32 blobs) |
-| `chunks_fts` | FTS5 keyword index, kept in sync by triggers |
+| `chunks` | `kind` = document/entity/distilled; `is_pii` + `pii_categories` auto-flagged (B30); embeddings (float32 blobs); FTS5 `chunks_fts` + vec0 `vec_chunks` (B33) kept in sync by triggers (SQLite-only, skip on Postgres) |
+| `chunks_fts` / `vec_chunks` | FTS5 keyword index / vec0 cosine index (SQLite), triggers sync; Postgres skips (fallback to Python scan) |
 | `merge_actions` | duplicate proposals + decisions |
 | `jobs` | sync/reclassify progress + history |
 | `system_events` | structured error/audit trail |
-| `app_settings` | runtime overrides (secrets live in the OS keychain, not here) |
+| `app_settings` | runtime overrides (secrets live in the OS keychain, not here; PII custom words/disabled categories B30) |
+| `users` | hosted auth (B40, email unique, pbkdf2 hash) — local stays single-user no-auth |

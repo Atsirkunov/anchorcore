@@ -25,6 +25,7 @@ export type Source = {
   connector: string;
   name: string;
   enabled: boolean;
+  label: "internal" | "public" | "sensitive" | "pii";
   last_synced_at: string | null;
   last_error: string | null;
   error_count: number;
@@ -64,6 +65,13 @@ export type ClassifierStatus = ClassifierStats & {
   model: string;
 };
 
+export type RetrievalStatus = {
+  calls: number;
+  vec0_calls: number;
+  avg_latency_ms: number;
+  backend: "vec0" | "scan" | "none";
+};
+
 export type EmbedderStatus = {
   provider: "local" | "cloud";
   base_url: string;
@@ -97,6 +105,7 @@ export type SystemStatus = {
     missing_models: string[];
   };
   classifier: ClassifierStatus;
+  retrieval: RetrievalStatus;
   embedder: EmbedderStatus;
   answer: { provider: string; model: string; base_url: string };
   tasks: Record<string, string>;
@@ -177,7 +186,7 @@ export type Job = {
   id: number;
   source_id: number;
   kind: "sync" | "reclassify";
-  status: "running" | "done" | "failed" | "cancelled";
+  status: "running" | "pending" | "done" | "failed" | "cancelled";
   total: number;
   processed: number;
   result: { items?: number; entities?: number };
@@ -185,4 +194,37 @@ export type Job = {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+};
+
+export type PiiCategory = {
+  id: string;
+  label: string;
+  description: string;
+  field_names: string[];
+  patterns: string[];
+  enabled: boolean;
+};
+
+export type PiiConfig = {
+  categories: PiiCategory[];
+  custom_words: string[];
+};
+
+export type PiiMatch = {
+  category: string;
+  label: string;
+  strong: boolean;
+  match: string;
+};
+
+export type PiiChunk = {
+  chunk_id: number;
+  source_id: number | null;
+  source_name: string;
+  source_label: string;
+  kind: string;
+  content: string;
+  snippet: string;
+  is_pii: boolean;
+  categories: PiiMatch[];
 };

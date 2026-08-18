@@ -1,4 +1,5 @@
-"""B12: chunk cleaning, heading-aware chunking, FTS5 hybrid retrieval."""
+"""B12: chunk cleaning, heading-aware chunking, FTS5 hybrid retrieval.
+B33: vec0 index vector retrieval (index availability, correctness, perf)."""
 
 import time
 from datetime import datetime, timedelta, timezone
@@ -9,6 +10,32 @@ from app.config import settings
 from app.pipeline import chunk_document
 
 from tests.test_smoke import start_and_wait
+
+
+def _vec0_available() -> bool:
+    import sqlite3
+
+    try:
+        import sqlite_vec  # noqa: F401
+    except ImportError:
+        return False
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.enable_load_extension(True)
+    except AttributeError:
+        return False
+    try:
+        sqlite_vec.load(conn)
+    except Exception:  # noqa: BLE001
+        return False
+    conn.close()
+    return True
+
+
+def _pack_vector(vector: list[float]) -> bytes:
+    import struct
+
+    return b"".join(struct.pack("<f", v) for v in vector)
 
 
 def test_clean_text_removes_page_numbers_and_control_chars():
@@ -228,3 +255,180 @@ def test_diversity_cap_relaxed_for_single_file(client, tmp_path):
         assert len(fused) > settings.retrieval_max_per_source, (
             "single-file corpus must not be capped below top_k"
         )
+
+
+def test_vec_chunks_table_exists(client):
+    """B33 DoD: the vec0 virtual table + triggers exist after migration (when
+    the sqlite-vec extension is loadable)."""
+    if not _vec0_available():
+        import pytest
+
+        pytest.skip("sqlite-vec not loadable in this Python")
+    import sqlite3
+
+    from app.db import engine
+
+    with engine.connect() as conn:
+        dbapi = conn.connection.driver_connection
+        table = dbapi.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_chunks'"
+        ).fetchone()
+        triggers = [
+            r[0]
+            for r in dbapi.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'vec_chunks_%'"
+            ).fetchall()
+        ]
+    assert table is not None, "vec_chunks table must exist after migration"
+    assert {"vec_chunks_ai", "vec_chunks_ad", "vec_chunks_au"} <= set(triggers), triggers
+
+
+def test_vec0_insert_and_retrieval(client, tmp_path):
+    """B33: embeddings written through the trigger are retrievable by vec0 with
+    cosine scoring; a wrong-dimension blob is ignored rather than breaking the
+    chunk write."""
+    if not _vec0_available():
+        import pytest
+
+        pytest.skip("sqlite-vec not loadable in this Python")
+    from app.db import SessionLocal
+    from app.models import Chunk
+    from sqlalchemy import delete, select
+
+    dim = settings.embed_dim
+    # two vectors: one near the query, one far
+    near = [0.1] * dim
+    far = [-1.0] * dim
+    query = [0.1] * dim
+
+    with SessionLocal() as db:
+        db.execute(delete(Chunk).where(Chunk.content.in_(["vec-near", "vec-far", "vec-wrong"])))
+        db.flush()
+        for content, vec in [("vec-near", near), ("vec-far", far)]:
+            db.execute(
+                Chunk.__table__.insert().values(
+                    kind="document",
+                    content=content,
+                    source_ref="vec-test",
+                    embedding=_pack_vector(vec),
+                )
+            )
+        db.execute(
+            Chunk.__table__.insert().values(
+                kind="document",
+                content="vec-wrong",
+                source_ref="vec-test",
+                embedding=_pack_vector([0.1, 0.2, 0.3, 0.4]),
+            )
+        )
+        db.commit()
+
+        from app.answer_engine import AnswerEngine
+        from app.app_settings import SettingsService
+        from app.embedder import Embedder
+        from app.secrets import SecretStore
+
+        engine = AnswerEngine(
+            Embedder(SettingsService(settings, SecretStore(settings.data_dir / "secrets.enc"))),
+            SettingsService(settings, SecretStore(settings.data_dir / "secrets.enc")),
+        )
+        hits = engine._vector_search(db, query)
+        by_content = {h["chunk"].content: h["score"] for h in hits}
+        assert "vec-near" in by_content, "near vector must be retrieved via vec0"
+        assert "vec-far" not in by_content, "far vector must not pass the 0.2 cosine cutoff"
+        assert "vec-wrong" not in by_content, "wrong-dim blob must not be indexed"
+        assert by_content["vec-near"] > 0.99, by_content
+
+        # cleanup so shared-DB tests stay isolated
+        db.execute(delete(Chunk).where(Chunk.content.in_(["vec-near", "vec-far", "vec-wrong"])))
+        db.commit()
+
+
+def test_vec0_project_scoping(client, tmp_path):
+    """B33: vec0 retrieval is scoped to a project's sources (B15)."""
+    if not _vec0_available():
+        import pytest
+
+        pytest.skip("sqlite-vec not loadable in this Python")
+    from app.db import SessionLocal
+    from app.models import Chunk, IngestedItem
+    from sqlalchemy import delete, select
+
+    dim = settings.embed_dim
+    with SessionLocal() as db:
+        rows = db.execute(
+            select(IngestedItem.id, IngestedItem.source_id)
+        ).all()
+        if not rows:
+            pytest.skip("no ingested items available in shared test DB")
+
+    from app.answer_engine import AnswerEngine
+    from app.app_settings import SettingsService
+    from app.embedder import Embedder
+    from app.secrets import SecretStore
+
+    engine = AnswerEngine(
+        Embedder(SettingsService(settings, SecretStore(settings.data_dir / "secrets.enc"))),
+        SettingsService(settings, SecretStore(settings.data_dir / "secrets.enc")),
+    )
+    query = [0.1] * dim
+    # scope to a source that has no chunks matching near the query → empty set
+    with SessionLocal() as db:
+        # build an itemless chunk first so scoping has something to exclude
+        db.execute(delete(Chunk).where(Chunk.content == "vec-scope"))
+        db.flush()
+        db.execute(
+            Chunk.__table__.insert().values(
+                kind="document",
+                content="vec-scope",
+                source_ref="vec-test",
+                embedding=_pack_vector([0.1] * dim),
+            )
+        )
+        db.commit()
+        # an empty project scope must yield no hits (nothing to exclude / include)
+        hits = engine._vector_search(db, query, source_ids=set())
+        assert hits == [], "empty project scope must return no vector hits"
+        db.execute(delete(Chunk).where(Chunk.content == "vec-scope"))
+        db.commit()
+
+
+def test_vec0_perf_probe():
+    """B33 DoD: 1k-chunk vec0 query <100ms (vs the O(N) Python scan)."""
+    import sqlite3
+
+    if not _vec0_available():
+        import pytest
+
+        pytest.skip("sqlite-vec not loadable in this Python")
+
+    conn = sqlite3.connect(":memory:")
+    conn.enable_load_extension(True)
+    import sqlite_vec
+
+    sqlite_vec.load(conn)
+    dim = 768
+    conn.execute(f"CREATE VIRTUAL TABLE v USING vec0(embedding float[{dim}] distance_metric=cosine)")
+    import random
+
+    rng = random.Random(42)
+    start = time.perf_counter()
+    for i in range(1000):
+        vec = [rng.uniform(-1, 1) for _ in range(dim)]
+        conn.execute("INSERT INTO v(rowid, embedding) VALUES (?, ?)", (i + 1, _pack_vector(vec)))
+    insert_ms = (time.perf_counter() - start) * 1000
+
+    query = [rng.uniform(-1, 1) for _ in range(dim)]
+    import json
+
+    start = time.perf_counter()
+    rows = conn.execute(
+        "SELECT rowid, distance FROM v WHERE embedding MATCH :q AND k = 8",
+        {"q": json.dumps(query)},
+    ).fetchall()
+    latency_ms = (time.perf_counter() - start) * 1000
+    conn.close()
+
+    assert len(rows) == 8, rows
+    assert latency_ms < 100, f"vec0 query over 1k chunks took {latency_ms:.1f}ms (insert {insert_ms:.1f}ms)"
+

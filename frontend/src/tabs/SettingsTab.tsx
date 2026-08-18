@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
+import { stripPlaceholders } from "../placeholders";
+import { theme } from "../theme";
 import type { AppSettings } from "../types";
 
 type ProviderId = "local" | "cloud";
@@ -60,11 +62,11 @@ export function SettingsTab() {
     setSaved(false);
     setError(null);
     try {
-      const payload: Partial<AppSettings> = { ...form };
-      // never send the masked placeholder back — it would overwrite the real
-      // secret with the literal string "***set***"
+      const payload: Partial<AppSettings> = stripPlaceholders({ ...form });
+      // API keys already masked (or blank) are dropped so they never overwrite
+      // the stored secret with the literal placeholder.
       for (const k of ["answer_api_key", "classifier_api_key", "embed_api_key"] as const) {
-        if (!payload[k] || payload[k] === "***set***") delete payload[k];
+        if (!payload[k]) delete payload[k];
       }
       const updated = await api.updateSettings(payload);
       setSettings(updated);
@@ -124,7 +126,7 @@ export function SettingsTab() {
       <div>
         <h2>Model settings</h2>
         {error ? (
-          <p style={{ color: "#f87171" }}>Failed to load settings: {error}</p>
+          <p style={{ color: theme.red }}>Failed to load settings: {error}</p>
         ) : (
           <div>Loading settings…</div>
         )}
@@ -150,7 +152,7 @@ export function SettingsTab() {
           <label style={styles.label}>Model</label>
           <input style={styles.input} value={form.classifier_model} onChange={set("classifier_model")} placeholder="llama3.2:3b / gpt-4o-mini" />
           {classifierProvider === "cloud" && (
-            <div style={{ fontSize: 12, color: "#fbbf24", marginTop: 6 }}>
+            <div style={{ fontSize: 12, color: theme.amber, marginTop: 6 }}>
               Cost note: classification calls the model once per document window (a 274-page doc ≈ 160 calls). Cloud classification is token-heavy — reclassify a big source with a cloud model only when needed.
             </div>
           )}
@@ -173,7 +175,7 @@ export function SettingsTab() {
           <label style={styles.label}>Model</label>
           <input style={styles.input} value={form.embed_model} onChange={set("embed_model")} placeholder="nomic-embed-text / text-embedding-3-small" />
           {embedderProvider === "cloud" && (
-            <div style={{ fontSize: 12, color: "#fbbf24", marginTop: 6 }}>
+            <div style={{ fontSize: 12, color: theme.amber, marginTop: 6 }}>
               Note: changing the embedding model means re-embedding all chunks (reclassify sources or wait for the backfill job).
             </div>
           )}
@@ -206,7 +208,7 @@ export function SettingsTab() {
             <option value="medium">medium</option>
             <option value="high">high</option>
           </select>
-          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
+          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
             Cloud (o-series, gpt-5): sends <code>reasoning_effort</code>. Local Ollama: enables thinking on reasoning models (deepseek-r1, qwen3, llama3.3-thinking).
           </div>
           <button style={styles.button} disabled={testBusy === "answer"} onClick={() => testConnection("answer")}>
@@ -219,8 +221,8 @@ export function SettingsTab() {
             style={{
               padding: "0.5rem 0.75rem",
               borderRadius: 6,
-              background: testResult.ok ? "#1e3a2a" : "#3a1d1d",
-              color: testResult.ok ? "#86efac" : "#fca5a5",
+              background: testResult.ok ? "#1e3a2a" : theme.redBg,
+              color: testResult.ok ? "#86efac" : theme.redText,
               fontSize: 13,
             }}
           >
@@ -228,12 +230,12 @@ export function SettingsTab() {
           </div>
         )}
 
-        {error && <p style={{ color: "#f87171", margin: 0 }}>{error}</p>}
+        {error && <p style={{ color: theme.red, margin: 0 }}>{error}</p>}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <button style={{ ...styles.button, background: "#6366f1", color: "#fff" }} disabled={busy} onClick={save}>
+          <button style={{ ...styles.button, background: theme.accent, color: "#fff" }} disabled={busy} onClick={save}>
             {busy ? "Saving…" : "Save"}
           </button>
-          {saved && <span style={{ color: "#4ade80", fontSize: 13 }}>Saved — applied without restart</span>}
+          {saved && <span style={{ color: theme.green, fontSize: 13 }}>Saved — applied without restart</span>}
         </div>
       </div>
     </div>
@@ -241,9 +243,9 @@ export function SettingsTab() {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  label: { display: "block", fontSize: 12, color: "#9ca3af", marginBottom: 4, marginTop: 8 },
-  input: { width: "100%", padding: "0.5rem 0.75rem", borderRadius: 8, border: "1px solid #2d333b", background: "#171a21", color: "#e6e8eb", boxSizing: "border-box" },
-  button: { marginTop: 10, padding: "0.5rem 1rem", borderRadius: 8, border: "none", background: "#2b3240", color: "#e6e8eb", cursor: "pointer", fontSize: 13 },
-  section: { background: "#171a21", border: "1px solid #2d333b", borderRadius: 8, padding: "0.9rem 1rem" },
+  label: { display: "block", fontSize: 12, color: theme.textMuted, marginBottom: 4, marginTop: 8 },
+  input: { width: "100%", padding: "0.5rem 0.75rem", borderRadius: 8, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, boxSizing: "border-box" },
+  button: { marginTop: 10, padding: "0.5rem 1rem", borderRadius: 8, border: "none", background: theme.buttonBg, color: theme.text, cursor: "pointer", fontSize: 13 },
+  section: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: 8, padding: "0.9rem 1rem" },
   sectionTitle: { fontWeight: 600, fontSize: 14, marginBottom: 4 },
 };

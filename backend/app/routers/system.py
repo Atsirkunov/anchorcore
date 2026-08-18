@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from .. import schemas
 from ..app_settings import SettingsService
-from ..config import settings
+from ..config import __version__, settings
 from ..db import get_db
 from ..models import Chunk, Source, SystemEvent
 from ..status import (
@@ -21,11 +21,9 @@ from ..status import (
     missing_ollama_models,
     ollama_reachable,
 )
-from ..throughput import throughput
+from ..throughput import retrieval, throughput
 
 logger = logging.getLogger(__name__)
-
-APP_VERSION = "1.0.8"
 
 _LOG_NAME_RE = re.compile(r"^anchorcore\.log(\.\d+)?$")
 
@@ -75,7 +73,7 @@ def make_router(scheduler, settings_svc: SettingsService) -> APIRouter:
         )
         missing = missing_ollama_models(settings_svc)
         return {
-            "version": APP_VERSION,
+            "version": __version__,
             "data_dir": str(settings.data_dir),
             "database": settings.resolved_database_url,
             "ollama": {
@@ -96,6 +94,7 @@ def make_router(scheduler, settings_svc: SettingsService) -> APIRouter:
                 **throughput.snapshot(),
                 "concurrency": settings.classifier_concurrency,
             },
+            "retrieval": retrieval.snapshot(),
             "embedder": {
                 "provider": "local" if embedder_is_local(settings_svc) else "cloud",
                 "base_url": (

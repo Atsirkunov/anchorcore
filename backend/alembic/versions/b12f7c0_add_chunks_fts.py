@@ -44,7 +44,13 @@ END
 """
 
 
+def _is_postgres() -> bool:
+    return op.get_context().dialect.name == "postgresql"
+
+
 def upgrade() -> None:
+    if _is_postgres():
+        return
     op.execute(_FTS)
     op.execute(_TRIGGER_INSERT)
     op.execute(_TRIGGER_DELETE)
@@ -53,6 +59,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if _is_postgres():
+        return
     op.execute("DROP TRIGGER IF EXISTS chunks_fts_au")
     op.execute("DROP TRIGGER IF EXISTS chunks_fts_ad")
     op.execute("DROP TRIGGER IF EXISTS chunks_fts_ai")

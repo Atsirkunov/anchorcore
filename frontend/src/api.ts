@@ -1,7 +1,33 @@
-import type { AppSettings, AskResponse, AskTurn, Dispute, Entity, Health, Job, LogFile, MergeProposal, OnboardingState, Project, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
+import type { AppSettings, AskResponse, AskTurn, Dispute, Entity, Health, Job, LogFile, MergeProposal, OnboardingState, PiiChunk, PiiConfig, Project, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
+
+export class RequestAbortedError extends Error {
+  constructor(message = "Request cancelled") {
+    super(message);
+    this.name = "RequestAbortedError";
+  }
+}
+
+const REQUEST_TIMEOUT_MS = 30_000;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, init);
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  // an external signal (e.g. a Cancel button) wins over the timeout
+  const onExternalAbort = () => controller.abort();
+  if (init?.signal) {
+    if (init.signal.aborted) controller.abort();
+    else init.signal.addEventListener("abort", onExternalAbort, { once: true });
+  }
+  let res: Response;
+  try {
+    res = await fetch(path, { ...init, signal: controller.signal });
+  } catch (e) {
+    if (controller.signal.aborted) throw new RequestAbortedError();
+    throw e;
+  } finally {
+    window.clearTimeout(timeout);
+    if (init?.signal) init.signal.removeEventListener("abort", onExternalAbort);
+  }
   if (!res.ok) {
     throw new Error(await errorMessage(res));
   }
@@ -27,7 +53,7 @@ export const api = {
   health: () => request<Health>("/health"),
 
   listSources: () => request<Source[]>("/sources"),
-  createSource: (payload: { connector: string; name: string; config: Record<string, string> }) =>
+  createSource: (payload: { connector: string; name: string; config: Record<string, string>; label?: string }) =>
     request<Source>("/sources", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -47,13 +73,19 @@ export const api = {
   },
   runningJobs: () => request<Job[]>("/sources/jobs/running"),
   deleteSource: (id: number) => request<{ deleted: boolean }>(`/sources/${id}`, { method: "DELETE" }),
-  updateSource: (id: number, payload: { name?: string; enabled?: boolean; config?: Record<string, string> }) =>
+  updateSource: (id: number, payload: { name?: string; enabled?: boolean; config?: Record<string, string>; label?: string }) =>
     request<Source>(`/sources/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
   sourceConfig: (id: number) => request<Record<string, string>>(`/sources/${id}/config`),
+  listJiraProjects: (payload: { base_url: string; email: string; token: string }) =>
+    request<{ key: string; name: string }[]>("/sources/jira/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
 
   listProjects: () => request<Project[]>("/projects"),
   createProject: (payload: { name: string; source_ids?: number[] }) =>
@@ -86,6 +118,8 @@ export const api = {
       body: JSON.stringify({ reason }),
     }),
   entityDisputes: (id: number) => request<Dispute[]>(`/entities/${id}/disputes`),
+  entityContext: (id: number) =>
+    request<{ entity_id: number; source_name: string | null; source_ref: string; window_text: string; expanded_before: string[]; expanded_after: string[]; full_text: string; highlight: string; item_title: string }>(`/entities/${id}/context`),
 
   lowConfidence: () => request<Entity[]>("/review/low-confidence"),
   duplicates: () => request<MergeProposal[]>("/review/duplicates"),
@@ -96,14 +130,16 @@ export const api = {
       body: JSON.stringify({ proposal_id: proposalId, decision }),
     }),
 
-  ask: (question: string, history: AskTurn[] = [], projectId?: number) =>
-    request<AskResponse>("/qa", {
+  ask: (question: string, history: AskTurn[] = [], projectId?: number, signal?: AbortSignal, publicOnly = false) =>
+    request<AskResponse>(publicOnly ? "/qa/public" : "/qa", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal,
       body: JSON.stringify({
         question,
         history: history.map((t) => ({ role: t.role, content: t.content })),
         project_id: projectId ?? null,
+        public_only: publicOnly,
       }),
     }),
 
@@ -131,4 +167,27 @@ export const api = {
   },
   systemLogs: () => request<LogFile[]>("/system/logs"),
   logDownloadUrl: (name: string) => `/system/logs/${encodeURIComponent(name)}`,
+
+  piiConfig: () => request<PiiConfig>("/pii/config"),
+  updatePiiConfig: (payload: { custom_words?: string[]; disabled_categories?: string[] }) =>
+    request<PiiConfig>("/pii/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  piiReview: (params?: { only_flagged?: boolean; limit?: number; offset?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.only_flagged !== undefined) q.set("only_flagged", String(params.only_flagged));
+    if (params?.limit !== undefined) q.set("limit", String(params.limit));
+    if (params?.offset !== undefined) q.set("offset", String(params.offset));
+    return request<PiiChunk[]>("/pii/review" + (q.toString() ? `?${q}` : ""));
+  },
+  decidePii: (chunkId: number, is_pii: boolean) =>
+    request<PiiChunk>(`/pii/review/${chunkId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_pii }),
+    }),
+  scanPiiSource: (sourceId: number) =>
+    request<{ source_id: number; chunks: number; flagged: number }>(`/pii/scan/${sourceId}`, { method: "POST" }),
 };

@@ -11,6 +11,11 @@ from .models import Source
 
 logger = logging.getLogger(__name__)
 
+# B34: single source of truth for which source-config fields hold secrets. Both
+# SecretStore.store_source_config and the sources router mask/route these;
+# adding a new secret field must go here, not in both places.
+SECRET_SOURCE_FIELDS = ("token", "api_key", "password")
+
 
 class SecretStore:
     """Credentials in the OS keychain; encrypted-file fallback when unavailable.
@@ -106,7 +111,7 @@ def store_source_config(
     should stay) is skipped; an absent field is left untouched; an explicitly
     empty string clears the stored secret."""
     safe = dict(config)
-    for field in ("token", "api_key", "password"):
+    for field in SECRET_SOURCE_FIELDS:
         value = safe.pop(field, None)
         if value is None or value == "***set***":
             continue  # not provided / UI placeholder — keep the stored secret
@@ -120,7 +125,7 @@ def store_source_config(
 def resolve_source_config(source: Source, secrets: SecretStore) -> dict:
     """Rehydrate config with secrets from the SecretStore."""
     config = source.config_dict()
-    for field in ("token", "api_key", "password"):
+    for field in SECRET_SOURCE_FIELDS:
         value = secrets.get(source_secret_key(source, field))
         if value is not None:
             config[field] = value
