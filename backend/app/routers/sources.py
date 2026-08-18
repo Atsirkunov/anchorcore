@@ -3,6 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import schemas
+from .. import secrets as _secrets
 from ..db import get_db
 from ..jobs import JobManager
 from ..models import Source
@@ -17,7 +18,7 @@ def make_router(
 
     @router.post("", response_model=schemas.SourceOut, status_code=201)
     def create_source(payload: schemas.SourceCreate, db: Session = Depends(get_db)) -> Source:
-        source = Source(connector=payload.connector, name=payload.name)
+        source = Source(connector=payload.connector, name=payload.name, label=payload.label)
         db.add(source)
         db.flush()
         store_source_config(db, source, payload.config, secrets)
@@ -45,6 +46,8 @@ def make_router(
             source.name = payload.name.strip()
         if payload.enabled is not None:
             source.enabled = payload.enabled
+        if payload.label is not None:
+            source.label = payload.label
         if payload.config is not None:
             store_source_config(db, source, payload.config, secrets)
         db.commit()
@@ -81,7 +84,7 @@ def make_router(
             raise HTTPException(status_code=404, detail="Source not found")
         config = resolve_source_config(source, secrets)
         # never ship credentials back to the UI
-        for field in ("token", "api_key", "password"):
+        for field in _secrets.SECRET_SOURCE_FIELDS:
             if field in config:
                 config[field] = "***set***"
         return config
@@ -114,6 +117,32 @@ def make_router(
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
         return job
+
+    @router.post("/jira/projects")
+    async def list_jira_projects(payload: dict) -> list[dict]:
+        """List available Jira projects for the checkbox picker.
+        Body: {base_url, email, token}. No DB access - direct probe of Jira Cloud/Server.
+        """
+        base_url = (payload.get("base_url") or "").strip()
+        email = (payload.get("email") or "").strip()
+        token = (payload.get("token") or "").strip()
+        if not base_url or not email or not token:
+            raise HTTPException(status_code=422, detail="base_url, email and token are required")
+        try:
+            from ..connectors.jira import list_jira_projects as _list
+
+            projects = await _list(base_url, email, token)
+            return projects
+        except Exception as exc:  # noqa: BLE001
+            # surface Jira's error (401/403/404) as 502 so UI can show detail
+            detail = f"{type(exc).__name__}: {exc}"
+            # httpx HTTPStatusError has response with status
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status in (401, 403):
+                raise HTTPException(status_code=401, detail="Jira auth failed - check email / API token") from exc
+            if status == 404:
+                raise HTTPException(status_code=502, detail=f"Jira project list not found at {base_url} - check base_url") from exc
+            raise HTTPException(status_code=502, detail=detail) from exc
 
     return router
 

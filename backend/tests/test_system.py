@@ -32,6 +32,30 @@ def test_system_status(client):
     assert status["ollama"]["reachable"] in {True, False}
     assert isinstance(status["pending_embeddings"], int)
     assert "answer" in status
+    assert "retrieval" in status  # B33: vec0/scan latency snapshot
+
+
+def test_version_is_single_source_of_truth():
+    """B34 DoD: `rg APP_VERSION` hits one definition — main.py + system.py
+    both import __version__ from config."""
+    import re
+    from pathlib import Path
+
+    import app.config
+    import app.main
+    from app.routers import system
+
+    assert app.config.__version__ == "1.0.8"
+    # FastAPI's version= and /system/status's version both come from config
+    assert app.main.app.version == app.config.__version__
+    assert system.__version__ is app.config.__version__
+
+    # no leftover literal APP_VERSION / hardcoded version strings in the two files
+    backend = Path(__file__).resolve().parents[1]
+    for rel in ("app/main.py", "app/routers/system.py", "app/config.py"):
+        text = (backend / rel).read_text(encoding="utf-8")
+        assert "APP_VERSION" not in text, f"{rel} still defines APP_VERSION"
+    assert re.search(r'version="[0-9]', (backend / "app/main.py").read_text(encoding="utf-8")) is None
 
 
 def test_sync_failure_records_structured_event(client, tmp_path):

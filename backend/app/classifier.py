@@ -1,8 +1,9 @@
-import hashlib
 import json
 import logging
 import re
 from typing import Any
+
+from .hashing import window_hash  # noqa: F401  (re-exported for compat, B35)
 
 from .app_settings import SettingsService
 from .http import RetryClient
@@ -134,26 +135,43 @@ class Classifier:
     def __init__(self, settings: SettingsService):
         self.settings = settings
 
-    async def detect_document_type(self, text: str) -> str:
-        """Classify the document type once per document (1 call, cheap)."""
+    async def detect_document_type(self, text: str, cloud_trusted: bool = True) -> str:
+        """Classify the document type once per document (1 call, cheap).
+
+        `cloud_trusted=False` (B39 PII gate) forces the rule-based path when
+        the configured provider is remote — sensitive content must not leave
+        the machine until the user confirms the provider."""
+        if not cloud_trusted and not self._provider_is_local():
+            logger.info("document-type gate: remote provider unconfirmed; using rules")
+            return "general"
         try:
             return await self._detect_llm(text)
         except Exception as exc:  # noqa: BLE001
             logger.warning("document-type detection failed (%s); defaulting to general", exc)
             return "general"
 
-    async def classify(self, text: str, source_ref: str, doc_type: str = "general") -> list[dict[str, Any]]:
+    async def classify(
+        self, text: str, source_ref: str, doc_type: str = "general", cloud_trusted: bool = True
+    ) -> list[dict[str, Any]]:
+        if not cloud_trusted and not self._provider_is_local():
+            logger.info("classification gate: remote provider unconfirmed; using rules")
+            return self._classify_rules(text, source_ref)
         try:
             return await self._classify_llm(text, source_ref, doc_type)
         except Exception as exc:  # noqa: BLE001
             logger.warning("LLM classification failed (%s); falling back to rules", exc)
             return self._classify_rules(text, source_ref)
 
-    async def distill(self, text: str, source_ref: str) -> list[dict[str, Any]]:
+    async def distill(
+        self, text: str, source_ref: str, cloud_trusted: bool = True
+    ) -> list[dict[str, Any]]:
         """Distill a chat-like window into normalized Q&A units (B18).
 
         Returns a list of {question, answer, terms, systems} dicts. Falls back
         to a heuristic rule splitter when the LLM is unavailable (CI-safe)."""
+        if not cloud_trusted and not self._provider_is_local():
+            logger.info("distillation gate: remote provider unconfirmed; using rules")
+            return self._distill_rules(text)
         try:
             return await self._distill_llm(text, source_ref)
         except Exception as exc:  # noqa: BLE001
@@ -286,6 +304,11 @@ class Classifier:
             or "http://localhost:11434"
         )
 
+    def _provider_is_local(self) -> bool:
+        """B39: is the effective classifier provider a local one? Local
+        providers are always trusted; remote ones are gated until confirmed."""
+        return self._base_url().startswith(("http://localhost", "http://127.0.0.1"))
+
     def _classify_rules(self, text: str, source_ref: str) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         for sentence in re.split(r"(?<=[.!?])\s+", text):
@@ -335,10 +358,6 @@ class Classifier:
                 }
             )
         return [item for item in normalized if item["summary"]]
-
-
-def window_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _clamp_float(value: Any, default: float) -> float:

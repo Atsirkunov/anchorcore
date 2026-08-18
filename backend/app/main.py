@@ -14,14 +14,14 @@ from sqlalchemy.orm import Session
 from .answer_engine import AnswerEngine
 from .app_settings import SettingsService
 from .classifier import Classifier
-from .config import settings, validate_env_file
+from .config import __version__, settings, validate_env_file
 from .db import engine, get_db
 from .embedder import Embedder
 from .jobs import JobManager
 from .models import Chunk, Source
 from .pipeline import IngestionPipeline
 from .redact import RedactingFormatter
-from .routers import entities, projects, qa, settings as settings_router, sources, system
+from .routers import auth as auth_router, entities, pii, projects, qa, settings as settings_router, sources, system
 from .scheduler import Scheduler
 from .secrets import SecretStore
 from .status import answer_provider, missing_ollama_models, ollama_reachable
@@ -106,7 +106,7 @@ async def lifespan(_app: FastAPI):
     await scheduler.stop()
 
 
-app = FastAPI(title="AnchorCore", version="1.0.8", lifespan=lifespan)
+app = FastAPI(title="AnchorCore", version=__version__, lifespan=lifespan)
 
 origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 app.add_middleware(
@@ -116,9 +116,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router.make_router())
 app.include_router(sources.make_router(pipeline, secrets, scheduler, jobs))
 app.include_router(entities.make_router())
 app.include_router(entities.review_router())
+app.include_router(pii.make_router())
 app.include_router(projects.make_router())
 app.include_router(qa.make_router(answer_engine))
 app.include_router(system.make_router(scheduler, settings_svc))

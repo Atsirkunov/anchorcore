@@ -1,6 +1,21 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
+import { theme } from "../theme";
 import type { Entity, MergeProposal } from "../types";
+
+type EntityContext = { source_name: string | null; source_ref: string; window_text: string; expanded_before: string[]; expanded_after: string[]; full_text: string; highlight: string; item_title: string };
+
+function highlight(text: string, needle: string) {
+  if (!needle || !text.includes(needle)) return null;
+  const i = text.indexOf(needle);
+  return (
+    <>
+      {text.slice(0, i)}
+      <mark style={{ background: "#facc15", color: "#111", padding: "0 2px", borderRadius: 3 }}>{needle}</mark>
+      {text.slice(i + needle.length)}
+    </>
+  );
+}
 
 export function ReviewTab() {
   const [low, setLow] = useState<Entity[]>([]);
@@ -9,6 +24,8 @@ export function ReviewTab() {
   const [busyEntity, setBusyEntity] = useState<number | null>(null);
   const [busyProposal, setBusyProposal] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
+  const [ctx, setCtx] = useState<Record<number, EntityContext>>({});
+  const [showFull, setShowFull] = useState<Record<number, boolean>>({});
   const [disputeFor, setDisputeFor] = useState<number | null>(null);
   const [disputeReason, setDisputeReason] = useState("");
 
@@ -18,6 +35,19 @@ export function ReviewTab() {
   }, []);
 
   useEffect(() => refresh(), [refresh]);
+
+  async function toggleContext(e: Entity) {
+    const next = expanded === e.id ? null : e.id;
+    setExpanded(next);
+    if (next !== null && !ctx[e.id]) {
+      try {
+        const c = await api.entityContext(e.id);
+        setCtx((m) => ({ ...m, [e.id]: c }));
+      } catch {
+        // fallback to window_text already on entity
+      }
+    }
+  }
 
   async function decide(proposalId: number, decision: "merge" | "dismiss") {
     setBusyProposal(proposalId);
@@ -63,36 +93,61 @@ export function ReviewTab() {
   return (
     <div>
       <h2>Review</h2>
-      {error && <p style={{ color: "#f87171" }}>{error}</p>}
+      {error && <p style={{ color: theme.red }}>{error}</p>}
 
-      <h3 style={{ color: "#9ca3af" }}>Low confidence — needs a human look</h3>
+      <h3 style={{ color: theme.textMuted }}>Low confidence — needs a human look</h3>
       <div style={{ display: "grid", gap: 8, marginBottom: 24 }}>
         {low.map((e) => (
-          <article key={e.id} style={{ background: "#171a21", border: "1px solid #2d333b", borderRadius: 8, padding: "0.75rem 1rem" }}>
-            <div style={{ fontSize: 12, color: "#9ca3af" }}>
+          <article key={e.id} style={{ background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: 8, padding: "0.75rem 1rem" }}>
+            <div style={{ fontSize: 12, color: theme.textMuted }}>
               [{e.kind}] conf {(e.confidence * 100).toFixed(0)}% · {e.source_ref}
+              {ctx[e.id]?.item_title && <span> · {ctx[e.id].item_title}</span>}
+              {ctx[e.id]?.source_name && <span style={{ color: theme.accentAlt }}> · {ctx[e.id].source_name}</span>}
               {e.dispute_count > 0 && (
-                <span title={`Disputed ${e.dispute_count}× — excluded from Q&A`} style={{ marginLeft: 6, color: "#fca5a5" }}>
+                <span title={`Disputed ${e.dispute_count}× — excluded from Q&A`} style={{ marginLeft: 6, color: theme.redText }}>
                   ⚑ disputed ×{e.dispute_count}
                 </span>
               )}
             </div>
             <p style={{ margin: "0.3rem 0", fontWeight: 600 }}>{e.summary}</p>
-            {e.reasoning && <p style={{ margin: 0, color: "#9ca3af", fontSize: 13 }}>{e.reasoning}</p>}
-            {e.window_text && (
+            {e.reasoning && <p style={{ margin: 0, color: theme.textMuted, fontSize: 13 }}>{e.reasoning}</p>}
+            {(e.window_text || ctx[e.id]) && (
               <div style={{ marginTop: 8 }}>
-                <button
-                  onClick={() => setExpanded(expanded === e.id ? null : e.id)}
-                  style={styles.contextButton}
-                >
-                  {expanded === e.id ? "Hide classifier context ▲" : "Show what the classifier saw ▼"}
+                <button onClick={() => toggleContext(e)} style={styles.contextButton}>
+                  {expanded === e.id ? "Hide context ▲" : "Show context — file, section & neighbours ▼"}
                 </button>
                 {expanded === e.id && (
                   <div style={styles.contextBox}>
-                    <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 4, textTransform: "uppercase" }}>
-                      Classifier input window (source excerpt)
+                    <div style={{ fontSize: 11, color: theme.textDim, marginBottom: 6, textTransform: "uppercase" }}>
+                      {ctx[e.id]?.item_title || "Source"} · {ctx[e.id]?.source_ref || e.source_ref}
+                      {ctx[e.id]?.source_name ? ` · ${ctx[e.id].source_name}` : ""}
                     </div>
-                    <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontSize: 12, lineHeight: 1.5, color: "#d1d5db" }}>{e.window_text}</pre>
+                    {ctx[e.id]?.expanded_before.map((t, i) => (
+                      <pre key={`b-${i}`} style={styles.contextPreDim}>
+                        {t}
+                      </pre>
+                    ))}
+                    <pre style={styles.contextPre}>
+                      {highlight(ctx[e.id]?.window_text || e.window_text || "", ctx[e.id]?.highlight || e.summary) ||
+                        ctx[e.id]?.window_text ||
+                        e.window_text}
+                    </pre>
+                    {ctx[e.id]?.expanded_after.map((t, i) => (
+                      <pre key={`a-${i}`} style={styles.contextPreDim}>
+                        {t}
+                      </pre>
+                    ))}
+                    {ctx[e.id]?.full_text && (
+                      <div style={{ marginTop: 8 }}>
+                        <button onClick={() => setShowFull((m) => ({ ...m, [e.id]: !m[e.id] }))} style={styles.contextButton}>
+                          {showFull[e.id] ? "Hide full document ▲" : "Show full document (collapsed) ▼"}
+                        </button>
+                        {showFull[e.id] && (
+                          <pre style={{ ...styles.contextBox, marginTop: 6, maxHeight: 400, background: theme.bg }}>{ctx[e.id].full_text}</pre>
+                        )}
+                      </div>
+                    )}
+                    {!ctx[e.id] && <div style={{ fontSize: 12, color: theme.textDim }}>Loading context…</div>}
                   </div>
                 )}
               </div>
@@ -127,7 +182,7 @@ export function ReviewTab() {
                     onKeyDown={(ev) => ev.key === "Enter" && recordDispute(e.id)}
                   />
                   <button
-                    style={{ ...styles.button, background: "#3a1d1d", color: "#fca5a5", ...(busyEntity !== null ? styles.disabled : {}) }}
+                    style={{ ...styles.button, background: theme.redBg, color: theme.redText, ...(busyEntity !== null ? styles.disabled : {}) }}
                     disabled={busyEntity !== null}
                     onClick={() => recordDispute(e.id)}
                   >
@@ -147,15 +202,15 @@ export function ReviewTab() {
             </div>
           </article>
         ))}
-        {low.length === 0 && <p style={{ color: "#6b7280" }}>Nothing needs review.</p>}
+        {low.length === 0 && <p style={{ color: theme.textDim }}>Nothing needs review.</p>}
       </div>
 
-      <h3 style={{ color: "#9ca3af" }}>Possible duplicates</h3>
+      <h3 style={{ color: theme.textMuted }}>Possible duplicates</h3>
       <div style={{ display: "grid", gap: 8 }}>
         {dupes.map((d) => (
-          <article key={d.id} style={{ background: "#171a21", border: "1px solid #2d333b", borderRadius: 8, padding: "0.75rem 1rem" }}>
+          <article key={d.id} style={{ background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: 8, padding: "0.75rem 1rem" }}>
             <div style={{ fontSize: 13 }}>Entity #{d.entity_a_id} ↔ Entity #{d.entity_b_id}</div>
-            <div style={{ fontSize: 12, color: "#9ca3af" }}>{d.reason}</div>
+            <div style={{ fontSize: 12, color: theme.textMuted }}>{d.reason}</div>
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
               <button
                 style={{ ...styles.button, background: "#1e3a2a", ...(busyProposal !== null ? styles.disabled : {}) }}
@@ -174,7 +229,7 @@ export function ReviewTab() {
             </div>
           </article>
         ))}
-        {dupes.length === 0 && <p style={{ color: "#6b7280" }}>No duplicates found.</p>}
+        {dupes.length === 0 && <p style={{ color: theme.textDim }}>No duplicates found.</p>}
       </div>
     </div>
   );
@@ -184,9 +239,9 @@ const styles: Record<string, React.CSSProperties> = {
   button: {
     padding: "0.3rem 0.7rem",
     borderRadius: 6,
-    border: "1px solid #2d333b",
-    background: "#1e2430",
-    color: "#e6e8eb",
+    border: `1px solid ${theme.border}`,
+    background: theme.bgHover,
+    color: theme.text,
     cursor: "pointer",
     fontSize: 12,
     opacity: 1,
@@ -195,15 +250,15 @@ const styles: Record<string, React.CSSProperties> = {
   input: {
     padding: "0.35rem 0.6rem",
     borderRadius: 6,
-    border: "1px solid #2d333b",
-    background: "#14171d",
-    color: "#e6e8eb",
+    border: `1px solid ${theme.border}`,
+    background: theme.bgElevated,
+    color: theme.text,
     fontSize: 12,
   },
   contextButton: {
     background: "none",
     border: "none",
-    color: "#7dd3fc",
+    color: theme.accentAlt,
     cursor: "pointer",
     fontSize: 12,
     padding: 0,
@@ -212,10 +267,33 @@ const styles: Record<string, React.CSSProperties> = {
   contextBox: {
     marginTop: 6,
     padding: "0.6rem 0.75rem",
-    background: "#14171d",
-    border: "1px solid #2d333b",
+    background: theme.bgElevated,
+    border: `1px solid ${theme.border}`,
     borderRadius: 6,
-    maxHeight: 300,
+    maxHeight: 360,
     overflowY: "auto",
+  },
+  contextPre: {
+    whiteSpace: "pre-wrap",
+    margin: "6px 0",
+    fontSize: 12,
+    lineHeight: 1.5,
+    color: "#d1d5db",
+    background: theme.bg,
+    border: `1px solid ${theme.border}`,
+    borderRadius: 6,
+    padding: "0.5rem 0.6rem",
+  },
+  contextPreDim: {
+    whiteSpace: "pre-wrap",
+    margin: "6px 0",
+    fontSize: 12,
+    lineHeight: 1.5,
+    color: theme.textDim,
+    background: "transparent",
+    border: `1px dashed ${theme.border}`,
+    borderRadius: 6,
+    padding: "0.5rem 0.6rem",
+    opacity: 0.85,
   },
 };
