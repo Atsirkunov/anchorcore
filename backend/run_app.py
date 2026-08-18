@@ -71,7 +71,21 @@ def _start_ollama() -> None:
 
 
 def _browser_launcher(url: str) -> None:
-    time.sleep(1.5)  # let uvicorn bind first
+    # poll until the server is actually listening (migrations can take a few
+    # seconds on first boot) — avoids Safari "can't connect" race from fixed sleep
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(f"{url}/health", timeout=1):
+                break
+        except Exception:
+            pass
+        try:
+            with urllib.request.urlopen(url, timeout=1):
+                break
+        except Exception:
+            pass
+        time.sleep(0.4)
     try:
         webbrowser.open(url)
     except Exception:  # noqa: BLE001

@@ -4,6 +4,8 @@ Reads effective settings through the SettingsService so status reflects
 runtime changes without restart (B4).
 """
 
+import os
+
 import httpx
 
 from .app_settings import SettingsService
@@ -63,3 +65,36 @@ def answer_provider(settings: SettingsService) -> str:
     if settings.get("answer_api_key"):
         return "configured"
     return "missing"
+
+
+# B39: provider trust. Default policy: local (Ollama / 127.0.0.1) providers are
+# trusted; a remote provider is only trusted when the user explicitly confirms
+# it (ANCHOR_CLOUD_TRUST=1). Until confirmed, sensitive/pii sources never leave
+# the machine — cloud classify/embed is refused and falls back to rule-based.
+_SENSITIVE_LABELS = {"sensitive", "pii"}
+
+
+def cloud_classifier_trusted(settings: SettingsService) -> bool:
+    if classifier_is_local(settings):
+        return True
+    return os.environ.get("ANCHOR_CLOUD_TRUST") == "1"
+
+
+def cloud_embedder_trusted(settings: SettingsService) -> bool:
+    if embedder_is_local(settings):
+        return True
+    return os.environ.get("ANCHOR_CLOUD_TRUST") == "1"
+
+
+def cloud_answer_trusted(settings: SettingsService) -> bool:
+    """B30: answer-provider trust. A local (Ollama / 127.0.0.1) answer
+    provider is always trusted; a cloud answer provider needs the user to
+    confirm ANCHOR_CLOUD_TRUST=1 before sensitive/pii content is sent to it."""
+    base_url = settings.get("answer_base_url") or ""
+    if base_url.startswith(("http://localhost", "http://127.0.0.1")):
+        return True
+    return os.environ.get("ANCHOR_CLOUD_TRUST") == "1"
+
+
+def sensitive_label(label: str) -> bool:
+    return label in _SENSITIVE_LABELS

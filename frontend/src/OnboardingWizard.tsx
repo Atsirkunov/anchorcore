@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import { theme } from "./theme";
 import type { Citation, OnboardingState } from "./types";
 
 const STEPS = ["Setup checks", "Connect a source", "Ask a question"];
@@ -85,9 +86,20 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
     <div style={styles.backdrop}>
       <div style={styles.card}>
         <div style={styles.header}>
-          <h2 style={{ margin: 0, fontSize: 20 }}>Welcome to AnchorCore</h2>
-          <div style={{ fontSize: 13, color: "#9ca3af", marginTop: 2 }}>
-            Connect a folder, and AnchorCore turns it into searchable company memory.
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 20 }}>Welcome to AnchorCore</h2>
+              <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 2 }}>
+                Connect a folder, and AnchorCore turns it into searchable company memory.
+              </div>
+            </div>
+            <button
+              onClick={onClose}
+              title="Skip the wizard — you can connect a source later in Sources"
+              style={{ ...styles.button, background: "transparent", border: `1px solid ${theme.border}`, color: theme.textMuted, flexShrink: 0 }}
+            >
+              Skip →
+            </button>
           </div>
         </div>
 
@@ -99,12 +111,12 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
           ))}
         </div>
 
-        {error && <p style={{ color: "#f87171" }}>{error}</p>}
+        {error && <p style={{ color: theme.red }}>{error}</p>}
 
         {step === 0 && (
           <div style={styles.body}>
             <div style={styles.checkRow}>
-              <span style={{ ...styles.dot, background: state?.ollama.reachable ? "#4ade80" : "#f87171" }} />
+              <span style={{ ...styles.dot, background: state?.ollama.reachable ? theme.green : theme.red }} />
               <span>
                 Ollama {state?.ollama.reachable ? "is running" : "is not reachable"} ({state?.ollama.base_url || "http://localhost:11434"})
               </span>
@@ -114,7 +126,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
                 <div>Install Ollama, then start it and it will be detected here:</div>
                 {hints.brew && <pre style={styles.code}>{hints.brew}</pre>}
                 {hints.installer && (
-                  <a href={hints.installer} target="_blank" rel="noreferrer" style={{ color: "#7dd3fc" }}>
+                  <a href={hints.installer} target="_blank" rel="noreferrer" style={{ color: theme.accentAlt }}>
                     Download Ollama ↗
                   </a>
                 )}
@@ -128,7 +140,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
             )}
             {state?.ollama.reachable && state.ollama.missing_models.length === 0 && (
               <div style={{ ...styles.checkRow, marginTop: 8 }}>
-                <span style={{ ...styles.dot, background: "#4ade80" }} />
+                <span style={{ ...styles.dot, background: theme.green }} />
                 <span>Classifier + embeddings models ready</span>
               </div>
             )}
@@ -138,8 +150,11 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
               </div>
             )}
             <div style={styles.actions}>
+              <button style={{ ...styles.button, background: "transparent", border: `1px solid ${theme.border}`, color: theme.textMuted }} onClick={onClose}>
+                Skip for now
+              </button>
               <button style={styles.button} onClick={recheck}>Re-check</button>
-              <button style={{ ...styles.button, background: "#6366f1", color: "#fff" }} onClick={() => setStep(1)}>
+              <button style={{ ...styles.button, background: theme.accent, color: "#fff" }} onClick={() => setStep(1)}>
                 Continue →
               </button>
             </div>
@@ -152,7 +167,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
               AnchorCore ingests a folder of notes/docs (Markdown, txt, PDF). You can also use the bundled sample corpus to try it.
             </div>
             {state?.sample.available && (
-              <button style={{ ...styles.button, background: "#1e3a5f", color: "#7dd3fc" }} disabled={busy} onClick={connectSample}>
+              <button style={{ ...styles.button, background: theme.blueBg, color: theme.accentAlt }} disabled={busy} onClick={connectSample}>
                 {busy ? "Syncing sample…" : "Try the sample corpus"}
               </button>
             )}
@@ -164,12 +179,12 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
                 onChange={(e) => setFolderPath(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && connectFolder()}
               />
-              <button style={{ ...styles.button, background: "#6366f1", color: "#fff" }} disabled={busy} onClick={connectFolder}>
+              <button style={{ ...styles.button, background: theme.accent, color: "#fff" }} disabled={busy} onClick={connectFolder}>
                 Connect
               </button>
             </div>
             {busy && progress && (
-              <div style={{ marginTop: 10, fontSize: 13, color: "#7dd3fc" }}>
+              <div style={{ marginTop: 10, fontSize: 13, color: theme.accentAlt }}>
                 {progress.total > 0 ? `Ingesting… ${progress.processed}/${progress.total}` : "Ingesting…"}
               </div>
             )}
@@ -192,7 +207,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
                 onChange={(e) => setQuestion(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && askSample()}
               />
-              <button style={{ ...styles.button, background: "#6366f1", color: "#fff" }} disabled={busy} onClick={askSample}>
+              <button style={{ ...styles.button, background: theme.accent, color: "#fff" }} disabled={busy} onClick={askSample}>
                 {busy ? "Asking…" : "Ask"}
               </button>
             </div>
@@ -200,7 +215,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
               <div style={styles.answerBox}>
                 <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{answer.text}</div>
                 {answer.citations.length > 0 && (
-                  <div style={{ marginTop: 10, fontSize: 12, color: "#9ca3af" }}>
+                  <div style={{ marginTop: 10, fontSize: 12, color: theme.textMuted }}>
                     Sources:
                     {answer.citations.map((c, i) => (
                       <div key={i} style={{ marginTop: 4 }}>
@@ -213,7 +228,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
             )}
             <div style={styles.actions}>
               <button style={styles.button} onClick={() => setStep(1)}>← Back</button>
-              <button style={{ ...styles.button, background: "#2b3240" }} onClick={onClose}>Done — open AnchorCore</button>
+              <button style={{ ...styles.button, background: theme.buttonBg }} onClick={onClose}>Done — open AnchorCore</button>
             </div>
           </div>
         )}
@@ -234,8 +249,8 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "1rem",
   },
   card: {
-    background: "#171a21",
-    border: "1px solid #2d333b",
+    background: theme.bgCard,
+    border: `1px solid ${theme.border}`,
     borderRadius: 12,
     padding: "1.4rem 1.6rem",
     maxWidth: 640,
@@ -243,16 +258,16 @@ const styles: Record<string, React.CSSProperties> = {
     boxShadow: "0 12px 40px rgba(0,0,0,0.5)",
   },
   header: { marginBottom: 14 },
-  steps: { display: "flex", gap: 12, fontSize: 12, color: "#6b7280", marginBottom: 14, flexWrap: "wrap" },
-  step: { padding: "0.2rem 0.6rem", borderRadius: 999, background: "#14171d" },
-  stepActive: { background: "#1e3a5f", color: "#7dd3fc" },
-  stepDone: { color: "#4ade80" },
+  steps: { display: "flex", gap: 12, fontSize: 12, color: theme.textDim, marginBottom: 14, flexWrap: "wrap" },
+  step: { padding: "0.2rem 0.6rem", borderRadius: 999, background: theme.bgElevated },
+  stepActive: { background: theme.blueBg, color: theme.accentAlt },
+  stepDone: { color: theme.green },
   body: { display: "grid", gap: 10 },
   checkRow: { display: "flex", alignItems: "center", gap: 8, fontSize: 14 },
   dot: { width: 10, height: 10, borderRadius: "50%", display: "inline-block", flexShrink: 0 },
   note: {
-    background: "#14171d",
-    border: "1px solid #2d333b",
+    background: theme.bgElevated,
+    border: `1px solid ${theme.border}`,
     borderRadius: 8,
     padding: "0.6rem 0.8rem",
     fontSize: 13,
@@ -260,8 +275,8 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.5,
   },
   code: {
-    background: "#0f1115",
-    border: "1px solid #2d333b",
+    background: theme.bg,
+    border: `1px solid ${theme.border}`,
     borderRadius: 6,
     padding: "0.5rem 0.7rem",
     fontSize: 12,
@@ -272,23 +287,23 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
     padding: "0.55rem 0.75rem",
     borderRadius: 8,
-    border: "1px solid #2d333b",
-    background: "#0f1115",
-    color: "#e6e8eb",
+    border: `1px solid ${theme.border}`,
+    background: theme.bg,
+    color: theme.text,
   },
   button: {
     padding: "0.5rem 1rem",
     borderRadius: 8,
     border: "none",
-    background: "#2b3240",
-    color: "#e6e8eb",
+    background: theme.buttonBg,
+    color: theme.text,
     cursor: "pointer",
     fontSize: 13,
   },
   actions: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 6 },
   answerBox: {
-    background: "#14171d",
-    border: "1px solid #2d333b",
+    background: theme.bgElevated,
+    border: `1px solid ${theme.border}`,
     borderRadius: 8,
     padding: "0.7rem 0.9rem",
     fontSize: 14,

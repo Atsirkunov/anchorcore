@@ -53,6 +53,9 @@ Postgres + a real object store instead of SQLite + keychain.
 **Ops shape (recommended, pragmatic):** single FastAPI app + Postgres + object
 storage on a small VPS (Hetzner/Fly/Render) — one server per region; scale
 later. GitHub Actions deploys on tag (same release flow as B25).
+**Skeleton:** `hosting/` (Dockerfile + `docker-compose.yml` + `.env.example`) runs
+the same image locally with `pgvector/pgvector:pg16` — no provider lock-in, no fork.
+Same `ANCHOR_DATABASE_URL` switch drives SQLite→Postgres; see `hosting/README.md`.
 
 **Auth:** self-serve signup first (email+password or Google), SSO deferred to
 Enterprise (§7).
@@ -137,7 +140,7 @@ heavy hosted use.
 | 2 | Website landing + download page | B20/B24 artifacts exist |
 | 3 | Docs site | repo docs |
 | 4 | Read-only share links (project tokens) | B15 projects, B14.2 MCP HTTP |
-| 5 | Hosted pilot (1 server, signup, free tier) | Postgres + auth work |
+| 5 | Hosted pilot (1 server, signup, free tier) | skeleton in `hosting/`; then auth work |
 | 6 | Hosted pricing + Stripe billing | pilot feedback |
 | 7 | Teams (invites, permissions) | hosted |
 | 8 | Enterprise (SSO, audit, on-prem) | teams + contradictions |

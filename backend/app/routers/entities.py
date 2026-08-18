@@ -97,6 +97,72 @@ def make_router() -> APIRouter:
             ).scalars()
         )
 
+    @router.get("/{entity_id}/context")
+    def entity_context(entity_id: int, db: Session = Depends(get_db)) -> dict:
+        """B27: expanded review context — window plus neighbouring sections so the
+        reviewer sees the surrounding passage, not just the classifier fragment."""
+        entity = db.get(Entity, entity_id)
+        if entity is None:
+            raise HTTPException(status_code=404, detail="Entity not found")
+        item = db.get(IngestedItem, entity.item_id)
+        if item is None:
+            return {
+                "entity_id": entity.id,
+                "source_name": None,
+                "source_ref": entity.source_ref,
+                "window_text": entity.window_text or "",
+                "expanded_before": [],
+                "expanded_after": [],
+                "full_text": "",
+                "highlight": entity.summary,
+                "item_title": "",
+            }
+        from ..models import Source
+
+        source_name = None
+        try:
+            src_obj = db.get(Source, item.source_id)
+            source_name = src_obj.name if src_obj else None
+        except Exception:
+            source_name = None
+
+        window = entity.window_text or ""
+        before: list[str] = []
+        after: list[str] = []
+        full = item.text or ""
+        if full and window:
+            try:
+                from ..chunking import chunk_document
+
+                chunks = chunk_document(full)
+                idx = None
+                needle = window[:160].strip()
+                for i, c in enumerate(chunks):
+                    if needle and needle in c:
+                        idx = i
+                        break
+                if idx is None and entity.window_index:
+                    idx = max(0, min(entity.window_index - 1, len(chunks) - 1))
+                if idx is not None:
+                    if idx > 0:
+                        before = [chunks[idx - 1]]
+                    if idx + 1 < len(chunks):
+                        after = [chunks[idx + 1]]
+            except Exception:
+                pass
+
+        return {
+            "entity_id": entity.id,
+            "source_name": source_name,
+            "source_ref": entity.source_ref,
+            "window_text": window,
+            "expanded_before": before,
+            "expanded_after": after,
+            "full_text": full[:16000],
+            "highlight": entity.summary,
+            "item_title": item.title,
+        }
+
     return router
 
 
@@ -118,20 +184,38 @@ def review_router() -> APIRouter:
         )
 
     @router.get("/duplicates", response_model=list[schemas.MergeProposal])
-    def duplicate_proposals(db: Session = Depends(get_db)) -> list[schemas.MergeProposal]:
-        entities = (
-            db.execute(select(Entity).where(Entity.status != "stale").options(joinedload(Entity.chunks)))
-            .unique()
-            .scalars()
-            .all()
-        )
+    def duplicate_proposals(
+        limit: int = 25,
+        offset: int = 0,
+        kind: str | None = None,
+        db: Session = Depends(get_db),
+    ) -> list[schemas.MergeProposal]:
+        """B38: O(n²) duplicate scan, now paginated + bounded. `limit` caps the
+        returned proposals, `offset` skips already-returned pages, `kind`
+        restricts the candidate pool. On very large corpora (>500 candidates)
+        the pool is sampled to the 200 most-recent so the O(n²) scan stays
+        responsive instead of stalling the request."""
+        limit = max(1, min(limit, 100))
+        offset = max(0, offset)
+        stmt = select(Entity).where(Entity.status != "stale").options(joinedload(Entity.chunks))
+        if kind:
+            stmt = stmt.where(Entity.kind == kind)
+        entities = db.execute(stmt).unique().scalars().all()
+        if len(entities) > 500:
+            # early-exit: sample the most recent 200 for the scan
+            entities = sorted(entities, key=lambda e: e.created_at, reverse=True)[:200]
         existing = set(
             (m.entity_a_id, m.entity_b_id)
             for m in db.execute(select(MergeAction)).scalars()
         )
         proposals: list[schemas.MergeProposal] = []
+        seen: set[int] = set()
         for i, a in enumerate(entities):
+            if a.id in seen:
+                continue
             for b in entities[i + 1 :]:
+                if b.id in seen:
+                    continue
                 if (a.id, b.id) in existing or (b.id, a.id) in existing:
                     continue
                 if _similar(a, b) > settings.duplicate_threshold:
@@ -139,17 +223,15 @@ def review_router() -> APIRouter:
                     db.add(action)
                     db.flush()
                     existing.add((a.id, b.id))
-                    proposals.append(
-                        schemas.MergeProposal(
-                            id=action.id, entity_a_id=a.id, entity_b_id=b.id
-                        )
-                    )
-                if len(proposals) >= 25:
+                    proposals.append(schemas.MergeProposal(id=action.id, entity_a_id=a.id, entity_b_id=b.id))
+                    seen.add(a.id)
+                    seen.add(b.id)
+                if len(proposals) >= offset + limit:
                     break
-            if len(proposals) >= 25:
+            if len(proposals) >= offset + limit:
                 break
         db.commit()
-        return proposals
+        return proposals[offset:]
 
     @router.post("/merge")
     def decide_merge(payload: schemas.MergeDecision, db: Session = Depends(get_db)) -> dict:

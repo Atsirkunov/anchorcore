@@ -13,7 +13,26 @@ def make_router(answer_engine: AnswerEngine) -> APIRouter:
 
     @router.post("", response_model=schemas.AskResponse)
     async def ask(payload: schemas.AskRequest, db: Session = Depends(get_db)) -> schemas.AskResponse:
-        return await answer_engine.ask(db, payload.question, history=payload.history, project_id=payload.project_id)
+        return await answer_engine.ask(
+            db,
+            payload.question,
+            history=payload.history,
+            project_id=payload.project_id,
+            public_only=payload.public_only,
+        )
+
+    @router.post("/public", response_model=schemas.AskResponse)
+    async def ask_public(payload: schemas.AskRequest, db: Session = Depends(get_db)) -> schemas.AskResponse:
+        """B30: shared-link / agent-friendly ask — answers ONLY from `public`
+        sources. Non-public content is never retrieved, so this endpoint is safe
+        to expose to share links, MCP tools, and agents."""
+        return await answer_engine.ask(
+            db,
+            payload.question,
+            history=payload.history,
+            project_id=payload.project_id,
+            public_only=True,
+        )
 
     @router.get("/context", response_model=list[schemas.EntityOut])
     def context_snapshot(db: Session = Depends(get_db)) -> list[Entity]:

@@ -24,11 +24,20 @@ Organizations fragment knowledge across Slack, Jira, Confluence, Notion, Google 
 
 A system that becomes an organization's memory — understanding decisions, ownership, dependencies, timelines, requirements, risks, and historical context, so AI behaves like an employee who has worked at the company for years.
 
-## 4. Customer (v1)
+## 4. Customer (v1) — two doors, one product
 
-**Buyer:** self-serve knowledge workers — PMs at mid-sized companies, solo entrepreneurs, local enthusiasts. No sales team, no procurement cycle, €15–50/mo willingness.
+**Master positioning (hero A, chosen):** *Your memory — finally searchable.* (see `design-system.md:5.1` for variants)
 
-**Moment of wow (60-second demo):** connect sources → ask *"what was decided about X, and why?"* → get a cited answer showing exactly where the knowledge came from.
+**Tracks — same local app, different language:**
+
+| Track | Buyer | Job to be done | Why they pay €15–50/mo |
+|---|---|---|---|
+| **Personal** | Solo PM, founder, researcher, local enthusiast | “Remember everything *I* read/decided/built” — PDFs, notes, side-project Jira | Second brain that cites page 250 of a 300-page PDF |
+| **Company (team)** | 3–30 person team, PM-led | “Answer like you’ve worked here 3 years” — decisions, owners, dependencies across people | Onboarding, handovers, “who owns billing migration?” without Slack archaeology |
+
+No sales team, no procurement cycle in v1. Website has one page with `Personal | Team` toggle (`design-system.md:5.1`) — default **Personal** for faster validation, Team as “coming soon” teaser. Download tags `?track=` for `localStorage` hint in `AskTab.tsx:39`.
+
+**Moment of wow (60-second demo):** connect sources → ask *"what was decided about X, and why?"* → get a cited answer showing exactly where the knowledge came from. Personal example: security-transfers note; Team example: “who owns billing migration and what supersedes it?” (`sample/` covers both).
 
 ## 5. Scope — Locked v1 Decisions
 
@@ -217,7 +226,7 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** on first launch a new user is guided from "install Ollama" to a cited answer in a few clicks, no config file. — met (dev; frozen apps hide the sample button).
 
-### B9. Document type coverage (P2)
+### B9. Document type coverage (P1)
 **Scope:** add `.docx`/`.pptx`/`.odt` extraction (small deps); revisit after real tester file types are known — the watched folder currently only ingests a subset of formats.
 
 ### B11. Parallel classification throughput (P2 — discovered) — DONE
@@ -285,7 +294,7 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** connect 3+ sources, create two projects with overlapping sources, and confirm the same question returns project-scoped results. — met (live: a "Payments only" project excludes an unrelated parking source from citations).
 
-### B16. who_knows — expertise queries (P2 — Cerebras learning)
+### B16. who_knows — expertise queries (P1 — Cerebras learning)
 **Problem:** a top question in every org is "who is the expert in Y?" Cerebras surfaces people with demonstrated expertise from the index.
 
 **Scope:**
@@ -345,7 +354,7 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** connecting `sample/` exercises every Review tab state, produces multiple entity kinds with owners, and supports a 3+ turn follow-up demo. — met (live demo flows).
 
-### B22. Live integration validation: Jira / Linear (P2)
+### B22. Live integration validation: Jira / Linear (P1)
 **Problem:** the Jira connector has never hit a real instance; Linear doesn't exist. "Connects to your tools" is claimed but unproven.
 
 **Scope:**
@@ -379,31 +388,32 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** reclassifying the rulebook labels it standards and produces only note entities; a reviewer sees the source excerpt behind every low-confidence entity; a second reclassify of unchanged content makes ~0 classifier calls.
 
-### B27. Review page: real context, not just the window (P2 — tester feedback)
+### B27. Review page: real context, not just the window (P1 — tester feedback) — DONE
 **Problem:** even with `window_text`, the Review page still shows a raw classifier-window excerpt — no surrounding document context, no neighbouring sections, no file reference. Reviewing an entity still feels like judging a fragment in a vacuum ("small chunks, no value").
 
-**Scope:**
-- Review card shows: entity summary + kind + confidence + **source file name/link** + the section it came from (`source_ref`)
-- **Context expansion in review**: render the entity's window *plus* the neighbouring sections from the same item (reuse `_expand_context`-style logic / `chunk_document` sections), so the reviewer sees the whole surrounding passage
-- **Highlight the entity's summary text** within the source excerpt when it appears verbatim; if not verbatim, show the window with the summary quoted above it
-- Quick-actions stay on the card (Looks right / Dispute) but with a "full document" affordance — e.g. expandable full source text (collapsed by default, 16k windows are heavy)
-- Same treatment for the Entities tab card
+**Done:**
+- `GET /entities/{id}/context` — returns window + `expanded_before/after` (one `chunk_document` neighbour each side) + `source_name`/`item_title`/`source_ref` + `full_text` (16k, collapsed by default) + `highlight` (entity summary)
+- **ReviewTab** now shows file, section, source name, confidence/kind, highlight (`<mark>` on verbatim summary), neighbour sections dimmed, full-document expander; **EntitiesTab** same "Show context" affordance — no vacuum
+- Quick-actions stay (Looks right / Dispute) with full-document affordance
 
-**DoD:** reviewing a low-confidence entity shows the file, section, surrounding paragraphs, and the exact text the classifier summarized — a reviewer can judge correctness without opening the source file.
+**DoD:** reviewing a low-confidence entity shows the file, section, surrounding paragraphs, and the exact text the classifier summarized — a reviewer can judge correctness without opening the source file. — met
 
-### B28. Google Drive connector (P2 — big real use case)
-**Problem:** most teams keep shared docs in Google Drive (folders, shared drives). AnchorCore's folder connector only watches local disks — Drive content requires manual download. Candidate simple path: "access the folder → download contents into a local sync folder".
+### B28. Google Drive connector (P1 — big real use case) — DONE (skeleton, mocked)
+**Problem:** most teams keep shared docs in Google Drive (folders, shared drives). AnchorCore's folder connector only watches local disks — Drive content requires manual download.
 
-**Scope:**
-- **Simple path (recommended first): Drive → local sync folder.** Connector authenticates (OAuth or app password), maps a Drive folder/shared drive to a local mirror dir (e.g. `data/drive/<name>/`), downloads new/changed files on a poll, then the existing folder connector ingests the mirror. Incremental via Drive modifiedTime; deletions → stale
-- Native alternative (later, if needed): Drive API list+download directly into the pipeline without a local mirror
-- Auth: OAuth flow (needs Google Cloud project + client id) or service-account-less per-user token; store token in SecretStore
-- Supported types: Drive-native docs need export to .txt/.pdf (Google Docs → txt/pdf, Sheets → csv, Slides → pdf)
-- Troubleshooting/README: how to create a Google Cloud project + OAuth consent for personal use
+**Done (skeleton):**
+- `backend/app/connectors/gdrive.py` — direct Drive API ingest (no local mirror yet, simpler for hosted): lists `'{folder_id}' in parents` via `GET /drive/v3/files` (supports shared drives), incremental via `modifiedTime > cursor`, supports pagination; native Google Docs → `export=text/plain`, Sheets → `csv`, Slides → `text/plain`; regular files via `alt=media` with pdf/html/text decoding; `401` maps to "re-authorize". Config `folder_id` (non-secret) + `token` (SecretStore `token`, masked `***set***`), wired via `connectors/__init__.py: gdrive`.
+- Frontend: `SourceForm`/`SourceRow`/`SourceEditForm` now expose `Google Drive` (folder ID + OAuth token, keychain-stored, edit preserves `***set***`).
+- Tests `tests/test_gdrive.py` (mocked `RetryClient`): missing-config 422, list+export+media, 401 auth, end-to-end pipeline via `POST /sources` (gdrive) → sync → entities → `***set***` masking.
+- **Not yet:** local mirror dir (`data/drive/<name>/`), OAuth browser flow (needs Google Cloud project + client id), shared-drive `drive_id` filter, Drive-native PDF export, deletion→stale. These are the next polish after skeleton validation.
 
-**DoD:** a user authorizes a Drive folder, AnchorCore syncs its docs (including Google-native formats), and Q&A answers cite Drive sources with working file links.
+**DoD:** a user authorizes a Drive folder, AnchorCore syncs its docs (including Google-native formats), and Q&A answers cite Drive sources with working file links. — skeleton met (mocked), live OAuth + mirror remain.
 
-### B29. v2/v3 business & platform scoping (P3 — see [v2v3-scope.md](./v2v3-scope.md))
+**How to try (mocked or live):**
+- Mocked: `pytest backend/tests/test_gdrive.py` passes without creds.
+- Live: create Google Cloud OAuth consent + token (scope `https://www.googleapis.com/auth/drive.readonly`), create source `gdrive` with `folder_id` (from Drive URL `…/folders/<id>`) + token, `POST /sources/{id}/sync` → `SourceRef=Drive:<name>` citable like folder/Jira.
+
+### B29. v2/v3 business & platform scoping (P2 — see [v2v3-scope.md](./v2v3-scope.md))
 **Problem:** v1 is local-first and free; there's no website, hosted path, pricing, or changelog discipline — nothing for people to find/try/pay for.
 
 **Scope (per [v2v3-scope.md](./v2v3-scope.md)):**
@@ -416,7 +426,7 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** a stranger lands on the website, downloads the app (or starts the hosted free tier), and asks a cited question in under 3 minutes; a changelog accompanies every release.
 
-### B14. Agent connectivity via MCP (P2 — see [mcp.md](./mcp.md))
+### B14. Agent connectivity via MCP (P1 — see [mcp.md](./mcp.md))
 **Problem:** users want their own harnesses (Claude Code, Codex, opencode) to use AnchorCore's memory, but today only the browser UI can reach it.
 
 **Scope (per [mcp.md](./mcp.md)):**
@@ -446,15 +456,26 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
    - **Sharing/answers**: Q&A, share links (B15/B29), and MCP tools exclude non-`public` sources unless the session is authenticated + authorized (single-user local = everything visible; hosted/team = label-scoped)
    - **Audit**: every gate decision (allow/block) lands in `system_events` with source + label + provider
 
-**DoD:** label a folder `pii` → cloud classifier/embedder/answer never touch it (local-only, verified in logs + a `system_event`); a shared link (v2) answers only from `public` sources; the UI shows each source's label and what it allows.
+**DoD:** label a folder `pii` → cloud classifier/embedder/answer never touch it (local-only, verified in logs + a `system_event`); a shared link (v2) answers only from `public` sources; the UI shows each source's label and what it allows. — **met** (2026-08-17): cloud classify/embed (B39) + answer gating at source AND chunk level; `/qa/public` public-only scope; label chips in Sources + PiiTab.
 
-**B30 open question (needs product input before implementation — agreed 2026-08-07):**
-What counts as PII, and how do we map labels onto content? Proposed default to ratify:
-- **Hard PII (never leaves local)** — anything mappable to an identifiable person: names + contact (email, phone, address), government IDs (SSN/passport/driver's license), financial identifiers (account/card numbers), HR/medical data, credentials/secrets. Source label `pii` → local models only, excluded from sharing/answers/MCP.
-- **Sensitive (soft PII)** — data that isn't person-identifying but is commercially/strategically sensitive: customer lists, pricing, unreleased plans, legal drafts, security posture. Label `sensitive` → local-only, not shareable, but may be answerable to an authenticated local session.
-- **Internal** — default; local + trusted-cloud OK; not shareable.
-- **Public** — safe to share/answer via links, MCP, agents.
-- **Mapping question**: do we label at the **source level** only (folder = `pii`, so everything inside is gated — simple, safe, coarse), or allow **per-file/per-item overrides** (a docs folder containing one HR file)? Recommendation: source-level first (v1 semantics are "trust the source label"), per-item auto-detection (NER for emails/IDs/names) as a v2.5 stretch — never auto-*downgrade* to a less-restrictive label.
+**B30 open question — RESOLVED 2026-08-18 (user ratified):**
+Direct vs Indirect PII taxonomy, source-level for v1, local vs API gate now / per-user later:
+- **Direct / Linked PII → `pii` (hard, never cloud/share):** Full name (legal/maiden/alias), SSN/National ID, Passport/DL, Home address, Personal email, Personal phone, Financial accounts (card/bank), Biometric. `pii` → local model everything, API model blocked until `ANCHOR_CLOUD_TRUST=1`, never share/MCP.
+- **Indirect / Linkable PII → `sensitive` (soft, local-only, not shareable):** DOB/place of birth, IP/MAC, cookies/IDFA, Geo, Employment, Education, Medical, Vehicle VIN/plate, Mother's maiden, Criminal. Also payroll/financials/business-sensitive (customer lists, pricing, unreleased plans). `sensitive` → same cloud block until user-controlled trust, local answer allowed, never share/MCP.
+- **Internal / Public** unchanged.
+- **Gate now:** local model = everything; API model = user-controlled (`ANCHOR_CLOUD_TRUST`); chunk-level `is_pii` flags for review.
+- **Gate later (hosted team):** per-user access — users can/can't see PII/sensitive that company offers (requires `users` + project ACL, `hosting/` auth skeleton `b40a0c1`). Source-level for v1, per-item/chunk NER auto-detect deferred to v2.5.
+
+**Done (full — 2026-08-17):**
+- `app/pii.py` — PII knowledge base (17 categories with field names + value regexes + custom filter words), local-only `scan_text` (no LLM, CI-safe)
+- `chunks.is_pii` + `chunks.pii_categories` (migration `b30a0c1`); pipeline auto-flags chunks on ingest (`_flag_pii`)
+- `/pii` API: `GET/PUT /pii/config` (toggle categories, custom words), `GET /pii/review`, `POST /pii/review/{id}` (confirm/override), `POST /pii/scan/{source}` (re-scan after config change)
+- Frontend `PiiTab` (config: category toggles + custom filter words; review: flagged chunks with matched categories, Mark PII / Not PII)
+- **Answer-provider gate (B30):** `cloud_answer_trusted()` in `status.py`; `AnswerEngine.ask` filters sensitive/pii sources AND PII-flagged chunks from unconfirmed cloud answers, records a `system_event`, and refuses explicitly when nothing survives; follow-up rewrite is skipped when the answer provider is untrusted
+- **Share/MCP-safe ask:** `/qa/public` (and `public_only` on `/qa`) answers ONLY from `public` sources — non-public content is never retrieved; AskTab has a Public-only toggle; the frontend label chip shows what each label allows
+- **Chunk-level cloud embed gate:** PII-flagged chunks are not sent to an unconfirmed cloud embedder even in internal sources
+- Tests `tests/test_pii.py` + `tests/test_b30_gates.py` (public scope, sensitive/pii cloud block, chunk-level block, trust-flag allow, audit event)
+- **Deferred (P2, not B30):** MCP server itself (B14) — will consume `/qa/public`; NER-based auto-detection; LLM-assisted review
 
 ### B24. macOS build + ad-hoc signing (P2 — free path, no $99) — DONE
 **Problem:** Windows has a distributable exe (B20); macOS has none. The paid Apple Developer account ($99/yr) is only needed for *notarization* (silent Gatekeeper approval); for personal use and testers who accept one-time approval, a free path exists.
@@ -483,7 +504,7 @@ What counts as PII, and how do we map labels onto content? Proposed default to r
 
 **DoD:** tagging `v0.x.0` produces downloadable Windows + macOS artifacts automatically, verified by a smoke test on a clean machine.
 
-### B31. Backend port to Rust (P3 — deferred; see [rust-port.md](./rust-port.md))
+### B31. Backend port to Rust (P2 — deferred; see [rust-port.md](./rust-port.md))
 **Problem:** Python fully packaged is rough for non-technical testers — PyInstaller/venv
 fragility (we've shipped two packaging bugs: `.dylib` glob, toolcache-Python lacking
 loadable sqlite extensions), no cross-compile, cold start. The question keeps coming up:
@@ -523,16 +544,107 @@ rollback-safe — OR a documented decision to stay on Python.
 
 **DoD:** asking "what superseded the security-transfers decision?" (or a natural phrasing the model paraphrases) returns the newer decision's summary as a cited, connected result without the words co-occurring in both documents. — met (live: "Who owns the billing migration?" surfaces the connected security-transfers decision at score 0.9).
 
+### B33. Retrieval at scale: vec0 index (P1 — tech debt, blocks large corpora)
+**Problem:** `_vector_search` in `backend/app/answer_engine.py:529` loads every `chunks.embedding` into Python and computes cosine — O(N). Works at 100s chunks, collapses at 10k. sqlite-vec `vec0` virtual table is already bundled (`packaging.spec:32`) but unused.
+
+**Scope:**
+- Create `vec0` virtual table + triggers (mirror `chunks_fts` pattern `backend/alembic/versions/b12f7c0_add_chunks_fts.py:1`); backfill existing embeddings; keep `pack_f32` path as fallback when `enable_load_extension` missing (`backend/app/db.py:18`)
+- Rewrite `_vector_search` to `SELECT rowid, distance FROM vec_chunks WHERE embedding MATCH :q ORDER BY distance LIMIT :k`; keep `0.2` cosine threshold as distance cutoff; project-scoped via `JOIN` on `IngestedItem.source_id`
+- Measure: add `retrieval_latency_ms` to `/system/status` + `tests/test_retrieval.py:1` perf probe (1k chunks <100ms vs current O(N))
+
+**DoD:** 10k-chunk corpus retrieves in <100ms; fallback to Python scan when vec0 unavailable; existing tests green.
+
+**Done (B33):** migration `b33a0c1` creates `vec_chunks` (vec0, cosine metric) + AI/AD/AU triggers + backfill (skips gracefully when sqlite-vec isn't loadable); `alembic/env.py` loads sqlite-vec on migration connections; `_vector_search` → `vec_chunks` query with `k = :limit` + project JOIN, falling back to the Python scan on dim mismatch/extension missing; `embed_dim` config; `/system/status.retrieval` latency/backend snapshot + SystemTab card; `test_vec_chunks_table_exists`, `test_vec0_insert_and_retrieval`, `test_vec0_project_scoping`, `test_vec0_perf_probe` (1k chunks <100ms).
+
+### B34. Backend hardening: version, routing, secrets, jobs (P0 — correctness)
+**Problem (from review):** four small correctness debts compound: (1) `APP_VERSION` duplicated `backend/app/main.py:109` vs `backend/app/routers/system.py:28`; (2) `GET /projects/default` duplicated `backend/app/routers/projects.py:43` + `88` (second silently wins); (3) secret mask lists in `backend/app/secrets.py:108` and `backend/app/routers/sources.py:84` diverge — new field leaks; (4) `JobManager` `backend/app/jobs.py:150` creates unbounded `asyncio.create_task` — concurrent reclassifies can starve loop.
+
+**Scope:**
+- Single source of truth: `backend/app/config.py:1` or `backend/app/__init__.py:1` exports `__version__`; `main.py:109` + `system.py:28` import it; CI checks drift
+- Delete duplicate route `projects.py:88`; keep first; add test `GET /projects/default` before/after patch
+- Centralize secret fields: `SECRET_SOURCE_FIELDS = {"token","api_key","password"}` in `secrets.py:1`; both `store_source_config` and `sources.py:84` import it; add test that unknown secret field is masked
+- Bound jobs: `JobManager` semaphore / queue (max 2 concurrent syncs, enqueue rest as `pending`); `_age_decay` `answer_engine.py:112` uses per-query fixed `now` not per-hit `datetime.now()`
+
+**DoD:** `rg APP_VERSION` hits one definition; `pytest tests/test_projects.py -k default` passes once; new secret field auto-masked; 3 concurrent `POST /sources/{id}/sync` queues rather than stalls.
+
+**Done (B34):** `__version__` lives in `app/config.py`, imported by `main.py` + `system.py`; duplicate `GET /projects/default` route deleted (first kept); `SECRET_SOURCE_FIELDS` single tuple in `secrets.py` (sources router references it via module attr so a new field auto-masks); `JobManager` bounded (MAX_CONCURRENT=2, rest persist as `pending` + queue, dispatch on slot free, queued job cancellable); `_age_decay(created_at, halflife, now=)` uses one clock per query. Tests: version single-source, secret auto-mask, `test_job_queue_bounds_concurrency`.
+
+### B35. Ingestion pipeline decomposition (P2 — maintainability)
+**Problem:** `backend/app/pipeline.py:498` mixes DB lifecycle, LLM concurrency, 3 chunk kinds, cleaning `cleaning.py:68`, distillation — highest churn file. Changes risk SQLite lock regressions `pipeline.py:192` commit-before-LLM.
+
+**Scope:**
+- Extract: `chunking.py` (`chunk_text`, `chunk_document`, `_split_section`, `_is_heading`), `hashing.py` (`window_hash`, content hash), `distill.py` (`_distill_and_store`, `_signal`); `pipeline.py` retains orchestration (`sync_source`, `_upsert_doc`, `_classify_and_store`)
+- Keep commit-before-LLM invariant: `db.commit()` before `asyncio.gather` classify; add comment + test that validates no write tx held during `classifier.classify` mock
+- Scope `_signal` IDF: compute global DF across item + existing corpus (or at least item's `doc_type` cohort) vs per-item only `pipeline.py:476` — reduces isolated-doc low-signal mis-gating
+
+**DoD:** `pipeline.py` <300 lines; `chunking.py` unit-tested; `pytest` still 88+ green; lock-contention flake (`AGENTS.md:113`) not reintroduced.
+
+**Done (B35):** `pipeline.py` 298 lines; `chunking.py` (chunk_text/chunk_document/_split_section/_is_heading/classify_windows), `hashing.py` (window_hash/content_hash — single source, re-exported by classifier.py/models.py), `distill.py` (`distill_and_store`, `signal`) extracted; commit-before-LLM invariant preserved + validated by `test_commit_before_llm_invariant` (asserts no write tx open during classifier). `tests/test_pipeline_decomposition.py` + existing `test_retrieval.py` chunking tests cover the extracted modules.
+
+### B36. Frontend platform hardening (P0 — dev + reliability)
+**Problem:** `frontend/vite.config.ts:8` missing `/projects` proxy → `api.ts:58` fails in `vite dev`; `frontend/src/api.ts:3` `fetch` has no timeout/abort; `frontend/src/main.tsx:1` no `ErrorBoundary` → packaged `console=False` (`backend/run_app.py:101`) white-screens; `frontend/src/SettingsTab.tsx:66` strips `***set***` but `SourcesTab.tsx:152` sends it verbatim.
+
+**Scope:**
+- Add `"/projects": "http://localhost:8000"` + `"/projects/default"` to `vite.config.ts:8`; verify `npm run dev` manual smoke
+- `api.ts:3` `request()` accepts `AbortSignal`, 30s timeout via `AbortController`, surface `AbortError` as "Request cancelled"; `AskTab.tsx:11` `submit()` wires `AbortController` to Cancel button for long `/qa`
+- Add `ErrorBoundary` (`react-error-boundary`) in `main.tsx:1` + per-tab boundary with "Copy error / Download log" linking `api.systemLogs` `SystemTab.tsx:5`
+- Unify secret placeholder: extract `stripPlaceholders(payload)` helper (like `SettingsTab.tsx:66`) and use in `SourcesTab.tsx:152`; add test/build check
+
+**DoD:** `vite dev` → Projects CRUD works; long QA cancellable; throw in any tab shows boundary not white screen; `***set***` never sent as literal token.
+
+**Done (B36):** `/projects` proxy added to `vite.config.ts`; `api.request()` accepts an `AbortSignal` + 30s timeout, throws `RequestAbortedError` ("Request cancelled"); `AskTab` Cancel button aborts the `/qa` request; `ErrorBoundary` (self-contained, no new dep) wraps the app + each tab in `main.tsx`/`App.tsx` with Copy error / Download log; `stripPlaceholders` shared helper used by SettingsTab + SourcesTab edit form. Vitest covers placeholder + abort + error parsing.
+
+### B37. Frontend decomposition & design system (P1 — maintainability, **no UX expertise required**)
+**Problem:** `frontend/src/tabs/SourcesTab.tsx:384` is 384-line god component (11 `useState`, sources+jobs+projects+edit+jira); polling soup `SourcesTab:61` 1s + `App.tsx:88` 5s + `SystemTab:32` 10s + `App:69` 30s, no `AbortController`; inline `styles:Record<string,CSSProperties>` duplicated `App.tsx:181` across 6 files; `App.tsx:29` vs `SourcesTab:17` duplicate `projects` state.
+
+**Constraint:** owner has no UX/UI expertise — this item is **engineer-only**. No custom design; adopt an off-the-shelf system so good UX comes for free. Visual polish is deferred to validation feedback.
+
+**Scope:**
+- Split `SourcesTab` → `SourceForm`, `SourceRow`, `ProjectSection`, `JobsBadge` + hook `useJobsPoll(sourceId)`; `SourcesTab` becomes composition <120 lines — pure refactor, zero visual change
+- Replace 4 intervals with `TanStack Query` (or `SWR`) + single `useJobsPoll`: cache, dedupe, `refetchInterval: 1000` only when `runningJobs.length>0`, `enabled` by tab visibility; `App.tsx:33` lifts `projects` to `ProjectsContext` (`api.listProjects` once, invalidated on `updateProject`/`deleteProject`)
+- Styles: **do not design** — install `shadcn/ui` (or Radix + Tailwind) and map existing tokens (`#0f1115`, `#171a21`, `#2d333b`) to its `theme.ts` as a 1:1 token swap; replace `styles` objects with library primitives (`Card`, `Button`, `Badge`) — looks better with no design decisions; keep `tsconfig.json:13` `strict` + `noUnusedLocals` — add `eslint` + `prettier` (`package.json:6` currently none)
+- Fix `AskTab.tsx:74` `[...turns].reverse()` keyed by index → key by `turn.content+idx`; `EntitiesTab.tsx:67` `busyId!==null` disables all buttons → `busyId===e.id`
+- Alternative if even that is too much: skip token migration, keep current dark inline styles — decomposition alone delivers 80% of maintainability; visual system can wait until 5 testers give feedback
+
+**DoD:** `SourcesTab` <150 lines; one polling hook; no duplicate projects fetch; `npm run build` passes `tsc -b`; no visual regression (pixel-diff or manual check) — even with no design skill.
+
+**Done (B37):** `SourcesTab` is a 76-line composition; logic split into `tabs/sources/{ProjectSection,SourceForm,SourceRow}.tsx`; single `useJobsPoll` hook (TanStack Query, pauses when idle/tab-hidden); `ProjectsContext` (ProjectsProvider + useProjects) removes the App/SourcesTab duplicate `/projects` fetch; health + running-jobs polling moved to TanStack Query; `theme.ts` color tokens replace per-file inline hex (App/System/Entities/Ask/Settings/Review/OnboardingWizard/ErrorBoundary); AskTab turn keys + EntitiesTab busyId fixes.
+
+### B38. Testing & observability uplift (P1 — confidence)
+**Problem:** `package.json:11` has zero frontend tests/lint (`backend/tests:1` has 88 tests); `backend/app/routers/entities.py:120` `GET /review/duplicates` is O(n²) uncapped (cap 25 but scans all); shared test DB `backend/tests/conftest.py:26` accumulates — brittle; no perf regression guard.
+
+**Scope:**
+- Frontend: add `vitest` + `msw` for `api.ts:11` error parsing + `AskTab`/`ReviewTab` smoke; add `eslint` + `tsc --noEmit` in CI (`.github/workflows` already runs `npm run build`; add `npm run lint && npm run test`)
+- Backend: paginate `GET /review/duplicates` (`limit`, `offset`, `kind` filter); early-exit when `len(unverified)>500` sample top 200 by recency; add test for limit
+- Tests: document shared-DB contract in `backend/tests/README.md:1`; add `conftest` fixture `isolated_db` opt-in for tests needing empty DB (like `test_onboarding`); add `retrieval_latency` probe for B33
+- Observability: expose `retrieval_*` knobs in `/system/status` (already Banner `config.py:95`) + SystemTab card; add `pending_embeddings` backfill progress bar
+
+**DoD:** `npm run test` green in CI; `GET /review/duplicates?limit=10` paginated; new test can request isolation without global count asserts.
+
+**Done (B38):** `vitest` + `eslint` configured (`vitest.config.ts`, `eslint.config.js`, `npm run test/lint` scripts, CI runs lint+test+build); `src/placeholders.test.ts` + `src/api.test.ts` (7 tests); `GET /review/duplicates` paginated with `limit` (clamped ≤100)/`offset`/`kind` + >500-candidate early-exit sampling; `isolated_db` fixture for empty-DB tests; retrieval latency probes in `test_retrieval.py` (B33) + `test_testing_uplift.py`; shared-DB contract documented in `tests/README.md`.
+
+### B39. Security & distribution follow-through (P1 — trust, P2 — reach)
+**Problem:** B30 PII gating `docs/product-plan.md:430` is spec-only — cloud classifier `classifier.py:280` can leak `sensitive` source; Ollama prereq `docs/packaging.md:69` blocks non-technical testers; contradicts local-first privacy promise `docs/architecture.md:300`.
+
+**Scope:**
+- Gate before B30 full build: add `sources.label` column (migration, default `internal`) + `SettingsService` `provider_trust` (`local` vs user-confirmed `cloud`); `pipeline.py:246` refuses cloud `classify/embed` when `label in (sensitive,pii)` and `provider_trust==cloud` → fallback to rule-based + `system_events` warning (`system_events.py:65`); Q&A/MCP exclude non-`public` outside local session
+- Distribution: bundled inference `docs/packaging.md:69` `llama.cpp` sidecar (deferred from `docs/rust-port.md:42` §4.1) or guided Ollama install via B8 wizard `OnboardingWizard.tsx:298` — whichever unblocks testers faster; evaluate before Rust port `docs/rust-port.md:105`
+- Keep `SecretStore` `secrets.py:47` per-key files + `RedactingFormatter` `redact.py:38` coverage for new fields
+
+**DoD:** label a folder `pii` → cloud classifier skipped (log + `system_event`); `Ask` from local session still answers; non-`public` excluded from share/MCP; tester installs without manual `ollama pull`.
+
+**Done (B39 thin gate):** migration `b39a0c1` adds `sources.label` (internal|public|sensitive|pii); `SourceCreate/Update` accept + validate it (frontend label select in add/edit forms); provider trust helpers in `status.py` (`cloud_classifier_trusted`/`cloud_embedder_trusted`, `ANCHOR_CLOUD_TRUST=1` for cloud); `Classifier.classify/distill/detect_document_type` take `cloud_trusted` and fall back to rules; pipeline gate records a `system_event` and skips cloud embedding for gated sources. Tests: `tests/test_gate.py` (label plumbing, invalid-label 422, local-trusted, remote-untrusted-until-flag, pii source still ingests). *B30 full model/share/MCP gating + bundled inference remain (needs product input).*
+
 ---
 
-## Current execution priorities (agreed 2026-08-07)
+## Current execution priorities (agreed 2026-08-07 — updated after Aug review, amended for no-UX constraint)
 
-Explicit order — the retrieval/answer architecture is the focus while tokens are cheap.
-**B32, B17, B18 and B15 are DONE** (released in v1.0.3–v1.0.6); the queue below is what remains.
-B30 is large and cross-cutting so it sits last in line but is **flagged for design input
-before implementation** (see [B30 open question](#b30-data-labeling-piisensitive-gating-of-models-sharing-and-answers-p1-for-pii--v1-risk-p2-rest)).
+Explicit order — retrieval/answer is DONE, hardening is next. **B32, B17, B18, B15 are DONE** (v1.0.3–v1.0.6); the queue below reflects review findings.
+B30 remains large/cross-cutting and **needs product input before implementation** (see [B30 open question](#b30-data-labeling-piisensitive-gating-of-models-sharing-and-answers-p1-for-pii--v1-risk-p2-rest)); B39 is the thin pre-gate.
 
-> **B30 (needs product input on the PII taxonomy)**
+> **Hardening & scale (P0/P1) before new connectors. No UX expertise needed for P0 — P0 is pure engineering (proxy/abort/boundary). Visual polish deferred; B37 uses off-the-shelf components so taste is not required.**
+
+> **UX constraint (owner: no UX/UI background):** B27 (Review context expansion) and any visual redesign are **deprioritized to P2** until validation. B36 and B37 are scoped as engineer-only: B36 fixes bugs with no visual change; B37 decomposition can ship with current dark styles untouched — swapping to `shadcn/ui` is a token mapping, not a design exercise. When real testers complain about a specific screen, fix that screen — no speculative redesign.
 
 | # | Item | Status | Why here |
 |---|---|---|---|
@@ -544,6 +656,21 @@ before implementation** (see [B30 open question](#b30-data-labeling-piisensitive
 | — | B3 Dispute tracking | ✅ DONE (v1.0.7) | audit trail + counter; disputed excluded from Q&A |
 | — | B7 Source config editing | ✅ DONE (v1.0.7) | PUT /sources/{id} + edit form; keychain-backed secrets |
 | — | B8 First-run wizard | ✅ DONE (v1.0.7) | onboarding overlay: Ollama checks → connect → ask |
-| 5 | B30 Data labeling / PII gating | **next** | large + cross-cutting; **needs product input first** (see below) |
+| — | B33 vec0 retrieval | ✅ DONE | vec0 index + Python-scan fallback; `/system/status.retrieval` |
+| — | B34 Backend hardening | ✅ DONE | single `__version__`, dedup route, shared secret fields, bounded jobs |
+| — | B36 Frontend hardening | ✅ DONE | /projects proxy, abort+timeout, ErrorBoundary, shared stripPlaceholders |
+| — | B37 Frontend decomposition | ✅ DONE | SourcesTab split, useJobsPoll, ProjectsContext, theme tokens |
+| — | B35 Pipeline decomposition | ✅ DONE | chunking.py/hashing.py/distill.py; commit-before-LLM invariant tested |
+| — | B38 Testing uplift | ✅ DONE | vitest + eslint + CI; paginated duplicates; isolated_db fixture |
+| — | B39 PII thin gate | ✅ DONE | sources.label + provider trust; cloud blocked until ANCHOR_CLOUD_TRUST |
+| 5 | **B30 PII gating (full)** | ✅ DONE | labels + provider trust; cloud classify/embed/answer gating (source + chunk); `/qa/public` share-safe scope; PII config + review |
+| 6 | B27 Review context expansion | ✅ DONE | ReviewTab/EntitiesTab neighbour sections + highlight + full-doc |
+| 7 | B28 Google Drive connector | ✅ DONE (skeleton) | Drive API direct ingest (mocked tests); OAuth + mirror polish next |
+| 8 | B22 Jira/Linear validation | **P1** | parity — sandbox fixtures |
+| 9 | B14 MCP agent connectivity | **P1** | see `mcp.md:1` — stdio + HTTP after hardening |
+| 10 | B9 Document type coverage | **P1** | `.docx`/`.pptx`/`.odt` extraction |
+| 11 | B16 who_knows (full) | **P1** | expertise queries — ranking + evidence |
+| 12 | B29 v2/v3 scoping | **P2** | see `v2v3-scope.md` — business/platform direction |
+| 13 | B31 Rust port | **P2** deferred | see `rust-port.md:1` — after vec0 + bundled inference |
 
-*Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md)*
+*Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md), [design-system.md](./design-system.md)*

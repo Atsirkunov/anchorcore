@@ -167,6 +167,76 @@ def test_job_404(client):
     assert client.get("/sources/jobs/999999").status_code == 404
 
 
+def test_job_queue_bounds_concurrency(client, tmp_path):
+    """B34 DoD: when all JobManager slots are busy, new syncs queue as
+    `pending` (not unbounded asyncio tasks); a freed slot launches the oldest
+    queued job; a queued job can be cancelled before it starts."""
+    import asyncio
+
+    from app.jobs import JobManager
+
+    source = client.post(
+        "/sources",
+        json={"connector": "folder", "name": "q", "config": {"path": str(tmp_path)}},
+    ).json()
+
+    async def scenario():
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class _BlockingPipeline:
+            async def sync_source(self, *args, **kwargs):
+                started.set()
+                await release.wait()
+                return {"items": 0, "entities": 0}
+
+        mgr = JobManager(_BlockingPipeline())
+        mgr._running = JobManager.MAX_CONCURRENT  # simulate full slots
+        ids = [mgr.start(source["id"], "sync") for _ in range(3)]
+
+        from app.db import SessionLocal
+        from app.models import Job
+        from sqlalchemy import select
+
+        with SessionLocal() as db:
+            statuses = {
+                j.id: j.status
+                for j in db.execute(select(Job).where(Job.id.in_(ids))).scalars()
+            }
+        assert list(statuses.values()) == ["pending"] * 3, statuses
+
+        # a slot frees → oldest queued job launches and runs (blocked on `release`)
+        mgr._running = JobManager.MAX_CONCURRENT - 1
+        mgr._dispatch_next()
+        await asyncio.wait_for(started.wait(), timeout=5)
+        with SessionLocal() as db:
+            assert db.get(Job, ids[0]).status == "running", "oldest queued job must launch"
+            assert db.get(Job, ids[1]).status == "pending", "later jobs stay queued"
+            assert db.get(Job, ids[2]).status == "pending"
+
+        # cancelling a queued job before it starts → cancelled, never ran
+        mgr.cancel(ids[1])
+        with SessionLocal() as db:
+            assert db.get(Job, ids[1]).status == "cancelled"
+            assert db.get(Job, ids[1]).started_at is None
+
+        # let the running job finish, then the next queued one starts
+        release.set()
+        await asyncio.sleep(0.2)
+        with SessionLocal() as db:
+            assert db.get(Job, ids[0]).status == "done"
+
+        # cleanup: cancel any lingering tasks and drop our job rows
+        for task in mgr._tasks.values():
+            task.cancel()
+        with SessionLocal() as db:
+            for jid in ids:
+                db.delete(db.get(Job, jid))
+            db.commit()
+
+    asyncio.run(scenario())
+
+
 def test_cancel_running_job(client, tmp_path):
     """A long reclassify can be cancelled; the job ends 'cancelled' and the
     cancel endpoint rejects non-running jobs."""

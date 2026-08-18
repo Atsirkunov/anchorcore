@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import time
 from datetime import datetime, timezone
 
 from sqlalchemy import or_, select, text
@@ -10,9 +11,11 @@ from .app_settings import SettingsService
 from .config import settings
 from .embedder import Embedder, unpack_f32
 from .http import RetryClient
-from .models import Chunk, Entity, IngestedItem, Relationship
+from .models import Chunk, Entity, IngestedItem, Relationship, Source
 from .schemas import AskResponse, Citation
+from .status import cloud_answer_trusted, sensitive_label
 from .system_events import record as record_event
+from .throughput import retrieval
 
 logger = logging.getLogger(__name__)
 
@@ -109,14 +112,18 @@ def _rrf_fuse_multi(lists: list[list[dict]], weights: list[float]) -> list[dict]
     return list(fused.values())
 
 
-def _age_decay(created_at, halflife_days: float) -> float:
-    """0.5^(age/halflife): recent wins when relevance is otherwise equal."""
+def _age_decay(created_at, halflife_days: float, now: datetime | None = None) -> float:
+    """0.5^(age/halflife): recent wins when relevance is otherwise equal.
+
+    `now` defaults to the current time; callers that decay a whole ranked
+    list pass ONE fixed `now` (B34) so every hit ages against the same clock
+    instead of drifting across per-hit datetime.now() calls."""
     if created_at is None:
         return 1.0
     try:
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=timezone.utc)
-        age_days = max(0.0, (datetime.now(timezone.utc) - created_at).total_seconds() / 86400)
+        age_days = max(0.0, ((now or datetime.now(timezone.utc)) - created_at).total_seconds() / 86400)
     except (TypeError, OverflowError):
         return 1.0
     if halflife_days <= 0:
@@ -160,16 +167,30 @@ class AnswerEngine:
         return True
 
     async def ask(
-        self, db: Session, question: str, history: list | None = None, project_id: int | None = None
+        self,
+        db: Session,
+        question: str,
+        history: list | None = None,
+        project_id: int | None = None,
+        public_only: bool = False,
     ) -> AskResponse:
         """Answer a question; `history` (previous user/assistant turns) enables
         follow-ups: the question is rewritten into a standalone query before
         retrieval, and the conversation is passed to generation. `project_id`
-        (B15) scopes retrieval to a project's sources."""
+        (B15) scopes retrieval to a project's sources.
+
+        `public_only=True` (B30 sharing/MCP): only `public`-labelled sources
+        are retrieved, so shared answers can never leak internal/PII content.
+        """
         source_ids = self._project_source_ids(db, project_id)
+        if public_only:
+            source_ids = self._public_source_ids(db, source_ids)
         history = [t for t in (history or []) if t.content and t.content.strip()]
         query = question
-        if history:
+        # B30: never rewrite (send conversation text) to an unconfirmed cloud
+        # answer provider — follow-ups degrade to the raw question instead.
+        answer_trusted = cloud_answer_trusted(self.settings)
+        if history and answer_trusted:
             rewritten = await self._rewrite_followup(question, history)
             if rewritten:
                 logger.info("follow-up rewritten: %r -> %r", question, rewritten)
@@ -191,6 +212,26 @@ class AnswerEngine:
                 answer="No relevant knowledge found yet. Ingest sources first.",
                 citations=[],
             )
+
+        # B30: answer-provider gate — sensitive/pii sources and PII-flagged
+        # chunks never reach an unconfirmed cloud answer provider.
+        if not answer_trusted:
+            all_hits, blocked = self._gate_answer_hits(db, all_hits)
+            if blocked:
+                record_event(
+                    "qa",
+                    f"answer gate: {len(blocked)} hit(s) excluded from cloud answer "
+                    "(sensitive/pii source or PII chunk)",
+                    level="warning",
+                    detail=f"labels={sorted(set(blocked))}; set ANCHOR_CLOUD_TRUST=1 to allow",
+                )
+                if not all_hits:
+                    return AskResponse(
+                        answer="Relevant knowledge was found but it is sensitive/PII and "
+                        "the answer provider is an unconfirmed cloud service. Enable a local "
+                        "provider or set ANCHOR_CLOUD_TRUST=1 to answer.",
+                        citations=[],
+                    )
 
         sections = []
         for idx, hit in enumerate(all_hits, start=1):
@@ -228,6 +269,45 @@ class AnswerEngine:
             )
         return AskResponse(answer=answer_text, citations=citations)
 
+    def _public_source_ids(self, db: Session, source_ids: set[int] | None) -> set[int] | None:
+        """B30: narrow retrieval to `public` sources (share/MCP scope)."""
+        from .models import Source
+
+        labels = dict(
+            db.execute(select(Source.id, Source.label).where(Source.label == "public")).all()
+        )
+        public_ids = set(labels)
+        if source_ids is None:
+            return public_ids
+        return public_ids & source_ids
+
+    def _gate_answer_hits(self, db: Session, hits: list[dict]) -> tuple[list[dict], list[str]]:
+        """B30: split retrieval hits into those allowed and blocked for an
+        unconfirmed cloud answer provider. Returns (allowed, blocked_labels).
+
+        A hit is blocked when its source is labelled sensitive/pii OR its chunk
+        is flagged is_pii — regardless of what the source label says (chunk
+        level catches mixed/overlooked sources)."""
+        source_ids = {h.get("source_id") for h in hits if h.get("source_id") is not None}
+        labels: dict[int, str] = {}
+        if source_ids:
+            labels = dict(
+                db.execute(
+                    select(Source.id, Source.label).where(Source.id.in_(source_ids))
+                ).all()
+            )
+        allowed: list[dict] = []
+        blocked: list[str] = []
+        for hit in hits:
+            sid = hit.get("source_id")
+            label = labels.get(sid, "internal") if sid is not None else "internal"
+            chunk_pii = bool(hit.get("chunk") is not None and hit["chunk"].is_pii)
+            if sensitive_label(label) or chunk_pii:
+                blocked.append(label)
+            else:
+                allowed.append(hit)
+        return allowed, blocked
+
     def _fuse_and_rank(
         self, db: Session, vector_hits: list[dict] | None, keyword_hits: list[dict] | None
     ) -> list[dict]:
@@ -241,10 +321,10 @@ class AnswerEngine:
         else:
             fused = _rrf_fuse(vector_hits, keyword_hits, self.settings.get_float("retrieval_keyword_weight", 1.0))
 
+        halflife = self.settings.get_float("retrieval_age_halflife_days", 365.0)
+        now = datetime.now(timezone.utc)  # B34: one clock for the whole ranked list
         for hit in fused:
-            hit["score"] *= _age_decay(
-                hit["chunk"].created_at, self.settings.get_float("retrieval_age_halflife_days", 365.0)
-            )
+            hit["score"] *= _age_decay(hit["chunk"].created_at, halflife, now=now)
 
         fused.sort(key=lambda r: r["score"], reverse=True)
 
@@ -478,6 +558,7 @@ class AnswerEngine:
         rows = db.execute(self._chunk_query(source_ids).where(or_(*filters))).all()
         hits: list[dict] = []
         halflife = self.settings.get_float("retrieval_age_halflife_days", 365.0)
+        now = datetime.now(timezone.utc)  # B34: one clock for the whole candidate set
         for chunk, entity, item in rows:
             if not self._status_ok(entity):
                 continue
@@ -485,7 +566,7 @@ class AnswerEngine:
             overlap = sum(1 for t in terms if t in blob)
             if overlap == 0:
                 continue
-            score = entity.confidence * (1.0 + 0.5 * min(overlap, 4)) * _age_decay(entity.created_at, halflife)
+            score = entity.confidence * (1.0 + 0.5 * min(overlap, 4)) * _age_decay(entity.created_at, halflife, now=now)
             hits.append(
                 {
                     "chunk": chunk,
@@ -527,6 +608,74 @@ class AnswerEngine:
         return fused[: settings.top_k]
 
     def _vector_search(self, db: Session, query_embedding: list[float], source_ids: set[int] | None = None) -> list[dict]:
+        """B33: vector retrieval via the sqlite-vec `vec_chunks` index, falling
+        back to the pure-Python cosine scan when the index is unavailable
+        (extension not loadable / table missing / dimension mismatch)."""
+        start = time.perf_counter()
+        hits = self._vector_search_vec0(db, query_embedding, source_ids=source_ids)
+        backend = "vec0"
+        if hits is None:
+            hits = self._vector_search_scan(db, query_embedding, source_ids=source_ids)
+            backend = "scan"
+        retrieval.record(time.perf_counter() - start, backend)
+        return hits
+
+    def _vector_search_vec0(self, db: Session, query_embedding: list[float], source_ids: set[int] | None = None) -> list[dict] | None:
+        """vec0 index path: top-k nearest chunks by cosine distance, project
+        scoping done inside the query so the limit counts only scoped chunks.
+        Returns None when the index can't be used (caller falls back to the
+        scan)."""
+        if len(query_embedding) != settings.embed_dim:
+            return None
+        # chunk -> item link: a chunk references its item directly OR via its
+        # entity's item; join both so source scoping matches _chunk_query.
+        sql = (
+            "SELECT v.rowid, v.distance FROM vec_chunks v "
+            "JOIN chunks c ON c.id = v.rowid "
+            "LEFT JOIN entities e ON e.id = c.entity_id "
+            "LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) "
+            "WHERE v.embedding MATCH :q"
+        )
+        params: dict = {"q": json.dumps(query_embedding), "limit": settings.top_k * 4}
+        if source_ids is not None:
+            sql += " AND i.source_id IN (" + ", ".join(f":sid_{i}" for i in range(len(source_ids))) + ")"
+            params.update({f"sid_{i}": sid for i, sid in enumerate(sorted(source_ids))})
+        # vec0 requires a `k = ?` constraint (a bare LIMIT is rejected once the
+        # MATCH is joined to other tables); it returns the k nearest rows.
+        sql += " AND k = :limit"
+        try:
+            rows = db.execute(text(sql), params).all()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("vec0 vector search unavailable (%s); using scan", exc)
+            return None
+        if not rows:
+            return []
+        by_id = {row[0]: row[1] for row in rows}  # chunk id -> cosine distance
+
+        chunks = db.execute(
+            self._chunk_query(source_ids).where(Chunk.id.in_(list(by_id)))
+        ).all()
+        hits = []
+        for chunk, entity, item in chunks:
+            if not self._status_ok(entity):
+                continue
+            distance = by_id[chunk.id]
+            score = 1.0 - distance  # cosine metric: distance = 1 - similarity
+            if score <= 0.2:
+                continue
+            hits.append(
+                {
+                    "chunk": chunk,
+                    "entity": entity,
+                    "item": item,
+                    "source_id": item.source_id if item is not None else None,
+                    "score": score,
+                }
+            )
+        hits.sort(key=lambda r: r["score"], reverse=True)
+        return hits
+
+    def _vector_search_scan(self, db: Session, query_embedding: list[float], source_ids: set[int] | None = None) -> list[dict]:
         rows = db.execute(self._chunk_query(source_ids).where(Chunk.embedding.is_not(None))).all()
 
         scored = []

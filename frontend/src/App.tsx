@@ -1,46 +1,58 @@
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
-import type { Health, Job, Project } from "./types";
+import { ErrorBoundary } from "./ErrorBoundary";
+import { useProjects } from "./ProjectsContext";
+import { theme } from "./theme";
 import { OnboardingWizard } from "./OnboardingWizard";
 import { AskTab } from "./tabs/AskTab";
 import { EntitiesTab } from "./tabs/EntitiesTab";
+import { PiiTab } from "./tabs/PiiTab";
 import { ReviewTab } from "./tabs/ReviewTab";
 import { SettingsTab } from "./tabs/SettingsTab";
 import { SourcesTab } from "./tabs/SourcesTab";
 import { SystemTab } from "./tabs/SystemTab";
 
-type Tab = "ask" | "sources" | "entities" | "review" | "settings" | "system";
+type Tab = "ask" | "sources" | "entities" | "review" | "settings" | "system" | "pii";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "ask", label: "Ask" },
   { id: "sources", label: "Sources" },
   { id: "entities", label: "Entities" },
   { id: "review", label: "Review" },
+  { id: "pii", label: "PII" },
   { id: "settings", label: "Settings" },
   { id: "system", label: "System" },
 ];
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("ask");
-  const [online, setOnline] = useState<boolean | null>(null);
-  const [health, setHealth] = useState<Health | null>(null);
   const [bannerDismissed, setBannerDismissed] = useState(false);
-  const [runningJobs, setRunningJobs] = useState<Job[]>([]);
-  const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
   const [showWizard, setShowWizard] = useState(false);
+  // B37: projects come from the shared context (no duplicate fetch here)
+  const { projects } = useProjects();
+
+  // B37: health + running-jobs polling via TanStack Query (replaces setInterval)
+  const { data: health, isError: healthError } = useQuery({
+    queryKey: ["health"],
+    queryFn: () => api.health(),
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: true,
+  });
+  const { data: runningJobs } = useQuery({
+    queryKey: ["running-jobs"],
+    queryFn: () => api.runningJobs(),
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: true,
+  });
+
+  const online = healthError ? false : health ? true : null;
+  // effective scope = explicit user pick, else the default project
+  const effectiveProject = selectedProject ?? projects.find((p) => p.is_default)?.id ?? null;
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .listProjects()
-      .then((list) => {
-        if (cancelled) return;
-        setProjects(list);
-        const def = list.find((p) => p.is_default);
-        setSelectedProject((prev) => prev ?? def?.id ?? null);
-      })
-      .catch(() => {});
     api
       .onboarding()
       .then((o) => {
@@ -50,45 +62,6 @@ export default function App() {
       .catch(() => {});
     return () => {
       cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function poll() {
-      try {
-        const h = await api.health();
-        if (cancelled) return;
-        setHealth(h);
-        setOnline(true);
-      } catch {
-        if (!cancelled) setOnline(false);
-      }
-    }
-    poll();
-    const timer = setInterval(poll, 30000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function pollJobs() {
-      try {
-        const jobs = await api.runningJobs();
-        if (cancelled) return;
-        setRunningJobs(jobs);
-      } catch {
-        // ignore — status badge shows API offline instead
-      }
-    }
-    pollJobs();
-    const timer = setInterval(pollJobs, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
     };
   }, []);
 
@@ -126,7 +99,7 @@ export default function App() {
             </button>
           ))}
         </nav>
-        {runningJobs.length > 0 && (
+        {runningJobs && runningJobs.length > 0 && (
           <button
             onClick={() => setTab("sources")}
             title={runningJobs.map((j) => `#${j.id} ${j.kind}${j.total > 0 ? ` ${j.processed}/${j.total}` : ""}`).join("\n")}
@@ -137,7 +110,7 @@ export default function App() {
           </button>
         )}
         <select
-          value={selectedProject ?? ""}
+          value={effectiveProject ?? ""}
           onChange={(e) => setSelectedProject(e.target.value ? Number(e.target.value) : null)}
           style={styles.projectPicker}
           title="Scope questions to a project (B15)"
@@ -167,67 +140,82 @@ export default function App() {
         </div>
       )}
       <main style={styles.main}>
-        {tab === "ask" && <AskTab projectId={selectedProject ?? undefined} />}
-        {tab === "sources" && <SourcesTab />}
-        {tab === "entities" && <EntitiesTab />}
-        {tab === "review" && <ReviewTab />}
-        {tab === "settings" && <SettingsTab />}
-        {tab === "system" && <SystemTab />}
+        <ErrorBoundary label="Ask">
+          {tab === "ask" && <AskTab projectId={effectiveProject ?? undefined} />}
+        </ErrorBoundary>
+        <ErrorBoundary label="Sources">
+          {tab === "sources" && <SourcesTab />}
+        </ErrorBoundary>
+        <ErrorBoundary label="Entities">
+          {tab === "entities" && <EntitiesTab />}
+        </ErrorBoundary>
+        <ErrorBoundary label="Review">
+          {tab === "review" && <ReviewTab />}
+        </ErrorBoundary>
+        <ErrorBoundary label="PII">
+          {tab === "pii" && <PiiTab />}
+        </ErrorBoundary>
+        <ErrorBoundary label="Settings">
+          {tab === "settings" && <SettingsTab />}
+        </ErrorBoundary>
+        <ErrorBoundary label="System">
+          {tab === "system" && <SystemTab />}
+        </ErrorBoundary>
       </main>
     </div>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  wrap: { minHeight: "100vh", background: "#0f1115", color: "#e6e8eb", fontFamily: "system-ui, sans-serif" },
+  wrap: { minHeight: "100vh", background: theme.bg, color: theme.text, fontFamily: "system-ui, sans-serif" },
   header: {
     display: "flex",
     alignItems: "center",
     gap: 24,
     padding: "0.75rem 1.5rem",
-    borderBottom: "1px solid #1f242c",
-    background: "#14171d",
+    borderBottom: `1px solid ${theme.borderSoft}`,
+    background: theme.bgElevated,
   },
   title: { fontSize: 18, margin: 0 },
   nav: { display: "flex", gap: 4 },
   tab: {
     background: "none",
     border: "none",
-    color: "#9ca3af",
+    color: theme.textMuted,
     padding: "0.4rem 0.8rem",
     borderRadius: 6,
     cursor: "pointer",
     fontSize: 14,
   },
-  tabActive: { background: "#1e2430", color: "#e6e8eb" },
+  tabActive: { background: theme.bgHover, color: theme.text },
   banner: {
     display: "flex",
     alignItems: "flex-start",
     gap: 12,
-    background: "#3a1d1d",
-    color: "#fca5a5",
+    background: theme.redBg,
+    color: theme.redText,
     padding: "0.6rem 1.5rem",
     fontSize: 13,
     borderBottom: "1px solid #4c2626",
   },
-  dismiss: { background: "none", border: "1px solid #6b3030", color: "#fca5a5", borderRadius: 6, padding: "0.2rem 0.6rem", cursor: "pointer" },
+  dismiss: { background: "none", border: `1px solid ${theme.redBorder}`, color: theme.redText, borderRadius: 6, padding: "0.2rem 0.6rem", cursor: "pointer" },
   main: { padding: "1.5rem", maxWidth: 1000, margin: "0 auto" },
   jobsBadge: {
     display: "flex",
     alignItems: "center",
     gap: 6,
-    background: "#1e2430",
-    border: "1px solid #38bdf8",
-    color: "#7dd3fc",
+    background: theme.bgHover,
+    border: `1px solid ${theme.blue}`,
+    color: theme.accentAlt,
     padding: "0.25rem 0.6rem",
     borderRadius: 999,
     fontSize: 12,
     cursor: "pointer",
   },
   projectPicker: {
-    background: "#171a21",
-    border: "1px solid #2d333b",
-    color: "#e6e8eb",
+    background: theme.bgCard,
+    border: `1px solid ${theme.border}`,
+    color: theme.text,
     borderRadius: 6,
     padding: "0.3rem 0.6rem",
     fontSize: 13,
@@ -237,8 +225,8 @@ const styles: Record<string, React.CSSProperties> = {
     width: 10,
     height: 10,
     borderRadius: "50%",
-    border: "2px solid #2d333b",
-    borderTopColor: "#38bdf8",
+    border: `2px solid ${theme.border}`,
+    borderTopColor: theme.blue,
     animation: "spin 0.8s linear infinite",
     flexShrink: 0,
   },

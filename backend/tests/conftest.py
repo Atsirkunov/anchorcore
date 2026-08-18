@@ -24,3 +24,23 @@ def client():
 
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture()
+def isolated_db(tmp_path):
+    """B38: a fresh, empty SQLite DB + session for tests that need isolation
+    (e.g. onboarding-on-empty-db) without asserting against the shared test DB.
+
+    The app's module-level engine is still bound to the shared DB, so this is
+    for direct-session tests that build their own engine — NOT for `client`.
+    Applies migrations (create_all covers the base schema; the app's runtime
+    migration listener isn't involved here)."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from app.db import Base
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'isolated.db'}")
+    Base.metadata.create_all(engine)
+    yield engine, Session(engine)
+    Session(engine).close()

@@ -15,11 +15,20 @@ logger = logging.getLogger(__name__)
 class JobManager:
     """Runs sync/reclassify as background tasks so long operations never block
     an HTTP request or look frozen. Jobs carry progress (processed/total) and
-    persist a result + error for the job-history surface."""
+    persist a result + error for the job-history surface.
+
+    B34: concurrency is bounded (MAX_CONCURRENT pipeline runs at once). When
+    every slot is busy, new jobs are persisted as `pending` and enqueued; a
+    freed slot picks the next queued job, so N concurrent POST /sync queue
+    rather than spawn N unbounded tasks and starve the event loop."""
+
+    MAX_CONCURRENT = 2
 
     def __init__(self, pipeline):
         self.pipeline = pipeline
         self._tasks: dict[int, asyncio.Task] = {}
+        self._running = 0
+        self._queue: list[int] = []
         self._mark_orphans()
 
     def _mark_orphans(self) -> None:
@@ -39,15 +48,37 @@ class JobManager:
             logger.debug("orphan sweep skipped (table not ready yet): %s", exc)
 
     def start(self, source_id: int, kind: str) -> int:
-        """Create a job row and start it in the background. Returns the job id."""
+        """Create a job row and start it (or queue it when slots are full).
+        Returns the job id. Pending jobs keep their row so the jobs list and
+        progress UI reflect the backlog; they start when a slot frees up."""
         with SessionLocal() as db:
             job = Job(source_id=source_id, kind=kind)
             db.add(job)
             db.commit()
             db.refresh(job)
             job_id = job.id
-        self._tasks[job_id] = asyncio.create_task(self._run(job_id), name=f"job-{job_id}")
+        if self._running < self.MAX_CONCURRENT:
+            self._launch(job_id)
+        else:
+            with SessionLocal() as db:
+                job = db.get(Job, job_id)
+                if job is None:
+                    return job_id
+                job.status = "pending"
+                db.commit()
+            self._queue.append(job_id)
+            logger.info("job %d (%s) queued (all %d slots busy)", job_id, kind, self.MAX_CONCURRENT)
         return job_id
+
+    def _launch(self, job_id: int) -> None:
+        self._running += 1
+        self._tasks[job_id] = asyncio.create_task(self._run(job_id), name=f"job-{job_id}")
+
+    def _dispatch_next(self) -> None:
+        """After a job finishes, start the oldest queued job if a slot is free."""
+        while self._running < self.MAX_CONCURRENT and self._queue:
+            next_id = self._queue.pop(0)
+            self._launch(next_id)
 
     def get(self, db: Session, job_id: int) -> Job | None:
         return db.get(Job, job_id)
@@ -68,11 +99,22 @@ class JobManager:
         )
 
     def cancel(self, job_id: int, db: Session | None = None) -> bool:
-        """Request cancellation of a running job. The pipeline awaits inside
-        the task, so cancelling the asyncio task stops LLM calls mid-flight;
-        uncommitted DB writes roll back (pipeline commits once at the end).
-        Orphaned jobs (running in DB but no live task, e.g. after restart)
-        are marked cancelled directly."""
+        """Request cancellation of a running or queued job. The pipeline awaits
+        inside the task, so cancelling the asyncio task stops LLM calls
+        mid-flight; uncommitted DB writes roll back (pipeline commits once at
+        the end). Orphaned jobs (running in DB but no live task, e.g. after
+        restart) are marked cancelled directly."""
+        if job_id in self._queue:
+            self._queue.remove(job_id)
+            with db or SessionLocal() as session:
+                job = session.get(Job, job_id)
+                if job is not None and job.status == "pending":
+                    job.status = "cancelled"
+                    job.finished_at = datetime.now(timezone.utc)
+                    session.commit()
+                    logger.info("queued job %d cancelled before starting", job_id)
+                    return True
+            return False
         task = self._tasks.get(job_id)
         if task is None or task.done():
             with db or SessionLocal() as session:
@@ -148,3 +190,5 @@ class JobManager:
                 db.commit()
         finally:
             self._tasks.pop(job_id, None)
+            self._running -= 1
+            self._dispatch_next()

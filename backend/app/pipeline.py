@@ -1,120 +1,27 @@
 import asyncio
 import json
 import logging
-import math
-import re
 import time
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
-from .classifier import DISTILL_DOC_TYPES, Classifier, window_hash
+from .chunking import chunk_text, chunk_document, classify_windows
+from .classifier import DISTILL_DOC_TYPES, Classifier
 from .cleaning import clean_text, repeated_lines, strip_repeated
 from .config import settings
-from .connectors import ConnectorError, IngestionDoc, build_connector
+from .connectors import IngestionDoc, build_connector
+from .distill import signal, distill_and_store
 from .embedder import Embedder, pack_f32
-from .models import Chunk, Entity, IngestedItem, MergeAction, Relationship, Source, content_hash
+from .hashing import content_hash, window_hash
+from .models import Chunk, Entity, IngestedItem, MergeAction, Relationship, Source
 from .redact import redact
 from .secrets import SecretStore, resolve_source_config
 from .system_events import record as record_event
 from .throughput import throughput
 
 logger = logging.getLogger(__name__)
-
-
-def chunk_text(text: str) -> list[str]:
-    """Fixed-size chunks with overlap (used for entity summaries)."""
-    size, overlap = settings.chunk_size, settings.chunk_overlap
-    if len(text) <= size:
-        return [text]
-    step = size - overlap
-    return [text[i : i + size] for i in range(0, max(len(text) - size + 1, 1), step)]
-
-
-_HEADING_RE = re.compile(
-    r"^\s*(?:"
-    r"§\s*\d+(\.\d+)*"  # §434, §4.2.1
-    r"|\d{1,4}(\.\d{1,4}){1,3}"  # 4.2.1, 12.3.4.5
-    r"|(?:article|annex|section|schedule|rule|appendix)\s+\d+"  # Article 12
-    r")(?:\s|[:.)\-]|$)",
-    re.IGNORECASE,
-)
-
-_CAPS_HEADING_RE = re.compile(r"^[A-Z][A-Z0-9 &()/\-]{3,80}$")
-
-
-def _is_heading(line: str) -> bool:
-    """A line that looks like a section heading: numbered markers (§434,
-    4.2.1, Article 12) or short ALL-CAPS titles. Page-number lines are
-    already removed by cleaning before chunking."""
-    stripped = line.strip()
-    if not stripped or len(stripped) > 80:
-        return False
-    if _HEADING_RE.match(stripped):
-        return True
-    if _CAPS_HEADING_RE.match(stripped) and not stripped.isdigit():
-        return True
-    return False
-
-
-def chunk_document(text: str) -> list[str]:
-    """Section-aware chunks: hard boundaries at heading lines, paragraph
-    accumulation inside a section, fixed-size fallback only for oversized
-    paragraphs/sections. Max section size = chunk_max_chars."""
-    max_chars = settings.chunk_max_chars
-    lines = text.split("\n")
-    sections: list[str] = []
-    current: list[str] = []
-    for line in lines:
-        if _is_heading(line):
-            if current:
-                sections.append("\n".join(current))
-                current = []
-            current.append(line)
-        else:
-            current.append(line)
-    if current:
-        sections.append("\n".join(current))
-
-    chunks: list[str] = []
-    for section in sections:
-        chunks.extend(_split_section(section, max_chars))
-    return chunks
-
-
-def _split_section(section: str, max_chars: int) -> list[str]:
-    """Split one section by paragraphs; fall back to fixed-size for oversized
-    paragraphs. Keeps headings attached to their section's first chunk."""
-    if len(section) <= max_chars:
-        return [section]
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", section) if p.strip()]
-    out: list[str] = []
-    current = ""
-    for paragraph in paragraphs:
-        if len(paragraph) > max_chars:
-            if current:
-                out.append(current)
-                current = ""
-            out.extend(chunk_text(paragraph))
-        elif len(current) + len(paragraph) + 2 <= max_chars:
-            current = paragraph if not current else f"{current}\n\n{paragraph}"
-        else:
-            if current:
-                out.append(current)
-            current = paragraph
-    if current:
-        out.append(current)
-    return out
-
-
-def classify_windows(text: str) -> list[str]:
-    """Split long documents into overlapping windows for classification."""
-    window = settings.classify_window_chars
-    if len(text) <= window:
-        return [text]
-    step = max(window // 2, 1)
-    return [text[i : i + window] for i in range(0, max(len(text) - window + 1, 1), step)]
 
 
 def record_sync_error(db: Session, source: Source, exc: Exception) -> None:
@@ -130,11 +37,8 @@ def record_sync_success(db: Session, source: Source) -> None:
 
 
 def _detach_entity_refs(db: Session, entity_ids: list[int]) -> None:
-    """Delete rows that reference entities about to be deleted.
-
-    The ORM would otherwise try to NULL their NOT NULL FK columns
-    (merge_actions.entity_a_id, relationships.*_id), which fails.
-    """
+    """Delete merge_actions/relationships referencing entities about to be
+    deleted (the ORM would otherwise try to NULL their NOT NULL FKs)."""
     if not entity_ids:
         return
     db.execute(
@@ -162,13 +66,8 @@ class IngestionPipeline:
             return await self._sync_source(db, source, force_reclassify, progress)
         except Exception as exc:
             record_sync_error(db, source, exc)
-            record_event(
-                "pipeline",
-                f"sync failed for source '{source.name}'",
-                source_id=source.id,
-                detail=f"{type(exc).__name__}: {exc}",
-                db=db,
-            )
+            record_event("pipeline", f"sync failed for source '{source.name}'",
+                         source_id=source.id, detail=f"{type(exc).__name__}: {exc}", db=db)
             raise
 
     async def _sync_source(
@@ -185,10 +84,9 @@ class IngestionPipeline:
             if progress is not None:
                 await progress(index, total)
             if self._upsert_doc(db, source, doc) or force_reclassify:
-                # Commit the item BEFORE classification: LLM calls are slow and
-                # must never run while this session holds the SQLite write lock
-                # (other writers would block — and a blocked sqlite busy-wait
-                # stalls the whole event loop).
+                # Commit BEFORE classification: LLM calls are slow and must
+                # never run while this session holds the SQLite write lock
+                # (a blocked sqlite busy-wait stalls the whole event loop).
                 db.commit()
                 created_items += 1
                 new_entities += await self._classify_and_store(db, source, doc, force_reclassify)
@@ -243,8 +141,9 @@ class IngestionPipeline:
         doc: IngestionDoc,
         force_reclassify: bool = False,
     ) -> int:
-        # Classify BEFORE touching the DB: LLM calls are slow and must never
-        # hold a write lock on SQLite (blocks syncs/requests concurrently).
+        # LLM calls must never run while this session holds the SQLite write
+        # lock, so classify BEFORE touching the DB (see commit-before-LLM
+        # invariant in _sync_source).
         base_ref = doc.source_ref or doc.title
         windows = classify_windows(doc.text)
 
@@ -255,17 +154,38 @@ class IngestionPipeline:
             )
         ).scalar_one()
 
+        # B39 PII gate: sensitive/pii sources must not reach a cloud provider
+        # until the user confirms it (ANCHOR_CLOUD_TRUST=1). We still classify
+        # locally with rules + embed locally, but refuse the remote LLM path.
+        from .status import cloud_classifier_trusted, cloud_embedder_trusted, sensitive_label
+
+        classify_trusted = cloud_classifier_trusted(self.classifier.settings)
+        embed_trusted = cloud_embedder_trusted(self.classifier.settings)
+        gated = sensitive_label(source.label) and not (classify_trusted and embed_trusted)
+
         # document-type pre-pass (B26): one cheap call per document, cached on
         # the item so reclassify doesn't re-detect
         doc_type = item.doc_type or "general"
         if not item.doc_type:
-            doc_type = await self.classifier.detect_document_type(doc.text[:12000])
+            doc_type = await self.classifier.detect_document_type(doc.text[:12000], cloud_trusted=classify_trusted)
             item.doc_type = doc_type
             db.commit()
 
-        # per-window: skip unchanged windows on reclassify (cheaper cloud calls).
-        # force_reclassify → classify everything; incremental (sync) → skip
-        # windows whose content hash is unchanged since last run.
+        if gated:
+            record_event(
+                "pipeline",
+                f"PII gate: source '{source.name}' skipped cloud provider (unconfirmed)",
+                source_id=source.id,
+                level="warning",
+                detail=(
+                    f"label={source.label}; classify_cloud={classify_trusted}, "
+                    f"embed_cloud={embed_trusted}. Used rule-based classification "
+                    "and local processing. Set ANCHOR_CLOUD_TRUST=1 to allow cloud."
+                ),
+                db=db,
+            )
+
+        # per-window hash-skip on incremental reclassify (cheaper cloud calls)
         prev_hashes = json.loads(item.window_hashes or "{}")
         sem = asyncio.Semaphore(settings.classifier_concurrency)
 
@@ -285,7 +205,9 @@ class IngestionPipeline:
             async with sem:
                 started = time.monotonic()
                 try:
-                    classified = await self.classifier.classify(window, ref, doc_type)
+                    classified = await self.classifier.classify(
+                        window, ref, doc_type, cloud_trusted=classify_trusted
+                    )
                     for entity_data in classified:
                         entity_data["window_text"] = window
                         entity_data["window_index"] = index
@@ -303,7 +225,6 @@ class IngestionPipeline:
             new_hashes[str(index)] = window_hash(window)
             if batch is None:
                 continue  # window unchanged — keep existing entities
-            # drop entities that came from this window, keep the rest
             stale = db.execute(
                 select(Entity).where(Entity.item_id == item.id, Entity.window_index == index)
             ).scalars().all()
@@ -344,17 +265,15 @@ class IngestionPipeline:
 
         item.window_hashes = json.dumps(new_hashes)
 
-        # B18: distillation pass — normalize chat-like windows into searchable
-        # Q&A units (kind='distilled'). Runs only for chat-like doc types, keyed
-        # on the same window hashes so unchanged windows are skipped. Units are
-        # stored as a first-class embeddable chunk alongside the raw content.
+        # B18 distillation (chat-like doc types → Q&A units), hash-skipped.
         if settings.distill_enabled and doc_type in DISTILL_DOC_TYPES:
-            await self._distill_and_store(db, item, doc, windows, force_reclassify)
+            await distill_and_store(
+                self.classifier, db, item, doc, windows, force_reclassify, cloud_trusted=classify_trusted
+            )
 
-        # full-document chunks so long content is fully retrievable;
-        # clean BEFORE chunking so boundaries/embeddings/FTS tokens are clean.
-        # Rebuild them each pass (hash-skip applies to classification only) —
-        # drop the previous doc chunks first so re-syncs don't duplicate.
+        # full-document chunks so long content is fully retrievable; clean
+        # BEFORE chunking so boundaries/embeddings/FTS tokens are clean.
+        # Rebuilt each pass — drop previous doc chunks so re-syncs don't dup.
         old_doc_chunks = db.execute(
             select(Chunk).where(Chunk.item_id == item.id, Chunk.entity_id.is_(None), Chunk.kind != "distilled")
         ).scalars().all()
@@ -369,78 +288,34 @@ class IngestionPipeline:
 
         db.commit()
 
-        await self._embed_item(db, item)
+        self._flag_pii(db, item)
+        await self._embed_item(db, item, cloud_trusted=embed_trusted, gated=gated)
         return sum(1 for batch in results if batch)
 
-    async def _distill_and_store(
-        self,
-        db: Session,
-        item: IngestedItem,
-        doc: IngestionDoc,
-        windows: list[str],
-        force_reclassify: bool,
-    ) -> None:
-        """B18: normalize chat-like windows into searchable Q&A units.
+    def _flag_pii(self, db: Session, item: IngestedItem) -> None:
+        """B30: scan the item's chunks for PII and set is_pii/pii_categories.
+        Local regex scan (no LLM); strong matches auto-flag is_pii, the review
+        page can confirm or override."""
+        from .pii import load_config, scan_text
 
-        Mirrors the classification hash-skip: unchanged windows don't re-distill
-        (cheap on re-sync/reclassify). Distilled units are stored as chunks with
-        kind='distilled' and a normalized 'Q: … A: …' content so they embed well.
-        Old distilled chunks are dropped first so re-runs don't duplicate."""
-        prev_hashes = json.loads(item.distill_hashes or "{}")
-        base_ref = doc.source_ref or doc.title
-        refs = [f"{base_ref} §{index}" if len(windows) > 1 else base_ref for index in range(1, len(windows) + 1)]
-        sem = asyncio.Semaphore(settings.classifier_concurrency)
-
-        async def distill_one(window: str, ref: str, index: int) -> list[dict] | None:
-            h = window_hash(window)
-            if not force_reclassify and prev_hashes.get(str(index)) == h:
-                return None
-            async with sem:
-                try:
-                    return await self.classifier.distill(window, ref)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("distillation failed for window %s (%s)", index, exc)
-                    return None
-
-        results = await asyncio.gather(
-            *(distill_one(w, r, i) for i, (w, r) in enumerate(zip(windows, refs), start=1))
-        )
-
-        new_hashes = dict(prev_hashes)
-        old_distilled = db.execute(
-            select(Chunk).where(Chunk.item_id == item.id, Chunk.kind == "distilled")
-        ).scalars().all()
-        for chunk in old_distilled:
-            db.delete(chunk)
-        db.flush()
-
-        max_units = settings.distill_max_units
-        total = 0
-        for index, (window, batch) in enumerate(zip(windows, results), start=1):
-            new_hashes[str(index)] = window_hash(window)
-            if batch is None:
-                continue
-            for unit in batch[:max_units]:
-                total += 1
-                content = f"Q: {unit['question']}\nA: {unit['answer']}"
-                if unit.get("terms"):
-                    content += f"\nTerms: {', '.join(unit['terms'])}"
-                if unit.get("systems"):
-                    content += f"\nSystems: {', '.join(unit['systems'])}"
-                db.add(
-                    Chunk(
-                        item_id=item.id,
-                        kind="distilled",
-                        source_ref=refs[index - 1],
-                        content=content,
-                    )
+        chunks = db.execute(
+            select(Chunk).where(
+                or_(
+                    Chunk.item_id == item.id,
+                    Chunk.entity_id.in_(select(Entity.id).where(Entity.item_id == item.id)),
                 )
-        item.distill_hashes = json.dumps(new_hashes)
+            )
+        ).scalars().all()
+        cfg = load_config(db)
+        for chunk in chunks:
+            matches = scan_text(chunk.content, disabled=cfg["disabled"], custom_words=cfg["custom_words"])
+            chunk.pii_categories = json.dumps([m.category for m in matches])
+            chunk.is_pii = any(m.strong for m in matches)
         db.commit()
-        if total:
-            logger.info("distilled %d unit(s) from %s", total, doc.title)
 
-    async def _embed_item(self, db: Session, item: IngestedItem) -> None:
+    async def _embed_item(
+        self, db: Session, item: IngestedItem, cloud_trusted: bool = True, gated: bool = False
+    ) -> None:
         chunks = db.execute(
             select(Chunk).where(
                 or_(Chunk.item_id == item.id, Chunk.entity_id.in_(
@@ -452,16 +327,38 @@ class IngestionPipeline:
         pending = [c for c in chunks if c.embedding is None]
         if not pending:
             return
-        # B18 IDF gating: skip low-signal content (short filler, greeting-only,
-        # rare-token sparse) from vector search — keep it in FTS for keyword.
-        # Compute token document-frequencies across this item's chunks.
-        embeddable = [c for c in pending if self._signal(c.content, pending) >= settings.embed_min_signal]
+        # B18 IDF gating: low-signal chunks (filler/rare-token sparse) stay in
+        # FTS but are skipped from vector embedding.
+        embeddable = [c for c in pending if signal(c.content, pending) >= settings.embed_min_signal]
         skipped = len(pending) - len(embeddable)
         if skipped:
             logger.info("IDF gate: skipping embeddings for %d low-signal chunk(s) of %s", skipped, item.title)
         texts = [c.content for c in embeddable]
         if not texts:
             return
+        # B30: sensitive/pii sources AND PII-flagged chunks are only embedded
+        # by a trusted (local) embedder; when the gate trips we skip remote
+        # embedding and keep the chunks in FTS (keyword retrieval still works
+        # locally).
+        if gated and not cloud_trusted:
+            logger.info(
+                "embed gate: %d chunk(s) of %s not sent to remote embedder (PII gate)",
+                len(texts),
+                item.title,
+            )
+            return
+        if not cloud_trusted:
+            pii_chunks = [c for c in embeddable if c.is_pii]
+            if pii_chunks:
+                logger.info(
+                    "embed gate: %d PII-flagged chunk(s) of %s not sent to remote embedder",
+                    len(pii_chunks),
+                    item.title,
+                )
+                embeddable = [c for c in embeddable if not c.is_pii]
+                texts = [c.content for c in embeddable]
+                if not texts:
+                    return
         try:
             vectors = await self.embedder.embed(texts)
         except Exception as exc:  # noqa: BLE001
@@ -471,28 +368,3 @@ class IngestionPipeline:
             if chunk.embedding is None:
                 chunk.embedding = pack_f32([vector])
         db.commit()
-
-    @staticmethod
-    def _signal(content: str, chunks: list[Chunk]) -> float:
-        """B18 IDF-gated signal score: mean inverse document frequency of the
-        chunk's tokens across the corpus (here: the item's chunks). Short filler
-        and sparse/rare-token content score low and are skipped from embedding."""
-        from collections import Counter
-
-        doc_freq: Counter[str] = Counter()
-        for c in chunks:
-            doc_freq.update(re.findall(r"[a-z0-9_]{3,}", c.content.lower()))
-        n = max(1, len(chunks))
-        tokens = re.findall(r"[a-z0-9_]{3,}", content.lower())
-        if not tokens:
-            return 0.0
-        # idf = log(n / df); rare tokens (df small) → higher idf. We want the
-        # *signal* = how distinctive this chunk's vocabulary is. Common filler
-        # words shared across chunks contribute ~0 idf.
-        total = 0.0
-        for t in set(tokens):
-            df = doc_freq.get(t, 0)
-            if df == 0:
-                continue
-            total += max(0.0, math.log((n + 1) / (df + 1)))
-        return total / len(set(tokens))

@@ -1,0 +1,46 @@
+name: anchorcore-hosting
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: anchorcore
+      POSTGRES_PASSWORD: anchorcore
+      POSTGRES_DB: anchorcore
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anchorcore"]
+      interval: 5s
+      retries: 10
+
+  app:
+    build:
+      context: ..
+      dockerfile: hosting/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      ANCHOR_DATABASE_URL: postgresql+psycopg://anchorcore:anchorcore@db:5432/anchorcore
+      ANCHOR_CORS_ORIGINS: http://localhost:5173,http://localhost:3000
+      ANCHOR_DATA_DIR: /data
+      # Secrets: in hosted, mount from env / secret manager. Keychain fallback is disabled inside container.
+      ANCHOR_SECRETS_NO_KEYRING: "1"
+      ANCHOR_OLLAMA_BASE_URL: http://host.docker.internal:11434
+      # .env overrides above — see hosting/.env.example
+    ports:
+      - "8000:8000"
+    volumes:
+      - appdata:/data
+    # For local hosted emulation, expose host Ollama via host.docker.internal (Docker Desktop).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  pgdata:
+  appdata:

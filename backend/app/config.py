@@ -6,6 +6,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
+# Single source of truth for the app version (B34): main.py's FastAPI
+# `version=` and /system/status both import this. Release bumps only touch it.
+__version__ = "1.0.8"
+
 
 def _env_file_path() -> Path:
     return Path(".env")
@@ -57,6 +61,7 @@ class Settings(BaseSettings):
     embed_model: str = "nomic-embed-text"
     embed_base_url: str = ""  # empty → ollama_base_url (local)
     embed_api_key: str = ""
+    embed_dim: int = 768  # matches nomic-embed-text; vec0 index dim (B33)
     classifier_timeout: float = 60.0
     classifier_concurrency: int = 4
     http_retries: int = 3
@@ -88,6 +93,15 @@ class Settings(BaseSettings):
     duplicate_threshold: float = 0.92
     qa_exclude_disputed: bool = True  # B3: never cite disputed entities by default
 
+    # Auth (hosted skeleton) — off by default, local stays single-user no-auth.
+    # When ANCHOR_AUTH_SECRET is set, /auth is enabled; when empty, auth is disabled.
+    auth_secret: str = ""  # HS256 signing key; generate with `openssl rand -hex 32`
+    auth_token_hours: int = 168  # 7 days
+
+    @property
+    def auth_enabled(self) -> bool:
+        return bool(self.auth_secret.strip())
+
     @property
     def resolved_database_url(self) -> str:
         return self.database_url or f"sqlite:///{self.data_dir / 'anchorcore.db'}"
@@ -107,7 +121,7 @@ class Settings(BaseSettings):
             f"  ollama          : {self.ollama_base_url}",
             f"  classifier model: {self.classifier_model}",
             f"  classifier conc : {self.classifier_concurrency}",
-            f"  embed model     : {self.embed_model}",
+            f"  embed model     : {self.embed_model} ({self.embed_dim}d)",
             f"  retrieval       : RRF fusion (keyword weight {self.retrieval_keyword_weight}, "
             f"max {self.retrieval_max_per_source}/source, age halflife {self.retrieval_age_halflife_days}d, "
             f"graph {self.retrieval_graph_hops}hops/{self.retrieval_graph_max}cap)",

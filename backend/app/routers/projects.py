@@ -85,15 +85,6 @@ def make_router() -> APIRouter:
         db.commit()
         return {"deleted": True}
 
-    @router.get("/default", response_model=schemas.ProjectOut | None)
-    def default_project(db: Session = Depends(get_db)) -> dict | None:
-        project = db.execute(
-            select(Project).where(Project.is_default.is_(True)).limit(1)
-        ).scalar_one_or_none()
-        if project is None:
-            return None
-        return _project_dict(project, db)
-
     return router
 
 

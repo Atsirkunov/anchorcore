@@ -1,0 +1,46 @@
+# Hosting skeleton (v1.5)
+
+> Same FastAPI app, env-driven. Local = SQLite + keychain. Hosted = Postgres + env secrets. No fork.
+
+## What this is
+A minimal skeleton so you can run the **hosted** shape tomorrow without rewriting the app:
+
+- `Dockerfile` — builds the backend + bundled `frontend/dist` (requires `npm run build` once).
+- `docker-compose.yml` — `app` + `pgvector:pg16` Postgres, healthchecked, `pgdata` persisted. Uses `psycopg` driver.
+- `.env.example` — copy to `.env` and fill `ANCHOR_*`.
+- `entrypoint.sh` — `alembic upgrade head` then `uvicorn`.
+
+Follows `docs/v2v3-scope.md:3` — same code, swap via `ANCHOR_DATABASE_URL`, `SecretStore` interface, `VectorStore` → pgvector later.
+
+## Run hosted locally (emulation)
+
+```bash
+# from repo root
+npm run build --prefix frontend   # embed UI
+cp hosting/.env.example hosting/.env  # edit if needed
+docker compose -f hosting/docker-compose.yml up --build
+# app at http://localhost:8000
+# db at localhost:5432 (anchorcore/anchorcore)
+```
+
+Migrations run via `backend/alembic/env.py` against `ANCHOR_DATABASE_URL`. Local dev still uses `data/anchorcore.db` — nothing changes unless you set `ANCHOR_DATABASE_URL` to `postgresql+...`.
+
+## What still needs decisions (not in skeleton)
+
+- Provider: Fly / Hetzner / Render — all work with this image. Skeleton is provider-agnostic.
+- Auth: **skeleton done** (`/auth/status|signup|login|me`, B40, `ANCHOR_AUTH_SECRET` enables JWT; local stays no-auth). Next: Google OAuth / per-project share tokens (B30 gate already enforces `public_only`).
+- Vector store: `vec_chunks` vec0 is SQLite-only (B33) and skips on Postgres (fallback to Python scan); Compose uses `pgvector/pgvector` image so DB is ready for future `pgvector` wiring.
+- Object storage / Drive connector (B28 — next) — env keys reserved, not wired.
+- TLS / domain — add Caddy/Traefik or provider's proxy.
+
+## Personal vs Team
+
+Skeleton serves both tracks with same image. Personal stays local free; Team is "coming soon" behind a `coming soon` toggle on the landing page (`docs/design-system.md:5.1`). No separate deployment per track.
+
+## Next steps
+
+1. `docker compose up` should turn green with an empty DB (smoke: `curl localhost:8000/health`).
+2. Add hosted auth + read-only share links (project tokens, `docs/v2v3-scope.md:4`).
+3. Wire pgvector for `vec0` → pgvector migration and bundled model keys.
+
+Companion: `docs/architecture.md:8` (swap points), `docs/v2v3-scope.md:8` (sequencing).
