@@ -4,6 +4,23 @@
 > try, and pay for. Status: **scoping only — decisions needed, nothing built.**
 > Everything here builds on the v1 memory core (see [product-plan.md](./product-plan.md)).
 
+## Decisions log (2026-08-10)
+
+Locked decisions from the publishing-strategy review; each maps to a backlog item
+(B-numbers in [product-plan.md](./product-plan.md)):
+
+| # | Decision | Backlog |
+|---|---|---|
+| D1 | Domain: **`anchorcore.dev`** registered (~$12/yr, Cloudflare Registrar). `anchorcore.ai`/`.com`/`.app` are taken but parked — no squatter premium | B33 |
+| D2 | Website: static Astro/Vite on Cloudflare Pages (free); landing + docs + changelog; "free during validation" until hosted exists | B33 |
+| D3 | Pricing: **sub-only, one dial** — local free forever; sub includes everything (no separate fixed license). Individual €19/mo, Teams €25/user/mo | B35 |
+| D4 | Hosted = low-risk, quota-bounded features only (hosted sync, MCP endpoint, webhooks, share links, review); cheap-tier metered bundled models; per-workspace caps | B35 |
+| D5 | License: **BSL 1.1** + Ed25519-signed keys, verified offline (air-gapped capable); community carve-out for non-commercial + small orgs | B36 |
+| D6 | Enterprise: **sell the platform, don't host it** — Docker + SSO/RBAC/audit, flat annual per deployment + support; enterprise telemetry = SLA feature | B37 |
+| D7 | Telemetry: **opt-in, off by default, counts-only** (never content), pseudonymous reset-able ID, transparency screen; public signals (release downloads, stars) complement | B34 |
+| D8 | Object storage: **Cloudflare R2** (S3-compatible, free 10 GB + 1M A / 10M B ops/mo, **$0 egress** → free share-link serving) | B35 |
+| D9 | Infra topology: **single Hetzner VPS (~€4–5/mo) running Docker Compose (FastAPI + Postgres)**; ingress via **Cloudflare Tunnel** (no open ports); SSL/DNS on the free Cloudflare plan; Stripe for billing; UptimeRobot for uptime pings. One box until real demand — no K8s/multi-region/autoscaling. Full plain-terms plan below (§3). | B35 |
+
 ---
 
 ## 1. The funnel we're designing
@@ -56,6 +73,28 @@ later. GitHub Actions deploys on tag (same release flow as B25).
 **Skeleton:** `hosting/` (Dockerfile + `docker-compose.yml` + `.env.example`) runs
 the same image locally with `pgvector/pgvector:pg16` — no provider lock-in, no fork.
 Same `ANCHOR_DATABASE_URL` switch drives SQLite→Postgres; see `hosting/README.md`.
+
+**Locked stack (2026-08-10, D8–D9):**
+
+| Piece | Choice | Why |
+|---|---|---|
+| Front door (DNS/SSL/CDN) | Cloudflare free plan on `anchorcore.dev` | free TLS + DDoS absorption |
+| Ingress | **Cloudflare Tunnel** (`cloudflared`) | no open ports on the VPS — nothing to firewall; the tunnel dials out |
+| The computer | **Hetzner CX22** (2 vCPU / 4 GB / 40 GB), ~€4–5/mo | cheapest reliable; Docker Compose runs both services |
+| App + DB | Docker Compose: `anchorcore` (FastAPI) + `postgres` | one command to start/update; same code, env-driven (DB swap point) |
+| Files | Cloudflare R2 (D8) | free 10 GB, $0 egress → share links cost nothing to serve |
+| Billing | Stripe Checkout (hosted pages) + webhooks | no PCI burden; the app turns features on when a payment webhook arrives |
+| Uptime | UptimeRobot free plan | emails you if the site dies; you don't stare at dashboards |
+| Backups | nightly `pg_dump` → R2 | if the computer dies, restore on a new one in ~30 min |
+| Deploy | GitHub Actions builds a Docker image on `v*` tag → GHCR → VPS pulls | same tag flow as B25; `docker compose up -d` updates the app |
+
+Deliberately **not** in scope until real demand: Kubernetes, multi-region,
+autoscaling, managed DBs. One box, ~€10–15/mo fixed + model tokens
+(~$2–3/active workspace). When the box gets small, the app/db/storage split is
+already clean: Postgres moves to a managed service (Neon/Supabase), R2 stays.
+
+Full operational reference: [hosting.md](./hosting.md) — topology, provisioning,
+deploy, security posture, backups, scale-out path.
 
 **Auth:** self-serve signup first (email+password or Google), SSO deferred to
 Enterprise (§7).
@@ -147,14 +186,14 @@ heavy hosted use.
 
 ## 9. Open questions
 
-- [ ] Domain + name check (`anchorcore.ai` vs alternatives)?
+- [x] ~~Domain + name check~~ — **resolved 2026-08-10: `anchorcore.dev`** (B33)
 - [ ] Hosting provider (Hetzner/Fly/Render/self-managed)?
 - [ ] Hosted free tier size (storage/sources/workspaces)?
 - [ ] Signup: email+password vs Google OAuth first?
-- [ ] Bundled model access — which provider(s), how metered?
-- [ ] Is file sharing = workspace sharing only, or actual file download too?
-- [ ] Update-checker opt-in from day one or later?
-- [ ] Changelog: manual curated vs generated?
+- [x] ~~Bundled model access — which provider(s), how metered?~~ — **partially resolved 2026-08-10**: cheap-tier metered allowance (~2–3M tokens), expensive models BYO (B35); provider choice TBD
+- [x] ~~File sharing: workspace sharing only, or file download too?~~ — **resolved 2026-08-10**: workspace/share-link sharing only (B35)
+- [x] ~~Update-checker opt-in from day one or later?~~ — **resolved 2026-08-10**: later, as part of the on-prem managed-update story (B37)
+- [x] ~~Changelog: manual curated vs generated?~~ — **resolved 2026-08-10**: manual, Keep a Changelog format (B33)
 
 ---
 

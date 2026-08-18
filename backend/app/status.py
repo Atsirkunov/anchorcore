@@ -9,12 +9,17 @@ import os
 import httpx
 
 from .app_settings import SettingsService
+from .config import settings
+
+
+def _probe_timeout() -> httpx.Timeout:
+    return httpx.Timeout(3.0, connect=settings.http_connect_timeout)
 
 
 def ollama_reachable(settings: SettingsService) -> bool:
     base_url = settings.get("ollama_base_url") or "http://localhost:11434"
     try:
-        with httpx.Client(timeout=httpx.Timeout(3.0, connect=2.0)) as client:
+        with httpx.Client(timeout=_probe_timeout()) as client:
             resp = client.get(f"{base_url.rstrip('/')}/api/tags")
             return resp.status_code == 200
     except httpx.TransportError:
@@ -44,7 +49,7 @@ def missing_ollama_models(settings: SettingsService) -> list[str]:
     )
     embed_model = (settings.get("embed_model") or "nomic-embed-text") if embedder_is_local(settings) else None
     try:
-        with httpx.Client(timeout=httpx.Timeout(3.0, connect=2.0)) as client:
+        with httpx.Client(timeout=_probe_timeout()) as client:
             resp = client.get(f"{base_url.rstrip('/')}/api/tags")
             if resp.status_code != 200:
                 return [m for m in (classifier_model, embed_model) if m]
