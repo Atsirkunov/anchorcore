@@ -1,13 +1,13 @@
 # AnchorCore — Architecture Overview (v1.0)
 
 > Locked through structured product/architecture drilldown (13 decisions).
-> Stack: **FastAPI · React (Vite) · SQLite + sqlite-vec · Ollama · BYO cloud LLM APIs**
+> Stack: **FastAPI · React (Vite) · SQLite (local) / Postgres (hosted `hosting/`) + sqlite-vec/vec0 + FTS5 · Ollama · BYO cloud LLM APIs** — env-driven via `ANCHOR_DATABASE_URL`
 
 ---
 
-## 1. Runtime Model: Local-First (Plex-Style)
+## 1. Runtime Model: Local-First (Plex-Style), Hosted Env-Driven
 
-One local process = the entire product. No Docker, no sidecar services, no setup.
+One local process = the entire product. No Docker, no sidecar services, no setup. Hosted (`hosting/` Docker + Postgres `pgvector/pg16`) is the **same FastAPI image, env-driven** via `ANCHOR_DATABASE_URL` — SQLite FTS5/vec0 triggers skip on Postgres (fallback to Python scan). See `hosting/README.md` + `docs/v2v3-scope.md:3`.
 
 ## 2. System Diagram
 
@@ -154,6 +154,7 @@ erDiagram
         string content_hash
         string doc_type "standards|runbook|meeting|decision_log|prd|general"
         text window_hashes "JSON {index: sha256} — cheap reclassify"
+        text distill_hashes "JSON {index: sha256} — B18 distillation"
         bool stale
         datetime created_at
     }
@@ -191,6 +192,7 @@ erDiagram
         string last_error
         int error_count
         bool enabled
+        string label "internal|public|sensitive|pii (B39)"
     }
     CHUNKS {
         int id PK
@@ -200,6 +202,8 @@ erDiagram
         string source_ref "section"
         string content
         bytes embedding "float32 blob"
+        bool is_pii "auto-flagged B30"
+        string pii_categories "JSON"
         datetime created_at
     }
     CHUNKS_FTS {
@@ -246,6 +250,16 @@ erDiagram
         bool is_default "user's default query scope"
         datetime created_at
     }
+    USERS {
+        int id PK
+        string email "unique"
+        string password_hash "pbkdf2"
+        datetime created_at
+    }
+    VEC_CHUNKS {
+        int rowid "virtual vec0 768d cosine (B33, SQLite-only)"
+        bytes embedding
+    }
     PROJECT_SOURCES {
         int project_id FK
         int source_id FK "many-to-many"
@@ -275,11 +289,11 @@ erDiagram
 
 | Container | Responsibility | Tech |
 |---|---|---|
-| Web UI | Connect sources, project scoping, review queue, duplicate proposals, Q&A chat, model settings | React SPA (Vite, TS) |
-| API | All endpoints, orchestration, config | FastAPI |
-| Entity Store | Entities, provenance, window context, sync state | SQLite + SQLAlchemy |
-| Vector Store | Chunk embeddings + similarity search | sqlite-vec (same SQLite file) |
-| Keyword Store | FTS5 bm25 for hybrid retrieval | SQLite FTS5 (`chunks_fts`, trigger-synced) |
+| Web UI | Connect sources, project scoping, review queue (B27 expanded context), PII review, Q&A chat, model settings | React SPA (Vite, TS, 7 tabs incl PII) |
+| API | All endpoints, orchestration, config | FastAPI (env-driven) |
+| Entity Store | Entities, provenance, window context, sync state | SQLite local / Postgres hosted + SQLAlchemy |
+| Vector Store | Chunk embeddings + similarity search | sqlite-vec vec0 (`vec_chunks`, B33) same file; pgvector/pgvector image for hosted (Python-scan fallback on Postgres) |
+| Keyword Store | FTS5 bm25 for hybrid retrieval | SQLite FTS5 (`chunks_fts`, trigger-synced; skipped on Postgres) |
 | Classifier | Doc-type detection + entity extraction | Ollama or cloud OpenAI-compatible + rule fallback |
 | Embedder | Chunk embeddings | Ollama or cloud OpenAI-compatible |
 | Answer Engine | Planner (tool selection) → Executor (hybrid + who_knows) → RRF fusion → graph walk → cited answer | BYO cloud model or Ollama |
@@ -291,15 +305,12 @@ erDiagram
 ## 7. Security
 
 - Credentials: **OS Keychain** (`keyring`), encrypted-file fallback; never in DB/config/logs.
-- Local-only server binds 127.0.0.1.
+- Local-only server binds 127.0.0.1 (hosted binds `0.0.0.0` behind `CORS` allowlist).
 - Secret values masked in logs, error responses, and API payloads (`***set***`).
-- `SecretStore` interface maps to cloud secret managers in hosted v2.
+- `SecretStore` interface maps to cloud secret managers in hosted v2; single source `SECRET_SOURCE_FIELDS` (B34).
 - Tests never touch the real keychain (`ANCHOR_SECRETS_NO_KEYRING`).
-- **Data labels (B30, planned)**: sources carry a label (`public|internal|sensitive|pii`);
-  each model provider declares a trust tier (`local` vs user-confirmed `cloud`);
-  the pipeline gates routing by label×tier (PII → local-only, logged), and
-  sharing/answers/MCP exclude non-`public` content outside authorized sessions.
-  Every allow/block decision is audited in `system_events`.
+- **Data labels (B30 DONE, B39 thin gate):** `sources.label` (`public|internal|sensitive|pii`, default `internal`); Direct→`pii` / Indirect+payroll→`sensitive` (ratified 2026-08-18: source-level for v1). Local model = everything, API model = user-controlled via `ANCHOR_CLOUD_TRUST=1`; `chunks.is_pii` auto-flagged (`pii.py` categories + `pipeline._flag_pii`). Pipeline gate: `sensitive`/`pii` + `is_pii` chunks skip cloud classify/embed/answer, fall back to rules, record `system_event` (`gate`, `answer_engine`). Share/MCP surface `GET /qa/public` + `public_only` (B30) — non-public excluded. Per-user ACL deferred to hosted `users` (B40, `hosting/`). Wizard is skippable (`OnboardingWizard` Skip + `System → Show welcome wizard`); Review shows expanded context B27 (`GET /entities/{id}/context`).
+- Every allow/block decision is audited in `system_events`; hosted auth (`/auth`, B40) issues HS256 JWT when `ANCHOR_AUTH_SECRET` set, otherwise disabled (local stays single-user).
 
 ## 8. Key Interfaces (Swap Points)
 
@@ -316,13 +327,13 @@ erDiagram
 ## 9. Evolution Path
 
 ```
-v1: local-first, folder + Jira, document-aware classification + review + cited Q&A
-    (done: hybrid RRF retrieval + planner/executor + graph walk + distillation + projects + Windows/macOS apps)
-  -> v1.5: Linear/Drive connectors, MCP access, data labeling (PII gates)
-  -> v2: team sharing, hosted option, Slack, contradictions, bundled models
+v1: local-first, folder + Jira, document-aware classification + review (B27 expanded) + cited Q&A
+    (done: hybrid RRF + vec0 (B33) + planner/executor + graph walk + distillation + projects + PII gate (B30) + hosted skeleton + auth (B40) + Windows/macOS apps)
+  -> v1.5: Linear/Drive connectors (B28 next), MCP access (B14), wizard skippable (B8)
+  -> v2: team sharing (project tokens), hosted pilot (hosting/ + per-user ACL), Slack, contradictions, bundled models
   -> v3: agentic levels (draft, prepare-action-with-approval), enterprise compliance
 ```
 
 ---
 
-*Companion docs: [product-plan.md](./product-plan.md), [packaging.md](./packaging.md), [releasing.md](./releasing.md), [mcp.md](./mcp.md)*
+*Companion docs: [product-plan.md](./product-plan.md), [packaging.md](./packaging.md), [releasing.md](./releasing.md), [mcp.md](./mcp.md), [design-system.md](./design-system.md)*

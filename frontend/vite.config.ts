@@ -9,6 +9,7 @@ export default defineConfig({
       "/sources": "http://localhost:8000",
       "/entities": "http://localhost:8000",
       "/review": "http://localhost:8000",
+      "/projects": "http://localhost:8000",
       "/qa": "http://localhost:8000",
       "/health": "http://localhost:8000",
       "/system": "http://localhost:8000",

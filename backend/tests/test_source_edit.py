@@ -84,3 +84,26 @@ def test_secret_fields_stay_keychain_backed(client):
     # clearing the field removes the stored secret
     client.put(f"/sources/{source['id']}", json={"config": {"token": ""}})
     assert stored_token() == ""
+
+
+def test_new_secret_field_auto_masked(client, tmp_path, monkeypatch):
+    """B34 DoD: adding a field to SECRET_SOURCE_FIELDS must auto-mask it in
+    GET /sources/{id}/config (single source of truth — no divergence)."""
+    from app import secrets as secrets_module
+
+    original = secrets_module.SECRET_SOURCE_FIELDS
+    monkeypatch.setattr(secrets_module, "SECRET_SOURCE_FIELDS", original + ("client_secret",))
+
+    source = client.post(
+        "/sources",
+        json={
+            "connector": "jira",
+            "name": "auto-mask",
+            "config": {"base_url": "https://x.atlassian.net", "client_secret": "shh-secret"},
+        },
+    ).json()
+
+    cfg = client.get(f"/sources/{source['id']}/config").json()
+    assert cfg["client_secret"] == "***set***", "new secret field must be masked"
+    assert "shh-secret" not in str(cfg), "raw secret must never reach the UI"
+

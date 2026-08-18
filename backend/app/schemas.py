@@ -3,6 +3,8 @@ import json
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+SOURCE_LABELS = {"internal", "public", "sensitive", "pii"}
+
 
 class SourceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -11,6 +13,7 @@ class SourceOut(BaseModel):
     connector: str
     name: str
     enabled: bool
+    label: str = "internal"  # B39: internal|public|sensitive|pii
     last_synced_at: datetime | None
     last_error: str | None
     error_count: int
@@ -21,6 +24,14 @@ class SourceCreate(BaseModel):
     connector: str
     name: str
     config: dict = {}
+    label: str = "internal"  # B39
+
+    @field_validator("label")
+    @classmethod
+    def _label_valid(cls, value: str) -> str:
+        if value not in SOURCE_LABELS:
+            raise ValueError(f"label must be one of {sorted(SOURCE_LABELS)}")
+        return value
 
 
 class SourceUpdate(BaseModel):
@@ -30,6 +41,14 @@ class SourceUpdate(BaseModel):
     name: str | None = None
     enabled: bool | None = None
     config: dict | None = None
+    label: str | None = None  # B39
+
+    @field_validator("label")
+    @classmethod
+    def _label_valid(cls, value: str) -> str:
+        if value not in SOURCE_LABELS:
+            raise ValueError(f"label must be one of {sorted(SOURCE_LABELS)}")
+        return value
 
 
 class ProjectCreate(BaseModel):
@@ -114,6 +133,7 @@ class AskRequest(BaseModel):
     question: str
     history: list[AskTurn] = []  # previous turns, oldest first
     project_id: int | None = None  # B15: scope retrieval to a project's sources
+    public_only: bool = False  # B30: answer only from `public` sources (share/MCP)
 
 
 class Citation(BaseModel):
@@ -155,7 +175,7 @@ class JobOut(BaseModel):
     id: int
     source_id: int
     kind: str
-    status: str  # running | done | failed
+    status: str  # running | pending | done | failed | cancelled
     total: int
     processed: int
     result: dict = {}
@@ -170,3 +190,46 @@ class JobOut(BaseModel):
         if isinstance(value, str):
             return json.loads(value or "{}")
         return value
+
+
+class PiiCategoryOut(BaseModel):
+    id: str
+    label: str
+    description: str
+    field_names: list[str]
+    patterns: list[str]
+    enabled: bool
+
+
+class PiiConfigOut(BaseModel):
+    categories: list[PiiCategoryOut]
+    custom_words: list[str]
+
+
+class PiiConfigUpdate(BaseModel):
+    custom_words: list[str] | None = None
+    disabled_categories: list[str] | None = None
+
+
+class PiiMatchOut(BaseModel):
+    category: str
+    label: str
+    strong: bool
+    match: str = ""
+
+
+class PiiChunkOut(BaseModel):
+    """One flagged chunk for the review surface."""
+    chunk_id: int
+    source_id: int | None
+    source_name: str = ""
+    source_label: str = "internal"
+    kind: str
+    content: str
+    snippet: str
+    is_pii: bool
+    categories: list[PiiMatchOut]
+
+
+class PiiReviewDecision(BaseModel):
+    is_pii: bool

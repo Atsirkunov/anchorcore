@@ -3,7 +3,7 @@ from logging.config import fileConfig
 from pathlib import Path
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import event, pool
 
 # Make `app` importable regardless of cwd (backend dir is the script location root).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -57,7 +57,16 @@ def _make_engine():
 
     url = _database_url()
     connect_args = {"check_same_thread": False, "timeout": 30} if url.startswith("sqlite") else {}
-    return create_engine(url, poolclass=pool.NullPool, connect_args=connect_args)
+    engine = create_engine(url, poolclass=pool.NullPool, connect_args=connect_args)
+    if url.startswith("sqlite"):
+        # Load sqlite-vec on every migration connection so the vec0 virtual
+        # table (B33) can be created. Mirrors app/db.py's connect listener;
+        # the migration itself degrades gracefully when the extension is
+        # unavailable (Python without loadable extensions).
+        from app.db import _load_sqlite_vec
+
+        event.listen(engine, "connect", _load_sqlite_vec)
+    return engine
 
 
 if context.is_offline_mode():

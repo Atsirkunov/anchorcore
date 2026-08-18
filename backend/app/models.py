@@ -1,11 +1,11 @@
 import json
-import hashlib
 from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Table, Text, Column
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
+from .hashing import content_hash  # noqa: F401  (re-exported for compat, B35)
 
 
 def utcnow() -> datetime:
@@ -46,6 +46,7 @@ class Source(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_count: Mapped[int] = mapped_column(Integer, default=0)
     enabled: Mapped[bool] = mapped_column(default=True)
+    label: Mapped[str] = mapped_column(String(20), default="internal")  # B39: internal|public|sensitive|pii
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     items: Mapped[list["IngestedItem"]] = relationship(back_populates="source", cascade="all, delete-orphan")
@@ -144,6 +145,8 @@ class Chunk(Base):
     source_ref: Mapped[str] = mapped_column(String(500), default="")
     content: Mapped[str] = mapped_column(Text, default="")
     embedding: Mapped[bytes | None] = mapped_column(nullable=True)  # float32 blob
+    is_pii: Mapped[bool] = mapped_column(default=False)  # B30: auto-flagged / confirmed PII
+    pii_categories: Mapped[str] = mapped_column(Text, default="[]")  # JSON list of matched category ids
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     entity: Mapped[Entity | None] = relationship(back_populates="chunks")
@@ -236,5 +239,13 @@ class MergeAction(Base):
     entity_b: Mapped[Entity] = relationship(foreign_keys=[entity_b_id])
 
 
-def content_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+class User(Base):
+    """Hosted skeleton (B40): local stays no-auth; when ANCHOR_AUTH_SECRET is set,
+    /auth signup/login issues HS256 tokens. Minimal for hosting smoke tests."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
