@@ -11,6 +11,11 @@ from `backend/`. CI runs this plus the frontend build on every push
   locally. Tests that need real models are run manually as probes (see §10).
 - `client` fixture = FastAPI TestClient with app lifespan (migrations run,
   scheduler starts).
+- **Shared-DB contract (B38):** `tests/conftest.py` sets ONE SQLite file at
+  module import; it accumulates across every test file. Scope assertions to
+  your own source/entity ids and assert **deltas**, NEVER global emptiness.
+  Tests that need a genuinely empty DB use the `isolated_db` fixture (fresh
+  file + session) instead of asserting against the shared DB.
 
 ---
 

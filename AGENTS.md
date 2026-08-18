@@ -17,9 +17,9 @@ Repo: `git@github.com:Atsirkunov/anchorcore.git`. Backend under `backend/`, UI u
 ## How to run / test / release
 
 - Dev: `./start.sh` (venv, migrations, Ollama, backend :8000)
-- Backend tests: `cd backend && .venv/bin/python -m pytest tests -q` (88+ tests, ~18s; CI-safe, no LLM needed)
+- Backend tests: `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests -q` (121 tests, ~25s; CI-safe, no LLM needed)
 - Frontend: `cd frontend && npm run build` (tsc + vite; must pass before a UI change is done)
-- Release: bump `APP_VERSION` in `backend/app/routers/system.py` + `version=` in `backend/app/main.py` → commit → tag → push
+- Release: bump `__version__` in `backend/app/config.py` (single source of truth; main.py + system.py import it) → commit → tag → push
 - **The packaged app embeds `frontend/dist` at build time** — after any UI change you must rebuild, or the exe ships stale UI.
 
 ## Backend architecture map
@@ -27,36 +27,31 @@ Repo: `git@github.com:Atsirkunov/anchorcore.git`. Backend under `backend/`, UI u
 - `backend/app/main.py` — wires everything: `secrets`, `SettingsService`, `Classifier`, `Embedder`,
   `IngestionPipeline`, `AnswerEngine`, `Scheduler`, `JobManager`; runs Alembic migrations in lifespan;
   serves bundled UI last (must stay last).
-- `backend/app/models.py` — SQLAlchemy models: `Source`, `IngestedItem`, `Entity`, `Relationship`,
-  `Chunk` (`kind`: document|entity|distilled), `Job`, `Project` + `project_sources`, `SystemEvent`,
-  `AppSetting`, `MergeAction`. `content_hash()` helper.
+- `backend/app/models.py` — SQLAlchemy models: `Source` (`label` B39), `IngestedItem`, `Entity` (`window_text`/`window_index` B26, `dispute_count` B3), `Relationship`, `Chunk` (`kind`: document|entity|distilled B18, `is_pii`/`pii_categories` B30), `Job`, `Project` + `project_sources`, `SystemEvent`, `AppSetting`, `MergeAction`, `User` (B40 hosted auth). `content_hash()` helper (re-exported via `hashing.py`).
 - `backend/app/schemas.py` — Pydantic request/response models. `SourceOut` does NOT include `config`
-  (config is fetched via `GET /sources/{id}/config` which masks secrets).
-- `backend/app/answer_engine.py` — **the core retrieval pipeline** (see below).
-- `backend/app/pipeline.py` — ingestion: classify (windowed, hash-skipped, concurrency-limited),
-  distill (B18), embed (IDF-gated). Runs as background jobs via `JobManager`.
+  (config is fetched via `GET /sources/{id}/config` which masks secrets); `SourceCreate/Update` validate `label` (B39).
+- `backend/app/answer_engine.py` — **the core retrieval pipeline** (see below). `vec_chunks` vec0 index (B33) with Python-scan fallback; gates `sensitive`/`pii` + `is_pii` chunks from cloud answer when `ANCHOR_CLOUD_TRUST` missing (B30).
+- `backend/app/pipeline.py` — ingestion orchestration: classify (windowed, hash-skipped, concurrency-limited),
+  distill (B18), embed (IDF-gated, `is_pii` chunks skip cloud embed B30, `_flag_pii`), PII gate (B39). Chunking split to `chunking.py`/`hashing.py`/`distill.py` (B35).
+- `backend/app/chunking.py` / `hashing.py` / `distill.py` — extracted from `pipeline.py` (B35).
+- `backend/app/pii.py` — PII knowledge base + `scan_text` (B30), categories + custom words, persisted in `app_settings`.
+- `backend/app/auth.py` — hosted auth (B40): PBKDF2 + HS256 JWT, `get_current_user`/`require_auth` (off when `ANCHOR_AUTH_SECRET` empty).
 - `backend/app/classifier.py` — per-doc-type extraction prompts, `detect_document_type`, `classify`,
-  `distill`; rule-based fallbacks for all (tests must pass without Ollama).
-- `backend/app/routers/` — `sources.py` (create/list/update/delete + config + jobs),
-  `entities.py` (+ `review_router` for low-confidence/duplicates/merge; B3: `POST /entities/{id}/dispute`,
-  `GET /entities/{id}/disputes`), `qa.py`, `projects.py`, `settings.py`, `system.py`
-  (status/errors/logs/**onboarding** for the B8 first-run wizard).
+  `distill`; rule-based fallbacks for all (tests must pass without Ollama). Takes `cloud_trusted` (B39).
+- `backend/app/routers/` — `sources.py` (create/list/update/delete + config + jobs, label B39),
+  `entities.py` (`GET /{id}`, `PATCH`, `GET /{id}/related`, `POST /{id}/dispute`, `GET /{id}/disputes`, **`GET /{id}/context` B27 neighbour expansion**; `review_router` for low-confidence/duplicates/merge), `qa.py` (`POST /qa` + `POST /qa/public` B30 share-safe), `projects.py`, `settings.py`, `system.py` (status/errors/logs/onboarding B8), `pii.py` (`/pii/config`, `/pii/review`, `/pii/review/{id}`, `/pii/scan/{source}`), `auth.py` (`/auth/status`, `/auth/signup`, `/auth/login`, `/auth/me` B40).
 - `backend/app/secrets.py` — `SecretStore` (OS keychain, encrypted-file fallback when
-  `ANCHOR_SECRETS_NO_KEYRING=1`); `store_source_config`/`resolve_source_config` handle source
-  config secret fields (`token`, `api_key`, `password`). Never ship secrets to the UI.
+  `ANCHOR_SECRETS_NO_KEYRING=1`); `SECRET_SOURCE_FIELDS` single source of truth (B34); `store_source_config`/`resolve_source_config` handle secret fields. Never ship secrets to the UI.
 - `backend/app/app_settings.py` — `SettingsService`: env `.env` is default, DB `app_settings` overrides
   win, secrets resolve from SecretStore. Read effective values at call time (no restart). `SETTING_KEYS`/
   `SECRET_KEYS`/`ALL_KEYS` control what the Settings UI exposes.
-- `backend/app/config.py` — pydantic `Settings` (env prefix `ANCHOR_`, `.env` file). Retrieval knobs:
-  `retrieval_keyword_weight`, `retrieval_max_per_source`, `retrieval_age_halflife_days`,
-  `retrieval_context_window`, `retrieval_graph_hops/max`, `top_k`, `low_confidence_threshold`,
-  `duplicate_threshold`.
-- `backend/app/db.py` — engine/session; **sets `PRAGMA foreign_keys=ON` (critical, deletions depend on it)**.
-- `backend/alembic/versions/` — migrations; chain head is now `b3a0c1` (disputes). New migrations must set
-  `down_revision` to the current head. Convention: one migration + matching model change per feature.
+- `backend/app/config.py` — single source `__version__` (B34) + pydantic `Settings` (env prefix `ANCHOR_`, `.env` file). Adds `auth_secret`/`auth_token_hours`/`auth_enabled` (B40), `cloud_trust` helpers (B30/B39), retrieval knobs, `embed_dim` (B33 vec0).
+- `backend/app/db.py` — engine/session; **sets `PRAGMA foreign_keys=ON` (critical, deletions depend on it)**. `engine` is env-driven (`resolved_database_url` → SQLite local, `postgresql+psycopg` hosted via `hosting/`).
+- `backend/alembic/versions/` — migrations; chain head is now `b40a0c1` (users B40). New migrations must set
+  `down_revision` to the current head. Convention: one migration + matching model change per feature. SQLite-only migrations (`b12f7c0` FTS5, `b33a0c1` vec0) skip on Postgres.
 - `backend/tests/` — helpers live in `tests/test_smoke.py`: `start_and_wait(client, source_id, kind="sync")`
   and `wait_job(...)`. Copy the `_mk_source(...)` pattern (create folder → sync → return source dict) from
-  `test_projects.py`/`test_disputes.py` instead of hand-rolling sync flow in every test.
+  `test_projects.py`/`test_disputes.py` instead of hand-rolling sync flow in every test. Now 121 tests (see `tests/README.md`). Shared DB + optional `isolated_db` fixture (B38).
 
 ## AnswerEngine retrieval pipeline (the core logic)
 
@@ -128,6 +123,25 @@ Key rules:
 - sqlite-vec native lib collected via `packaging.spec` (`*.dll`/`*.dylib`).
 - Secrets: never log/return raw tokens — `GET /sources/{id}/config` masks `token`/`api_key`/`password`
   as `***set***`; `RedactingFormatter` strips secrets from logs.
+- **Retrieval is index-backed (B33):** `vec_chunks` (sqlite-vec vec0, cosine) is created by migration
+  `b33a0c1` and kept in sync by triggers; `AnswerEngine._vector_search` queries it (`k = :limit`)
+  and falls back to the pure-Python cosine scan when the extension/table is unavailable or the
+  embedding dims don't match. `/system/status.retrieval` exposes latency + backend (vec0 vs scan).
+- **Single version source:** `__version__` in `app/config.py` (B34). Release = bump it → tag → push.
+- **Job concurrency is bounded (B34):** `JobManager.MAX_CONCURRENT` (2) pipeline runs at once; excess
+  syncs persist as `pending` and queue. `_age_decay` takes a fixed `now` per query.
+- **PII gate (B39):** `sources.label` (internal|public|sensitive|pii) + provider trust — local
+  (localhost) providers always trusted; cloud providers need `ANCHOR_CLOUD_TRUST=1`. Gated sources
+  classify with rules (never sent to cloud) and skip cloud embedding, recording a `system_event`.
+- **PII config + review (B30 partial):** `app/pii.py` = PII knowledge base (categories with field names +
+  regexes + custom filter words) + `scan_text()` (local, no LLM). Chunks get `is_pii`/`pii_categories`
+  auto-set on ingest (`pipeline._flag_pii`). API under `/pii` (config get/put, review list, decide, scan);
+  UI = `PiiTab`. Config persists in `app_settings` keys `pii_custom_words` / `pii_disabled_categories`.
+- **Answer gate (B30):** `AnswerEngine.ask` excludes sensitive/pii sources AND PII-flagged chunks from an
+  unconfirmed cloud answer provider (`cloud_answer_trusted`, `ANCHOR_CLOUD_TRUST=1`), records a
+  `system_event`, and refuses when nothing survives; follow-up rewrite is skipped when untrusted.
+  `/qa/public` answers ONLY from `public` sources (share/MCP-safe surface; AskTab Public-only toggle).
+  PII-flagged chunks are also skipped from cloud embedding in `pipeline._embed_item`.
 - **SecretStore fallback is a per-key file store** (`secrets.enc.<sha256(key)>` files) — the old
   single-blob design made `delete(key)` wipe *every* stored secret. `store_source_config` treats a
   `'***set***'` placeholder or absent field as "leave the stored secret unchanged", and an explicit
@@ -146,6 +160,13 @@ Key rules:
   or the bundled `sample/` corpus (sync with live progress) → ask a question with cited answer.
   Sample path resolves via `Path(__file__).resolve().parents[3] / "sample"` (dev checkout only; frozen
   apps report `sample.available: false`).
-- `AskTab` renders turns newest-first (B19). `SourcesTab` has an inline edit form per source (B7).
-- `api.ts` `request()` throws `Error(detail)` from the response JSON; tabs surface `error` state.
+- `AskTab` renders turns newest-first (B19). `SourcesTab` is a thin composition (B37): project/source
+  logic lives in `tabs/sources/{ProjectSection,SourceForm,SourceRow}.tsx`; job polling is the single
+  `useJobsPoll` hook (TanStack Query); `projects` state lives in `ProjectsContext` (no duplicate fetch).
+- `theme.ts` holds the shared color tokens (B37) — don't inline new hex literals; extend the token set.
+- `api.ts` `request()` throws `Error(detail)` from the response JSON; it accepts an `AbortSignal` +
+  applies a 30s timeout, surfacing aborts as `RequestAbortedError` ("Request cancelled"); tabs surface
+  `error` state.
+- `main.tsx` wraps the app + each tab in an `ErrorBoundary` (B36) — a render throw shows a recoverable
+  card with "Copy error / Download log" instead of a white screen in `console=False` packaged builds.
 - `types.ts` mirrors backend schemas; keep in sync when adding API surface.

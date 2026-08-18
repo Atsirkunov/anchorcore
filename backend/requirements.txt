@@ -12,3 +12,4 @@ watchdog==6.0.0
 pypdf==5.1.0
 python-multipart==0.0.20
 pytest==8.3.4
+pytest-asyncio==0.24.0
