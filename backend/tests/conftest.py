@@ -11,6 +11,10 @@ os.environ["ANCHOR_DATABASE_URL"] = f"sqlite:///{_db_path}"
 os.environ["ANCHOR_OLLAMA_BASE_URL"] = "http://localhost:1"
 os.environ["ANCHOR_CLASSIFIER_TIMEOUT"] = "1.0"
 os.environ["ANCHOR_HTTP_RETRIES"] = "0"
+# Windows never RSTs closed localhost ports: each dead-port connect waits the
+# full connect timeout twice (IPv6 + IPv4). Without this the suite crawls
+# (~4s/lifespan probe, ~2s per model call). Real default stays 2.0s.
+os.environ["ANCHOR_HTTP_CONNECT_TIMEOUT"] = "0.2"
 os.environ["ANCHOR_ANSWER_BASE_URL"] = "https://api.openai.com/v1"
 os.environ["ANCHOR_DATA_DIR"] = str(Path(tempfile.mkdtemp(prefix="anchorcore-data-")))
 # never touch the real OS keychain from tests — secrets go to the encrypted
