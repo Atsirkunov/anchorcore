@@ -3,10 +3,22 @@
 //! Mirrors `backend/app/main.py:130` health shape + `backend/app/db.py:44` PRAGMAs.
 
 mod answer;
+mod chunking;
+mod classifier;
 mod connectors;
 mod db;
+mod distill;
+mod embedder;
+mod entities;
+mod frontend;
+mod hashing;
 mod health;
+mod jobs;
+mod pii;
+mod projects;
 mod retrieval;
+mod review;
+mod scheduler;
 mod secrets;
 mod settings;
 mod stubs;
@@ -88,24 +100,25 @@ async fn main() {
         .route("/sources/:id/config", get(stubs::not_implemented))
         .route("/sources/:id/sync", post(stubs::not_implemented))
         .route("/sources/:id/reclassify", post(stubs::not_implemented))
-        // entities + review
-        .route("/entities/:id", get(stubs::not_implemented).patch(stubs::not_implemented))
-        .route("/entities/:id/related", get(stubs::not_implemented))
-        .route("/entities/:id/dispute", post(stubs::not_implemented))
-        .route("/entities/:id/disputes", get(stubs::not_implemented))
-        .route("/entities/:id/context", get(stubs::not_implemented))
-        .route("/review/low-confidence", get(stubs::not_implemented))
-        .route("/review/duplicates", get(stubs::not_implemented))
-        .route("/review/merge", post(stubs::not_implemented))
-        // pii
-        .route("/pii/config", get(stubs::not_implemented).put(stubs::not_implemented))
-        .route("/pii/review", get(stubs::not_implemented))
-        .route("/pii/review/:id", post(stubs::not_implemented))
-        .route("/pii/scan/:id", post(stubs::not_implemented))
-        // projects
-        .route("/projects", get(stubs::not_implemented).post(stubs::not_implemented))
-        .route("/projects/default", get(stubs::not_implemented))
-        .route("/projects/:id", patch(stubs::not_implemented).delete(stubs::not_implemented))
+        // entities + review (R4.4)
+        .route("/entities", get(entities::list_handler))
+        .route("/entities/:id", get(entities::get_handler).patch(entities::patch_handler))
+        .route("/entities/:id/related", get(entities::related_handler))
+        .route("/entities/:id/dispute", post(entities::dispute_handler))
+        .route("/entities/:id/disputes", get(entities::disputes_handler))
+        .route("/entities/:id/context", get(entities::context_handler))
+        .route("/review/low-confidence", get(review::low_confidence_handler))
+        .route("/review/duplicates", get(review::duplicates_handler))
+        .route("/review/merge", post(review::merge_handler))
+        // pii (R4.3)
+        .route("/pii/config", get(pii::get_config_handler).put(pii::put_config_handler))
+        .route("/pii/review", get(pii::review_handler))
+        .route("/pii/review/:id", post(pii::decide_handler))
+        .route("/pii/scan/:id", post(pii::scan_handler))
+        // projects (R4.4)
+        .route("/projects", get(projects::list_handler).post(projects::create_handler))
+        .route("/projects/default", get(projects::default_handler))
+        .route("/projects/:id", get(projects::get_handler).patch(projects::patch_handler).delete(projects::delete_handler))
         // qa (R2.2)
         .route("/qa", post(qa_handler))
         .route("/qa/public", post(qa_public_handler))
@@ -123,6 +136,8 @@ async fn main() {
         .route("/auth/signup", post(stubs::not_implemented))
         .route("/auth/login", post(stubs::not_implemented))
         .route("/auth/me", get(stubs::not_implemented))
+        // frontend (R5.1) — must be last, SPA fallback to index.html
+        .fallback(frontend::handler)
         .layer(CorsLayer::permissive())
         .with_state(state);
 
