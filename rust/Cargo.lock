@@ -46,6 +46,7 @@ dependencies = [
  "fernet",
  "hex",
  "keyring",
+ "regex",
  "reqwest",
  "rusqlite",
  "rusqlite_migration",
