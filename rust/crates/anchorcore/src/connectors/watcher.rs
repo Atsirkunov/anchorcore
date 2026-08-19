@@ -1,6 +1,7 @@
 use notify::{Event, RecursiveMode, Watcher};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Simple watcher like Python `folder_watcher` - debounces 3s, watches `path` recursively.

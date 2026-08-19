@@ -8,7 +8,7 @@ use crate::health::AppState;
 pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let pending: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL", [], |r| r.get(0)).unwrap_or(0);
         let mut stmt = conn.prepare("SELECT id, name, last_error, error_count FROM sources WHERE error_count > 0 AND enabled = 1").unwrap();
