@@ -20,6 +20,8 @@ rust/**/target/
 
 # Runtime
 backend/data/
+data/
+rust/data/
 *.log
 
 # Editor / OS

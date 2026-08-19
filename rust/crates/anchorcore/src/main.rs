@@ -4,8 +4,12 @@
 
 mod db;
 mod health;
+mod stubs;
 
-use axum::{routing::get, Router};
+use axum::{
+    routing::{delete, get, patch, post, put},
+    Router,
+};
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -60,8 +64,56 @@ async fn main() {
         data_dir: data_dir.to_string_lossy().to_string(),
     };
 
+    // R1.3: stub all routers with 501, keep /health real (already done in R1.2)
+    // Note: axum 0.7 uses `/:id` style; keep literal routes before param routes
     let app = Router::new()
         .route("/health", get(health::health))
+        // sources
+        .route("/sources", get(stubs::not_implemented).post(stubs::not_implemented))
+        .route("/sources/jira/projects", post(stubs::not_implemented))
+        .route("/sources/jobs", get(stubs::not_implemented))
+        .route("/sources/jobs/running", get(stubs::not_implemented))
+        .route("/sources/jobs/:id", get(stubs::not_implemented))
+        .route("/sources/jobs/:id/cancel", post(stubs::not_implemented))
+        .route("/sources/:id", get(stubs::not_implemented).put(stubs::not_implemented).delete(stubs::not_implemented))
+        .route("/sources/:id/config", get(stubs::not_implemented))
+        .route("/sources/:id/sync", post(stubs::not_implemented))
+        .route("/sources/:id/reclassify", post(stubs::not_implemented))
+        // entities + review
+        .route("/entities/:id", get(stubs::not_implemented).patch(stubs::not_implemented))
+        .route("/entities/:id/related", get(stubs::not_implemented))
+        .route("/entities/:id/dispute", post(stubs::not_implemented))
+        .route("/entities/:id/disputes", get(stubs::not_implemented))
+        .route("/entities/:id/context", get(stubs::not_implemented))
+        .route("/review/low-confidence", get(stubs::not_implemented))
+        .route("/review/duplicates", get(stubs::not_implemented))
+        .route("/review/merge", post(stubs::not_implemented))
+        // pii
+        .route("/pii/config", get(stubs::not_implemented).put(stubs::not_implemented))
+        .route("/pii/review", get(stubs::not_implemented))
+        .route("/pii/review/:id", post(stubs::not_implemented))
+        .route("/pii/scan/:id", post(stubs::not_implemented))
+        // projects
+        .route("/projects", get(stubs::not_implemented).post(stubs::not_implemented))
+        .route("/projects/default", get(stubs::not_implemented))
+        .route("/projects/:id", patch(stubs::not_implemented).delete(stubs::not_implemented))
+        // qa
+        .route("/qa", post(stubs::not_implemented))
+        .route("/qa/public", post(stubs::not_implemented))
+        // settings
+        .route("/settings", get(stubs::not_implemented).put(stubs::not_implemented))
+        .route("/settings/test-connection", post(stubs::not_implemented))
+        // system
+        .route("/system/status", get(stubs::not_implemented))
+        .route("/system/onboarding", get(stubs::not_implemented))
+        .route("/system/errors", get(stubs::not_implemented))
+        .route("/system/logs", get(stubs::not_implemented))
+        .route("/system/logs/:name", get(stubs::not_implemented))
+        // auth
+        .route("/auth/status", get(stubs::not_implemented))
+        .route("/auth/signup", post(stubs::not_implemented))
+        .route("/auth/login", post(stubs::not_implemented))
+        .route("/auth/me", get(stubs::not_implemented))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
