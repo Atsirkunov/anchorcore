@@ -24,6 +24,38 @@ os.environ["ANCHOR_SECRETS_NO_KEYRING"] = "1"
 
 @pytest.fixture()
 def client():
+    # R2.3: if ANCHOR_TEST_RUST_URL is set (e.g. http://127.0.0.1:8123), run tests
+    # against the Rust binary (black-box HTTP) instead of Python TestClient.
+    # This is the conformance harness for the incremental Rust port.
+    rust_url = os.environ.get("ANCHOR_TEST_RUST_URL")
+    if rust_url:
+        import httpx
+
+        class RustClient:
+            def __init__(self, base):
+                self.base = base.rstrip("/")
+                self.client = httpx.Client(base_url=self.base, timeout=10.0)
+
+            def get(self, path, **kw):
+                return self.client.get(path, **kw)
+
+            def post(self, path, **kw):
+                # httpx Client.post expects json=, same as TestClient
+                return self.client.post(path, **kw)
+
+            def put(self, path, **kw):
+                return self.client.put(path, **kw)
+
+            def patch(self, path, **kw):
+                return self.client.patch(path, **kw)
+
+            def delete(self, path, **kw):
+                return self.client.delete(path, **kw)
+
+        c = RustClient(rust_url)
+        yield c
+        c.client.close()
+        return
     from app.main import app
 
     with TestClient(app) as c:
