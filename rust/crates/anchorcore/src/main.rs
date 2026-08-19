@@ -7,7 +7,7 @@ mod health;
 mod stubs;
 
 use axum::{
-    routing::{delete, get, patch, post, put},
+    routing::{get, patch, post},
     Router,
 };
 use clap::Parser;
