@@ -4,6 +4,8 @@
 
 mod db;
 mod health;
+mod secrets;
+mod settings;
 mod stubs;
 
 use axum::{
@@ -59,9 +61,16 @@ async fn main() {
     let conn = db::init_db(&db_path).expect("failed to init DB");
     tracing::info!("Rust anchorcore — data_dir {} db {}", data_dir.display(), db_path.display());
 
+    // R1.4 + R1.5: secret store + settings service (mirrors Python wiring in main.py:55)
+    let secret_store = secrets::SecretStore::new(data_dir.join("secrets.enc"));
+    let settings_svc = std::sync::Arc::new(settings::SettingsService::new(secret_store));
+    // keep a clone for health probing (needs to read ANCHOR_ env + DB)
+    let health_settings = settings_svc.clone();
+
     let state = health::AppState {
         db: Arc::new(Mutex::new(conn)),
         data_dir: data_dir.to_string_lossy().to_string(),
+        settings: health_settings,
     };
 
     // R1.3: stub all routers with 501, keep /health real (already done in R1.2)
