@@ -69,7 +69,7 @@ pub async fn list_handler(State(state): State<AppState>, Query(q): Query<ListQue
     let kind = q.kind.clone();
     let status = q.status.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let mut sql = "SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities".to_string();
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![];
@@ -105,7 +105,7 @@ pub async fn list_handler(State(state): State<AppState>, Query(q): Query<ListQue
 pub async fn get_handler(State(state): State<AppState>, Path(entity_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities WHERE id = ?1").unwrap();
         let v = stmt.query_row([entity_id], |r| entity_json_from_row(r));
@@ -129,7 +129,7 @@ pub async fn patch_handler(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let exists: bool = conn.query_row("SELECT 1 FROM entities WHERE id = ?1", [entity_id], |_| Ok(())).is_ok();
         if !exists {
@@ -160,7 +160,7 @@ pub async fn patch_handler(
 pub async fn related_handler(State(state): State<AppState>, Path(entity_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let exists: bool = conn.query_row("SELECT 1 FROM entities WHERE id = ?1", [entity_id], |_| Ok(())).is_ok();
         if !exists {
@@ -199,7 +199,7 @@ pub async fn dispute_handler(
     let reason = payload.reason.unwrap_or_default().trim().to_string();
     let user = payload.user.unwrap_or_default().trim().to_string();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let exists: bool = conn.query_row("SELECT 1 FROM entities WHERE id = ?1", [entity_id], |_| Ok(())).is_ok();
         if !exists {
@@ -222,7 +222,7 @@ pub async fn dispute_handler(
 pub async fn disputes_handler(State(state): State<AppState>, Path(entity_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let exists: bool = conn.query_row("SELECT 1 FROM entities WHERE id = ?1", [entity_id], |_| Ok(())).is_ok();
         if !exists {
@@ -252,7 +252,7 @@ pub async fn disputes_handler(State(state): State<AppState>, Path(entity_id): Pa
 pub async fn context_handler(State(state): State<AppState>, Path(entity_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let mut stmt = conn.prepare("SELECT id, item_id, source_ref, window_text, window_index, summary FROM entities WHERE id = ?1").unwrap();
         let row: Result<(i64,i64,String,String,Option<i64>,String), _> = stmt.query_row([entity_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)));
