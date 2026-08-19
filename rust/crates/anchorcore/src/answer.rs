@@ -87,7 +87,7 @@ pub async fn ask(
     let settings_clone = settings_snapshot(settings);
     let q_for_block = question.clone();
     let hits = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
         retrieve_sync(&conn, &q_for_block, project_id, public_only, &settings_clone)
     })
@@ -256,7 +256,7 @@ pub async fn search(
     let project_id = req.project_id;
     let settings_clone = settings_snapshot(settings);
     let hits = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
         search_sync(&conn, &query, k, project_id)
     })

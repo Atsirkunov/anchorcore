@@ -431,7 +431,7 @@ pub struct DecideRequest {
 pub async fn get_config_handler(State(state): State<AppState>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let (disabled, custom) = load_config(&conn);
         let cats = categories_payload(&disabled);
@@ -450,7 +450,7 @@ pub async fn get_config_handler(State(state): State<AppState>) -> Json<Value> {
 pub async fn put_config_handler(State(state): State<AppState>, Json(payload): Json<PiiConfigUpdate>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let _ = save_config(&conn, payload.disabled_categories.as_deref(), payload.custom_words.as_deref());
         let (disabled, custom) = load_config(&conn);
@@ -473,7 +473,7 @@ pub async fn review_handler(State(state): State<AppState>, Query(q): Query<Revie
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let offset = q.offset.unwrap_or(0).max(0);
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let (disabled, custom) = load_config(&conn);
         // mirrors backend/app/routers/pii.py:58 review
@@ -557,7 +557,7 @@ pub async fn decide_handler(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let exists: bool = conn.query_row("SELECT 1 FROM chunks WHERE id=?1", [chunk_id], |_| Ok(())).is_ok();
         if !exists {
@@ -601,7 +601,7 @@ pub async fn decide_handler(
 pub async fn scan_handler(State(state): State<AppState>, Path(source_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let exists: bool = conn.query_row("SELECT 1 FROM sources WHERE id=?1", [source_id], |_| Ok(())).is_ok();
         if !exists {
