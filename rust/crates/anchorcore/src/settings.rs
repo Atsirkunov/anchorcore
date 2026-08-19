@@ -17,6 +17,21 @@ pub const SETTING_KEYS: &[&str] = &[
     "answer_reasoning_effort",
 ];
 pub const SECRET_KEYS: &[&str] = &["answer_api_key", "classifier_api_key", "embed_api_key"];
+pub const ALL_KEYS: &[&str] = &[
+    "ollama_base_url",
+    "classifier_model",
+    "embed_model",
+    "classifier_timeout",
+    "classifier_base_url",
+    "embed_base_url",
+    "answer_model",
+    "answer_base_url",
+    "answer_timeout",
+    "answer_reasoning_effort",
+    "answer_api_key",
+    "classifier_api_key",
+    "embed_api_key",
+];
 pub const SECRET_PREFIX: &str = "app:";
 const CACHE_TTL: Duration = Duration::from_secs(3);
 
@@ -192,6 +207,272 @@ fn db_value(conn: &Connection, key: &str) -> Option<String> {
         |r| r.get::<_, String>(0),
     )
     .ok()
+}
+
+// --- HTTP handlers (R6.1) ---
+use axum::{extract::State, http::StatusCode, Json};
+use serde_json::Value;
+
+use crate::health::AppState;
+
+pub async fn get_handler(State(state): State<AppState>) -> Json<Value> {
+    let data_dir = state.data_dir.clone();
+    let settings = state.settings.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        settings.snapshot(Some(&conn))
+    })
+    .await
+    .unwrap();
+    Json(result)
+}
+
+pub async fn put_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let obj = match payload.as_object() {
+        Some(m) => m.clone(),
+        None => {
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({"detail": "invalid payload"})),
+            ))
+        }
+    };
+    let unknown: Vec<String> = obj.keys().filter(|k| !ALL_KEYS.contains(&k.as_str())).cloned().collect();
+    if !unknown.is_empty() {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"detail": format!("unknown settings: {}", unknown.join(", "))})),
+        ));
+    }
+    let data_dir = state.data_dir.clone();
+    let settings = state.settings.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        for (k, v) in obj.iter() {
+            if v.is_null() {
+                settings.clear(k, &conn);
+            } else {
+                let s = if let Some(s) = v.as_str() {
+                    s.to_string()
+                } else {
+                    v.to_string()
+                };
+                // trim quotes for JSON numbers/bools that were stringified with quotes?
+                // For numbers/bools, v.to_string() yields e.g. "true" without quotes, correct.
+                // For strings, we used as_str, so no extra quotes.
+                let _ = settings.set(k, &s, &conn);
+            }
+        }
+        settings.snapshot(Some(&conn))
+    })
+    .await
+    .unwrap();
+    Ok(Json(result))
+}
+
+pub async fn test_connection_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let provider = payload
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("ollama")
+        .to_string();
+    match provider.as_str() {
+        "ollama" => Ok(Json(test_ollama(&state.settings).await)),
+        "classifier" => Ok(Json(test_classifier(&state.settings).await)),
+        "embedder" => Ok(Json(test_embedder(&state.settings).await)),
+        "embed" => Ok(Json(test_embedder(&state.settings).await)),
+        "answer" => Ok(Json(test_answer(&state.settings).await)),
+        _ => Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"detail": format!("unknown provider: {}", provider)})),
+        )),
+    }
+}
+
+fn connect_timeout() -> std::time::Duration {
+    // Conftest sets ANCHOR_HTTP_CONNECT_TIMEOUT=0.2 to keep suite fast (Windows quirk)
+    if let Ok(v) = std::env::var("ANCHOR_HTTP_CONNECT_TIMEOUT") {
+        if let Ok(f) = v.parse::<f64>() {
+            return std::time::Duration::from_secs_f64(f.clamp(0.05, 10.0));
+        }
+    }
+    if let Ok(v) = std::env::var("ANCHOR_CONNECT_TIMEOUT") {
+        if let Ok(f) = v.parse::<f64>() {
+            return std::time::Duration::from_secs_f64(f.clamp(0.05, 10.0));
+        }
+    }
+    std::time::Duration::from_secs(3)
+}
+
+async fn test_ollama(settings: &SettingsService) -> Value {
+    let base = settings
+        .get("ollama_base_url", None)
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
+    let url = format!("{}/api/tags", base.trim_end_matches('/'));
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .connect_timeout(connect_timeout())
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return serde_json::json!({"ok": false, "provider": "ollama", "message": format!("unreachable: {}", e)})
+        }
+    };
+    let resp = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            return serde_json::json!({"ok": false, "provider": "ollama", "message": format!("unreachable: {}", e)})
+        }
+    };
+    if !resp.status().is_success() {
+        return serde_json::json!({"ok": false, "provider": "ollama", "message": format!("unreachable: status {}", resp.status())});
+    }
+    let body: Value = resp.json().await.unwrap_or(Value::Null);
+    let models: std::collections::HashSet<String> = body
+        .get("models")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("name").and_then(|n| n.as_str()).map(|n| n.split(':').next().unwrap_or(n).to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let classifier = settings
+        .get("classifier_model", None)
+        .unwrap_or_else(|| "llama3.2:3b".to_string())
+        .split(':')
+        .next()
+        .unwrap_or("llama3.2")
+        .to_string();
+    let embed = settings
+        .get("embed_model", None)
+        .unwrap_or_else(|| "nomic-embed-text".to_string())
+        .split(':')
+        .next()
+        .unwrap_or("nomic-embed-text")
+        .to_string();
+    let missing: Vec<String> = [classifier.clone(), embed.clone()]
+        .into_iter()
+        .filter(|m| !models.contains(m))
+        .collect();
+    if !missing.is_empty() {
+        return serde_json::json!({"ok": false, "provider": "ollama", "message": format!("reachable; models missing: {} (run: ollama pull {})", missing.join(", "), missing.join(" && ollama pull "))});
+    }
+    serde_json::json!({"ok": true, "provider": "ollama", "message": "Ollama up, models present"})
+}
+
+async fn test_classifier(settings: &SettingsService) -> Value {
+    let base = settings
+        .get("classifier_base_url", None)
+        .or_else(|| settings.get("ollama_base_url", None))
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
+    let is_local = base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1");
+    let api_key = settings.get("classifier_api_key", None).unwrap_or_default();
+    if !is_local && api_key.is_empty() {
+        return serde_json::json!({"ok": false, "provider": "classifier", "message": "API key required for a cloud classifier provider"});
+    }
+    let model = settings.get("classifier_model", None).unwrap_or_else(|| "llama3.2:3b".to_string());
+    let url = format!("{}/v1/chat/completions", base.trim_end_matches('/'));
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(connect_timeout())
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({"ok": false, "provider": "classifier", "message": format!("request failed: {}", e)}),
+    };
+    let mut req = client.post(&url).json(&serde_json::json!({
+        "model": model,
+        "messages": [{"role":"user","content":"ping"}],
+        "max_tokens": 1
+    }));
+    if !api_key.is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", api_key));
+    }
+    match req.send().await {
+        Ok(r) if r.status().is_success() => serde_json::json!({"ok": true, "provider": "classifier", "message": "classifier provider responds"}),
+        Ok(r) => serde_json::json!({"ok": false, "provider": "classifier", "message": format!("request failed: status {}", r.status())}),
+        Err(e) => serde_json::json!({"ok": false, "provider": "classifier", "message": format!("request failed: {}", e)}),
+    }
+}
+
+async fn test_embedder(settings: &SettingsService) -> Value {
+    let base = settings
+        .get("embed_base_url", None)
+        .or_else(|| settings.get("ollama_base_url", None))
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
+    let is_local = base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1");
+    let api_key = settings.get("embed_api_key", None).unwrap_or_default();
+    if !is_local && api_key.is_empty() {
+        return serde_json::json!({"ok": false, "provider": "embedder", "message": "API key required for a cloud embedding provider"});
+    }
+    let model = settings.get("embed_model", None).unwrap_or_else(|| "nomic-embed-text".to_string());
+    let url = format!("{}/v1/embeddings", base.trim_end_matches('/'));
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(connect_timeout())
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({"ok": false, "provider": "embedder", "message": format!("request failed: {}", e)}),
+    };
+    let mut req = client.post(&url).json(&serde_json::json!({
+        "model": model,
+        "input": ["ping"]
+    }));
+    if !api_key.is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", api_key));
+    }
+    match req.send().await {
+        Ok(r) if r.status().is_success() => serde_json::json!({"ok": true, "provider": "embedder", "message": "embedding provider responds"}),
+        Ok(r) => serde_json::json!({"ok": false, "provider": "embedder", "message": format!("request failed: status {}", r.status())}),
+        Err(e) => serde_json::json!({"ok": false, "provider": "embedder", "message": format!("request failed: {}", e)}),
+    }
+}
+
+async fn test_answer(settings: &SettingsService) -> Value {
+    let base = settings.get("answer_base_url", None).unwrap_or_default();
+    if base.is_empty() {
+        return serde_json::json!({"ok": false, "provider": "answer", "message": "no answer base URL configured"});
+    }
+    let is_local = base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1");
+    let api_key = settings.get("answer_api_key", None).unwrap_or_default();
+    if !is_local && api_key.is_empty() {
+        return serde_json::json!({"ok": false, "provider": "answer", "message": "API key required for this provider"});
+    }
+    let model = settings.get("answer_model", None).unwrap_or_else(|| "gpt-4o-mini".to_string());
+    // Python posts to {base}/chat/completions (base already includes /v1)
+    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .connect_timeout(connect_timeout())
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({"ok": false, "provider": "answer", "message": format!("request failed: {}", e)}),
+    };
+    let mut req = client.post(&url).json(&serde_json::json!({
+        "model": model,
+        "messages": [{"role":"user","content":"ping"}],
+        "max_tokens": 1
+    }));
+    if !api_key.is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", api_key));
+    }
+    match req.send().await {
+        Ok(r) if r.status().is_success() => serde_json::json!({"ok": true, "provider": "answer", "message": format!("model '{}' responds", model)}),
+        Ok(r) => serde_json::json!({"ok": false, "provider": "answer", "message": format!("request failed: status {}", r.status())}),
+        Err(e) => serde_json::json!({"ok": false, "provider": "answer", "message": format!("request failed: {}", e)}),
+    }
 }
 
 #[cfg(test)]

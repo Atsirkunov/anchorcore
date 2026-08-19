@@ -3,6 +3,7 @@
 //! Mirrors `backend/app/main.py:130` health shape + `backend/app/db.py:44` PRAGMAs.
 
 mod answer;
+mod auth;
 mod chunking;
 mod classifier;
 mod connectors;
@@ -77,6 +78,11 @@ async fn main() {
     let db_path = db::resolve_db_path(&data_dir.to_string_lossy());
     // init DB for side-effect (migrations, pragmas) - health/qa open per-request
     let _ = db::init_db(&db_path).expect("failed to init DB");
+    // R6.2: ensure log file exists so GET /system/logs finds anchorcore.log (Python creates via RotatingFileHandler)
+    let log_path = data_dir.join("anchorcore.log");
+    if !log_path.exists() {
+        let _ = std::fs::write(&log_path, format!("AnchorCore Rust {} started\n", env!("CARGO_PKG_VERSION")));
+    }
     tracing::info!("Rust anchorcore — data_dir {} db {}", data_dir.display(), db_path.display());
 
     // R1.4 + R1.5: secret store + settings service (mirrors Python wiring in main.py:55)
@@ -221,20 +227,20 @@ async fn main() {
         .route("/qa", post(qa_handler))
         .route("/qa/public", post(qa_public_handler))
         .route("/qa/search", post(search_handler))
-        // settings
-        .route("/settings", get(stubs::not_implemented).put(stubs::not_implemented))
-        .route("/settings/test-connection", post(stubs::not_implemented))
-        // system
+        // settings (R6.1)
+        .route("/settings", get(settings::get_handler).put(settings::put_handler))
+        .route("/settings/test-connection", post(settings::test_connection_handler))
+        // system (R6.2)
         .route("/system/status", get(system::status_handler))
-        .route("/system/onboarding", get(stubs::not_implemented))
-        .route("/system/errors", get(stubs::not_implemented))
-        .route("/system/logs", get(stubs::not_implemented))
-        .route("/system/logs/:name", get(stubs::not_implemented))
-        // auth
-        .route("/auth/status", get(stubs::not_implemented))
-        .route("/auth/signup", post(stubs::not_implemented))
-        .route("/auth/login", post(stubs::not_implemented))
-        .route("/auth/me", get(stubs::not_implemented))
+        .route("/system/onboarding", get(system::onboarding_handler))
+        .route("/system/errors", get(system::errors_handler))
+        .route("/system/logs", get(system::logs_handler))
+        .route("/system/logs/:name", get(system::log_download_handler))
+        // auth (R6.3 B40)
+        .route("/auth/status", get(auth::status_handler))
+        .route("/auth/signup", post(auth::signup_handler))
+        .route("/auth/login", post(auth::login_handler))
+        .route("/auth/me", get(auth::me_handler))
         // frontend (R5.1) — must be last, SPA fallback to index.html
         .fallback(frontend::handler)
         .layer(CorsLayer::permissive())
