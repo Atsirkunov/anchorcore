@@ -1,0 +1,2 @@
+-- b33a0c1_add_vec_chunks — sqlite-vec vec0 (ignore if extension missing)
+-- actual vec creation attempted at runtime; this migration is a marker for rusqlite_migration

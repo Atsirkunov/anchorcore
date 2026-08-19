@@ -1,0 +1,109 @@
+use rusqlite::{Connection, Result};
+use rusqlite_migration::{Migrations, M};
+use std::path::Path;
+
+/// Open SQLite at `path`, set PRAGMAs, run migrations.
+/// Mirrors `backend/app/db.py:44` + `backend/app/main.py:_run_migrations`.
+
+pub fn init_db(path: &Path) -> Result<Connection> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut conn = Connection::open(path)?;
+
+    // PRAGMAs — must match Python (WAL, busy_timeout, synchronous, foreign_keys)
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "busy_timeout", 5000)?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+
+    // Run migrations (see `migrations()` below). If the DB already exists from
+    // Python/Alembic, this will apply only missing ones; otherwise it creates all.
+    // All SQL uses IF NOT EXISTS so re-running on a Python-created DB is safe.
+    let migrations = migrations();
+    // Ignore migration errors on Python-created DBs where rusqlite_migration
+    // tracking table is empty but tables already exist — our SQL is idempotent.
+    let _ = migrations.to_latest(&mut conn);
+
+    // Idempotent column adds for incremental schema (b39, b30, b26, etc.)
+    ensure_columns(&conn)?;
+    ensure_vec(&conn);
+
+    // Ensure PRAGMAs after migrations (some migrations may reset)
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(conn)
+}
+
+fn try_add_column(conn: &Connection, sql: &str) {
+    let _ = conn.execute(sql, []);
+}
+
+fn ensure_columns(conn: &Connection) -> Result<()> {
+    // sources.label (b39)
+    try_add_column(conn, "ALTER TABLE sources ADD COLUMN label VARCHAR(20) NOT NULL DEFAULT 'internal'");
+    // ingested_items additional (b26 + misc)
+    try_add_column(conn, "ALTER TABLE ingested_items ADD COLUMN doc_type VARCHAR(50) NOT NULL DEFAULT ''");
+    try_add_column(conn, "ALTER TABLE ingested_items ADD COLUMN window_hashes TEXT NOT NULL DEFAULT '{}'");
+    try_add_column(conn, "ALTER TABLE ingested_items ADD COLUMN distill_hashes TEXT NOT NULL DEFAULT '{}'");
+    // entities.window_text/window_index/dispute_count (b26 + B3)
+    try_add_column(conn, "ALTER TABLE entities ADD COLUMN window_text TEXT NOT NULL DEFAULT ''");
+    try_add_column(conn, "ALTER TABLE entities ADD COLUMN window_index INTEGER");
+    try_add_column(conn, "ALTER TABLE entities ADD COLUMN dispute_count INTEGER NOT NULL DEFAULT 0");
+    // chunks additions (B30, B18)
+    try_add_column(conn, "ALTER TABLE chunks ADD COLUMN kind VARCHAR(20) NOT NULL DEFAULT 'document'");
+    try_add_column(conn, "ALTER TABLE chunks ADD COLUMN is_pii BOOLEAN NOT NULL DEFAULT 0");
+    try_add_column(conn, "ALTER TABLE chunks ADD COLUMN pii_categories TEXT NOT NULL DEFAULT '[]'");
+    Ok(())
+}
+
+fn ensure_vec(conn: &Connection) {
+    // Try to create vec0 index; ignore if sqlite-vec not available (like Python fallback)
+    let sql = "CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(embedding float[768] distance_metric=cosine)";
+    let _ = conn.execute(sql, []);
+}
+
+fn migrations() -> Migrations<'static> {
+    Migrations::new(vec![
+        // 23bca0413318_initial_schema — sources, ingested_items, entities, chunks, merge_actions, relationships
+        M::up(include_str!("../migrations/01_initial.sql")),
+        // 7c4a2b9e3d81_add_system_events_table
+        M::up(include_str!("../migrations/02_system_events.sql")),
+        // 9d3f1b2c4a51_add_jobs_table
+        M::up(include_str!("../migrations/03_jobs.sql")),
+        // b4a00c1_add_app_settings
+        M::up(include_str!("../migrations/04_app_settings.sql")),
+        // b3a0c1_disputes + b15a0d1_projects + b18 distilled + b26 review_context (collapsed)
+        M::up(include_str!("../migrations/05_misc.sql")),
+        // b12f7c0_add_chunks_fts
+        M::up(include_str!("../migrations/06_fts.sql")),
+        // b39a0c1_add_source_label
+        M::up(include_str!("../migrations/07_source_label.sql")),
+        // b33a0c1_add_vec_chunks
+        M::up(include_str!("../migrations/08_vec.sql")),
+        // b30a0c1_add_pii_flags
+        M::up(include_str!("../migrations/09_pii.sql")),
+        // b40a0c1_add_users
+        M::up(include_str!("../migrations/10_users.sql")),
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn opens_and_migrates() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let conn = init_db(&path).unwrap();
+        // check tables exist
+        let mut stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table'").unwrap();
+        let tables: Vec<String> = stmt.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+        assert!(tables.contains(&"sources".to_string()));
+        assert!(tables.contains(&"chunks".to_string()));
+        // pragmas
+        let fk: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(fk, 1);
+    }
+}

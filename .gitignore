@@ -14,6 +14,10 @@ dist/
 # Packaging (PyInstaller intermediates; the exe output lives in dist/)
 build/
 
+# Rust
+rust/target/
+rust/**/target/
+
 # Runtime
 backend/data/
 *.log

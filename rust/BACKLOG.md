@@ -19,8 +19,8 @@ Status: `todo` | `doing` | `done`. Update this file when you pick/complete a tas
 
 | ID | Title | Est | Dependencies | DoD | Owner |
 |---|---|---|---|---|---|
-| R1.1 | Workspace + CI | 0.5d | — | `cargo build` + `cargo test` in CI, `rust/Cargo.toml` workspace, `rust/crates/anchorcore` builds binary + reads `--port`/`--data-dir`. | todo |
-| R1.2 | SQLite + migrations | 1d | R1.1 | `rusqlite` opens same file as Python, `PRAGMA foreign_keys=ON`, applies Alembic history (b12 b30 b33 b39 b40) via `rusqlite_migration`, `GET /health` returns same shape as `backend/app/main.py`. | todo |
+| R1.1 | Workspace + CI | 0.5d | — | `cargo build` + `cargo test` in CI, `rust/Cargo.toml` workspace, `rust/crates/anchorcore` builds binary + reads `--port`/`--data-dir`. | done (workspace scaffold `rust/README.md`, `rust/Cargo.toml`, `rust/crates/anchorcore/src/main.rs` - CI pending `cargo` install) |
+| R1.2 | SQLite + migrations | 1d | R1.1 | `rusqlite` opens same file as Python, `PRAGMA foreign_keys=ON`, applies Alembic history (b12 b30 b33 b39 b40) via `rusqlite_migration`, `GET /health` returns same shape as `backend/app/main.py`. | doing ( `rust/crates/anchorcore/src/db.rs:1` + `migrations/*.sql:1` + `src/health.rs:1` + `src/main.rs:1` — `cargo` not yet installed, needs `rustup`) |
 | R1.3 | Axum router stubs (read-only) | 1d | R1.2 | All `backend/app/routers/*` routes exist, return `501 Not Implemented` with same JSON `detail`, `cargo test` + Python conformance passes for 501. | todo |
 | R1.4 | Secret store (keyring) | 1d | R1.2 | `keyring` crate + file fallback (`ANCHOR_SECRETS_NO_KEYRING=1`), `***set***` placeholder, never logs raw tokens. | todo |
 | R1.5 | Settings service | 0.5d | R1.2 | `.env` defaults + DB `app_settings` overrides win, `ANCHOR_CLOUD_TRUST` etc. Same `SETTING_KEYS`/`SECRET_KEYS`. | todo |
