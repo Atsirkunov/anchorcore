@@ -565,6 +565,91 @@ pub fn fuse_evidence(mut lists: Vec<Vec<Hit>>, mut weights: Vec<f64>) -> Vec<Hit
     rrf_fuse_multi(lists, weights)
 }
 
+pub fn fuse_and_rank(
+    conn: &Connection,
+    vector_hits: Option<Vec<Hit>>,
+    keyword_hits: Option<Vec<Hit>>,
+    keyword_weight: f64,
+    halflife_days: f64,
+    max_per_source: usize,
+    top_k: usize,
+    qa_exclude_disputed: bool,
+) -> Vec<Hit> {
+    let mut fused = if vector_hits.is_none() && keyword_hits.is_none() {
+        vec![]
+    } else if vector_hits.is_none() {
+        keyword_hits.unwrap().into_iter().map(|mut h| { h.score = 1.0/(RRF_K+1.0); h }).collect()
+    } else if keyword_hits.is_none() {
+        vector_hits.unwrap().into_iter().map(|mut h| { h.score = 1.0/(RRF_K+1.0); h }).collect()
+    } else {
+        rrf_fuse_multi(vec![vector_hits.unwrap(), keyword_hits.unwrap()], vec![1.0, keyword_weight])
+    };
+    let now = Utc::now();
+    for h in &mut fused {
+        // need created_at from DB; for now use now - age decay via Hit status? Use content age via DB lookup
+        // For R2.1, we approximate with now and halflife
+        let created: Option<DateTime<Utc>> = conn.query_row("SELECT created_at FROM chunks WHERE id=?1", [h.chunk_id], |r| r.get::<_, Option<String>>(0)).ok().flatten().and_then(|s| DateTime::parse_from_rfc3339(&s).ok()).map(|d| d.with_timezone(&Utc));
+        h.score *= age_decay(created, halflife_days, now);
+    }
+    fused.sort_by(|a,b| b.score.partial_cmp(&a.score).unwrap());
+    // diversity cap per item
+    if max_per_source>0 {
+        let distinct: std::collections::HashSet<Option<i64>> = fused.iter().map(|h| h.item_id).collect();
+        let effective_cap = if distinct.len()>=3 { max_per_source } else { top_k };
+        let mut per_item: std::collections::HashMap<Option<i64>, usize> = HashMap::new();
+        let mut capped = Vec::new();
+        for h in fused {
+            let c = per_item.entry(h.item_id).or_insert(0);
+            if *c >= effective_cap { continue; }
+            *c+=1;
+            capped.push(h);
+        }
+        fused = capped;
+    }
+    fused = dedupe_similar(fused);
+    let mut hits: Vec<Hit> = fused.into_iter().take(top_k).collect();
+    expand_context(conn, &mut hits, 1);
+    // filter stale/disputed again (already in load, but for fused graph hits)
+    hits.into_iter().filter(|h| status_ok(h.status.as_deref(), qa_exclude_disputed)).collect()
+}
+
+pub fn dedupe_similar(mut hits: Vec<Hit>) -> Vec<Hit> {
+    let mut seen: HashSet<(Option<i64>, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for h in hits.drain(..) {
+        let key = (h.item_id, content_signature(&h.content));
+        if seen.contains(&key) { continue; }
+        seen.insert(key);
+        out.push(h);
+    }
+    out
+}
+
+pub fn expand_context(conn: &Connection, hits: &mut [Hit], window: usize) {
+    if window==0 || hits.is_empty() { return; }
+    let hit_ids: HashSet<i64> = hits.iter().map(|h| h.chunk_id).collect();
+    for h in hits.iter_mut() {
+        let item_id = match h.item_id { Some(id)=>id, None=> continue };
+        let mut stmt = match conn.prepare("SELECT id, content FROM chunks WHERE item_id=?1 ORDER BY id") { Ok(s)=>s, Err(_)=> continue };
+        let siblings: Vec<(i64,String)> = stmt.query_map([item_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(|r| r.ok()).collect();
+        let idx = siblings.iter().position(|(id,_)| *id==h.chunk_id);
+        if let Some(i) = idx {
+            let start = i.saturating_sub(window);
+            let end = (i+window+1).min(siblings.len());
+            let mut extra = Vec::new();
+            for (j,(cid,content)) in siblings[start..end].iter().enumerate() {
+                if *cid==h.chunk_id || hit_ids.contains(cid) { continue; }
+                if j==i { continue; }
+                extra.push(content.clone());
+            }
+            if !extra.is_empty() {
+                // store expanded in content for now (Python stores hit["expanded"])
+                h.content = format!("{}\n\n[continued]\n\n{}", h.content, extra.join("\n\n"));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
