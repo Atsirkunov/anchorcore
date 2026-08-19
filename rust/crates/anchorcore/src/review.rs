@@ -40,7 +40,7 @@ pub async fn low_confidence_handler(State(state): State<AppState>) -> Json<Value
     let data_dir = state.data_dir.clone();
     let threshold: f64 = std::env::var("ANCHOR_LOW_CONFIDENCE_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(0.6);
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities WHERE confidence < ?1 AND status = 'unverified' ORDER BY confidence ASC LIMIT 100").unwrap();
         let rows = stmt.query_map([threshold], |r| {
@@ -74,7 +74,7 @@ pub async fn duplicates_handler(State(state): State<AppState>, Query(q): Query<D
     let kind = q.kind.clone();
     let dup_threshold: f64 = std::env::var("ANCHOR_DUPLICATE_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(0.92);
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let mut sql = "SELECT id, summary, kind, created_at FROM entities WHERE status != 'stale'".to_string();
         if let Some(k) = kind {
@@ -125,7 +125,7 @@ pub async fn duplicates_handler(State(state): State<AppState>, Query(q): Query<D
 pub async fn merge_handler(State(state): State<AppState>, Json(payload): Json<MergePayload>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let (a_id, b_id, status): (i64, i64, String) = match conn.query_row("SELECT entity_a_id, entity_b_id, status FROM merge_actions WHERE id = ?1", [payload.proposal_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))) {
             Ok(v) => v,
