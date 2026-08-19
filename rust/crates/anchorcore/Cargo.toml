@@ -9,6 +9,10 @@ license.workspace = true
 name = "anchorcore"
 path = "src/main.rs"
 
+[[bin]]
+name = "anchorcore-mcp"
+path = "src/bin/mcp.rs"
+
 [dependencies]
 axum = { version = "0.7", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
