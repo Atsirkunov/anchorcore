@@ -1,9 +1,9 @@
 # AnchorCore — Backend Port to Rust (evaluation + plan, B31)
 
-> **Status: evaluation. Not started.** The question is real — *"would Rust make this
+> **Status: backlog — workspace `rust/` created.** The question is real — *"would Rust make this
 > easier to run and faster?"* — and the answer is more honest than either a blanket
 > "yes" or "no". This doc captures the reasoning and a concrete, incremental plan.
-> Companion: [product-plan.md](./product-plan.md#b31-backend-port-to-rust-p3deferred).
+> Companion: [product-plan.md](./product-plan.md#b31-backend-port-to-rust-p3deferred) + `rust/BACKLOG.md:1` + `rust/README.md:1`.
 
 ---
 
@@ -148,4 +148,6 @@ contract keeps both worlds working in parallel.
 
 ---
 
-*Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [product-plan.md](./product-plan.md)*
+*Workspace: `rust/` (Cargo workspace, `rust/AGENTS.md`, `rust/BACKLOG.md`). AI agents: pick one `R*.*` task, branch `rust/R1.1`.*
+
+*Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [product-plan.md](./product-plan.md), [rust/BACKLOG.md](../rust/BACKLOG.md)*
