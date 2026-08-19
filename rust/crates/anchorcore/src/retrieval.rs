@@ -144,6 +144,236 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     dot / (na * nb)
 }
 
+pub fn unpack_f32(blob: &[u8], dim: usize) -> Option<Vec<f32>> {
+    if blob.len() != dim * 4 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(dim);
+    for chunk in blob.chunks_exact(4) {
+        out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Some(out)
+}
+
+// --- DB-backed retrieval (mirrors answer_engine.py:610 _vector_search etc.) ---
+
+use rusqlite::Connection;
+
+pub fn vector_search(
+    conn: &Connection,
+    query_emb: &[f32],
+    source_ids: Option<&std::collections::HashSet<i64>>,
+    top_k: usize,
+    qa_exclude_disputed: bool,
+) -> Vec<Hit> {
+    if let Some(hits) = vector_search_vec0(conn, query_emb, source_ids, top_k, qa_exclude_disputed) {
+        return hits;
+    }
+    vector_search_scan(conn, query_emb, source_ids, top_k, qa_exclude_disputed)
+}
+
+fn vector_search_vec0(
+    conn: &Connection,
+    query_emb: &[f32],
+    source_ids: Option<&HashSet<i64>>,
+    top_k: usize,
+    qa_exclude_disputed: bool,
+) -> Option<Vec<Hit>> {
+    let dim: usize = std::env::var("ANCHOR_EMBED_DIM").ok().and_then(|v| v.parse().ok()).unwrap_or(768);
+    if query_emb.len() != dim {
+        return None;
+    }
+    let q_json = serde_json::to_string(query_emb).ok()?;
+    let mut sql = String::from(
+        "SELECT v.rowid, v.distance FROM vec_chunks v \
+         JOIN chunks c ON c.id = v.rowid \
+         LEFT JOIN entities e ON e.id = c.entity_id \
+         LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
+         WHERE v.embedding MATCH :q",
+    );
+    if let Some(ids) = source_ids {
+        if !ids.is_empty() {
+            let list = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+            sql.push_str(&format!(" AND i.source_id IN ({})", list));
+        }
+    }
+    sql.push_str(" AND k = :limit");
+    let mut stmt = conn.prepare(&sql).ok()?;
+    let limit = (top_k * 4) as i64;
+    let rows: Result<Vec<(i64, f64)>, _> = stmt
+        .query_map(
+            rusqlite::named_params! { ":q": q_json, ":limit": limit },
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?)),
+        )
+        .ok()?
+        .collect();
+    let rows = match rows {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+    if rows.is_empty() {
+        return Some(vec![]);
+    }
+    let by_id: HashMap<i64, f64> = rows.into_iter().collect();
+    let ids: Vec<i64> = by_id.keys().cloned().collect();
+    let hits = load_hits(conn, &ids, source_ids, qa_exclude_disputed);
+    let mut out = Vec::new();
+    for mut h in hits {
+        if let Some(d) = by_id.get(&h.chunk_id) {
+            let score = 1.0 - *d as f32;
+            if score <= 0.2 {
+                continue;
+            }
+            h.score = score as f64;
+            out.push(h);
+        }
+    }
+    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    Some(out)
+}
+
+fn vector_search_scan(
+    conn: &Connection,
+    query_emb: &[f32],
+    source_ids: Option<&HashSet<i64>>,
+    top_k: usize,
+    qa_exclude_disputed: bool,
+) -> Vec<Hit> {
+    let hits = load_chunks_with_embedding(conn, source_ids, qa_exclude_disputed);
+    let mut scored = Vec::new();
+    for mut h in hits {
+        if let Some(blob) = get_embedding(conn, h.chunk_id) {
+            if let Some(vec) = unpack_f32(&blob, query_emb.len()) {
+                let score = cosine(query_emb, &vec);
+                if score > 0.2 {
+                    h.score = score as f64;
+                    scored.push(h);
+                }
+            }
+        }
+    }
+    scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    scored.truncate(top_k * 4);
+    scored
+}
+
+fn load_hits(
+    conn: &Connection,
+    ids: &[i64],
+    source_ids: Option<&HashSet<i64>>,
+    qa_exclude_disputed: bool,
+) -> Vec<Hit> {
+    if ids.is_empty() {
+        return vec![];
+    }
+    let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT c.id, c.entity_id, c.item_id, c.content, c.is_pii, c.created_at, e.status, \
+                COALESCE(c.item_id, e.item_id) as eff_item, i.source_id \
+         FROM chunks c \
+         LEFT JOIN entities e ON e.id = c.entity_id \
+         LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
+         WHERE c.id IN ({})",
+        list
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<i64>>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<i64>>(7)?,
+                r.get::<_, Option<i64>>(8)?,
+            ))
+        })
+        .unwrap();
+    let mut out = Vec::new();
+    for row in rows.flatten() {
+        let (cid, eid, iid, content, is_pii, _created, status, _eff, sid) = row;
+        if !status_ok(status.as_deref(), qa_exclude_disputed) {
+            continue;
+        }
+        if let Some(filter) = source_ids {
+            if let Some(s) = sid {
+                if !filter.contains(&s) {
+                    continue;
+                }
+            }
+        }
+        out.push(Hit {
+            chunk_id: cid,
+            entity_id: eid,
+            item_id: iid,
+            source_id: sid,
+            score: 0.0,
+            content,
+            is_pii: is_pii != 0,
+            status,
+        });
+    }
+    out
+}
+
+fn load_chunks_with_embedding(
+    conn: &Connection,
+    source_ids: Option<&HashSet<i64>>,
+    qa_exclude_disputed: bool,
+) -> Vec<Hit> {
+    let sql = "SELECT c.id, c.entity_id, c.item_id, c.content, c.is_pii, e.status, i.source_id \
+               FROM chunks c \
+               LEFT JOIN entities e ON e.id = c.entity_id \
+               LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
+               WHERE c.embedding IS NOT NULL";
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<i64>>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, Option<i64>>(6)?,
+            ))
+        })
+        .unwrap();
+    let mut out = Vec::new();
+    for row in rows.flatten() {
+        let (cid, eid, iid, content, is_pii, status, sid) = row;
+        if !status_ok(status.as_deref(), qa_exclude_disputed) {
+            continue;
+        }
+        if let Some(filter) = source_ids {
+            if let Some(s) = sid {
+                if !filter.contains(&s) {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+        }
+        out.push(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, score: 0.0, content, is_pii: is_pii != 0, status });
+    }
+    out
+}
+
+fn get_embedding(conn: &Connection, chunk_id: i64) -> Option<Vec<u8>> {
+    conn.query_row("SELECT embedding FROM chunks WHERE id = ?1", [chunk_id], |r| r.get::<_, Option<Vec<u8>>>(0))
+        .ok()?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
