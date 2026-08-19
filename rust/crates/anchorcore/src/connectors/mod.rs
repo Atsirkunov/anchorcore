@@ -1,4 +1,5 @@
 pub mod folder;
+pub mod jira;
 pub mod watcher;
 
 use chrono::{DateTime, Utc};
