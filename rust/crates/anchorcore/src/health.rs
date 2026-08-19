@@ -1,20 +1,20 @@
 use axum::{extract::State, Json};
 use rusqlite::Connection;
 use serde_json::{json, Value};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use crate::settings::SettingsService;
+use crate::{db, settings::SettingsService};
 
 #[derive(Clone)]
 pub struct AppState {
-    pub db: Arc<Mutex<Connection>>,
     pub data_dir: String,
     pub settings: Arc<SettingsService>,
 }
 
 pub async fn health(State(state): State<AppState>) -> Json<Value> {
     let (failing_sources, pending_embeddings) = {
-        let conn = state.db.lock().unwrap();
+        let db_path = std::path::PathBuf::from(&state.data_dir).join("anchorcore.db");
+        let conn = db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
         let failing = failing_sources(&conn);
         let pending: i64 = conn
             .query_row("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL", [], |r| r.get(0))
