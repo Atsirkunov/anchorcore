@@ -3,17 +3,18 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use crate::{db, settings::SettingsService};
+use crate::{db, jobs::JobManager, settings::SettingsService};
 
 #[derive(Clone)]
 pub struct AppState {
     pub data_dir: String,
     pub settings: Arc<SettingsService>,
+    pub jobs: Arc<JobManager>,
 }
 
 pub async fn health(State(state): State<AppState>) -> Json<Value> {
     let (failing_sources, pending_embeddings) = {
-        let db_path = std::path::PathBuf::from(&state.data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&state.data_dir);
         let conn = db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
         let failing = failing_sources(&conn);
         let pending: i64 = conn

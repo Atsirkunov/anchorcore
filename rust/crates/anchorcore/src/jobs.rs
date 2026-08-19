@@ -1,11 +1,18 @@
 //! JobManager (R4.1) — bounded concurrency MAX_CONCURRENT=2, pending queue.
 //! Port of `backend/app/jobs.py` / `JobManager`.
 
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    Json,
+};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use crate::health::AppState;
 
 pub const MAX_CONCURRENT: usize = 2;
 
@@ -159,6 +166,135 @@ impl Default for JobManager {
     fn default() -> Self {
         Self { pending: Mutex::new(VecDeque::new()), running: Mutex::new(HashMap::new()) }
     }
+}
+
+// --- helpers for HTTP handlers ---
+
+fn job_json(row: &rusqlite::Row) -> rusqlite::Result<serde_json::Value> {
+    let id: i64 = row.get(0)?;
+    let source_id: i64 = row.get(1)?;
+    let kind: String = row.get(2)?;
+    let status: String = row.get(3)?;
+    let total: i64 = row.get(4)?;
+    let processed: i64 = row.get(5)?;
+    let result_str: String = row.get(6)?;
+    let error: Option<String> = row.get(7)?;
+    let created_at: Option<String> = row.get(8)?;
+    let started_at: Option<String> = row.get(9)?;
+    let finished_at: Option<String> = row.get(10)?;
+    let result: serde_json::Value = serde_json::from_str(&result_str).unwrap_or(serde_json::json!({}));
+    Ok(serde_json::json!({
+        "id": id,
+        "source_id": source_id,
+        "kind": kind,
+        "status": status,
+        "total": total,
+        "processed": processed,
+        "result": result,
+        "error": error,
+        "created_at": created_at.unwrap_or_default(),
+        "started_at": started_at,
+        "finished_at": finished_at
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct JobsQuery {
+    pub source_id: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+pub async fn list_handler(State(state): State<AppState>, Query(q): Query<JobsQuery>) -> Json<serde_json::Value> {
+    let data_dir = state.data_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let mut sql = "SELECT id, source_id, kind, status, total, processed, result, error, created_at, started_at, finished_at FROM jobs".to_string();
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![];
+        if let Some(sid) = q.source_id {
+            sql.push_str(" WHERE source_id = ?");
+            params.push(Box::new(sid));
+        }
+        sql.push_str(" ORDER BY created_at DESC");
+        if let Some(l) = q.limit {
+            sql.push_str(&format!(" LIMIT {}", l.clamp(1, 200)));
+        } else {
+            sql.push_str(" LIMIT 50");
+        }
+        let mut stmt = match conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(_) => return serde_json::Value::Array(vec![]),
+        };
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt.query_map(param_refs.as_slice(), |r| job_json(r)).unwrap();
+        let out: Vec<serde_json::Value> = rows.filter_map(|r| r.ok()).collect();
+        serde_json::Value::Array(out)
+    }).await.unwrap();
+    Json(result)
+}
+
+pub async fn running_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let data_dir = state.data_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let mut stmt = conn.prepare("SELECT id, source_id, kind, status, total, processed, result, error, created_at, started_at, finished_at FROM jobs WHERE status = 'running' ORDER BY created_at").unwrap();
+        let rows = stmt.query_map([], |r| job_json(r)).unwrap();
+        let out: Vec<serde_json::Value> = rows.filter_map(|r| r.ok()).collect();
+        serde_json::Value::Array(out)
+    }).await.unwrap();
+    Json(result)
+}
+
+pub async fn get_handler(State(state): State<AppState>, Path(job_id): Path<i64>) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let data_dir = state.data_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let mut stmt = conn.prepare("SELECT id, source_id, kind, status, total, processed, result, error, created_at, started_at, finished_at FROM jobs WHERE id = ?1").unwrap();
+        match stmt.query_row([job_id], |r| job_json(r)) {
+            Ok(v) => Ok(Json(v)),
+            Err(_) => Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Job not found"})))),
+        }
+    }).await.unwrap();
+    result
+}
+
+pub async fn cancel_handler(State(state): State<AppState>, Path(job_id): Path<i64>) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let data_dir = state.data_dir.clone();
+    let jobs = state.jobs.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let exists: Option<String> = conn.query_row("SELECT status FROM jobs WHERE id = ?1", [job_id], |r| r.get(0)).ok();
+        let status = match exists {
+            Some(s) => s,
+            None => return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Job not found"})))),
+        };
+        if status != "pending" && status != "running" {
+            // check if orphaned running (no in-memory task) — treat as cancellable
+            // For Rust, we don't track tasks, so we allow cancelling any running
+            // If it's done/failed/cancelled already, return 409
+            if status == "done" || status == "failed" || status == "cancelled" {
+                return Err((StatusCode::CONFLICT, Json(serde_json::json!({"detail": format!("Job is {}, not running", status)}))));
+            }
+        }
+        // If job is running but we have no task, still mark cancelled (orphan handling)
+        let was_running = status == "running";
+        let cancelled = jobs.cancel(&conn, job_id);
+        if cancelled {
+            // ensure status is cancelled even if JobManager didn't have it
+            let _ = conn.execute("UPDATE jobs SET status='cancelled', finished_at=datetime('now') WHERE id=?1", [job_id]);
+            return Ok(Json(serde_json::json!({"cancelled": true})));
+        }
+        // If cancel returned false but it was pending/running, try direct update
+        if status == "pending" || was_running {
+            let _ = conn.execute("UPDATE jobs SET status='cancelled', finished_at=datetime('now') WHERE id=?1", [job_id]);
+            return Ok(Json(serde_json::json!({"cancelled": true})));
+        }
+        Err((StatusCode::CONFLICT, Json(serde_json::json!({"detail":"Job is not cancellable"}))))
+    }).await.unwrap();
+    result
 }
 
 #[cfg(test)]

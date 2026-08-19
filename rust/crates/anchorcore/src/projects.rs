@@ -45,7 +45,7 @@ fn project_json(conn: &rusqlite::Connection, project_id: i64) -> Option<Value> {
 pub async fn list_handler(State(state): State<AppState>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let mut stmt = conn.prepare("SELECT id FROM projects ORDER BY created_at").unwrap();
         let ids: Vec<i64> = stmt.query_map([], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
@@ -65,7 +65,7 @@ pub async fn create_handler(State(state): State<AppState>, Json(payload): Json<P
     let name = payload.name.trim().to_string();
     let source_ids = payload.source_ids.unwrap_or_default();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         // validate source_ids before write
         if !source_ids.is_empty() {
@@ -95,7 +95,7 @@ pub async fn create_handler(State(state): State<AppState>, Json(payload): Json<P
 pub async fn default_handler(State(state): State<AppState>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let pid: Option<i64> = conn.query_row("SELECT id FROM projects WHERE is_default = 1 LIMIT 1", [], |r| r.get(0)).ok();
         if let Some(id) = pid {
@@ -112,7 +112,7 @@ pub async fn default_handler(State(state): State<AppState>) -> Json<Value> {
 pub async fn get_handler(State(state): State<AppState>, Path(project_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         match project_json(&conn, project_id) {
             Some(v) => Ok(Json(v)),
@@ -127,7 +127,7 @@ pub async fn get_handler(State(state): State<AppState>, Path(project_id): Path<i
 pub async fn patch_handler(State(state): State<AppState>, Path(project_id): Path<i64>, Json(payload): Json<ProjectUpdate>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let exists: bool = conn.query_row("SELECT 1 FROM projects WHERE id = ?1", [project_id], |_| Ok(())).is_ok();
         if !exists {
@@ -173,7 +173,7 @@ pub async fn patch_handler(State(state): State<AppState>, Path(project_id): Path
 pub async fn delete_handler(State(state): State<AppState>, Path(project_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let exists: bool = conn.query_row("SELECT 1 FROM projects WHERE id = ?1", [project_id], |_| Ok(())).is_ok();
         if !exists {

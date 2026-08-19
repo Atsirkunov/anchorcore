@@ -1,6 +1,23 @@
 use rusqlite::{Connection, Result};
 use rusqlite_migration::{Migrations, M};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+pub fn resolve_db_path(data_dir: &str) -> PathBuf {
+    if let Ok(url) = std::env::var("ANCHOR_DATABASE_URL") {
+        if let Some(p) = url.strip_prefix("sqlite:///") {
+            if !p.is_empty() {
+                return PathBuf::from(p);
+            }
+        }
+        if let Some(p) = url.strip_prefix("sqlite://") {
+            if !p.is_empty() {
+                return PathBuf::from(p);
+            }
+        }
+        // handle postgresql case - fallback to data_dir
+    }
+    PathBuf::from(data_dir).join("anchorcore.db")
+}
 
 /// Open SQLite at `path`, set PRAGMAs, run migrations.
 /// Mirrors `backend/app/db.py:44` + `backend/app/main.py:_run_migrations`.

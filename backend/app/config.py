@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     classifier_timeout: float = 60.0
     classifier_concurrency: int = 4
     http_retries: int = 3
+    http_connect_timeout: float = 2.0
 
     answer_model: str = "gpt-4o-mini"
     answer_api_key: str = ""

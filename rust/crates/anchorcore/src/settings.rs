@@ -166,9 +166,9 @@ impl SettingsService {
             }
         }
         // need DB read; open a short-lived connection to data dir
-        // For simplicity, we try to open the default DB file
+        // For simplicity, we try to open the default DB file (respect ANCHOR_DATABASE_URL)
         let data_dir = std::env::var("ANCHOR_DATA_DIR").unwrap_or_else(|_| "data".to_string());
-        let db_path = std::path::Path::new(&data_dir).join("anchorcore.db");
+        let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = Connection::open(&db_path).ok();
         let db_val = conn.as_ref().and_then(|c| db_value(c, key));
         let resolved = db_val.or_else(|| env_value(key));
