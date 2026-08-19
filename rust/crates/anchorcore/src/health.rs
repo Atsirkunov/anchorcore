@@ -3,10 +3,13 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
+use crate::settings::SettingsService;
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub data_dir: String,
+    pub settings: Arc<SettingsService>,
 }
 
 pub async fn health(State(state): State<AppState>) -> Json<Value> {
@@ -19,9 +22,9 @@ pub async fn health(State(state): State<AppState>) -> Json<Value> {
         (failing, pending)
     };
 
-    // Mirrors backend/app/status.py:19 ollama_reachable + answer_provider
-    let ollama = if is_ollama_reachable().await { "ok" } else { "offline" };
-    let answer_key = answer_provider();
+    // Mirrors backend/app/status.py:19 ollama_reachable + answer_provider via SettingsService
+    let ollama = if is_ollama_reachable(&state.settings).await { "ok" } else { "offline" };
+    let answer_key = answer_provider(&state.settings);
 
     Json(json!({
         "status": "ok",
@@ -37,8 +40,11 @@ pub async fn health(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
-async fn is_ollama_reachable() -> bool {
-    let base = std::env::var("ANCHOR_OLLAMA_BASE_URL").unwrap_or_else(|_| "http://localhost:11434".to_string());
+async fn is_ollama_reachable(settings: &SettingsService) -> bool {
+    // Use SettingsService so DB overrides win, like Python status.py:19
+    let base = settings
+        .get("ollama_base_url", None)
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
     let url = format!("{}/api/tags", base.trim_end_matches('/'));
     let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).build() {
         Ok(c) => c,
@@ -50,9 +56,11 @@ async fn is_ollama_reachable() -> bool {
     }
 }
 
-fn answer_provider() -> Value {
-    let base = std::env::var("ANCHOR_ANSWER_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-    let key = std::env::var("ANCHOR_ANSWER_API_KEY").unwrap_or_default();
+fn answer_provider(settings: &SettingsService) -> Value {
+    let base = settings
+        .get("answer_base_url", None)
+        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+    let key = settings.get("answer_api_key", None).unwrap_or_default();
     if base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1") {
         Value::String("ollama".to_string())
     } else if !key.trim().is_empty() {
