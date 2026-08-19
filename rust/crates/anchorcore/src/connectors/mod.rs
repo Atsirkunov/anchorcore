@@ -1,4 +1,5 @@
 pub mod folder;
+pub mod gdrive;
 pub mod jira;
 pub mod watcher;
 
