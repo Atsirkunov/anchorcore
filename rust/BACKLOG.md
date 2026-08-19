@@ -40,25 +40,25 @@ Status: `todo` | `doing` | `done`. Update this file when you pick/complete a tas
 | R3.1 | Folder connector + watcher | 1d | R1.2 | `notify` crate, `path` config, same `IngestionDoc` shape, hash dedup | done ( `src/connectors/folder.rs:1` + `src/connectors/watcher.rs:1` `FolderWatcher` `notify` `Recursive` + `poll` debounce 3s like `folder_watch_debounce`, `cargo test` 9 passed) |
 | R3.2 | Jira connector (410-safe) | 0.5d | R1.2 | `GET /search/jql` with `nextPageToken`/`isLast` fallback `/search` `startAt/total`, `project in (...)` for multi, `BaseConnector::list_projects` -> `POST /sources/jira/projects` checkbox | done ( `src/connectors/jira.rs:1` `JiraConnector::fetch` `search/jql` `nextPageToken`/`isLast` fallback `search` `startAt`, `list_projects` `project/search`, `cargo test` 9 passed) |
 | R3.3 | GDrive connector | 0.5d | R1.2 | `folder_id` + Bearer token, same mock pattern as `tests/test_gdrive.py` | done ( `src/connectors/gdrive.rs:1` `GDriveConnector::fetch` `list` + `export` `text/plain`/`csv`/`pdf`, `cargo test` 9 passed) |
-| R3.4 | Classification orchestration | 1d | R1.5 | Calls Ollama/cloud via `reqwest`, `cloud_trusted` gate (B39), rule fallback, `window_hash` skip |
-| R3.5 | Chunking / hashing / distill | 1d | — | Port `chunking.py`/`hashing.py`/`distill.py` + `_flag_pii` + `is_pii`/`_dismissed` sentinel, `pii_categories` |
-| R3.6 | Embedder + IDF gate | 1d | R3.5 | `signal()` gate, `pack_f32`, cloud-trust gate for `is_pii` chunks, `vec0` sync triggers |
+| R3.4 | Classification orchestration | 1d | R1.5 | Calls Ollama/cloud via `reqwest`, `cloud_trusted` gate (B39), rule fallback, `window_hash` skip | done (`src/classifier.rs:1` `detect_document_type`/`classify`/`distill` via `reqwest` `classifier_base_url`→`ollama_base_url`, `provider_is_local` gate `ANCHOR_CLOUD_TRUST`, rule fallback `classify_rules`/`distill_rules`, `window_hash` via `hashing.rs`, `cargo test` 4 passed) |
+| R3.5 | Chunking / hashing / distill | 1d | — | Port `chunking.py`/`hashing.py`/`distill.py` + `_flag_pii` + `is_pii`/`_dismissed` sentinel, `pii_categories` | done (`src/chunking.rs:1` `chunk_text`/`chunk_document`/`classify_windows` char-based `ANCHOR_CHUNK_*`, `src/hashing.rs:1` `window_hash`/`content_hash` via `sha2`, `src/pii.rs:1` 20 categories `scan_text` disabled/custom + `load_config`/`save_config` `categories_payload` + `flag_pii_for_item` `_dismissed` sentinel, `src/distill.rs:1` `signal()` IDF + `DISTILL_DOC_TYPES`, `cargo test` 22 passed) |
+| R3.6 | Embedder + IDF gate | 1d | R3.5 | `signal()` gate, `pack_f32`, cloud-trust gate for `is_pii` chunks, `vec0` sync triggers | done (`src/embedder.rs:1` `pack_f32`/`unpack_f32` `BATCH_SIZE=32` `embed` `reqwest` `embed_base_url`, `embed_gated` `signal()` `embed_min_signal` + `gated`/`is_pii` `ANCHOR_CLOUD_TRUST`, `sync_vec` `vec_chunks` JSON, `cargo test` 3 passed) |
 
 ## Phase 4 — Jobs & system (1 week)
 
 | ID | Title | Est | Dependencies | DoD |
 |---|---|---|---|---|
-| R4.1 | JobManager (bounded) | 0.5d | R1.2 | `MAX_CONCURRENT=2`, `pending` queue, `running`/`cancel`, `POST /sources/{id}/sync` 202 + poll |
-| R4.2 | Scheduler (poll loops) | 0.5d | R4.1 | `jira_poll_minutes` / `folder_scan_minutes`, `reload_sources` on CRUD |
-| R4.3 | PII config + review | 0.5d | R3.5 | `GET/PUT /pii/config`, `GET /pii/review` (`only_flagged` + `_dismissed` hide), `POST /pii/review/{id}` (Mark PII / Not PII), `POST /pii/scan/{id}` |
-| R4.4 | Entities / review / projects | 1d | R1.3 | `GET /entities/{id}/context` B27, low-confidence/duplicates/merge, `projects` scoped search B15 |
+| R4.1 | JobManager (bounded) | 0.5d | R1.2 | `MAX_CONCURRENT=2`, `pending` queue, `running`/`cancel`, `POST /sources/{id}/sync` 202 + poll | done (`src/jobs.rs:1` `MAX_CONCURRENT=2` `JobManager` `create_job`/`maybe_promote`/`cancel`/`complete` via `jobs` table, `cargo test` 2 passed) |
+| R4.2 | Scheduler (poll loops) | 0.5d | R4.1 | `jira_poll_minutes` / `folder_scan_minutes`, `reload_sources` on CRUD | done (`src/scheduler.rs:1` `Scheduler` `reload_sources` aborts+respawns, `poll_intervals_minutes` from `SettingsService`, `spawn_for_source` `tokio::interval`, `cargo test` 2 passed) |
+| R4.3 | PII config + review | 0.5d | R3.5 | `GET/PUT /pii/config`, `GET /pii/review` (`only_flagged` + `_dismissed` hide), `POST /pii/review/{id}` (Mark PII / Not PII), `POST /pii/scan/{id}` | done (`src/pii.rs:443` `get_config_handler`/`put_config_handler`/`review_handler`/`decide_handler`/`scan_handler` via `spawn_blocking` + `load_config`/`scan_text` `_dismissed` filter, wired in `main.rs:106` `cargo test` 35 passed) |
+| R4.4 | Entities / review / projects | 1d | R1.3 | `GET /entities/{id}/context` B27, low-confidence/duplicates/merge, `projects` scoped search B15 | done (`src/entities.rs:1` `list`/`get`/`patch`/`related`/`dispute`/`disputes`/`context` via `spawn_blocking` + `chunk_document` B27, `src/projects.rs:1` `list`/`create`/`default`/`get`/`patch`/`delete` `project_sources` + `source_ids` validation, `src/review.rs:1` `low-confidence` `duplicates` O(n²) `similar` + `merge` `dismiss`/`merged` repoint, wired `main.rs:101` `cargo test` 35 passed, `curl` `projects`/`entities`/`review` verified) |
 | R4.5 | MCP sidecar (B14.1) | 1d | R2.2 | `anchorcore_mcp.py` equivalent `mcp/server.py` 6 read-only tools via stdio |
 
 ## Phase 5 — Packaging & cutover
 
 | ID | Title | Est | Dependencies | DoD |
 |---|---|---|---|---|
-| R5.1 | Embed frontend/dist | 0.5d | R1.3 | `include_dir!` embeds `frontend/dist`, serves last, `cargo build --release` yields single binary |
+| R5.1 | Embed frontend/dist | 0.5d | R1.3 | `include_dir!` embeds `frontend/dist`, serves last, `cargo build --release` yields single binary | done (`src/frontend.rs:1` `include_dir!("$CARGO_MANIFEST_DIR/../../../frontend/dist")` + `mime_guess`, `handler` exact→SPA `index.html` fallback, wired `main.rs:140` `.fallback(frontend::handler)`, `cargo test` 2 passed) |
 | R5.2 | Cross-compile + release | 0.5d | R5.1 | `cargo cross` win/mac/linux, ad-hoc `codesign`, `dist/AnchorCore-*` artifacts, `release.yml` |
 | R5.3 | Cutover checklist | 0.5d | R4.* | All `backend/tests` green against Rust, Python retires, version bumps in `rust/Cargo.toml` (single source) |
 
