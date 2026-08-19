@@ -12,7 +12,7 @@ FastAPI process. Stack: Python 3.12 + FastAPI + SQLite (sqlite-vec + FTS5) ·
 React/Vite · Ollama local + BYO cloud OpenAI-compatible. Packaged via PyInstaller.
 
 Repo: `git@github.com:Atsirkunov/anchorcore.git`. Backend under `backend/`, UI under
-`frontend/`. Release cadence: bump version → tag `vX.Y.Z` → push (CI builds artifacts).
+`frontend/`, Rust port under `rust/` (incremental, contract-first, see `rust/README.md` + `rust/BACKLOG.md` + `docs/rust-port.md`). Release cadence: bump version → tag `vX.Y.Z` → push (CI builds artifacts).
 
 ## How to run / test / release
 
@@ -99,6 +99,11 @@ Key rules:
 5. Tests: new file `backend/tests/test_*.py` following existing style; run `pytest tests -q`.
 6. Run `npm run build` for UI changes. Sync docs in the same commit (product-plan `— DONE` marker).
 7. Bump version + tag only when releasing.
+
+## Rust port
+
+* Incremental, separate workspace `rust/` (`rust/README.md` + `rust/BACKLOG.md` + `rust/AGENTS.md`). Same API + same SQLite file as Python. AI agents can work there in parallel; pick one `R*.*` task, branch `rust/R1.1`.
+* Python backend stays shipped artifact until `rust` passes shared conformance (`backend/tests` via HTTP on `:8123`).
 
 ## Gotchas (learned the hard way — don't reintroduce)
 
