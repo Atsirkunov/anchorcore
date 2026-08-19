@@ -21,9 +21,21 @@ pub fn init_db(path: &Path) -> Result<Connection> {
     // Python/Alembic, this will apply only missing ones; otherwise it creates all.
     // All SQL uses IF NOT EXISTS so re-running on a Python-created DB is safe.
     let migrations = migrations();
-    // Ignore migration errors on Python-created DBs where rusqlite_migration
-    // tracking table is empty but tables already exist — our SQL is idempotent.
-    let _ = migrations.to_latest(&mut conn);
+    if let Err(e) = migrations.to_latest(&mut conn) {
+        // Real syntax errors should surface; "already exists" is ok because
+        // Python/Alembic already created tables before rusqlite_migration
+        // tracking table existed. Log and continue for the latter.
+        let msg = e.to_string();
+        if msg.contains("already exists") || msg.contains("duplicate column") {
+            tracing::warn!("migration ignored (idempotent rerun on Python DB): {}", msg);
+        } else {
+            // For fresh DBs any error is fatal - surface it
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some(msg),
+            ));
+        }
+    }
 
     // Idempotent column adds for incremental schema (b39, b30, b26, etc.)
     ensure_columns(&conn)?;
@@ -35,7 +47,13 @@ pub fn init_db(path: &Path) -> Result<Connection> {
 }
 
 fn try_add_column(conn: &Connection, sql: &str) {
-    let _ = conn.execute(sql, []);
+    if let Err(e) = conn.execute(sql, []) {
+        let msg = e.to_string();
+        // "duplicate column name" is expected when Python already added it
+        if !msg.contains("duplicate column") && !msg.contains("already exists") {
+            tracing::warn!("ensure_columns failed: {} -> {}", sql, msg);
+        }
+    }
 }
 
 fn ensure_columns(conn: &Connection) -> Result<()> {
@@ -57,9 +75,22 @@ fn ensure_columns(conn: &Connection) -> Result<()> {
 }
 
 fn ensure_vec(conn: &Connection) {
-    // Try to create vec0 index; ignore if sqlite-vec not available (like Python fallback)
-    let sql = "CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(embedding float[768] distance_metric=cosine)";
-    let _ = conn.execute(sql, []);
+    // Try to create vec0 index; ignore if sqlite-vec not available (like Python fallback b33a0c1)
+    // Dim from ANCHOR_EMBED_DIM (default 768 = nomic-embed-text) — matches backend/app/config.py:64
+    let dim: usize = std::env::var("ANCHOR_EMBED_DIM")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(768);
+    let sql = format!(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(embedding float[{}] distance_metric=cosine)",
+        dim
+    );
+    if let Err(e) = conn.execute(&sql, []) {
+        let msg = e.to_string();
+        if !msg.contains("no such module: vec0") && !msg.contains("already exists") {
+            tracing::warn!("ensure_vec failed (sqlite-vec missing is ok): {}", msg);
+        }
+    }
 }
 
 fn migrations() -> Migrations<'static> {
