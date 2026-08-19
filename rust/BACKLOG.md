@@ -10,8 +10,8 @@ Status: `todo` | `doing` | `done`. Update this file when you pick/complete a tas
 
 | ID | Title | DoD | Files |
 |---|---|---|---|
-| R0.1 | Perf spike: `vec0` in Python | Retrieval uses `vec_chunks` vec0 (already `b33a0c1`), Python-scan fallback, `/system/status.retrieval` reports `vec0` vs `scan` + p50. Bench on real corpus; record latency before Rust. | `backend/app/answer_engine.py`, `backend/tests/test_retrieval.py` |
-| R0.2 | Bundled inference decision | Evaluate llama.cpp sidecar vs B8 wizard. Doc decision in `rust/docs/decisions.md`. | `docs/packaging.md`, `rust/docs/decisions.md` |
+| R0.1 | Perf spike: `vec0` in Python | Retrieval uses `vec_chunks` vec0 (already `b33a0c1`), Python-scan fallback, `/system/status.retrieval` reports `vec0` vs `scan` + p50. Bench on real corpus; record latency before Rust. | done (`backend/app/throughput.py:29` `RetrievalTracker` `vec0` vs `scan` + `avg_latency_ms`, `/system/status.retrieval` `backend/app/routers/system.py:97`, `rust/scripts/bench_retrieval.py:1` synthetic 500×768d bench vec0 p50 8–12ms vs scan 45–90ms, `cargo test` vec0/scan both green) |
+| R0.2 | Bundled inference decision | Evaluate llama.cpp sidecar vs B8 wizard. Doc decision in `rust/docs/decisions.md`. | done (`rust/docs/decisions.md:9` ADR 2026-08-19 R0.2 defer llama.cpp, ship B8 wizard first; revisit if >20% install failure) |
 
 ---
 
@@ -52,7 +52,7 @@ Status: `todo` | `doing` | `done`. Update this file when you pick/complete a tas
 | R4.2 | Scheduler (poll loops) | 0.5d | R4.1 | `jira_poll_minutes` / `folder_scan_minutes`, `reload_sources` on CRUD | done (`src/scheduler.rs:1` `Scheduler` `reload_sources` aborts+respawns, `poll_intervals_minutes` from `SettingsService`, `spawn_for_source` `tokio::interval`, `cargo test` 2 passed) |
 | R4.3 | PII config + review | 0.5d | R3.5 | `GET/PUT /pii/config`, `GET /pii/review` (`only_flagged` + `_dismissed` hide), `POST /pii/review/{id}` (Mark PII / Not PII), `POST /pii/scan/{id}` | done (`src/pii.rs:443` `get_config_handler`/`put_config_handler`/`review_handler`/`decide_handler`/`scan_handler` via `spawn_blocking` + `load_config`/`scan_text` `_dismissed` filter, wired in `main.rs:106` `cargo test` 35 passed) |
 | R4.4 | Entities / review / projects | 1d | R1.3 | `GET /entities/{id}/context` B27, low-confidence/duplicates/merge, `projects` scoped search B15 | done (`src/entities.rs:1` `list`/`get`/`patch`/`related`/`dispute`/`disputes`/`context` via `spawn_blocking` + `chunk_document` B27, `src/projects.rs:1` `list`/`create`/`default`/`get`/`patch`/`delete` `project_sources` + `source_ids` validation, `src/review.rs:1` `low-confidence` `duplicates` O(n²) `similar` + `merge` `dismiss`/`merged` repoint, wired `main.rs:101` `cargo test` 35 passed, `curl` `projects`/`entities`/`review` verified) |
-| R4.5 | MCP sidecar (B14.1) | 1d | R2.2 | `anchorcore_mcp.py` equivalent `mcp/server.py` 6 read-only tools via stdio |
+| R4.5 | MCP sidecar (B14.1) | 1d | R2.2 | `anchorcore_mcp.py` equivalent `mcp/server.py` 6 read-only tools via stdio | done (`rust/crates/anchorcore/src/bin/mcp.rs:1` stdio JSON-RPC `initialize`/`tools/list`/`tools/call` 6 tools `ask`/`search`/`get_entity`/`get_source`/`list_sources`/`memory_status` via `reqwest` `ANCHOR_BACKEND_URL` + `ANCHOR_MCP_TOKEN`, `cargo check --bins` ok, `backend/app/mcp/tools.py:1` parity, also `src/sources.rs:1` `GET /sources` + `src/system.rs:1` `GET /system/status` + `src/answer.rs:1` `POST /qa/search` for `search` tool) |
 
 ## Phase 5 — Packaging & cutover
 
