@@ -84,6 +84,7 @@ pub struct Hit {
     pub source_id: Option<i64>,
     pub score: f64,
     pub content: String,
+    pub source_ref: String,
     pub is_pii: bool,
     pub status: Option<String>,
 }
@@ -268,7 +269,7 @@ fn load_hits(
     }
     let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     let sql = format!(
-        "SELECT c.id, c.entity_id, c.item_id, c.content, c.is_pii, c.created_at, e.status, \
+        "SELECT c.id, c.entity_id, c.item_id, c.content, c.source_ref, c.is_pii, c.created_at, e.status, \
                 COALESCE(c.item_id, e.item_id) as eff_item, i.source_id \
          FROM chunks c \
          LEFT JOIN entities e ON e.id = c.entity_id \
@@ -287,17 +288,18 @@ fn load_hits(
                 r.get::<_, Option<i64>>(1)?,
                 r.get::<_, Option<i64>>(2)?,
                 r.get::<_, String>(3)?,
-                r.get::<_, i64>(4)?,
-                r.get::<_, Option<String>>(5)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)?,
                 r.get::<_, Option<String>>(6)?,
-                r.get::<_, Option<i64>>(7)?,
+                r.get::<_, Option<String>>(7)?,
                 r.get::<_, Option<i64>>(8)?,
+                r.get::<_, Option<i64>>(9)?,
             ))
         })
         .unwrap();
     let mut out = Vec::new();
     for row in rows.flatten() {
-        let (cid, eid, iid, content, is_pii, _created, status, _eff, sid) = row;
+        let (cid, eid, iid, content, source_ref, is_pii, _created, status, _eff, sid) = row;
         if !status_ok(status.as_deref(), qa_exclude_disputed) {
             continue;
         }
@@ -315,6 +317,7 @@ fn load_hits(
             source_id: sid,
             score: 0.0,
             content,
+            source_ref,
             is_pii: is_pii != 0,
             status,
         });
@@ -327,7 +330,7 @@ fn load_chunks_with_embedding(
     source_ids: Option<&HashSet<i64>>,
     qa_exclude_disputed: bool,
 ) -> Vec<Hit> {
-    let sql = "SELECT c.id, c.entity_id, c.item_id, c.content, c.is_pii, e.status, i.source_id \
+    let sql = "SELECT c.id, c.entity_id, c.item_id, c.content, c.source_ref, c.is_pii, e.status, i.source_id \
                FROM chunks c \
                LEFT JOIN entities e ON e.id = c.entity_id \
                LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
@@ -343,15 +346,16 @@ fn load_chunks_with_embedding(
                 r.get::<_, Option<i64>>(1)?,
                 r.get::<_, Option<i64>>(2)?,
                 r.get::<_, String>(3)?,
-                r.get::<_, i64>(4)?,
-                r.get::<_, Option<String>>(5)?,
-                r.get::<_, Option<i64>>(6)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<i64>>(7)?,
             ))
         })
         .unwrap();
     let mut out = Vec::new();
     for row in rows.flatten() {
-        let (cid, eid, iid, content, is_pii, status, sid) = row;
+        let (cid, eid, iid, content, source_ref, is_pii, status, sid) = row;
         if !status_ok(status.as_deref(), qa_exclude_disputed) {
             continue;
         }
@@ -364,7 +368,7 @@ fn load_chunks_with_embedding(
                 continue;
             }
         }
-        out.push(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, score: 0.0, content, is_pii: is_pii != 0, status });
+        out.push(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, score: 0.0, content, source_ref, is_pii: is_pii != 0, status });
     }
     out
 }
@@ -420,7 +424,7 @@ pub fn keyword_fallback(
     qa_exclude_disputed: bool,
 ) -> Vec<Hit> {
     let mut sql = String::from(
-        "SELECT c.id, c.entity_id, c.item_id, c.content, c.is_pii, e.status, i.source_id \
+        "SELECT c.id, c.entity_id, c.item_id, c.content, c.source_ref, c.is_pii, e.status, i.source_id \
          FROM chunks c \
          LEFT JOIN entities e ON e.id = c.entity_id \
          LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id)",
@@ -442,9 +446,10 @@ pub fn keyword_fallback(
             r.get::<_, Option<i64>>(1)?,
             r.get::<_, Option<i64>>(2)?,
             r.get::<_, String>(3)?,
-            r.get::<_, i64>(4)?,
-            r.get::<_, Option<String>>(5)?,
-            r.get::<_, Option<i64>>(6)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, i64>(5)?,
+            r.get::<_, Option<String>>(6)?,
+            r.get::<_, Option<i64>>(7)?,
         ))
     }) {
         Ok(m) => m,
@@ -452,7 +457,7 @@ pub fn keyword_fallback(
     };
     let mut out = Vec::new();
     for row in rows.flatten() {
-        let (cid, eid, iid, content, is_pii, status, sid) = row;
+        let (cid, eid, iid, content, source_ref, is_pii, status, sid) = row;
         if !status_ok(status.as_deref(), qa_exclude_disputed) {
             continue;
         }
@@ -461,7 +466,7 @@ pub fn keyword_fallback(
                 if !filter.contains(&s) { continue; }
             } else { continue; }
         }
-        out.push(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, score: 0.0, content, is_pii: is_pii != 0, status });
+        out.push(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, score: 0.0, content, source_ref, is_pii: is_pii != 0, status });
     }
     out
 }
@@ -477,7 +482,7 @@ pub fn who_knows_search(
     let stopwords: HashSet<&str> = ["a","an","the","and","or","but","of","in","on","at","to","for","with","about","is","are","was","were","be","been","being","am","do","does","did","have","has","had","will","would","can","could","should","shall","may","might","must","what","which","who","whom","whose","when","where","why","how","this","that","these","those","it","its","not","no","so","if","then","than","too","very","s","t","you","your","we","our","they","their","i","me","my"].into();
     let terms: Vec<String> = re.find_iter(&query.to_lowercase()).map(|m| m.as_str().to_string()).filter(|t| t.len()>=3 && !stopwords.contains(t.as_str())).collect();
     if terms.is_empty() { return vec![]; }
-    let mut sql = String::from("SELECT c.id, c.entity_id, c.item_id, c.content, c.is_pii, e.status, e.owner, e.author, e.summary, e.confidence, e.created_at, i.source_id FROM chunks c JOIN entities e ON e.id=c.entity_id JOIN ingested_items i ON i.id=e.item_id WHERE (e.owner != '' OR e.author != '')");
+    let mut sql = String::from("SELECT c.id, c.entity_id, c.item_id, c.content, c.source_ref, c.is_pii, e.status, e.owner, e.author, e.summary, e.confidence, e.created_at, i.source_id FROM chunks c JOIN entities e ON e.id=c.entity_id JOIN ingested_items i ON i.id=e.item_id WHERE (e.owner != '' OR e.author != '')");
     for t in &terms {
         sql.push_str(&format!(" OR e.summary LIKE '%{}%'", t.replace('\'', "''")));
     }
@@ -486,9 +491,9 @@ pub fn who_knows_search(
     let mut out = Vec::new();
     let halflife: f64 = std::env::var("ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(365.0);
     let now = Utc::now();
-    let rows = match stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, String>(3)?, r.get::<_, i64>(4)?, r.get::<_, Option<String>>(5)?, r.get::<_, String>(6)?, r.get::<_, String>(7)?, r.get::<_, String>(8)?, r.get::<_, f64>(9)?, r.get::<_, Option<String>>(10)?, r.get::<_, Option<i64>>(11)?))) { Ok(m) => m, Err(_) => return out };
+    let rows = match stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, i64>(5)?, r.get::<_, Option<String>>(6)?, r.get::<_, String>(7)?, r.get::<_, String>(8)?, r.get::<_, String>(9)?, r.get::<_, f64>(10)?, r.get::<_, Option<String>>(11)?, r.get::<_, Option<i64>>(12)?))) { Ok(m) => m, Err(_) => return out };
     for row in rows.flatten() {
-        let (cid, eid, iid, content, is_pii, status, owner, author, summary, conf, created, sid) = row;
+        let (cid, eid, iid, content, source_ref, is_pii, status, owner, author, summary, conf, created, sid) = row;
         if !status_ok(status.as_deref(), qa_exclude_disputed) { continue; }
         let blob = format!("{} {} {}", owner, author, summary).to_lowercase();
         let overlap = terms.iter().filter(|t| blob.contains(&t.to_lowercase())).count();
@@ -496,7 +501,7 @@ pub fn who_knows_search(
         let created_dt = created.and_then(|s| DateTime::parse_from_rfc3339(&s).ok()).map(|d| d.with_timezone(&Utc));
         let decay = age_decay(created_dt, halflife, now);
         let score = conf * (1.0 + 0.5 * (overlap.min(4) as f64)) * decay;
-        out.push(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, score, content, is_pii: is_pii!=0, status });
+        out.push(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, score, content, source_ref, is_pii: is_pii!=0, status });
     }
     out.sort_by(|a,b| b.score.partial_cmp(&a.score).unwrap());
     out.truncate(top_k*2);
@@ -542,18 +547,18 @@ pub fn graph_expand(
     ranked.truncate(cap);
     let ids: Vec<i64> = ranked.iter().map(|(id,_)| *id).collect();
     let list = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-    let mut sql = format!("SELECT e.id, e.summary, e.status, e.item_id, c.id, c.content, c.is_pii FROM entities e LEFT JOIN chunks c ON c.entity_id=e.id WHERE e.id IN ({})", list);
+    let mut sql = format!("SELECT e.id, e.summary, e.status, e.item_id, c.id, c.content, c.source_ref, c.is_pii FROM entities e LEFT JOIN chunks c ON c.entity_id=e.id WHERE e.id IN ({})", list);
     if let Some(filter)=source_ids { if !filter.is_empty() { let l = filter.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(","); sql.push_str(&format!(" AND e.item_id IN (SELECT id FROM ingested_items WHERE source_id IN ({}))", l)); } }
     let mut stmt = match conn.prepare(&sql) { Ok(s)=>s, Err(_)=> return vec![] };
-    let rows: Vec<(i64,String,Option<String>,Option<i64>,Option<i64>,Option<String>,i64)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))).unwrap().filter_map(|r| r.ok()).collect();
-    let by_id: HashMap<i64,(String,Option<String>,Option<i64>,Option<i64>,Option<String>,i64)> = rows.into_iter().map(|(id,summary,status,item,cid,content,is_pii)| (id,(summary,status,item,cid,content,is_pii))).collect();
+    let rows: Vec<(i64,String,Option<String>,Option<i64>,Option<i64>,Option<String>,Option<String>,i64)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))).unwrap().filter_map(|r| r.ok()).collect();
+    let by_id: HashMap<i64,(String,Option<String>,Option<i64>,Option<i64>,Option<String>,Option<String>,i64)> = rows.into_iter().map(|(id,summary,status,item,cid,content,src_ref,is_pii)| (id,(summary,status,item,cid,content,src_ref,is_pii))).collect();
     let mut out = Vec::new();
     for (eid, score) in ranked {
-        if let Some((summary,status,item,cid,content,_is_pii)) = by_id.get(&eid) {
+        if let Some((summary,status,item,cid,content,src_ref,_is_pii)) = by_id.get(&eid) {
             if !status_ok(status.as_deref(), qa_exclude_disputed) { continue; }
             // need source_id via item
             let sid: Option<i64> = if let Some(iid)=item { conn.query_row("SELECT source_id FROM ingested_items WHERE id=?1", [*iid], |r| r.get(0)).ok() } else { None };
-            out.push(Hit { chunk_id: cid.unwrap_or(eid), entity_id: Some(eid), item_id: *item, source_id: sid, score, content: content.clone().unwrap_or_else(|| summary.clone()), is_pii: false, status: status.clone() });
+            out.push(Hit { chunk_id: cid.unwrap_or(eid), entity_id: Some(eid), item_id: *item, source_id: sid, score, content: content.clone().unwrap_or_else(|| summary.clone()), source_ref: src_ref.clone().unwrap_or_else(|| summary.clone()), is_pii: false, status: status.clone() });
         }
     }
     out
@@ -663,8 +668,8 @@ mod tests {
 
     #[test]
     fn rrf() {
-        let h1 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, score: 0.0, content: "".into(), is_pii: false, status: None }];
-        let h2 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, score: 0.0, content: "".into(), is_pii: false, status: None }];
+        let h1 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None }];
+        let h2 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None }];
         let fused = rrf_fuse_multi(vec![h1, h2], vec![1.0, 1.0]);
         assert_eq!(fused.len(), 1);
         assert!(fused[0].score > 0.0);

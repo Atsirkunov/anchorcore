@@ -11,6 +11,57 @@ use serde_json::{json, Value};
 
 use crate::health::AppState;
 
+const SECRET_FIELDS: &[&str] = &["token", "api_key", "password", "client_secret"];
+
+fn secret_store(data_dir: &str) -> crate::secrets::SecretStore {
+    crate::secrets::SecretStore::new(std::path::PathBuf::from(data_dir).join("secrets.enc"))
+}
+
+fn store_secret_fields(data_dir: &str, source_id: i64, config: &mut Value) {
+    let store = secret_store(data_dir);
+    if let Some(obj) = config.as_object_mut() {
+        for &field in SECRET_FIELDS {
+            if let Some(v) = obj.remove(field) {
+                match v {
+                    Value::String(s) if s == "***set***" => {
+                        // keep existing – do nothing, but we removed it, so don't reinsert
+                        // Need to keep stored value, so just not store
+                    }
+                    Value::String(s) if s.is_empty() => {
+                        store.delete(&format!("source:{}:{}", source_id, field));
+                    }
+                    Value::String(s) => {
+                        store.set(&format!("source:{}:{}", source_id, field), &s);
+                    }
+                    other => {
+                        // non-string, treat as string
+                        let s = other.as_str().unwrap_or("").to_string();
+                        if s == "***set***" {
+                        } else if s.is_empty() {
+                            store.delete(&format!("source:{}:{}", source_id, field));
+                        } else {
+                            store.set(&format!("source:{}:{}", source_id, field), &s);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn mask_secrets(data_dir: &str, source_id: i64, cfg: &mut Value) {
+    let store = secret_store(data_dir);
+    if let Some(obj) = cfg.as_object_mut() {
+        for &field in SECRET_FIELDS {
+            // if store has value, mask; also if obj already contains field (legacy plaintext), mask
+            let has_stored = store.get(&format!("source:{}:{}", source_id, field)).is_some();
+            if has_stored || obj.contains_key(field) {
+                obj.insert(field.to_string(), Value::String("***set***".to_string()));
+            }
+        }
+    }
+}
+
 fn source_json(row: &rusqlite::Row) -> rusqlite::Result<Value> {
     let id: i64 = row.get(0)?;
     let name: String = row.get(1)?;
@@ -100,8 +151,7 @@ pub async fn create_handler(State(state): State<AppState>, Json(payload): Json<V
     }
     let connector = payload.get("connector").and_then(|v| v.as_str()).unwrap_or("folder").to_string();
     let label = payload.get("label").and_then(|v| v.as_str()).unwrap_or("internal").to_string();
-    let config_val = payload.get("config").cloned().unwrap_or(Value::Object(Default::default()));
-    let config_str = serde_json::to_string(&config_val).unwrap();
+    let mut config_val = payload.get("config").cloned().unwrap_or(Value::Object(Default::default()));
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
@@ -109,8 +159,15 @@ pub async fn create_handler(State(state): State<AppState>, Json(payload): Json<V
         if !valid_labels.contains(&label.as_str()) {
             return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"detail": format!("label must be one of {:?}", valid_labels)}))));
         }
-        conn.execute("INSERT INTO sources (name, connector, config, label, enabled) VALUES (?1, ?2, ?3, ?4, 1)", rusqlite::params![name, connector, config_str, label]).unwrap();
+        // initial insert with safe config (without secrets) – we need id first to store secrets
+        // Insert with empty config first, then update with safe config after storing secrets
+        let initial_str = serde_json::to_string(&Value::Object(Default::default())).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, label, enabled) VALUES (?1, ?2, ?3, ?4, 1)", rusqlite::params![name, connector, initial_str, label]).unwrap();
         let id = conn.last_insert_rowid();
+        // store secrets and get safe config
+        store_secret_fields(&data_dir, id, &mut config_val);
+        let safe_str = serde_json::to_string(&config_val).unwrap();
+        let _ = conn.execute("UPDATE sources SET config=?1 WHERE id=?2", rusqlite::params![safe_str, id]);
         let mut stmt = conn.prepare("SELECT id, name, connector, config, enabled, label, last_synced_at, last_error, error_count, created_at FROM sources WHERE id = ?1").unwrap();
         let v = stmt.query_row([id], |r| source_json(r)).unwrap();
         Ok((StatusCode::CREATED, Json(v)))
@@ -151,8 +208,23 @@ pub async fn update_handler(State(state): State<AppState>, Path(source_id): Path
             }
             let _ = conn.execute("UPDATE sources SET label=?1 WHERE id=?2", rusqlite::params![label, source_id]);
         }
-        if let Some(cfg) = payload.config {
-            let s = serde_json::to_string(&cfg).unwrap();
+        if let Some(new_cfg) = payload.config {
+            // merge with existing config like Python's store_source_config
+            let existing_str: String = conn.query_row("SELECT config FROM sources WHERE id=?1", [source_id], |r| r.get(0)).unwrap_or_else(|_| "{}".to_string());
+            let mut existing: Value = serde_json::from_str(&existing_str).unwrap_or(json!({}));
+            if let Some(new_obj) = new_cfg.as_object() {
+                if let Some(exist_obj) = existing.as_object_mut() {
+                    for (k, v) in new_obj {
+                        exist_obj.insert(k.clone(), v.clone());
+                    }
+                } else {
+                    existing = new_cfg.clone();
+                }
+            } else {
+                existing = new_cfg.clone();
+            }
+            store_secret_fields(&data_dir, source_id, &mut existing);
+            let s = serde_json::to_string(&existing).unwrap();
             let _ = conn.execute("UPDATE sources SET config=?1 WHERE id=?2", rusqlite::params![s, source_id]);
         }
         let mut stmt = conn.prepare("SELECT id, name, connector, config, enabled, label, last_synced_at, last_error, error_count, created_at FROM sources WHERE id=?1").unwrap();
@@ -181,6 +253,7 @@ pub async fn delete_handler(State(state): State<AppState>, Path(source_id): Path
 
 pub async fn config_handler(State(state): State<AppState>, Path(source_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
+    let data_dir_clone = data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
@@ -189,14 +262,7 @@ pub async fn config_handler(State(state): State<AppState>, Path(source_id): Path
             Err(_) => return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Source not found"})))),
         };
         let mut cfg: Value = serde_json::from_str(&config_str).unwrap_or(json!({}));
-        // mask secrets like Python's secrets masking (***set***)
-        if let Some(obj) = cfg.as_object_mut() {
-            for key in ["token","api_key","password"] {
-                if obj.contains_key(key) {
-                    obj.insert(key.to_string(), Value::String("***set***".to_string()));
-                }
-            }
-        }
+        mask_secrets(&data_dir_clone, source_id, &mut cfg);
         Ok(Json(cfg))
     }).await.unwrap();
     result

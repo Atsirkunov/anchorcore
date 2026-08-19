@@ -63,6 +63,11 @@ def test_commit_before_llm_invariant(client, tmp_path, monkeypatch):
     """B35 DoD: the pipeline commits the ingested item BEFORE calling the LLM
     classifier — no write tx is held during a classifier call (a held lock
     would stall concurrent syncs on SQLite)."""
+    import os
+    import pytest
+
+    if os.environ.get("ANCHOR_TEST_RUST_URL"):
+        pytest.skip("Python-specific probe (main.pipeline.classifier) not applicable to Rust binary (Rust uses spawn_blocking)")
     from app import main
     from app.db import SessionLocal
     from app.models import IngestedItem
