@@ -37,6 +37,32 @@ pub struct Citation {
     pub snippet: String,
 }
 
+#[derive(Deserialize)]
+pub struct SearchRequest {
+    pub query: String,
+    pub k: Option<usize>,
+    pub project_id: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub struct SearchHit {
+    pub chunk_id: Option<i64>,
+    pub entity_id: Option<i64>,
+    pub kind: String,
+    pub summary: String,
+    pub content: String,
+    pub source_ref: String,
+    pub source_id: Option<i64>,
+    pub item_id: Option<i64>,
+    pub item_title: String,
+    pub score: f64,
+}
+
+#[derive(Serialize)]
+pub struct SearchResponse {
+    pub hits: Vec<SearchHit>,
+}
+
 pub async fn ask_stub(settings: &SettingsService, req: AskRequest) -> AskResponse {
     // Minimal stub for R2.2 to keep handler Send (no DB !Send across await)
     // Returns context-aware answer like Python fallback when no hits
@@ -217,6 +243,72 @@ fn is_answer_trusted(settings: &SettingsService) -> bool {
     let base = settings.get("answer_base_url", None).unwrap_or_else(|| "https://api.openai.com/v1".to_string());
     if base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1") { return true; }
     std::env::var("ANCHOR_CLOUD_TRUST").as_deref() == Ok("1")
+}
+
+pub async fn search(
+    settings: &SettingsService,
+    req: SearchRequest,
+    data_dir: &str,
+) -> SearchResponse {
+    let data_dir = data_dir.to_string();
+    let query = req.query.clone();
+    let k = req.k.unwrap_or(8).clamp(1, 50);
+    let project_id = req.project_id;
+    let settings_clone = settings_snapshot(settings);
+    let hits = tokio::task::spawn_blocking(move || {
+        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        search_sync(&conn, &query, k, project_id)
+    })
+    .await
+    .unwrap_or_default();
+    let hits = hits.into_iter().map(|h| SearchHit {
+        chunk_id: Some(h.chunk_id),
+        entity_id: h.entity_id,
+        kind: if h.entity_id.is_some() { "entity".to_string() } else { "document".to_string() },
+        summary: h.content.chars().take(200).collect(),
+        content: h.content.chars().take(4000).collect(),
+        source_ref: format!("chunk:{}", h.chunk_id),
+        source_id: h.source_id,
+        item_id: h.item_id,
+        item_title: String::new(),
+        score: (h.score * 1000.0).round() / 1000.0,
+    }).collect();
+    SearchResponse { hits }
+}
+
+fn search_sync(conn: &Connection, query: &str, k: usize, project_id: Option<i64>) -> Vec<crate::retrieval::Hit> {
+    let project_ids = project_source_ids(conn, project_id);
+    let qa_exclude_disputed: bool = std::env::var("ANCHOR_QA_EXCLUDE_DISPUTED")
+        .map(|v| v != "0" && v.to_lowercase() != "false")
+        .unwrap_or(true);
+    let top_k = k;
+    let keyword_weight: f64 = std::env::var("ANCHOR_RETRIEVAL_KEYWORD_WEIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+    let halflife: f64 = std::env::var("ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(365.0);
+    let max_per_source: usize = std::env::var("ANCHOR_RETRIEVAL_MAX_PER_SOURCE").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+    let keyword_hits = retrieval::keyword_search(conn, query, project_ids.as_ref(), top_k, qa_exclude_disputed);
+    let evidence = if keyword_hits.is_empty() {
+        retrieval::keyword_fallback(conn, project_ids.as_ref(), top_k, qa_exclude_disputed)
+    } else {
+        keyword_hits
+    };
+    let mut hits = retrieval::fuse_and_rank(
+        conn,
+        None,
+        Some(evidence),
+        keyword_weight,
+        halflife,
+        max_per_source,
+        top_k,
+        qa_exclude_disputed,
+    );
+    let graph_hits = retrieval::graph_expand(conn, &hits, project_ids.as_ref(), 2, 3, qa_exclude_disputed);
+    if !graph_hits.is_empty() {
+        let lists = vec![hits, graph_hits];
+        hits = retrieval::fuse_evidence(lists, vec![1.0, 0.5]);
+        hits.truncate(top_k);
+    }
+    hits
 }
 
 async fn generate_answer(settings: &SettingsService, question: &str, context: &str, _history: &[AskTurn]) -> String {
