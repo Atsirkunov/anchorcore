@@ -19,18 +19,47 @@ pub async fn health(State(state): State<AppState>) -> Json<Value> {
         (failing, pending)
     };
 
+    // Mirrors backend/app/status.py:19 ollama_reachable + answer_provider
+    let ollama = if is_ollama_reachable().await { "ok" } else { "offline" };
+    let answer_key = answer_provider();
+
     Json(json!({
         "status": "ok",
         "data_dir": state.data_dir,
         "components": {
-            "ollama": "offline", // R1.2 does not yet probe Ollama; match Python shape
-            "answer_key": null,
+            "ollama": ollama,
+            "answer_key": answer_key,
             "pending_embeddings": pending_embeddings,
             "tasks": {},
             "classifier": { "concurrency": 4 },
             "failing_sources": failing_sources
         }
     }))
+}
+
+async fn is_ollama_reachable() -> bool {
+    let base = std::env::var("ANCHOR_OLLAMA_BASE_URL").unwrap_or_else(|_| "http://localhost:11434".to_string());
+    let url = format!("{}/api/tags", base.trim_end_matches('/'));
+    let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).build() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    match client.get(&url).send().await {
+        Ok(r) => r.status().is_success(),
+        Err(_) => false,
+    }
+}
+
+fn answer_provider() -> Value {
+    let base = std::env::var("ANCHOR_ANSWER_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+    let key = std::env::var("ANCHOR_ANSWER_API_KEY").unwrap_or_default();
+    if base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1") {
+        Value::String("ollama".to_string())
+    } else if !key.trim().is_empty() {
+        Value::String("configured".to_string())
+    } else {
+        Value::String("missing".to_string())
+    }
 }
 
 fn failing_sources(conn: &Connection) -> Vec<Value> {
