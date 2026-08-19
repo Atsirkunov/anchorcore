@@ -34,7 +34,8 @@ fn sensitive_label(label: &str) -> bool {
 fn record_sync_error(conn: &Connection, source_id: i64, err: &str) {
     let redacted = err.chars().take(1000).collect::<String>();
     let _ = conn.execute("UPDATE sources SET last_error = ?1, error_count = COALESCE(error_count,0)+1 WHERE id = ?2", rusqlite::params![redacted, source_id]);
-    let _ = conn.execute("INSERT INTO system_events (component, level, source_id, message, detail) VALUES ('pipeline','error',?1,'sync failed',?2)", rusqlite::params![source_id, redacted]);
+    let msg = format!("sync failed for source {}", source_id);
+    let _ = conn.execute("INSERT INTO system_events (component, level, source_id, message, detail) VALUES ('pipeline','error',?1,?2,?3)", rusqlite::params![source_id, msg, redacted]);
 }
 fn record_sync_success(conn: &Connection, source_id: i64) {
     let _ = conn.execute("UPDATE sources SET last_error = NULL, error_count = 0, last_synced_at = datetime('now') WHERE id = ?1", [source_id]);
@@ -346,6 +347,83 @@ impl Pipeline {
                 let _ = crate::pii::flag_pii_for_item(&conn, item_id);
             }
         }).await.map_err(|e| e.to_string())?;
+        // B18 distillation (chat-like doc types → Q&A units), hash-skipped
+        let do_distill = {
+            let distill_enabled = settings.get("distill_enabled", None).map(|v| v=="true" || v=="1" || v=="True").unwrap_or(true);
+            crate::distill::DISTILL_DOC_TYPES.contains(&doc_type.as_str()) && distill_enabled
+        };
+        if do_distill {
+            let distill_result = tokio::task::spawn_blocking({
+                let data_dir = data_dir.to_string();
+                let doc_text = doc.text.clone();
+                let base_ref_clone = base_ref.clone();
+                let windows_clone = windows.clone();
+                let force = force_reclassify;
+                move || {
+                    let db_path = crate::db::resolve_db_path(&data_dir);
+                    let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+                    let prev_str: String = conn.query_row("SELECT distill_hashes FROM ingested_items WHERE id=?1", [item_id], |r| r.get(0)).unwrap_or_else(|_| "{}".to_string());
+                    let prev: std::collections::HashMap<String,String> = serde_json::from_str(&prev_str).unwrap_or_default();
+                    let mut new_hashes = prev.clone();
+                    // hash skip check: if all windows hashes equal prev and not force, skip entirely
+                    let mut should_run = force;
+                    if !force {
+                        for (idx, w) in windows_clone.iter().enumerate() {
+                            let h = crate::hashing::window_hash(w);
+                            if prev.get(&(idx+1).to_string()).map(|v| v != &h).unwrap_or(true) {
+                                should_run = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !should_run {
+                        // update hashes even if skip? keep prev
+                        return Ok::<(), String>(());
+                    }
+                    // delete old distilled chunks
+                    let _ = conn.execute("DELETE FROM chunks WHERE item_id=?1 AND kind='distilled'", [item_id]);
+                    let max_units: usize = std::env::var("ANCHOR_DISTILL_MAX_UNITS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+                    for (idx, window) in windows_clone.iter().enumerate() {
+                        let h = crate::hashing::window_hash(window);
+                        new_hashes.insert((idx+1).to_string(), h);
+                        let units = crate::classifier::distill_rules(window);
+                        let refs = if windows_clone.len() > 1 { format!("{} §{}", base_ref_clone, idx+1) } else { base_ref_clone.clone() };
+                        for unit in units.into_iter().take(max_units) {
+                            let mut content = format!("Q: {}\nA: {}", unit.question, unit.answer);
+                            if !unit.terms.is_empty() {
+                                content.push_str(&format!("\nTerms: {}", unit.terms.join(", ")));
+                            }
+                            if !unit.systems.is_empty() {
+                                content.push_str(&format!("\nSystems: {}", unit.systems.join(", ")));
+                            }
+                            let _ = conn.execute("INSERT INTO chunks (item_id, kind, source_ref, content) VALUES (?1,'distilled',?2,?3)", rusqlite::params![item_id, refs, content]);
+                        }
+                    }
+                    let j = serde_json::to_string(&new_hashes).unwrap_or_else(|_| "{}".to_string());
+                    let _ = conn.execute("UPDATE ingested_items SET distill_hashes=?1 WHERE id=?2", rusqlite::params![j, item_id]);
+                    Ok(())
+                }
+            }).await.map_err(|e| e.to_string())?;
+            distill_result.map_err(|e| e.to_string())?;
+        } else {
+            // still need to update distill_hashes to current window hashes to avoid re-distilling later if type changes
+            let _ = tokio::task::spawn_blocking({
+                let data_dir = data_dir.to_string();
+                let windows_clone = windows.clone();
+                move || {
+                    let db_path = crate::db::resolve_db_path(&data_dir);
+                    if let Ok(conn) = crate::db::init_db(&db_path) {
+                        let mut map = std::collections::HashMap::new();
+                        for (idx, w) in windows_clone.iter().enumerate() {
+                            map.insert((idx+1).to_string(), crate::hashing::window_hash(w));
+                        }
+                        if let Ok(j) = serde_json::to_string(&map) {
+                            let _ = conn.execute("UPDATE ingested_items SET distill_hashes=?1 WHERE id=?2", rusqlite::params![j, item_id]);
+                        }
+                    }
+                }
+            }).await;
+        }
         // embed (gated)
         // For tests, embed will fail (no Ollama), we skip gracefully
         let embed_min_signal: f64 = std::env::var("ANCHOR_EMBED_MIN_SIGNAL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.15);

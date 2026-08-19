@@ -120,6 +120,10 @@ async def test_gdrive_auth_401(monkeypatch):
 @pytest.mark.asyncio
 async def test_gdrive_end_to_end_via_pipeline(monkeypatch):
     """IngestionPipeline can sync a gdrive source (mocked fetch)."""
+    import os
+
+    if os.environ.get("ANCHOR_TEST_RUST_URL"):
+        pytest.skip("GDrive mock patches Python RetryClient only; Rust GDrive uses live HTTP and shares DB causing Alembic stamp failure")
     from fastapi.testclient import TestClient
 
     # reuse test smoke's TestClient pattern — monkeypatch the connector fetch
