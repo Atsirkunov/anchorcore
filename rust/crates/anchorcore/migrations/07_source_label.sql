@@ -1,0 +1,2 @@
+-- b39a0c1_add_source_label — handled via ALTER in Rust (idempotent)
+-- kept as migration marker; actual ALTER is done in db.rs with error-ignore
