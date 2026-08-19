@@ -21,7 +21,9 @@ mod review;
 mod scheduler;
 mod secrets;
 mod settings;
+mod sources;
 mod stubs;
+mod system;
 
 use axum::{
     routing::{get, patch, post},
@@ -89,14 +91,14 @@ async fn main() {
     // Note: axum 0.7 uses `/:id` style; keep literal routes before param routes
     let app = Router::new()
         .route("/health", get(health::health))
-        // sources
-        .route("/sources", get(stubs::not_implemented).post(stubs::not_implemented))
+        // sources (R4.5 list/get for MCP, rest still stub until pipeline)
+        .route("/sources", get(sources::list_handler).post(sources::create_handler))
         .route("/sources/jira/projects", post(stubs::not_implemented))
         .route("/sources/jobs", get(stubs::not_implemented))
         .route("/sources/jobs/running", get(stubs::not_implemented))
         .route("/sources/jobs/:id", get(stubs::not_implemented))
         .route("/sources/jobs/:id/cancel", post(stubs::not_implemented))
-        .route("/sources/:id", get(stubs::not_implemented).put(stubs::not_implemented).delete(stubs::not_implemented))
+        .route("/sources/:id", get(sources::get_handler).put(stubs::not_implemented).delete(stubs::not_implemented))
         .route("/sources/:id/config", get(stubs::not_implemented))
         .route("/sources/:id/sync", post(stubs::not_implemented))
         .route("/sources/:id/reclassify", post(stubs::not_implemented))
@@ -119,14 +121,15 @@ async fn main() {
         .route("/projects", get(projects::list_handler).post(projects::create_handler))
         .route("/projects/default", get(projects::default_handler))
         .route("/projects/:id", get(projects::get_handler).patch(projects::patch_handler).delete(projects::delete_handler))
-        // qa (R2.2)
+        // qa (R2.2 + R4.5 search)
         .route("/qa", post(qa_handler))
         .route("/qa/public", post(qa_public_handler))
+        .route("/qa/search", post(search_handler))
         // settings
         .route("/settings", get(stubs::not_implemented).put(stubs::not_implemented))
         .route("/settings/test-connection", post(stubs::not_implemented))
         // system
-        .route("/system/status", get(stubs::not_implemented))
+        .route("/system/status", get(system::status_handler))
         .route("/system/onboarding", get(stubs::not_implemented))
         .route("/system/errors", get(stubs::not_implemented))
         .route("/system/logs", get(stubs::not_implemented))
@@ -161,5 +164,13 @@ async fn qa_public_handler(
 ) -> axum::Json<answer::AskResponse> {
     req.public_only = Some(true);
     let resp = answer::ask(&state.settings, req, &state.data_dir).await;
+    axum::Json(resp)
+}
+
+async fn search_handler(
+    axum::extract::State(state): axum::extract::State<health::AppState>,
+    axum::Json(req): axum::Json<answer::SearchRequest>,
+) -> axum::Json<answer::SearchResponse> {
+    let resp = answer::search(&state.settings, req, &state.data_dir).await;
     axum::Json(resp)
 }
