@@ -2,6 +2,7 @@
 //! See `rust/BACKLOG.md:1` and `docs/rust-port.md:1`.
 //! Mirrors `backend/app/main.py:130` health shape + `backend/app/db.py:44` PRAGMAs.
 
+mod answer;
 mod db;
 mod health;
 mod retrieval;
@@ -15,7 +16,6 @@ use axum::{
 };
 use clap::Parser;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 
@@ -59,19 +59,17 @@ async fn main() {
     let data_dir = resolve_data_dir(&args.data_dir);
     std::fs::create_dir_all(&data_dir).ok();
     let db_path = data_dir.join("anchorcore.db");
-    let conn = db::init_db(&db_path).expect("failed to init DB");
+    // init DB for side-effect (migrations, pragmas) - health/qa open per-request
+    let _ = db::init_db(&db_path).expect("failed to init DB");
     tracing::info!("Rust anchorcore — data_dir {} db {}", data_dir.display(), db_path.display());
 
     // R1.4 + R1.5: secret store + settings service (mirrors Python wiring in main.py:55)
     let secret_store = secrets::SecretStore::new(data_dir.join("secrets.enc"));
     let settings_svc = std::sync::Arc::new(settings::SettingsService::new(secret_store));
-    // keep a clone for health probing (needs to read ANCHOR_ env + DB)
-    let health_settings = settings_svc.clone();
 
     let state = health::AppState {
-        db: Arc::new(Mutex::new(conn)),
         data_dir: data_dir.to_string_lossy().to_string(),
-        settings: health_settings,
+        settings: settings_svc,
     };
 
     // R1.3: stub all routers with 501, keep /health real (already done in R1.2)
@@ -107,9 +105,9 @@ async fn main() {
         .route("/projects", get(stubs::not_implemented).post(stubs::not_implemented))
         .route("/projects/default", get(stubs::not_implemented))
         .route("/projects/:id", patch(stubs::not_implemented).delete(stubs::not_implemented))
-        // qa
-        .route("/qa", post(stubs::not_implemented))
-        .route("/qa/public", post(stubs::not_implemented))
+        // qa (R2.2)
+        .route("/qa", post(qa_handler))
+        .route("/qa/public", post(qa_public_handler))
         // settings
         .route("/settings", get(stubs::not_implemented).put(stubs::not_implemented))
         .route("/settings/test-connection", post(stubs::not_implemented))
@@ -131,4 +129,26 @@ async fn main() {
     tracing::info!("listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+async fn qa_handler(
+    axum::extract::State(state): axum::extract::State<health::AppState>,
+    axum::Json(req): axum::Json<answer::AskRequest>,
+) -> axum::Json<answer::AskResponse> {
+    // R2.2 stub: avoid holding `Connection` (!Send) across await.
+    // For now return a simple context-aware stub; full DB retrieval will be
+    // moved to `spawn_blocking` in the next incremental (keeps handler Send).
+    let settings = state.settings.clone();
+    let resp = answer::ask_stub(&settings, req).await;
+    axum::Json(resp)
+}
+
+async fn qa_public_handler(
+    axum::extract::State(state): axum::extract::State<health::AppState>,
+    axum::Json(mut req): axum::Json<answer::AskRequest>,
+) -> axum::Json<answer::AskResponse> {
+    req.public_only = Some(true);
+    let settings = state.settings.clone();
+    let resp = answer::ask_stub(&settings, req).await;
+    axum::Json(resp)
 }
