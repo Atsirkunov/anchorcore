@@ -48,47 +48,88 @@ pub async fn ask_stub(settings: &SettingsService, req: AskRequest) -> AskRespons
 }
 
 pub async fn ask(
-    conn: &Connection,
     settings: &SettingsService,
     req: AskRequest,
+    data_dir: &str,
 ) -> AskResponse {
-    let project_ids = project_source_ids(conn, req.project_id);
+    // Do DB retrieval in blocking thread to avoid holding !Send Connection across await
+    let data_dir = data_dir.to_string();
+    let question = req.question.clone();
+    let project_id = req.project_id;
+    let public_only = req.public_only.unwrap_or(false);
+    let history = req.history.clone();
+    let settings_clone = settings_snapshot(settings);
+    let q_for_block = question.clone();
+    let hits = tokio::task::spawn_blocking(move || {
+        let db_path = std::path::PathBuf::from(&data_dir).join("anchorcore.db");
+        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        retrieve_sync(&conn, &q_for_block, project_id, public_only, &settings_clone)
+    })
+    .await
+    .unwrap_or_default();
+
+    if hits.is_empty() {
+        return AskResponse {
+            answer: "No relevant knowledge found yet. Ingest sources first.".to_string(),
+            citations: vec![],
+        };
+    }
+
+    // Build context and generate (no DB borrow across await)
+    let sections: Vec<String> = hits.iter().enumerate().map(|(i, h)| format!("[S{}] {}", i+1, &h.content[..h.content.len().min(2000)])).collect();
+    let context = sections.join("\n\n");
+    let answer = generate_answer(settings, &question, &context, history.as_deref().unwrap_or(&[])).await;
+    let citations = hits.iter().take(5).map(|h| Citation {
+        entity_id: h.entity_id,
+        kind: if h.entity_id.is_some() { "entity".to_string() } else { "document".to_string() },
+        summary: h.content.chars().take(200).collect(),
+        source_ref: format!("chunk:{}", h.chunk_id),
+        score: (h.score * 1000.0).round() / 1000.0,
+        snippet: h.content.chars().take(300).collect(),
+    }).collect();
+    return AskResponse { answer, citations };
+}
+
+fn settings_snapshot(settings: &SettingsService) -> std::collections::HashMap<String, String> {
+    // snapshot needed for blocking thread (SettingsService is Sync but we clone needed values)
+    let mut m = std::collections::HashMap::new();
+    for k in ["answer_base_url","answer_api_key","answer_model","ollama_base_url"] {
+        if let Some(v) = settings.get(k, None) { m.insert(k.to_string(), v); }
+    }
+    m
+}
+
+fn retrieve_sync(
+    conn: &Connection,
+    question: &str,
+    project_id: Option<i64>,
+    public_only: bool,
+    settings_map: &std::collections::HashMap<String, String>,
+) -> Vec<crate::retrieval::Hit> {
+    let project_ids = project_source_ids(conn, project_id);
     let mut source_ids = project_ids;
-    if req.public_only.unwrap_or(false) {
+    if public_only {
         let public_ids = public_source_ids(conn);
         source_ids = match source_ids {
             None => Some(public_ids),
             Some(s) => Some(s.intersection(&public_ids).cloned().collect()),
         };
     }
-    let question = req.question.clone();
-    let query = question.clone(); // R2.2 stub: no follow-up rewrite yet (needs LLM)
+    let query = question.to_string();
     let qa_exclude_disputed: bool = std::env::var("ANCHOR_QA_EXCLUDE_DISPUTED")
         .map(|v| v != "0" && v.to_lowercase() != "false")
         .unwrap_or(true);
-
-    // Planner
-    let mut tools = vec!["hybrid"];
-    if retrieval::is_who_knows(&query) {
-        tools.push("who_knows");
-    }
-
-    // Executor: we need query embedding - for now skip vector search if no embedder (fallback to keyword)
-    // R2.2 will call embedder via reqwest when configured; for now keyword-only
     let top_k: usize = std::env::var("ANCHOR_TOP_K").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
     let keyword_weight: f64 = std::env::var("ANCHOR_RETRIEVAL_KEYWORD_WEIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let halflife: f64 = std::env::var("ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(365.0);
     let max_per_source: usize = std::env::var("ANCHOR_RETRIEVAL_MAX_PER_SOURCE").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
 
-    // For R2.2 stub, we use keyword_search only (no embedding). Vector search will be wired when embedder is ported (R3.6).
     let keyword_hits = retrieval::keyword_search(conn, &query, source_ids.as_ref(), top_k, qa_exclude_disputed);
-    let mut evidence = if keyword_hits.is_empty() {
+    let evidence = if keyword_hits.is_empty() {
         retrieval::keyword_fallback(conn, source_ids.as_ref(), top_k, qa_exclude_disputed)
     } else {
         keyword_hits
     };
-    // Filter via fuse_and_rank (handles age/diversity/dedupe)
-    // For now we treat keyword_hits as already fused; use fuse_and_rank to apply ranking
     let mut hits = retrieval::fuse_and_rank(
         conn,
         None,
@@ -99,56 +140,39 @@ pub async fn ask(
         top_k,
         qa_exclude_disputed,
     );
-
-    // Graph expand
     let graph_hits = retrieval::graph_expand(conn, &hits, source_ids.as_ref(), 2, 3, qa_exclude_disputed);
     if !graph_hits.is_empty() {
-        let mut lists = vec![hits, graph_hits];
-        // use fuse_evidence for graph
+        let lists = vec![hits, graph_hits];
         hits = retrieval::fuse_evidence(lists, vec![1.0, 0.5]);
         hits.truncate(top_k);
     }
-
-    if hits.is_empty() {
-        return AskResponse {
-            answer: "No relevant knowledge found yet. Ingest sources first.".to_string(),
-            citations: vec![],
-        };
-    }
-
-    // B30 gate: answer_provider check
-    let answer_trusted = is_answer_trusted(settings);
-    if !answer_trusted {
-        let (allowed, blocked) = gate_answer_hits(conn, &hits);
-        if !blocked.is_empty() {
-            tracing::warn!("answer gate: {} hit(s) excluded (sensitive/pii)", blocked.len());
-            if allowed.is_empty() {
-                return AskResponse {
-                    answer: "Relevant knowledge was found but it is sensitive/PII and the answer provider is an unconfirmed cloud service. Enable a local provider or set ANCHOR_CLOUD_TRUST=1 to answer.".to_string(),
-                    citations: vec![],
-                };
+    // B30 gate inside blocking (like Python _gate_answer_hits)
+    let base = settings_map.get("answer_base_url").cloned().unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+    let is_local = base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1");
+    let trusted = if is_local { true } else { std::env::var("ANCHOR_CLOUD_TRUST").as_deref() == Ok("1") };
+    if !trusted {
+        let sids: HashSet<i64> = hits.iter().filter_map(|h| h.source_id).collect();
+        let mut labels: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+        if !sids.is_empty() {
+            let list = sids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+            let sql = format!("SELECT id, label FROM sources WHERE id IN ({})", list);
+            if let Ok(mut stmt) = conn.prepare(&sql) {
+                for row in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).unwrap().flatten() {
+                    labels.insert(row.0, row.1);
+                }
             }
-            hits = allowed;
         }
+        let mut allowed = Vec::new();
+        for h in hits {
+            let label = h.source_id.and_then(|id| labels.get(&id).cloned()).unwrap_or_else(|| "internal".to_string());
+            if label=="sensitive" || label=="pii" || h.is_pii {
+                continue;
+            }
+            allowed.push(h);
+        }
+        hits = allowed;
     }
-
-    // Build context sections [S1] etc.
-    let sections: Vec<String> = hits.iter().enumerate().map(|(i, h)| format!("[S{}] {}", i+1, &h.content[..h.content.len().min(2000)])).collect();
-    let context = sections.join("\n\n");
-
-    // Generation stub: if no API key and not local, return context only (mirrors Python fallback)
-    let answer = generate_answer(settings, &query, &context, req.history.as_deref().unwrap_or(&[])).await;
-
-    let citations = hits.iter().take(5).map(|h| Citation {
-        entity_id: h.entity_id,
-        kind: if h.entity_id.is_some() { "entity".to_string() } else { "document".to_string() },
-        summary: h.content.chars().take(200).collect(),
-        source_ref: format!("chunk:{}", h.chunk_id),
-        score: (h.score * 1000.0).round() / 1000.0,
-        snippet: h.content.chars().take(300).collect(),
-    }).collect();
-
-    AskResponse { answer, citations }
+    hits
 }
 
 fn project_source_ids(conn: &Connection, project_id: Option<i64>) -> Option<HashSet<i64>> {

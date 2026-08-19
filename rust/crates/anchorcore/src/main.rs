@@ -135,11 +135,7 @@ async fn qa_handler(
     axum::extract::State(state): axum::extract::State<health::AppState>,
     axum::Json(req): axum::Json<answer::AskRequest>,
 ) -> axum::Json<answer::AskResponse> {
-    // R2.2 stub: avoid holding `Connection` (!Send) across await.
-    // For now return a simple context-aware stub; full DB retrieval will be
-    // moved to `spawn_blocking` in the next incremental (keeps handler Send).
-    let settings = state.settings.clone();
-    let resp = answer::ask_stub(&settings, req).await;
+    let resp = answer::ask(&state.settings, req, &state.data_dir).await;
     axum::Json(resp)
 }
 
@@ -148,7 +144,6 @@ async fn qa_public_handler(
     axum::Json(mut req): axum::Json<answer::AskRequest>,
 ) -> axum::Json<answer::AskResponse> {
     req.public_only = Some(true);
-    let settings = state.settings.clone();
-    let resp = answer::ask_stub(&settings, req).await;
+    let resp = answer::ask(&state.settings, req, &state.data_dir).await;
     axum::Json(resp)
 }
