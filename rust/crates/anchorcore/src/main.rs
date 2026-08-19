@@ -4,6 +4,7 @@
 
 mod db;
 mod health;
+mod retrieval;
 mod secrets;
 mod settings;
 mod stubs;
