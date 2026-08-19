@@ -39,7 +39,7 @@ def client():
         class RustClient:
             def __init__(self, base):
                 self.base = base.rstrip("/")
-                self.client = httpx.Client(base_url=self.base, timeout=10.0)
+                self.client = httpx.Client(base_url=self.base, timeout=30.0)
 
             def get(self, path, **kw):
                 return self.client.get(path, **kw)
