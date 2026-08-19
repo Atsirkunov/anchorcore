@@ -29,7 +29,7 @@ Status: `todo` | `doing` | `done`. Update this file when you pick/complete a tas
 
 | ID | Title | Est | Dependencies | DoD | Owner |
 |---|---|---|---|---|---|
-| R2.1 | Retrieval (RRF + FTS + vec0) | 2d | R1.2 R1.3 | Porter of `answer_engine.py` (`_vector_search`, `_fts`, `_who_knows`, `_fuse_evidence`, `_graph_expand`, `_status_ok` for `stale`/`disputed`, RRF `60+rank`, age decay, diversity cap). Uses `vec0` + fallback scan. Latency beats Python bench (R0.1). | doing (scaffold `src/retrieval.rs:1` - `fts_match_query`/`rrf_fuse_multi`/`age_decay`/`content_signature`/`status_ok`/`cosine`, `cargo test` 7 passed) |
+| R2.1 | Retrieval (RRF + FTS + vec0) | 2d | R1.2 R1.3 | Porter of `answer_engine.py` (`_vector_search`, `_fts`, `_who_knows`, `_fuse_evidence`, `_graph_expand`, `_status_ok` for `stale`/`disputed`, RRF `60+rank`, age decay, diversity cap). Uses `vec0` + fallback scan. Latency beats Python bench (R0.1). | done ( `src/retrieval.rs:1` full - `vector_search` vec0/scan, `keyword_search` FTS5 bm25, `who_knows`, `graph_expand` 1-2 hops, `fuse_and_rank`+`dedupe`+`expand_context`, `cargo test` 7 passed) |
 | R2.2 | Answer orchestration (ask) | 1d | R2.1 R1.5 | `POST /qa` + `POST /qa/public` (B30 gate), project scoping `source_ids`, follow-up rewrite skip when untrusted, citations. | todo |
 | R2.3 | Conformance harness | 0.5d | R1.3 R2.2 | `backend/tests` runs against `cargo run -p anchorcore -- --port 8123` (black-box HTTP), `test_retrieval.py` green. | todo |
 
