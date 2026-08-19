@@ -37,7 +37,7 @@ Status: `todo` | `doing` | `done`. Update this file when you pick/complete a tas
 
 | ID | Title | Est | Dependencies | DoD |
 |---|---|---|---|---|
-| R3.1 | Folder connector + watcher | 1d | R1.2 | `notify` crate, `path` config, same `IngestionDoc` shape, hash dedup | done ( `src/connectors/folder.rs:1` `SUPPORTED` `.md/.txt/.json/.html` + `read_plain_text` + `WalkDir` + `fetch` `external_id`/`mtime`, `cargo test` `reads_supported` 8 passed; watcher `notify` pending next) |
+| R3.1 | Folder connector + watcher | 1d | R1.2 | `notify` crate, `path` config, same `IngestionDoc` shape, hash dedup | done ( `src/connectors/folder.rs:1` + `src/connectors/watcher.rs:1` `FolderWatcher` `notify` `Recursive` + `poll` debounce 3s like `folder_watch_debounce`, `cargo test` 9 passed) |
 | R3.2 | Jira connector (410-safe) | 0.5d | R1.2 | `GET /search/jql` with `nextPageToken`/`isLast` fallback `/search` `startAt/total`, `project in (...)` for multi, `BaseConnector::list_projects` -> `POST /sources/jira/projects` checkbox |
 | R3.3 | GDrive connector | 0.5d | R1.2 | `folder_id` + Bearer token, same mock pattern as `tests/test_gdrive.py` |
 | R3.4 | Classification orchestration | 1d | R1.5 | Calls Ollama/cloud via `reqwest`, `cloud_trusted` gate (B39), rule fallback, `window_hash` skip |
