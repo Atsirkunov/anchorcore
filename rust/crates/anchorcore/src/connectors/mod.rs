@@ -1,4 +1,5 @@
 pub mod folder;
+pub mod watcher;
 
 use chrono::{DateTime, Utc};
 
