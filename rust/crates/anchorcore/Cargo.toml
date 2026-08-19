@@ -22,6 +22,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower-http = { version = "0.6", features = ["cors"] }
 chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
 keyring = "2"
 sha2 = "0.10"
 hex = "0.4"
