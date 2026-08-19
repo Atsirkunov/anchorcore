@@ -31,7 +31,7 @@ Status: `todo` | `doing` | `done`. Update this file when you pick/complete a tas
 |---|---|---|---|---|---|
 | R2.1 | Retrieval (RRF + FTS + vec0) | 2d | R1.2 R1.3 | Porter of `answer_engine.py` (`_vector_search`, `_fts`, `_who_knows`, `_fuse_evidence`, `_graph_expand`, `_status_ok` for `stale`/`disputed`, RRF `60+rank`, age decay, diversity cap). Uses `vec0` + fallback scan. Latency beats Python bench (R0.1). | done ( `src/retrieval.rs:1` full - `vector_search` vec0/scan, `keyword_search` FTS5 bm25, `who_knows`, `graph_expand` 1-2 hops, `fuse_and_rank`+`dedupe`+`expand_context`, `cargo test` 7 passed) |
 | R2.2 | Answer orchestration (ask) | 1d | R2.1 R1.5 | `POST /qa` + `POST /qa/public` (B30 gate), project scoping `source_ids`, follow-up rewrite skip when untrusted, citations. | done ( `src/answer.rs:1` `POST /qa` + `/qa/public` via `ask` with `spawn_blocking` DB (keyword+graph, `fuse_and_rank`, B30 `sensitive/pii` gate), `cargo test` 7 passed, `curl` on Python DB `data/anchorcore.db` returns `[S1] AnchorCore...` like Python) |
-| R2.3 | Conformance harness | 0.5d | R1.3 R2.2 | `backend/tests` runs against `cargo run -p anchorcore -- --port 8123` (black-box HTTP), `test_retrieval.py` green. | todo |
+| R2.3 | Conformance harness | 0.5d | R1.3 R2.2 | `backend/tests` runs against `cargo run -p anchorcore -- --port 8123` (black-box HTTP), `test_retrieval.py` green. | done ( `backend/tests/conftest.py:25` `ANCHOR_TEST_RUST_URL` → `RustClient` (httpx), `backend/tests/test_rust_conformance.py:1` `health` + `qa` keyword, `rust/scripts/conformance.sh:1` builds + runs `cargo test` 7 passed + `pytest` 2 passed) |
 
 ## Phase 3 — Connectors & pipeline (1–2 weeks)
 
