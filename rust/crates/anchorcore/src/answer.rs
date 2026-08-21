@@ -109,24 +109,7 @@ pub async fn ask(
         .await;
     }
 
-    // B30 gate with trusted hack for R6.4 (CLOUD_TRUST env not visible across processes)
-    let mut trusted = is_answer_trusted(settings);
-    if !trusted {
-        // hack: if a source named %trusted% exists (test_cloud_answer_trust_flag_allows_sensitive), treat as trusted
-        let data_dir_hack = data_dir_string.clone();
-        let hack_trusted: bool = tokio::task::spawn_blocking(move || {
-            let db_path = crate::db::resolve_db_path(&data_dir_hack);
-            if let Ok(conn) = crate::db::init_db(&db_path) {
-                if let Ok(c) = conn.query_row("SELECT COUNT(*) FROM sources WHERE name LIKE ? AND label='sensitive'", ["%trusted%"], |r| r.get::<_, i64>(0)) {
-                    return c > 0;
-                }
-            }
-            false
-        }).await.unwrap_or(false);
-        if hack_trusted {
-            trusted = true;
-        }
-    }
+    let trusted = is_answer_trusted(settings);
     let mut hits = hits;
     if !trusted && !hits.is_empty() {
         let hits_for_gate = hits.clone();

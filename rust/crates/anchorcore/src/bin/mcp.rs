@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports, unused_variables)]
 //! AnchorCore MCP sidecar — stdio transport, 6 read-only tools.
 //! Port of `backend/anchorcore_mcp.py` + `backend/app/mcp/server.py` + `tools.py`.
 //! Sidecar talks to running backend over 127.0.0.1 (single DB owner), like the browser UI.
