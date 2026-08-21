@@ -10,8 +10,8 @@ This mirrors `/AGENTS.md` but for the `rust/` workspace. **Rust is now shipped**
 
 ## How to work here (now tech-debt, not greenfield)
 
-* Pick one remaining `P*` from `docs/port-review-2026-08-21-lead.md:44` or `rust/BACKLOG.md:1` remainder (expand_context, logs pagination, deadpool, etc.) — tasks still sized for parallel agents (no shared files).
-* For each task: schema/migration (if any) → router/handler → wire in `main.rs` → test (new `cargo test` 44 + existing Python `backend/tests` `124/3` via HTTP on `:8123`) → docs.
+* Pick one task from `rust/BACKLOG.md` **Phase 7–10** (`R7.1`–`R10.9`, release-blocking security/retrieval/conformance first) or the `P*` remainder in `docs/port-review-2026-08-21-lead.md:44` (expand_context, logs pagination, deadpool, etc.) — tasks still sized for parallel agents (no shared files). Full review driving these: `docs/review-2026-08-21-full.md:1`.
+* For each task: schema/migration (if any) → router/handler → wire in `main.rs` → test (new `cargo test` 44 + existing Python `backend/tests` via HTTP on `:8123`) → docs. Note: the "124/3" conformance claim is stale (measured **115/8/3** on a matched-env fresh run — see `docs/review-2026-08-21-full.md:1`); R9.2 fixes the suite + CI so the number is real.
 * Keep `rust/Cargo.toml:6` single source (`1.0.9` via `scripts/sync_version.py`); crates live under `rust/crates/*`.
 * Log decisions in `rust/docs/decisions.md`; update `docs/handover-*.md` on retire.
 

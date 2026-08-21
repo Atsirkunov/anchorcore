@@ -79,6 +79,51 @@ Status: `todo` | `doing` | `done`. Update this file when you pick/complete a tas
 
 ---
 
+## Phase 7 — Security hardening (S0, release-blocking) — from `docs/review-2026-08-21-full.md`
+
+> These block any future `v*` tag. Do NOT ship until both land. Files disjoint → parallel.
+
+| ID | Title | Est | DoD | Files |
+|---|---|---|---|---|
+| R7.1 | Local-mode cross-origin protection | 1d | No cross-origin reads/writes against `127.0.0.1:<port>`: validate `Host`/`Origin` against an allowlist (`localhost`, `127.0.0.1`, configured `ANCHOR_CORS_ORIGINS`), replace `CorsLayer::permissive()` with the allowlist, and require a per-session custom-header CSRF token on all mutating requests when auth is disabled. Test: a request with a hostile `Origin`/`Host` is rejected (4xx) for both read and write endpoints; a normal SPA request still works. | `src/main.rs:169` + new middleware module |
+| R7.2 | Route-based authorization (hosted mode) | 1d | When `auth_enabled()`, every content/config/log GET requires a valid token — `/sources`, `/sources/:id/config`, `/entities*`, `/pii/config`, `/pii/review`, `/system/status`, `/system/logs*`, `/settings`, `/projects*` return 401 without one. Only `/health`, `/auth/status`\|`/auth/signup`\|`/auth/login`, and static frontend assets stay public. Add a `cargo test` (and conformance test) proving a bare `GET /entities` → 401 with auth on. | `src/auth.rs:139` (middleware) + `src/main.rs` |
+
+## Phase 8 — Retrieval & RAG integrity (P0) — from `docs/review-2026-08-21-full.md`
+
+> The shipped "hybrid RAG" answer path is keyword-only and the ranking is broken. These are the product's core value proposition.
+
+| ID | Title | Est | Dependencies | DoD | Files |
+|---|---|---|---|---|---|
+| R8.1 | Wire vector retrieval into the answer path + fix score flattening | 1.5d | — | `retrieve_sync`/`search_sync` embed the query and pass real `vector_hits`; `fuse_and_rank` preserves the single-list ranking (use BM25/vec scores, not a constant `1/61`); `vector_search` is exercised on every `/qa` and `/qa/search`. DoD: two chunks, one semantically-matching-but-no-keyword-overlap → the semantic chunk ranks first; scores differ between hits; `cargo test` + conformance `test_retrieval.py` green vs Rust. | `src/answer.rs:174,301` + `src/retrieval.rs:627` |
+| R8.2 | Non-Latin tokenization | 0.5d | — | Cyrillic/CJK/accented queries find matching chunks: tokenizer in `fts_match_query`/`who_knows_search` handles Unicode scripts (e.g. split on Unicode-aware boundaries, not `[a-z0-9_]` only). DoD: regression test ingesting a Cyrillic doc and retrieving it with a Cyrillic query (the probe in `docs/review-2026-08-21-full.md:1`). | `src/retrieval.rs:35,491` |
+
+## Phase 9 — Conformance & CI honesty (P1) — from `docs/review-2026-08-21-full.md`
+
+> The "124/3" claim is not reproducible (measured 115/8/3) and CI never tests the shipped binary. Until this lands, green means nothing.
+
+| ID | Title | Est | Dependencies | DoD | Files |
+|---|---|---|---|---|---|
+| R9.1 | Job cancel → `cancelled` (not `failed`) | 0.5d | — | Cancelling a running/pending job ends `status=cancelled`, `error` set or null, source `last_error`/`error_count` untouched, and the next queued job promotes. DoD: `test_smoke.py::test_cancel_running_job` green vs Rust. | `src/pipeline.rs:136,79` + `src/jobs.rs` |
+| R9.2 | Honest conformance suite + CI gate | 1d | — | (a) Split HTTP-only tests from tests that reach into Python internals (`settings_svc`, `app.secrets`, `os.environ` monkeypatching) — mark the latter `skipif ANCHOR_TEST_RUST_URL` or make them server-aware; (b) fix stale `test_version_is_single_source_of_truth` (hardcodes `1.0.8`); (c) fix the documented reproduction command's `ANCHR_*`→`ANCHOR_*` typos (`docs/port-review-2026-08-21.md:80-83`); (d) add a CI job: build Rust → boot on `:8123` → run `pytest` with `ANCHOR_TEST_RUST_URL` → gate merge; (e) add `scripts/sync_version.py` drift check to CI. DoD: CI runs the conformance suite against the Rust binary and it's reproducibly green; docs + AGENTS.md updated to the real number. | `backend/tests/conftest.py` + `backend/tests/test_{system,settings,source_edit,b30_gates}.py` + `.github/workflows/ci.yml` + docs |
+
+## Phase 10 — Feature completeness & polish (P1/P2) — from `docs/review-2026-08-21-full.md`
+
+| ID | Title | Est | Dependencies | DoD | Files |
+|---|---|---|---|---|---|
+| R10.1 | Follow-up rewriting + history into generation | 1d | — | The chat actually uses `history`: rewrite follow-ups into standalone queries (the README feature) and pass turns to `generate_answer`. DoD: conformance test — ask a question, follow up with a pronoun/coref ("what about its movements?"), the second query returns standalone-correct hits. | `src/answer.rs:335,88` |
+| R10.2 | Jira/GDrive ingestion or fail loudly | 0.5d | — | `run_sync_inner` either runs `JiraConnector::fetch`/`GDriveConnector::fetch` (R6.4 already wired the connectors) or returns an explicit error. A sync that ingests nothing must not report `done` with `items:0`. DoD: no silent no-op for non-folder connectors. | `src/pipeline.rs:113-119` |
+| R10.3 | Real scheduler auto-sync | 1d | R4.2 | `Scheduler::reload_sources` actually (re)spawns per-source poll loops that create sync jobs per `jira_poll_minutes`/`folder_scan_minutes`; reload wired on source CRUD. DoD: a poll loop creates a job on interval; `reload_sources` aborts+respawns. | `src/scheduler.rs:30-44,58-65` + `src/main.rs` |
+| R10.4 | Enforce `MAX_CONCURRENT` at execution | 0.5d | — | The pipeline executor is bounded: only `MAX_CONCURRENT` syncs run at once; excess jobs stay `pending` and are picked up as slots free (a worker/queue in front of `sources.rs:302`). `pipeline.rs:64` must not flip `pending`→`running` itself. DoD: 10 rapid syncs → ≤2 run concurrently, 8 remain `pending` then drain. | `src/sources.rs:302` + `src/pipeline.rs:64` + `src/jobs.rs` |
+| R10.5 | `/qa` event spam | 0.5d | — | The two `system_events` warnings are inserted only when retrieval actually degraded or generation actually failed — not on every `/qa`. DoD: N questions → exactly 0 warnings on a healthy provider; 2 on a genuinely degraded path. | `src/answer.rs:100-110` |
+| R10.6 | UTF-8-safe truncation | 0.5d | — | No byte-slice panics: replace `&s[..len.min(n)]` with `char`/`floor_char_boundary`-safe truncation in `answer.rs:151,340,348,369,371` and `bin/mcp.rs:58`. DoD: request whose hit content has a multibyte char at the truncation boundary → 200, never panic. | `src/answer.rs` + `src/bin/mcp.rs:58` |
+| R10.7 | Hosting parity decision | 0.5d | — | Decide and document: either `hosting/` runs the Rust binary (Postgres story then deferred or via sqlite-file volume) or the docs state hosting is Python-only. Update README's "same app against Postgres" claim accordingly. | `hosting/` + `docs/hosting.md` |
+| R10.8 | Auth rate-limit + logs bounds + info redaction | 1d | R7.2 | Login/signup rate-limited or locked out after N failures; `/system/logs` serves bounded sizes; `/health` and `/system/status` stop returning `data_dir`/DB paths. DoD: brute-force probe throttled; oversized log download limited; no filesystem paths in public responses. | `src/auth.rs` + `src/system.rs` + `src/health.rs` |
+| R10.9 | Dead code + drift cleanup | 0.5d | — | Remove `ask_stub` (`answer.rs:66`); reconcile `vector_search` usage; CI checks `scripts/sync_version.py` drift; scrub "124/3" claims from docs/AGENTS to the real number. DoD: `cargo check` 0 warnings, docs match CI. | repo-wide + `docs/` + `AGENTS.md` |
+
+> Order: R7 → R8 → R9 before any release. R10.x are independently shippable after; `R10.1`–`R10.4` are the high-value ones.
+
+---
+
 ## How to pick a task (agents)
 
 1. Claim `R*.*` by setting `doing` + branch `rust/R2.1`, etc.
