@@ -1,6 +1,8 @@
 use rusqlite::{Connection, Result};
 use rusqlite_migration::{Migrations, M};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 pub fn resolve_db_path(data_dir: &str) -> PathBuf {
     if let Ok(url) = std::env::var("ANCHOR_DATABASE_URL") {
@@ -19,12 +21,39 @@ pub fn resolve_db_path(data_dir: &str) -> PathBuf {
     PathBuf::from(data_dir).join("anchorcore.db")
 }
 
-/// Open SQLite at `path`, set PRAGMAs, run migrations.
-/// Mirrors `backend/app/db.py:44` + `backend/app/main.py:_run_migrations`.
+static MIGRATED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 
+fn migrated_paths() -> &'static Mutex<HashSet<PathBuf>> {
+    MIGRATED.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Open without migrations — fast per-request (P1 4.1: avoids WAL/pragma + 10 migrations scan per HTTP request).
+/// Use after boot has called `init_db` once.
+pub fn open_db(path: &Path) -> Result<Connection> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let conn = Connection::open(path)?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "busy_timeout", 5000)?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(conn)
+}
+
+/// Open SQLite at `path`, set PRAGMAs, run migrations once per path.
+/// Mirrors `backend/app/db.py:44` + `backend/app/main.py:_run_migrations`.
 pub fn init_db(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
+    }
+    // Fast path: if this path already migrated in this process, just open with pragmas
+    {
+        let guard = migrated_paths().lock().unwrap();
+        if guard.contains(path) {
+            drop(guard);
+            return open_db(path);
+        }
     }
     let mut conn = Connection::open(path)?;
 
@@ -60,6 +89,8 @@ pub fn init_db(path: &Path) -> Result<Connection> {
 
     // Ensure PRAGMAs after migrations (some migrations may reset)
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    // mark migrated
+    migrated_paths().lock().unwrap().insert(path.to_path_buf());
     Ok(conn)
 }
 
