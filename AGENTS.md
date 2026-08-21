@@ -14,13 +14,14 @@ React/Vite · Ollama local + BYO cloud OpenAI-compatible. Packaged via PyInstall
 Repo: `git@github.com:Atsirkunov/anchorcore.git`. Backend under `backend/`, UI under
 `frontend/`, Rust port under `rust/` (incremental, contract-first, see `rust/README.md` + `rust/BACKLOG.md` + `docs/rust-port.md`). Release cadence: bump version → tag `vX.Y.Z` → push (CI builds artifacts).
 
-## How to run / test / release
+## How to run / test / release (Rust is shipped as of 1.0.9)
 
-- Dev: `./start.sh` (venv, migrations, Ollama, backend :8000)
-- Backend tests: `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests -q` (121 tests, ~25s; CI-safe, no LLM needed)
+- Dev (Rust): `cargo run -p anchorcore -- --port 8123 --data-dir /tmp/ac-dev` (migrations, watcher, jobs; `cargo test -p anchorcore` 44, `cargo check 0`)
+- Dev (Python legacy): `./start.sh` (venv, migrations, Ollama, backend :8000) — now conformance only
+- Backend tests: `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=test_mcp.py` (124/3 vs Rust) or `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests -q` (121 vs Python)
 - Frontend: `cd frontend && npm run build` (tsc + vite; must pass before a UI change is done)
-- Release: bump `__version__` in `backend/app/config.py` (single source of truth; main.py + system.py import it) → commit → tag → push
-- **The packaged app embeds `frontend/dist` at build time** — after any UI change you must rebuild, or the exe ships stale UI.
+- Release (single source): edit `rust/Cargo.toml:6` `workspace.package.version` → `python scripts/sync_version.py` (writes `backend/app/config.py:11`) → `cargo test` + `cargo build --release` (embeds `frontend/dist` via `src/frontend.rs:1`, 9.8M+3.4M, `codesign valid`) → `git tag vX.Y.Z` → `git push origin vX.Y.Z` (CI builds `AnchorCore-rust-*`)
+- **The packaged app embeds `frontend/dist` at build time** — after any UI change you must `cargo build --release` (or `npm run build` + `cargo build`), or the exe ships stale UI.
 
 ## Backend architecture map
 
@@ -100,10 +101,11 @@ Key rules:
 6. Run `npm run build` for UI changes. Sync docs in the same commit (product-plan `— DONE` marker).
 7. Bump version + tag only when releasing.
 
-## Rust port
+## Rust port — shipped as of `v1.0.9` `7131cfe` (Python retired)
 
-* Incremental, separate workspace `rust/` (`rust/README.md` + `rust/BACKLOG.md` + `rust/AGENTS.md`). Same API + same SQLite file as Python. AI agents can work there in parallel; pick one `R*.*` task, branch `rust/R1.1`.
-* Python backend stays shipped artifact until `rust` passes shared conformance (`backend/tests` via HTTP on `:8123`).
+* Now **shipped artifact**: `rust/` workspace is source of truth (`rust/Cargo.toml:6` `1.0.9` single source via `scripts/sync_version.py`), same API + same SQLite file as Python. Contract-first incremental is done; `backend/` is legacy conformance + hosted Postgres only.
+* `cargo run -p anchorcore -- --port 8123` on `:8123` vs `PYTHONPATH=backend pytest` `124/3` green, `cargo test 44` + `cargo check 0`. Watcher `watcher/service.rs:12` 3s debounce, `db.rs:22` `open_db` fast path, `jobs.rs:97` `BEGIN IMMEDIATE` atomic, `retrieval.rs:54` RRF tuple key + batch `created_at`, `auth.rs:139` `require_auth` 401.
+* AI agents: pick one `P*` tech-debt task from `docs/port-review-2026-08-21-lead.md:44` or `rust/BACKLOG.md:1` remainder (expand_context, logs pagination, deadpool), branch `rust/P1.8` etc.; keep `PRAGMA foreign_keys=ON` + `spawn_blocking` + per-key `secrets.enc.<sha256>` 64 hex.
 
 ## Gotchas (learned the hard way — don't reintroduce)
 
