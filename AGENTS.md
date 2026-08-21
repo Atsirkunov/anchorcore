@@ -18,7 +18,7 @@ Repo: `git@github.com:Atsirkunov/anchorcore.git`. Backend under `backend/`, UI u
 
 - Dev (Rust): `cargo run -p anchorcore -- --port 8123 --data-dir /tmp/ac-dev` (migrations, watcher, jobs; `cargo test -p anchorcore` 44, `cargo check 0`)
 - Dev (Python legacy): `./start.sh` (venv, migrations, Ollama, backend :8000) — now conformance only
-- Backend tests: `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=test_mcp.py` (124/3 vs Rust) or `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests -q` (121 vs Python)
+- Backend tests: `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=test_mcp.py` or `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests -q`. **The "124/3 vs Rust" claim is stale — a fresh run with matched env measures 115/8/3** (see `docs/review-2026-08-21-full.md:1`; fixes tracked in `rust/BACKLOG.md` Phase 7–10). `cargo test -p anchorcore` 44 + `cargo check 0` are current and green.
 - Frontend: `cd frontend && npm run build` (tsc + vite; must pass before a UI change is done)
 - Release (single source): edit `rust/Cargo.toml:6` `workspace.package.version` → `python scripts/sync_version.py` (writes `backend/app/config.py:11`) → `cargo test` + `cargo build --release` (embeds `frontend/dist` via `src/frontend.rs:1`, 9.8M+3.4M, `codesign valid`) → `git tag vX.Y.Z` → `git push origin vX.Y.Z` (CI builds `AnchorCore-rust-*`)
 - **The packaged app embeds `frontend/dist` at build time** — after any UI change you must `cargo build --release` (or `npm run build` + `cargo build`), or the exe ships stale UI.
@@ -104,8 +104,9 @@ Key rules:
 ## Rust port — shipped as of `v1.0.9` `7131cfe` (Python retired)
 
 * Now **shipped artifact**: `rust/` workspace is source of truth (`rust/Cargo.toml:6` `1.0.9` single source via `scripts/sync_version.py`), same API + same SQLite file as Python. Contract-first incremental is done; `backend/` is legacy conformance + hosted Postgres only.
-* `cargo run -p anchorcore -- --port 8123` on `:8123` vs `PYTHONPATH=backend pytest` `124/3` green, `cargo test 44` + `cargo check 0`. Watcher `watcher/service.rs:12` 3s debounce, `db.rs:22` `open_db` fast path, `jobs.rs:97` `BEGIN IMMEDIATE` atomic, `retrieval.rs:54` RRF tuple key + batch `created_at`, `auth.rs:139` `require_auth` 401.
-* AI agents: pick one `P*` tech-debt task from `docs/port-review-2026-08-21-lead.md:44` or `rust/BACKLOG.md:1` remainder (expand_context, logs pagination, deadpool), branch `rust/P1.8` etc.; keep `PRAGMA foreign_keys=ON` + `spawn_blocking` + per-key `secrets.enc.<sha256>` 64 hex.
+* `cargo run -p anchorcore -- --port 8123` on `:8123` vs `PYTHONPATH=backend pytest` conformance (see caveat above — measured **115/8/3**, not 124/3), `cargo test 44` + `cargo check 0`. Watcher `watcher/service.rs:12` 3s debounce, `db.rs:22` `open_db` fast path, `jobs.rs:97` `BEGIN IMMEDIATE` atomic, `retrieval.rs:54` RRF tuple key + batch `created_at`, `auth.rs:139` `require_auth` 401.
+* **Rust is shipped but has release-blocking debt** — security (`CorsLayer::permissive` + no Host/Origin check, GET-all-reads-public auth), keyword-only retrieval (vector search unused), and a non-reproducible "124/3" conformance claim. Do **not** tag a new `v*` until `rust/BACKLOG.md` **Phase 7 (R7.1/R7.2) + 8 + 9** land. Full write-up: `docs/review-2026-08-21-full.md:1`.
+* AI agents: pick one task from `rust/BACKLOG.md` **Phase 7–10** (`R7.1`–`R10.9`) or the `P*` remainder in `docs/port-review-2026-08-21-lead.md:44` (expand_context, logs pagination, deadpool); branch `rust/R7.1` etc.; keep `PRAGMA foreign_keys=ON` + `spawn_blocking` + per-key `secrets.enc.<sha256>` 64 hex.
 
 ## Gotchas (learned the hard way — don't reintroduce)
 
