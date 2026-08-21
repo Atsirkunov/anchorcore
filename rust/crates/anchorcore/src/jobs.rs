@@ -93,26 +93,39 @@ impl JobManager {
         Ok(id)
     }
 
-    /// Try to promote pending -> running up to MAX_CONCURRENT.
+    /// Try to promote pending -> running up to MAX_CONCURRENT — atomic (P1 4.10).
+    /// Uses `BEGIN IMMEDIATE` so concurrent `create_job` cannot double-promote same pending.
     pub fn maybe_promote(&self, conn: &Connection) {
+        let _ = conn.execute("BEGIN IMMEDIATE", []);
         let running: i64 = conn
             .query_row("SELECT COUNT(*) FROM jobs WHERE status = 'running'", [], |r| r.get(0))
             .unwrap_or(0);
         let slots = (MAX_CONCURRENT as i64) - running;
         if slots <= 0 {
+            let _ = conn.execute("COMMIT", []);
             return;
         }
         let mut stmt = match conn.prepare("SELECT id FROM jobs WHERE status = 'pending' ORDER BY created_at LIMIT ?1") {
             Ok(s) => s,
-            Err(_) => return,
+            Err(_) => {
+                let _ = conn.execute("ROLLBACK", []);
+                return;
+            }
         };
         let pending: Vec<i64> = stmt
             .query_map([slots], |r| r.get(0))
             .unwrap()
             .filter_map(|r| r.ok())
             .collect();
+        if pending.is_empty() {
+            let _ = conn.execute("COMMIT", []);
+            return;
+        }
+        for id in &pending {
+            let _ = conn.execute("UPDATE jobs SET status = 'running' WHERE id = ?1 AND status='pending'", [*id]);
+        }
+        let _ = conn.execute("COMMIT", []);
         for id in pending {
-            let _ = conn.execute("UPDATE jobs SET status = 'running' WHERE id = ?1", [id]);
             self.running.lock().unwrap().insert(id, Instant::now());
         }
     }
@@ -333,5 +346,38 @@ mod tests {
         assert!(mgr.cancel(&conn, pend));
         let status: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [pend], |r| r.get(0)).unwrap();
         assert_eq!(status, "cancelled");
+    }
+    #[test]
+    fn concurrent_promote_atomic() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test3.db");
+        let conn = crate::db::init_db(&path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled) VALUES ('s','folder','{}',1)", []).unwrap();
+        let sid = conn.last_insert_rowid();
+        let mgr = JobManager::new();
+        let mgr2 = mgr.clone();
+        let path2 = path.clone();
+        let path3 = path.clone();
+        // concurrent create from 2 threads (each with own connection, same file)
+        let h1 = std::thread::spawn(move || {
+            let c = crate::db::open_db(&path2).unwrap();
+            for _ in 0..2 {
+                let _ = mgr2.create_job(&c, sid, "sync");
+            }
+        });
+        let h2 = std::thread::spawn(move || {
+            let c = crate::db::open_db(&path3).unwrap();
+            for _ in 0..2 {
+                let _ = mgr.create_job(&c, sid, "sync");
+            }
+        });
+        h1.join().unwrap();
+        h2.join().unwrap();
+        let c = crate::db::open_db(&path).unwrap();
+        let running: i64 = c.query_row("SELECT COUNT(*) FROM jobs WHERE status='running'", [], |r| r.get(0)).unwrap();
+        let pending: i64 = c.query_row("SELECT COUNT(*) FROM jobs WHERE status='pending'", [], |r| r.get(0)).unwrap();
+        // MAX 2 running, rest pending — never exceeds
+        assert!(running <= MAX_CONCURRENT as i64);
+        assert_eq!(running + pending, 4);
     }
 }
