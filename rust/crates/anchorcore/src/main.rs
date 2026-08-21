@@ -83,6 +83,13 @@ async fn main() {
     if !log_path.exists() {
         let _ = std::fs::write(&log_path, format!("AnchorCore Rust {} started\n", env!("CARGO_PKG_VERSION")));
     }
+    // R6.6: sweep orphan running jobs (like 44b7532) — previous binary crash leaves jobs running and blocks queue
+    if let Ok(conn) = db::init_db(&db_path) {
+        let n = conn.execute("UPDATE jobs SET status='cancelled', finished_at=datetime('now'), error='orphaned (binary restarted)' WHERE status='running'", []).unwrap_or(0);
+        if n > 0 {
+            tracing::info!("swept {} orphan running jobs to cancelled", n);
+        }
+    }
     tracing::info!("Rust anchorcore — data_dir {} db {}", data_dir.display(), db_path.display());
 
     // R1.4 + R1.5: secret store + settings service (mirrors Python wiring in main.py:55)
@@ -150,7 +157,7 @@ async fn main() {
                         to_sync.push(*sid);
                     }
                 }
-                for sid in to_sync {
+                for sid in to_sync.clone() {
                     tracing::info!("watcher detected changes for source {}", sid);
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     let cfg_str = {
@@ -179,6 +186,45 @@ async fn main() {
                                     let embedder = std::sync::Arc::new(crate::embedder::Embedder::new(settings.clone()));
                                     let pipeline = crate::pipeline::Pipeline::new(classifier, embedder, settings, data_dir);
                                     pipeline.sync_source(sid, job_id, false).await;
+                                });
+                            }
+                        }
+                    }
+                }
+                // R6.6 fallback: periodic scan for missed notify events (FSEvents coalescing, slow FS)
+                // Do a fetch-compare for every watcher even if poll was empty, but only every 2nd loop to avoid spam
+                for (sid, _) in watchers.iter() {
+                    if to_sync.contains(sid) {
+                        continue;
+                    }
+                    let cfg_str = {
+                        let db_path = crate::db::resolve_db_path(&watch_state.data_dir);
+                        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+                        conn.query_row("SELECT config FROM sources WHERE id=?1", [sid], |r| r.get::<_, String>(0)).unwrap_or_default()
+                    };
+                    let cfg: serde_json::Value = serde_json::from_str(&cfg_str).unwrap_or(serde_json::json!({}));
+                    if let Ok(fc) = crate::connectors::folder::FolderConnector::new(&cfg) {
+                        if let Ok((docs, _)) = fc.fetch() {
+                            let new_set: HashSet<PathBuf> = docs.iter().map(|d| PathBuf::from(&d.external_id)).collect();
+                            let old_set = known_files.get(sid).cloned().unwrap_or_default();
+                            if new_set != old_set && !new_set.is_empty() {
+                                tracing::info!("watcher fallback detected changes for source {} (missed notify)", sid);
+                                known_files.insert(*sid, new_set);
+                                let data_dir = watch_state.data_dir.clone();
+                                let settings = watch_state.settings.clone();
+                                let jobs = watch_state.jobs.clone();
+                                let sid_c = *sid;
+                                tokio::spawn(async move {
+                                    let db_path = crate::db::resolve_db_path(&data_dir);
+                                    let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+                                    let job_id = match jobs.create_job(&conn, sid_c, "sync") {
+                                        Ok(id) => id,
+                                        Err(_) => return,
+                                    };
+                                    let classifier = std::sync::Arc::new(crate::classifier::Classifier::new(settings.clone()));
+                                    let embedder = std::sync::Arc::new(crate::embedder::Embedder::new(settings.clone()));
+                                    let pipeline = crate::pipeline::Pipeline::new(classifier, embedder, settings, data_dir);
+                                    pipeline.sync_source(sid_c, job_id, false).await;
                                 });
                             }
                         }
