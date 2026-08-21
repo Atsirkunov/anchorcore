@@ -5,7 +5,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::health::AppState;
@@ -175,10 +175,10 @@ pub async fn related_handler(State(state): State<AppState>, Path(entity_id): Pat
         if all.is_empty() {
             return Ok(Value::Array(vec![]));
         }
-        let list = all.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities WHERE id IN ({})", list);
+        let placeholders = all.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities WHERE id IN ({})", placeholders);
         let mut stmt3 = conn.prepare(&sql).unwrap();
-        let rows = stmt3.query_map([], |r| entity_json_from_row(r)).unwrap();
+        let rows = stmt3.query_map(rusqlite::params_from_iter(all.iter()), |r| entity_json_from_row(r)).unwrap();
         let out: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
         Ok(Value::Array(out))
     })

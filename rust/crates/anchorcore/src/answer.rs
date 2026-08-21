@@ -117,7 +117,7 @@ pub async fn ask(
         let hack_trusted: bool = tokio::task::spawn_blocking(move || {
             let db_path = crate::db::resolve_db_path(&data_dir_hack);
             if let Ok(conn) = crate::db::init_db(&db_path) {
-                if let Ok(c) = conn.query_row("SELECT COUNT(*) FROM sources WHERE name LIKE '%trusted%' AND label='sensitive'", [], |r| r.get::<_, i64>(0)) {
+                if let Ok(c) = conn.query_row("SELECT COUNT(*) FROM sources WHERE name LIKE ? AND label='sensitive'", ["%trusted%"], |r| r.get::<_, i64>(0)) {
                     return c > 0;
                 }
             }
@@ -193,7 +193,7 @@ fn retrieve_sync(
     question: &str,
     project_id: Option<i64>,
     public_only: bool,
-    settings_map: &std::collections::HashMap<String, String>,
+    _settings_map: &std::collections::HashMap<String, String>,
 ) -> Vec<crate::retrieval::Hit> {
     let project_ids = project_source_ids(conn, project_id);
     let mut source_ids = project_ids;
@@ -255,10 +255,10 @@ fn gate_answer_hits(conn: &Connection, hits: &[retrieval::Hit]) -> (Vec<retrieva
     let sids: HashSet<i64> = hits.iter().filter_map(|h| h.source_id).collect();
     let mut labels: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
     if !sids.is_empty() {
-        let list = sids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT id, label FROM sources WHERE id IN ({})", list);
+        let placeholders = sids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT id, label FROM sources WHERE id IN ({})", placeholders);
         if let Ok(mut stmt) = conn.prepare(&sql) {
-            for row in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).unwrap().flatten() {
+            for row in stmt.query_map(rusqlite::params_from_iter(sids.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).unwrap().flatten() {
                 labels.insert(row.0, row.1);
             }
         }
@@ -292,7 +292,7 @@ pub async fn search(
     let query = req.query.clone();
     let k = req.k.unwrap_or(8).clamp(1, 50);
     let project_id = req.project_id;
-    let settings_clone = settings_snapshot(settings);
+    let _settings_clone = settings_snapshot(settings);
     let hits = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());

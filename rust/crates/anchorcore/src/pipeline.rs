@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 
 use crate::classifier::Classifier;
@@ -64,7 +63,7 @@ impl Pipeline {
             let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
             let _ = conn.execute("UPDATE jobs SET status='running', started_at=datetime('now'), total=0, processed=0 WHERE id=?1", [job_id]);
         }
-        let res = self.run_sync_inner(source_id, job_id, force_reclassify, &data_dir, settings.clone(), classifier.clone(), embedder.clone()).await;
+        let res = Box::pin(self.run_sync_inner(source_id, job_id, force_reclassify, &data_dir, settings.clone(), classifier.clone(), embedder.clone())).await;
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
         match res {
@@ -96,7 +95,7 @@ impl Pipeline {
         embedder: Arc<Embedder>,
     ) -> Result<(i64, i64), String> {
         // load source
-        let (connector_type, config_str, label) = {
+        let (connector_type, config_str, _label) = {
             let db_path = crate::db::resolve_db_path(data_dir);
             let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
             let mut stmt = conn.prepare("SELECT connector, config, label FROM sources WHERE id = ?1").map_err(|e| e.to_string())?;
@@ -138,10 +137,10 @@ impl Pipeline {
                     return Err("job cancelled".to_string());
                 }
             }
-            let upserted = self.upsert_doc(data_dir, source_id, &doc, force_reclassify).await.map_err(|e| e.to_string())?;
+            let upserted = Box::pin(self.upsert_doc(data_dir, source_id, &doc, force_reclassify)).await.map_err(|e| e.to_string())?;
             if upserted || force_reclassify {
                 created_items += 1;
-                let n = self.classify_and_store(data_dir, source_id, &doc, force_reclassify, settings.clone(), classifier.clone(), embedder.clone()).await.map_err(|e| e.to_string())?;
+                let n = Box::pin(self.classify_and_store(data_dir, source_id, &doc, force_reclassify, settings.clone(), classifier.clone(), embedder.clone())).await.map_err(|e| e.to_string())?;
                 new_entities += n as i64;
             }
             processed += 1;
@@ -200,20 +199,15 @@ impl Pipeline {
                 conn.query_row("SELECT id FROM ingested_items WHERE source_id=?1 AND external_id=?2", rusqlite::params![source_id, external_id], |r| r.get(0)).unwrap()
             }
         }).await.map_err(|e| e.to_string())?;
-        // doc_type detection
-        let doc_type: String = tokio::task::spawn_blocking({
-            let settings = settings.clone();
-            move || {
-                let trusted = cloud_trusted(&*settings, "classifier");
-                if !trusted {
-                    return "general".to_string();
-                }
-                "general".to_string()
-            }
-        }).await.map_err(|e| e.to_string())?;
-        // gate
+        // gate + doc_type detection (P1 4.4 — was hardcoded general)
         let classify_trusted = cloud_trusted(&*settings, "classifier");
         let embed_trusted = cloud_trusted(&*settings, "embed");
+        let doc_type: String = if classify_trusted {
+            // Box LLM future to bound stack (large classifier future previously blew 8 MB)
+            Box::pin(classifier.detect_document_type(&doc.text, classify_trusted)).await
+        } else {
+            "general".to_string()
+        };
         let label: String = tokio::task::spawn_blocking({
             let data_dir = data_dir.to_string();
             move || {
@@ -297,7 +291,7 @@ impl Pipeline {
             }
             // insert into DB
             let data_dir_clone = data_dir.to_string();
-            let window_clone = window.clone();
+            let _window_clone = window.clone();
             tokio::task::spawn_blocking(move || {
                 let db_path = crate::db::resolve_db_path(&data_dir_clone);
                 let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
@@ -355,7 +349,7 @@ impl Pipeline {
         if do_distill {
             let distill_result = tokio::task::spawn_blocking({
                 let data_dir = data_dir.to_string();
-                let doc_text = doc.text.clone();
+                let _doc_text = doc.text.clone();
                 let base_ref_clone = base_ref.clone();
                 let windows_clone = windows.clone();
                 let force = force_reclassify;
@@ -424,35 +418,42 @@ impl Pipeline {
                 }
             }).await;
         }
-        // embed (gated)
-        // For tests, embed will fail (no Ollama), we skip gracefully
+        // embed (gated) — wire embedder.embed_gated + sync_vec (P0 3.2)
         let embed_min_signal: f64 = std::env::var("ANCHOR_EMBED_MIN_SIGNAL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.15);
+        let gated = sensitive_label(&label) && !(classify_trusted && embed_trusted);
         let chunks: Vec<(i64, String, bool)> = tokio::task::spawn_blocking({
             let data_dir = data_dir.to_string();
             move || {
                 let db_path = crate::db::resolve_db_path(&data_dir);
                 let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
-                let mut stmt = conn.prepare("SELECT id, content, is_pii FROM chunks WHERE item_id=?1 OR entity_id IN (SELECT id FROM entities WHERE item_id=?1)").unwrap();
+                let mut stmt = conn.prepare("SELECT id, content, is_pii FROM chunks WHERE (item_id=?1 OR entity_id IN (SELECT id FROM entities WHERE item_id=?1)) AND embedding IS NULL").unwrap();
                 let rows = stmt.query_map([item_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0))).unwrap().filter_map(|r| r.ok()).collect();
                 rows
             }
         }).await.map_err(|e| e.to_string())?;
-        // filter pending embeddings
-        let pending: Vec<(i64, String, bool)> = chunks.into_iter().filter(|(_, _, _)| true).collect(); // all for now; real would filter embedding IS NULL
-        // Actually we need to check which have embedding NULL; but we just inserted without embedding, so all pending
-        let contents: Vec<String> = pending.iter().map(|(_, c, _)| c.clone()).collect();
-        let is_pii_flags: Vec<bool> = pending.iter().map(|(_, _, p)| *p).collect();
-        // signal gate
-        let corpus: Vec<String> = contents.clone();
-        let mut embeddable_idx = vec![];
-        for (i, c) in contents.iter().enumerate() {
-            if crate::distill::signal(c, &corpus) >= embed_min_signal {
-                embeddable_idx.push(i);
+        if !chunks.is_empty() {
+            let pending_ids: Vec<i64> = chunks.iter().map(|(id, _, _)| *id).collect();
+            let contents: Vec<String> = chunks.iter().map(|(_, c, _)| c.clone()).collect();
+            let is_pii_flags: Vec<bool> = chunks.iter().map(|(_, _, p)| *p).collect();
+            // call embedder (graceful fallback inside embed_gated on remote failure)
+            let out = embedder.embed_gated(contents, is_pii_flags, gated, embed_min_signal).await.unwrap_or_else(|_| vec![None; pending_ids.len()]);
+            for (idx, blob_opt) in out.into_iter().enumerate() {
+                if let Some(blob) = blob_opt {
+                    let cid = pending_ids[idx];
+                    let data_dir_c = data_dir.to_string();
+                    let blob_c = blob.clone();
+                    let embedder_c = embedder.clone();
+                    // update DB + vec0 sync in blocking task
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let db_path = crate::db::resolve_db_path(&data_dir_c);
+                        if let Ok(conn) = crate::db::init_db(&db_path) {
+                            let _ = conn.execute("UPDATE chunks SET embedding=?1 WHERE id=?2", rusqlite::params![blob_c, cid]);
+                            let _ = embedder_c.sync_vec(&conn, cid, &blob_c);
+                        }
+                    }).await;
+                }
             }
         }
-        // For tests, we skip actual embed call (would fail without Ollama), just leave embedding NULL
-        // If we had a local embedder, we would call embedder.embed...
-        // For now, do nothing, but respect gated logic: if gated and not trusted, skip
 
         Ok(total_entities)
     }
