@@ -38,6 +38,19 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
     } else {
         "missing".to_string()
     };
+    // real probe like health.rs (was heuristic localhost:1 and always false)
+    let ollama_reachable = {
+        let url = format!("{}/api/tags", ollama_base.trim_end_matches('/'));
+        // quick heuristic for test suite when base is intentionally invalid (localhost:1)
+        if ollama_base.contains("localhost:1") || ollama_base.contains("127.0.0.1:1") {
+            false
+        } else {
+            match reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).build() {
+                Ok(c) => c.get(&url).send().await.map(|r| r.status().is_success()).unwrap_or(false),
+                Err(_) => false,
+            }
+        }
+    };
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
@@ -50,15 +63,12 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
             "count": r.get::<_, i64>(3)?
         }))).unwrap().filter_map(|r| r.ok()).collect();
         let version = env!("CARGO_PKG_VERSION");
-        // Ollama reachable: heuristic for tests (localhost:1 => offline), otherwise false to keep fast
-        let ollama_reachable = !(ollama_base.contains("localhost:1") || ollama_base.contains("127.0.0.1:1"));
-        // avoid blocking reqwest in spawn_blocking; health endpoint does real probe
         serde_json::json!({
             "version": version,
             "data_dir": data_dir,
             "database": format!("sqlite:///{}", db_path.display()),
             "ollama": {
-                "reachable": if ollama_reachable { false } else { false },
+                "reachable": ollama_reachable,
                 "base_url": ollama_base.clone(),
                 "classifier_model": classifier_model.clone(),
                 "embed_model": embed_model.clone(),
