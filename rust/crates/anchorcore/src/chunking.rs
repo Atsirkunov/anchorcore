@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use regex::Regex;
 
 const CHUNK_SIZE: usize = 800;
@@ -40,19 +42,23 @@ pub fn chunk_text(text: &str) -> Vec<String> {
 }
 
 fn is_heading(line: &str) -> bool {
+    static RE_NUM: OnceLock<Regex> = OnceLock::new();
+    static RE_CAPS: OnceLock<Regex> = OnceLock::new();
     let s = line.trim();
     if s.is_empty() || s.len() > 80 {
         return false;
     }
     // numbered markers §434, 4.2.1, Article 12
-    let re = Regex::new(
-        r"^\s*(?:§\s*\d+(\.\d+)*|\d{1,4}(\.\d{1,4}){1,3}|(?:article|annex|section|schedule|rule|appendix)\s+\d+)(?:\s|[:.)\-]|$)",
-    )
-    .unwrap();
+    let re = RE_NUM.get_or_init(|| {
+        Regex::new(
+            r"^\s*(?:§\s*\d+(\.\d+)*|\d{1,4}(\.\d{1,4}){1,3}|(?:article|annex|section|schedule|rule|appendix)\s+\d+)(?:\s|[:.)\-]|$)",
+        )
+        .unwrap()
+    });
     if re.is_match(s) {
         return true;
     }
-    let caps = Regex::new(r"^[A-Z][A-Z0-9 &()/\-]{3,80}$").unwrap();
+    let caps = RE_CAPS.get_or_init(|| Regex::new(r"^[A-Z][A-Z0-9 &()/\-]{3,80}$").unwrap());
     if caps.is_match(s) && !s.chars().all(|c| c.is_ascii_digit()) {
         return true;
     }
@@ -86,10 +92,11 @@ pub fn chunk_document(text: &str) -> Vec<String> {
 }
 
 fn split_section(section: &str, max_chars: usize) -> Vec<String> {
+    static RE_SPLIT: OnceLock<Regex> = OnceLock::new();
     if section.chars().count() <= max_chars {
         return vec![section.to_string()];
     }
-    let re = Regex::new(r"\n\s*\n").unwrap();
+    let re = RE_SPLIT.get_or_init(|| Regex::new(r"\n\s*\n").unwrap());
     let paras: Vec<String> = re
         .split(section)
         .map(|p| p.trim().to_string())
