@@ -1,8 +1,10 @@
 //! Distillation signal gating — port of `backend/app/distill.py:96` `signal`.
 //! Also re-exports DISTILL_DOC_TYPES (mirrors classifier.DISTILL_DOC_TYPES).
 
-use regex::Regex;
 use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use regex::Regex;
 
 pub const DISTILL_DOC_TYPES: &[&str] = &["meeting", "decision_log", "general"];
 
@@ -11,7 +13,8 @@ pub const DISTILL_DOC_TYPES: &[&str] = &["meeting", "decision_log", "general"];
 /// `content` is one chunk's text; `corpus` is all pending chunks' texts for the item.
 /// Tokens are `[a-z0-9_]{3,}` lowercased. Mean IDF = avg log((n+1)/(df+1)).
 pub fn signal(content: &str, corpus: &[String]) -> f64 {
-    let re = Regex::new(r"[a-z0-9_]{3,}").unwrap();
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"[a-z0-9_]{3,}").unwrap());
     let mut doc_freq: HashMap<String, usize> = HashMap::new();
     for c in corpus {
         for m in re.find_iter(&c.to_lowercase()) {

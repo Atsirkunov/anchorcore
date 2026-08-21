@@ -20,13 +20,18 @@ fn read_plain_text(path: &Path) -> Result<String, ConnectorError> {
                 .map_err(|e| ConnectorError(format!("read {}: {}", path.display(), e)))
         }
         "html" | "htm" => {
+            use std::sync::OnceLock;
+            static RE_SCRIPT: OnceLock<regex::Regex> = OnceLock::new();
+            static RE_STYLE: OnceLock<regex::Regex> = OnceLock::new();
+            static RE_TAG: OnceLock<regex::Regex> = OnceLock::new();
+            static RE_WS: OnceLock<regex::Regex> = OnceLock::new();
             let s = std::fs::read_to_string(path)
                 .map_err(|e| ConnectorError(format!("read {}: {}", path.display(), e)))?;
             // strip tags like Python's re
-            let re_script = regex::Regex::new(r"<script[^>]*>.*?</script>").unwrap();
-            let re_style = regex::Regex::new(r"<style[^>]*>.*?</style>").unwrap();
-            let re_tag = regex::Regex::new(r"<[^>]+>").unwrap();
-            let re_ws = regex::Regex::new(r"\s+").unwrap();
+            let re_script = RE_SCRIPT.get_or_init(|| regex::Regex::new(r"<script[^>]*>.*?</script>").unwrap());
+            let re_style = RE_STYLE.get_or_init(|| regex::Regex::new(r"<style[^>]*>.*?</style>").unwrap());
+            let re_tag = RE_TAG.get_or_init(|| regex::Regex::new(r"<[^>]+>").unwrap());
+            let re_ws = RE_WS.get_or_init(|| regex::Regex::new(r"\s+").unwrap());
             let mut t = re_script.replace_all(&s, " ").to_string();
             t = re_style.replace_all(&t, " ").to_string();
             t = re_tag.replace_all(&t, " ").to_string();

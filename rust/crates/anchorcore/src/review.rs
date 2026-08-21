@@ -23,8 +23,10 @@ pub struct MergePayload {
 }
 
 fn similar(a: &str, b: &str) -> f64 {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
     let norm = |s: &str| {
-        let re = regex::Regex::new(r"[^a-z0-9 ]").unwrap();
+        let re = RE.get_or_init(|| regex::Regex::new(r"[^a-z0-9 ]").unwrap());
         re.replace_all(&s.to_lowercase(), " ").to_string()
     };
     let wa: std::collections::HashSet<String> = norm(a).split_whitespace().map(|s| s.to_string()).collect();

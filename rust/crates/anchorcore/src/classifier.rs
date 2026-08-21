@@ -3,7 +3,7 @@
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::settings::SettingsService;
 
@@ -297,30 +297,35 @@ pub fn classify_rules(text: &str, source_ref: &str) -> Vec<ClassifiedItem> {
 }
 
 fn rule_kind(sentence: &str) -> Option<String> {
+    static RE_DECISION: OnceLock<Regex> = OnceLock::new();
+    static RE_ACTION: OnceLock<Regex> = OnceLock::new();
+    static RE_DOCUMENT: OnceLock<Regex> = OnceLock::new();
     let lower = sentence.to_lowercase();
-    if Regex::new(r"\b(we (should|will|must|need to|decided)|decision|decided to|approved|rejected|postpone)\b").unwrap().is_match(&lower) {
+    if RE_DECISION.get_or_init(|| Regex::new(r"\b(we (should|will|must|need to|decided)|decision|decided to|approved|rejected|postpone)\b").unwrap()).is_match(&lower) {
         return Some("decision".to_string());
     }
-    if Regex::new(r"\b(action item|todo|to-do|next step|owner|assign|follow[- ]up|deadline|due)\b").unwrap().is_match(&lower) {
+    if RE_ACTION.get_or_init(|| Regex::new(r"\b(action item|todo|to-do|next step|owner|assign|follow[- ]up|deadline|due)\b").unwrap()).is_match(&lower) {
         return Some("action".to_string());
     }
-    if Regex::new(r"\b(status|update|summary|as of|current state|is now|has been)\b").unwrap().is_match(&lower) {
+    if RE_DOCUMENT.get_or_init(|| Regex::new(r"\b(status|update|summary|as of|current state|is now|has been)\b").unwrap()).is_match(&lower) {
         return Some("document".to_string());
     }
     None
 }
 
 pub fn distill_rules(text: &str) -> Vec<DistilledUnit> {
+    static RE_FILLER: OnceLock<Regex> = OnceLock::new();
+    static RE_TERMS: OnceLock<Regex> = OnceLock::new();
     let sentences: Vec<String> = split_sentences(text);
     let mut units = Vec::new();
     for i in 0..sentences.len() {
         let sentence = &sentences[i];
         if !sentence.ends_with('?') || i+1 >= sentences.len() { continue; }
         let answer = &sentences[i+1];
-        if answer.len() < 5 || Regex::new(r"(?i)^(got it|ok|thanks|thx|yes|no|sure)[.!]*$").unwrap().is_match(answer) {
+        if answer.len() < 5 || RE_FILLER.get_or_init(|| Regex::new(r"(?i)^(got it|ok|thanks|thx|yes|no|sure)[.!]*$").unwrap()).is_match(answer) {
             continue;
         }
-        let terms: Vec<String> = Regex::new(r"[A-Za-z][A-Za-z0-9_\-]{2,}").unwrap().find_iter(&format!("{} {}", sentence, answer)).map(|m| m.as_str().to_lowercase()).take(5).collect();
+        let terms: Vec<String> = RE_TERMS.get_or_init(|| Regex::new(r"[A-Za-z][A-Za-z0-9_\-]{2,}").unwrap()).find_iter(&format!("{} {}", sentence, answer)).map(|m| m.as_str().to_lowercase()).take(5).collect();
         units.push(DistilledUnit { question: sentence.chars().take(500).collect(), answer: answer.chars().take(1200).collect(), terms, systems: vec![] });
     }
     units
