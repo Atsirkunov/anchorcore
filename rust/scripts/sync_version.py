@@ -11,6 +11,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# handle being inside rust/scripts (parents[1]==rust) vs scripts (parents[1]==root)
+if not (ROOT / "rust" / "Cargo.toml").exists():
+    ROOT = Path(__file__).resolve().parents[2]
 CARGO = ROOT / "rust" / "Cargo.toml"
 CONFIG = ROOT / "backend" / "app" / "config.py"
 
