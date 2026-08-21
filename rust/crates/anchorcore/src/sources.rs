@@ -10,8 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::health::AppState;
-
-const SECRET_FIELDS: &[&str] = &["token", "api_key", "password", "client_secret"];
+use crate::secrets::SECRET_SOURCE_FIELDS as SECRET_FIELDS;
 
 fn secret_store(data_dir: &str) -> crate::secrets::SecretStore {
     crate::secrets::SecretStore::new(std::path::PathBuf::from(data_dir).join("secrets.enc"))
@@ -300,15 +299,16 @@ async fn sync_inner(state: AppState, source_id: i64, force: bool) -> Result<(Sta
     let data_dir_clone = data_dir.clone();
     let settings_clone = settings.clone();
     let jobs_clone = jobs.clone();
-    tokio::spawn(async move {
+    tokio::spawn(Box::pin(async move {
         // create classifier/embedder on demand
         let classifier = std::sync::Arc::new(crate::classifier::Classifier::new(settings_clone.clone()));
         let embedder = std::sync::Arc::new(crate::embedder::Embedder::new(settings_clone.clone()));
         let pipeline = crate::pipeline::Pipeline::new(classifier, embedder, settings_clone, data_dir_clone.clone());
-        pipeline.sync_source(source_id, job_id, force).await;
+        // Box large pipeline future to avoid 8 MB stack overflow (see docs/handover-2026-08-20-sync.md)
+        Box::pin(pipeline.sync_source(source_id, job_id, force)).await;
         // ensure jobs maybe_promote already handled inside pipeline
         let _ = jobs_clone;
-    });
+    }));
     // fetch job to return 202
     let job_val = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);

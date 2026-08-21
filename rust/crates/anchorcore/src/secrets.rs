@@ -1,7 +1,7 @@
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-pub const SECRET_SOURCE_FIELDS: &[&str] = &["token", "api_key", "password"];
+pub const SECRET_SOURCE_FIELDS: &[&str] = &["token", "api_key", "password", "client_secret"];
 const SERVICE: &str = "AnchorCore";
 
 pub struct SecretStore {
@@ -50,7 +50,7 @@ impl SecretStore {
         let name = format!(
             "{}.{}",
             self.fallback_path.file_name().unwrap().to_string_lossy(),
-            &digest[..32]
+            &digest
         );
         self.fallback_path.with_file_name(name)
     }
@@ -110,11 +110,13 @@ impl SecretStore {
     }
 }
 
+#[allow(dead_code)]
 pub fn source_secret_key(source_id: i64, field: &str) -> String {
     format!("source:{}:{}", source_id, field)
 }
 
 /// Mirrors `backend/app/secrets.py:105` store_source_config
+#[allow(dead_code)]
 pub fn store_source_config(
     conn: &rusqlite::Connection,
     source_id: i64,
@@ -152,6 +154,7 @@ pub fn store_source_config(
     config
 }
 
+#[allow(dead_code)]
 pub fn resolve_source_config(
     conn: &rusqlite::Connection,
     source_id: i64,

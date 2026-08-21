@@ -5,7 +5,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::health::AppState;
@@ -67,12 +67,12 @@ pub async fn create_handler(State(state): State<AppState>, Json(payload): Json<P
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        // validate source_ids before write
+        // validate source_ids before write (parametrized)
         if !source_ids.is_empty() {
-            let list = source_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-            let sql = format!("SELECT id FROM sources WHERE id IN ({})", list);
+            let placeholders = source_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!("SELECT id FROM sources WHERE id IN ({})", placeholders);
             let mut stmt = conn.prepare(&sql).unwrap();
-            let found: Vec<i64> = stmt.query_map([], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
+            let found: Vec<i64> = stmt.query_map(rusqlite::params_from_iter(source_ids.iter()), |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
             if found.len() != source_ids.len() {
                 let found_set: std::collections::HashSet<i64> = found.into_iter().collect();
                 let missing: Vec<i64> = source_ids.iter().filter(|id| !found_set.contains(id)).cloned().collect();
@@ -146,12 +146,12 @@ pub async fn patch_handler(State(state): State<AppState>, Path(project_id): Path
             }
         }
         if let Some(sids) = payload.source_ids {
-            // validate
+            // validate (parametrized)
             if !sids.is_empty() {
-                let list = sids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-                let sql = format!("SELECT id FROM sources WHERE id IN ({})", list);
+                let placeholders = sids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let sql = format!("SELECT id FROM sources WHERE id IN ({})", placeholders);
                 let mut stmt = conn.prepare(&sql).unwrap();
-                let found: Vec<i64> = stmt.query_map([], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
+                let found: Vec<i64> = stmt.query_map(rusqlite::params_from_iter(sids.iter()), |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
                 if found.len() != sids.len() {
                     let found_set: std::collections::HashSet<i64> = found.into_iter().collect();
                     let missing: Vec<i64> = sids.iter().filter(|id| !found_set.contains(id)).cloned().collect();
