@@ -614,10 +614,10 @@ pub async fn scan_handler(State(state): State<AppState>, Path(source_id): Path<i
         if item_ids.is_empty() {
             return Ok(serde_json::json!({"source_id": source_id, "chunks": 0, "flagged": 0}));
         }
-        let list = item_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT id, content FROM chunks WHERE item_id IN ({})", list);
+        let placeholders = item_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT id, content FROM chunks WHERE item_id IN ({})", placeholders);
         let mut stmt2 = conn.prepare(&sql).unwrap();
-        let chunks: Vec<(i64, String)> = stmt2.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(|r| r.ok()).collect();
+        let chunks: Vec<(i64, String)> = stmt2.query_map(rusqlite::params_from_iter(item_ids.iter()), |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(|r| r.ok()).collect();
         let mut flagged = 0;
         for (cid, content) in &chunks {
             let matches = scan_text(content, &disabled, &custom);
@@ -627,10 +627,10 @@ pub async fn scan_handler(State(state): State<AppState>, Path(source_id): Path<i
             let _ = conn.execute("UPDATE chunks SET pii_categories=?1, is_pii=?2 WHERE id=?3", rusqlite::params![cats_json, if is_pii {1} else {0}, cid]);
             if is_pii { flagged += 1; }
         }
-        // also scan chunks via entities
-        let sql2 = format!("SELECT c.id, c.content FROM chunks c JOIN entities e ON e.id=c.entity_id WHERE e.item_id IN ({})", list);
+        // also scan chunks via entities (reuse placeholders)
+        let sql2 = format!("SELECT c.id, c.content FROM chunks c JOIN entities e ON e.id=c.entity_id WHERE e.item_id IN ({})", placeholders);
         if let Ok(mut stmt3) = conn.prepare(&sql2) {
-            let chunks2: Vec<(i64, String)> = stmt3.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(|r| r.ok()).collect();
+            let chunks2: Vec<(i64, String)> = stmt3.query_map(rusqlite::params_from_iter(item_ids.iter()), |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(|r| r.ok()).collect();
             for (cid, content) in &chunks2 {
                 let matches = scan_text(content, &disabled, &custom);
                 let cats: Vec<String> = matches.iter().map(|m| m.category.clone()).collect();
