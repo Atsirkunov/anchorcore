@@ -6,10 +6,22 @@
 //!   ANCHOR_BACKEND_URL=http://127.0.0.1:8000 cargo run -p anchorcore --bin anchorcore-mcp
 //!   claude mcp add anchorcore -- /path/to/anchorcore-mcp
 
+use std::sync::OnceLock;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 const DEFAULT_URL: &str = "http://127.0.0.1:8000";
+
+static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+fn http_client() -> &'static reqwest::Client {
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("client")
+    })
+}
 
 fn backend_url() -> String {
     std::env::var("ANCHOR_BACKEND_URL").unwrap_or_else(|_| DEFAULT_URL.to_string())
@@ -22,7 +34,7 @@ async fn http_call(method: &str, path: &str, body: Option<Value>) -> Result<Valu
     let base = backend_url();
     let token = backend_token();
     let url = format!("{}{}", base.trim_end_matches('/'), path);
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().map_err(|e| e.to_string())?;
+    let client = http_client();
     let mut req = match method {
         "GET" => client.get(&url),
         "POST" => client.post(&url),
@@ -34,7 +46,8 @@ async fn http_call(method: &str, path: &str, body: Option<Value>) -> Result<Valu
     if !token.is_empty() {
         req = req.header("Authorization", format!("Bearer {}", token));
     }
-    let resp = req.send().await.map_err(|e| format!("backend unreachable at {base} ({e}). Is the app running?"))?;
+    // token never appears in URL/path, but redact base if it ever contains token param
+    let resp = req.send().await.map_err(|e| format!("backend unreachable ({}). Is the app running?", e))?;
     if resp.status() == 404 {
         return Err("not found".to_string());
     }
