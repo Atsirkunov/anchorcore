@@ -1,7 +1,7 @@
 use crate::secrets::SecretStore;
 use rusqlite::Connection;
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 pub const SETTING_KEYS: &[&str] = &[
@@ -69,14 +69,14 @@ fn env_value(key: &str) -> Option<String> {
 
 pub struct SettingsService {
     secrets: SecretStore,
-    cache: Mutex<HashMap<String, (String, Instant)>>,
+    cache: RwLock<HashMap<String, (String, Instant)>>,
 }
 
 impl SettingsService {
     pub fn new(secrets: SecretStore) -> Self {
         Self {
             secrets,
-            cache: Mutex::new(HashMap::new()),
+            cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -174,21 +174,21 @@ impl SettingsService {
 
     fn cached_get(&self, key: &str) -> Option<String> {
         {
-            let cache = self.cache.lock().unwrap();
+            let cache = self.cache.read().unwrap();
             if let Some((v, exp)) = cache.get(key) {
                 if Instant::now() < *exp {
                     return if v.is_empty() { None } else { Some(v.clone()) };
                 }
             }
         }
-        // need DB read; open a short-lived connection to data dir
-        // For simplicity, we try to open the default DB file (respect ANCHOR_DATABASE_URL)
+        // need DB read; open a short-lived connection to data dir (respect state.data_dir via env fallback + ANCHOR_DATABASE_URL)
+        // Use open_db (WAL/busy_timeout/FK) not raw Connection::open (P1 4.2 fix)
         let data_dir = std::env::var("ANCHOR_DATA_DIR").unwrap_or_else(|_| "data".to_string());
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = Connection::open(&db_path).ok();
+        let conn = crate::db::open_db(&db_path).ok();
         let db_val = conn.as_ref().and_then(|c| db_value(c, key));
         let resolved = db_val.or_else(|| env_value(key));
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.write().unwrap();
         cache.insert(
             key.to_string(),
             (resolved.clone().unwrap_or_default(), Instant::now() + CACHE_TTL),
@@ -197,7 +197,7 @@ impl SettingsService {
     }
 
     fn invalidate(&self, key: &str) {
-        self.cache.lock().unwrap().remove(key);
+        self.cache.write().unwrap().remove(key);
     }
 }
 
