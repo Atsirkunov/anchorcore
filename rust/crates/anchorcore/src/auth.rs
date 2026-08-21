@@ -3,14 +3,16 @@
 //! ANCHOR_AUTH_SECRET empty → auth disabled (local). Otherwise signup/login/me.
 
 use axum::{
-    extract::State,
+    extract::{Request, State},
     http::{HeaderMap, StatusCode},
+    middleware::Next,
+    response::Response,
     Json,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use hmac::{Hmac, Mac};
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::Sha256;
 
@@ -18,7 +20,7 @@ use crate::health::AppState;
 
 const ITER: u32 = 200_000;
 
-fn auth_enabled() -> bool {
+pub fn auth_enabled() -> bool {
     std::env::var("ANCHOR_AUTH_SECRET")
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false)
@@ -131,6 +133,61 @@ pub fn decode_token(token: &str) -> Result<serde_json::Value, String> {
         return Err("expired".to_string());
     }
     Ok(data)
+}
+
+// --- Middleware (R6.3 polish + Week2 P0) ---
+pub async fn require_auth_middleware(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if !auth_enabled() {
+        return Ok(next.run(request).await);
+    }
+    let path = request.uri().path().to_string();
+    let method = request.method().clone();
+    // public: health, auth status/signup/login, and all GET/HEAD/OPTIONS (read-only)
+    if path == "/health"
+        || path == "/auth/status"
+        || path == "/auth/signup"
+        || path == "/auth/login"
+        || method == axum::http::Method::GET
+        || method == axum::http::Method::HEAD
+        || method == axum::http::Method::OPTIONS
+    {
+        return Ok(next.run(request).await);
+    }
+    let auth_header = request.headers().get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("");
+    let token = if let Some(t) = auth_header.strip_prefix("Bearer ") {
+        t.trim()
+    } else if let Some(t) = auth_header.strip_prefix("bearer ") {
+        t.trim()
+    } else {
+        ""
+    };
+    if token.is_empty() {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let data = decode_token(token).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let uid = data.get("sub").and_then(|v| v.as_i64()).unwrap_or(0);
+    if uid == 0 {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let data_dir = state.data_dir.clone();
+    let exists: bool = tokio::task::spawn_blocking(move || {
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        if let Ok(conn) = crate::db::init_db(&db_path) {
+            conn.query_row("SELECT 1 FROM users WHERE id=?1", [uid], |_| Ok(())).is_ok()
+        } else {
+            false
+        }
+    })
+    .await
+    .unwrap_or(false);
+    if !exists {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok(next.run(request).await)
 }
 
 // --- Handlers ---
@@ -254,6 +311,11 @@ pub async fn me_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+    static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_MUTEX.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     #[test]
     fn password_roundtrip() {
@@ -264,10 +326,62 @@ mod tests {
 
     #[test]
     fn jwt_roundtrip() {
+        let _g = env_lock();
         std::env::set_var("ANCHOR_AUTH_SECRET", "test-secret-12345");
         let t = create_token(42, "a@b.c").unwrap();
         let d = decode_token(&t).unwrap();
         assert_eq!(d["sub"], 42);
+        std::env::remove_var("ANCHOR_AUTH_SECRET");
+    }
+
+    #[test]
+    fn auth_flag() {
+        let _g = env_lock();
+        std::env::remove_var("ANCHOR_AUTH_SECRET");
+        assert!(!auth_enabled());
+        std::env::set_var("ANCHOR_AUTH_SECRET", "x");
+        assert!(auth_enabled());
+        std::env::remove_var("ANCHOR_AUTH_SECRET");
+    }
+
+    #[tokio::test]
+    async fn middleware_blocks_unauthenticated_post() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+        let _g = env_lock();
+        std::env::set_var("ANCHOR_AUTH_SECRET", "test-secret-12345");
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let svc = std::sync::Arc::new(crate::settings::SettingsService::new(store));
+        let jobs = crate::jobs::JobManager::new();
+        let state = crate::health::AppState {
+            data_dir: dir.path().to_string_lossy().to_string(),
+            settings: svc,
+            jobs,
+        };
+        let db_path = crate::db::resolve_db_path(&state.data_dir);
+        let _ = crate::db::init_db(&db_path).unwrap();
+        let app = axum::Router::new()
+            .route("/sources", axum::routing::post(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(state.clone(), crate::auth::require_auth_middleware))
+            .with_state(state);
+        // POST without token → 401
+        let req = Request::builder()
+            .uri("/sources")
+            .method("POST")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        // GET should be allowed even without token (public)
+        let req2 = Request::builder()
+            .uri("/sources")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let resp2 = app.clone().oneshot(req2).await.unwrap();
+        assert_ne!(resp2.status(), StatusCode::UNAUTHORIZED);
         std::env::remove_var("ANCHOR_AUTH_SECRET");
     }
 }

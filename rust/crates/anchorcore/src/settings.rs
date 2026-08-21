@@ -35,6 +35,7 @@ pub const ALL_KEYS: &[&str] = &[
 pub const SECRET_PREFIX: &str = "app:";
 const CACHE_TTL: Duration = Duration::from_secs(3);
 
+#[allow(dead_code)]
 static ENV_CACHE: OnceLock<HashMap<String, String>> = OnceLock::new();
 
 fn env_value(key: &str) -> Option<String> {

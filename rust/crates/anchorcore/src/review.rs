@@ -127,7 +127,7 @@ pub async fn merge_handler(State(state): State<AppState>, Json(payload): Json<Me
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        let (a_id, b_id, status): (i64, i64, String) = match conn.query_row("SELECT entity_a_id, entity_b_id, status FROM merge_actions WHERE id = ?1", [payload.proposal_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))) {
+        let (a_id, b_id, _status): (i64, i64, String) = match conn.query_row("SELECT entity_a_id, entity_b_id, status FROM merge_actions WHERE id = ?1", [payload.proposal_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))) {
             Ok(v) => v,
             Err(_) => return serde_json::json!({"detail":"Proposal not found"}),
         };
@@ -141,7 +141,7 @@ pub async fn merge_handler(State(state): State<AppState>, Json(payload): Json<Me
         if a_row.is_none() || b_row.is_none() {
             return serde_json::json!({"detail":"Entity not found"});
         }
-        let (a_sum,a_reas,a_conf,a_auth) = a_row.unwrap();
+        let (_a_sum,_a_reas,a_conf,a_auth) = a_row.unwrap();
         let (b_sum,b_reas,b_conf,b_auth) = b_row.unwrap();
         // repoint chunks
         let _ = conn.execute("UPDATE chunks SET entity_id = ?1 WHERE entity_id = ?2", rusqlite::params![a_id, b_id]);
