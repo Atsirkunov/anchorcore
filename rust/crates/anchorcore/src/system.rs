@@ -273,6 +273,7 @@ pub async fn onboarding_handler(State(state): State<AppState>) -> Json<Value> {
     Json(result)
 }
 
+#[allow(dead_code)]
 #[derive(Serialize)]
 struct LogFileOut {
     name: String,

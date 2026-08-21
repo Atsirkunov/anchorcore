@@ -26,9 +26,11 @@ mod settings;
 mod sources;
 mod stubs;
 mod system;
+mod watcher;
 
 use axum::{
-    routing::{get, patch, post},
+    middleware,
+    routing::{get, post},
     Router,
 };
 use clap::Parser;
@@ -102,137 +104,11 @@ async fn main() {
         settings: settings_svc.clone(),
         jobs: jobs_svc.clone(),
     };
-    // Folder watcher: spawn background tasks for existing folder sources (test `test_folder_watcher_picks_up_new_files` expects new file to be ingested within 20s)
+    // Folder watcher: extracted to `watcher::service` (P0 3.3) — gated for `cargo test`
+    // Keeps FolderWatcher (mpsc::Receiver !Sync) + HashMap future off test thread stack (8 MB).
+    #[cfg(not(test))]
     {
-        let watch_state = state.clone();
-        tokio::spawn(async move {
-            use std::collections::{HashMap, HashSet};
-            use std::path::PathBuf;
-            let mut watchers: HashMap<i64, (crate::connectors::watcher::FolderWatcher, PathBuf)> = HashMap::new();
-            let mut known_files: HashMap<i64, HashSet<PathBuf>> = HashMap::new();
-            loop {
-                // discover folder sources (spawn_blocking to keep Connection off async stack)
-                let data_dir_clone = watch_state.data_dir.clone();
-                let folder_sources: Vec<(i64, String)> = tokio::task::spawn_blocking(move || {
-                    let db_path = crate::db::resolve_db_path(&data_dir_clone);
-                    let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-                    let mut stmt = match conn.prepare("SELECT id, config FROM sources WHERE connector='folder' AND enabled=1") {
-                        Ok(s) => s,
-                        Err(_) => return vec![],
-                    };
-                    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).unwrap();
-                    let mut out = vec![];
-                    for row in rows.flatten() {
-                        let (id, cfg_str) = row;
-                        let cfg: serde_json::Value = serde_json::from_str(&cfg_str).unwrap_or(serde_json::json!({}));
-                        if let Some(p) = cfg.get("path").and_then(|v| v.as_str()) {
-                            out.push((id, p.to_string()));
-                        }
-                    }
-                    out
-                }).await.unwrap_or_default();
-                // ensure watchers
-                for (sid, path_str) in &folder_sources {
-                    if watchers.contains_key(sid) { continue; }
-                    let path = PathBuf::from(path_str);
-                    let expanded = if path_str.starts_with('~') { PathBuf::from(path_str.replacen('~', &std::env::var("HOME").unwrap_or_default(), 1)) } else { path.clone() };
-                    let cfg = serde_json::json!({"path": expanded.to_string_lossy()});
-                    if let Ok(w) = crate::connectors::watcher::FolderWatcher::new(&expanded) {
-                        // initial file set
-                        let mut set = HashSet::new();
-                        if let Ok(fc) = crate::connectors::folder::FolderConnector::new(&cfg) {
-                            if let Ok((docs, _)) = fc.fetch() {
-                                for d in docs { set.insert(PathBuf::from(d.external_id)); }
-                            }
-                        }
-                        known_files.insert(*sid, set);
-                        let display_str = expanded.display().to_string();
-                        watchers.insert(*sid, (w, expanded));
-                        tracing::info!("watcher started for source {} at {}", sid, display_str);
-                    }
-                }
-                let mut to_sync: Vec<i64> = Vec::new();
-                for (sid, (watcher, _)) in watchers.iter() {
-                    if !watcher.poll(std::time::Duration::from_millis(300)).is_empty() {
-                        to_sync.push(*sid);
-                    }
-                }
-                for sid in to_sync.clone() {
-                    tracing::info!("watcher detected changes for source {}", sid);
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    let cfg_str = {
-                        let db_path = crate::db::resolve_db_path(&watch_state.data_dir);
-                        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-                        conn.query_row("SELECT config FROM sources WHERE id=?1", [sid], |r| r.get::<_, String>(0)).unwrap_or_default()
-                    };
-                    let cfg: serde_json::Value = serde_json::from_str(&cfg_str).unwrap_or(serde_json::json!({}));
-                    if let Ok(fc) = crate::connectors::folder::FolderConnector::new(&cfg) {
-                        if let Ok((docs, _)) = fc.fetch() {
-                            let new_set: HashSet<PathBuf> = docs.iter().map(|d| PathBuf::from(&d.external_id)).collect();
-                            let old_set = known_files.get(&sid).cloned().unwrap_or_default();
-                            if new_set != old_set {
-                                known_files.insert(sid, new_set);
-                                let data_dir = watch_state.data_dir.clone();
-                                let settings = watch_state.settings.clone();
-                                let jobs = watch_state.jobs.clone();
-                                tokio::spawn(async move {
-                                    let db_path = crate::db::resolve_db_path(&data_dir);
-                                    let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-                                    let job_id = match jobs.create_job(&conn, sid, "sync") {
-                                        Ok(id) => id,
-                                        Err(_) => return,
-                                    };
-                                    let classifier = std::sync::Arc::new(crate::classifier::Classifier::new(settings.clone()));
-                                    let embedder = std::sync::Arc::new(crate::embedder::Embedder::new(settings.clone()));
-                                    let pipeline = crate::pipeline::Pipeline::new(classifier, embedder, settings, data_dir);
-                                    pipeline.sync_source(sid, job_id, false).await;
-                                });
-                            }
-                        }
-                    }
-                }
-                // R6.6 fallback: periodic scan for missed notify events (FSEvents coalescing, slow FS)
-                // Do a fetch-compare for every watcher even if poll was empty, but only every 2nd loop to avoid spam
-                for (sid, _) in watchers.iter() {
-                    if to_sync.contains(sid) {
-                        continue;
-                    }
-                    let cfg_str = {
-                        let db_path = crate::db::resolve_db_path(&watch_state.data_dir);
-                        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-                        conn.query_row("SELECT config FROM sources WHERE id=?1", [sid], |r| r.get::<_, String>(0)).unwrap_or_default()
-                    };
-                    let cfg: serde_json::Value = serde_json::from_str(&cfg_str).unwrap_or(serde_json::json!({}));
-                    if let Ok(fc) = crate::connectors::folder::FolderConnector::new(&cfg) {
-                        if let Ok((docs, _)) = fc.fetch() {
-                            let new_set: HashSet<PathBuf> = docs.iter().map(|d| PathBuf::from(&d.external_id)).collect();
-                            let old_set = known_files.get(sid).cloned().unwrap_or_default();
-                            if new_set != old_set && !new_set.is_empty() {
-                                tracing::info!("watcher fallback detected changes for source {} (missed notify)", sid);
-                                known_files.insert(*sid, new_set);
-                                let data_dir = watch_state.data_dir.clone();
-                                let settings = watch_state.settings.clone();
-                                let jobs = watch_state.jobs.clone();
-                                let sid_c = *sid;
-                                tokio::spawn(async move {
-                                    let db_path = crate::db::resolve_db_path(&data_dir);
-                                    let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-                                    let job_id = match jobs.create_job(&conn, sid_c, "sync") {
-                                        Ok(id) => id,
-                                        Err(_) => return,
-                                    };
-                                    let classifier = std::sync::Arc::new(crate::classifier::Classifier::new(settings.clone()));
-                                    let embedder = std::sync::Arc::new(crate::embedder::Embedder::new(settings.clone()));
-                                    let pipeline = crate::pipeline::Pipeline::new(classifier, embedder, settings, data_dir);
-                                    pipeline.sync_source(sid_c, job_id, false).await;
-                                });
-                            }
-                        }
-                    }
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-        });
+        watcher::service::spawn(state.clone());
     }
 
     // R1.3: stub all routers with 501, keep /health real (already done in R1.2)
@@ -290,6 +166,7 @@ async fn main() {
         // frontend (R5.1) — must be last, SPA fallback to index.html
         .fallback(frontend::handler)
         .layer(CorsLayer::permissive())
+        .layer(middleware::from_fn_with_state(state.clone(), auth::require_auth_middleware))
         .with_state(state);
 
     let addr = format!("127.0.0.1:{}", args.port);

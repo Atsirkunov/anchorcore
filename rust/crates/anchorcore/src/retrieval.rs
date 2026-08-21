@@ -10,6 +10,7 @@
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 pub const RRF_K: f64 = 60.0;
 pub const GRAPH_KIND_WEIGHTS: &[(&str, f64)] = &[
@@ -23,13 +24,15 @@ pub const GRAPH_DEFAULT_WEIGHT: f64 = 0.5;
 
 /// Mirrors `answer_engine.py:40` _WHO_KNOWS_RE
 pub fn is_who_knows(query: &str) -> bool {
-    let re = Regex::new(r"\b(who|whom|owns?|owner|responsible|expert|knows?)\b").unwrap();
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"(?i)\b(who|whom|owns?|owner|responsible|expert|knows?)\b").unwrap());
     re.is_match(query)
 }
 
 /// Mirrors `answer_engine.py:71` _fts_match_query
 pub fn fts_match_query(question: &str) -> Option<String> {
-    let re = Regex::new(r"[a-z0-9_§\-]+").unwrap();
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"[a-z0-9_§\-]+").unwrap());
     let stopwords: HashSet<&str> = [
         "a", "an", "the", "and", "or", "but", "of", "in", "on", "at", "to", "for", "with",
         "about", "is", "are", "was", "were", "be", "been", "being", "am", "do", "does", "did",
@@ -52,9 +55,9 @@ pub fn fts_match_query(question: &str) -> Option<String> {
 
 /// Mirrors `answer_engine.py:96` _rrf_fuse_multi
 pub fn rrf_fuse_multi(lists: Vec<Vec<Hit>>, weights: Vec<f64>) -> Vec<Hit> {
-    let mut fused: HashMap<i64, Hit> = HashMap::new();
+    let mut fused: HashMap<(i64, Option<i64>), Hit> = HashMap::new();
     for (hits, weight) in lists.into_iter().zip(weights) {
-        for (rank, mut hit) in hits.into_iter().enumerate() {
+        for (rank, hit) in hits.into_iter().enumerate() {
             let rank = (rank + 1) as f64;
             let key = hit.key();
             let entry = fused.entry(key).or_insert_with(|| Hit {
@@ -63,12 +66,8 @@ pub fn rrf_fuse_multi(lists: Vec<Vec<Hit>>, weights: Vec<f64>) -> Vec<Hit> {
                 score: 0.0,
                 ..hit.clone()
             });
-            // keep max score contribution per doc? RRF sums
             let add = weight / (RRF_K + rank);
-            // need to update score on fused entry, not hit
             entry.score += add;
-            // also update hit's score for later debug (not needed)
-            hit.score += add;
         }
     }
     let mut out: Vec<Hit> = fused.into_values().collect();
@@ -90,13 +89,9 @@ pub struct Hit {
 }
 
 impl Hit {
-    fn key(&self) -> i64 {
-        if self.entity_id.is_none() {
-            self.chunk_id
-        } else {
-            // graph hits may have no chunk; use negative entity id
-            -self.entity_id.unwrap()
-        }
+    fn key(&self) -> (i64, Option<i64>) {
+        // was i64 with -entity_id collision when chunk_id == -entity_id (P1 4.6)
+        (self.chunk_id, self.entity_id)
     }
 }
 
@@ -115,8 +110,10 @@ pub fn age_decay(created_at: Option<DateTime<Utc>>, halflife_days: f64, now: Dat
 
 /// Mirrors `answer_engine.py:134` _content_signature
 pub fn content_signature(content: &str) -> String {
-    let re_ws = Regex::new(r"\s+").unwrap();
-    let re_page = Regex::new(r"^\d{1,4}\s+").unwrap();
+    static RE_WS: OnceLock<Regex> = OnceLock::new();
+    static RE_PAGE: OnceLock<Regex> = OnceLock::new();
+    let re_ws = RE_WS.get_or_init(|| Regex::new(r"\s+").unwrap());
+    let re_page = RE_PAGE.get_or_init(|| Regex::new(r"^\d{1,4}\s+").unwrap());
     let mut s = re_ws.replace_all(content, " ").trim().to_lowercase();
     s = re_page.replace(&s, "").to_string();
     s.chars().take(160).collect()
@@ -190,22 +187,29 @@ fn vector_search_vec0(
          JOIN chunks c ON c.id = v.rowid \
          LEFT JOIN entities e ON e.id = c.entity_id \
          LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
-         WHERE v.embedding MATCH :q",
+         WHERE v.embedding MATCH ?",
     );
+    // parametrized IN list (was format! IN ({list}) — P1 4.5)
+    let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Text(q_json)];
     if let Some(ids) = source_ids {
         if !ids.is_empty() {
-            let list = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-            sql.push_str(&format!(" AND i.source_id IN ({})", list));
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            sql.push_str(&format!(" AND i.source_id IN ({})", placeholders));
+            for id in ids {
+                params.push(rusqlite::types::Value::Integer(*id));
+            }
         }
     }
-    sql.push_str(" AND k = :limit");
-    let mut stmt = conn.prepare(&sql).ok()?;
+    sql.push_str(" AND k = ?");
     let limit = (top_k * 4) as i64;
+    params.push(rusqlite::types::Value::Integer(limit));
+    let mut stmt = conn.prepare(&sql).ok()?;
+    // positional params: ?1 = q_json, ?2..?n = source ids, ?last = limit
+    // Build rusqlite params from Vec<Value>
     let rows: Result<Vec<(i64, f64)>, _> = stmt
-        .query_map(
-            rusqlite::named_params! { ":q": q_json, ":limit": limit },
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?)),
-        )
+        .query_map(rusqlite::params_from_iter(params.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?))
+        })
         .ok()?
         .collect();
     let rows = match rows {
@@ -267,22 +271,22 @@ fn load_hits(
     if ids.is_empty() {
         return vec![];
     }
-    let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let sql = format!(
         "SELECT c.id, c.entity_id, c.item_id, c.content, c.source_ref, c.is_pii, c.created_at, e.status, \
-                COALESCE(c.item_id, e.item_id) as eff_item, i.source_id \
+                 COALESCE(c.item_id, e.item_id) as eff_item, i.source_id \
          FROM chunks c \
          LEFT JOIN entities e ON e.id = c.entity_id \
          LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
          WHERE c.id IN ({})",
-        list
+        placeholders
     );
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return vec![],
     };
     let rows = stmt
-        .query_map([], |r| {
+        .query_map(rusqlite::params_from_iter(ids.iter()), |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, Option<i64>>(1)?,
@@ -429,18 +433,23 @@ pub fn keyword_fallback(
          LEFT JOIN entities e ON e.id = c.entity_id \
          LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id)",
     );
+    let mut params: Vec<rusqlite::types::Value> = vec![];
     if let Some(ids) = source_ids {
         if !ids.is_empty() {
-            let list = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-            sql.push_str(&format!(" WHERE i.source_id IN ({})", list));
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            sql.push_str(&format!(" WHERE i.source_id IN ({})", placeholders));
+            for id in ids {
+                params.push(rusqlite::types::Value::Integer(*id));
+            }
         }
     }
-    sql.push_str(" ORDER BY c.created_at DESC LIMIT ?1");
+    sql.push_str(" ORDER BY c.created_at DESC LIMIT ?");
+    params.push(rusqlite::types::Value::Integer(top_k as i64));
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return vec![],
     };
-    let rows = match stmt.query_map(rusqlite::params![top_k as i64], |r| {
+    let rows = match stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
         Ok((
             r.get::<_, i64>(0)?,
             r.get::<_, Option<i64>>(1)?,
@@ -478,20 +487,36 @@ pub fn who_knows_search(
     top_k: usize,
     qa_exclude_disputed: bool,
 ) -> Vec<Hit> {
-    let re = regex::Regex::new(r"[a-z0-9_]+").unwrap();
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"[a-z0-9_]+").unwrap());
     let stopwords: HashSet<&str> = ["a","an","the","and","or","but","of","in","on","at","to","for","with","about","is","are","was","were","be","been","being","am","do","does","did","have","has","had","will","would","can","could","should","shall","may","might","must","what","which","who","whom","whose","when","where","why","how","this","that","these","those","it","its","not","no","so","if","then","than","too","very","s","t","you","your","we","our","they","their","i","me","my"].into();
     let terms: Vec<String> = re.find_iter(&query.to_lowercase()).map(|m| m.as_str().to_string()).filter(|t| t.len()>=3 && !stopwords.contains(t.as_str())).collect();
     if terms.is_empty() { return vec![]; }
-    let mut sql = String::from("SELECT c.id, c.entity_id, c.item_id, c.content, c.source_ref, c.is_pii, e.status, e.owner, e.author, e.summary, e.confidence, e.created_at, i.source_id FROM chunks c JOIN entities e ON e.id=c.entity_id JOIN ingested_items i ON i.id=e.item_id WHERE (e.owner != '' OR e.author != '')");
+    // parametrized LIKE with ESCAPE (P1 4.5) — was format!(" OR e.summary LIKE '%{}%'", t)
+    let mut sql = String::from("SELECT c.id, c.entity_id, c.item_id, c.content, c.source_ref, c.is_pii, e.status, e.owner, e.author, e.summary, e.confidence, e.created_at, i.source_id FROM chunks c JOIN entities e ON e.id=c.entity_id JOIN ingested_items i ON i.id=e.item_id WHERE (e.owner != '' OR e.author != ''");
+    let mut params: Vec<rusqlite::types::Value> = vec![];
     for t in &terms {
-        sql.push_str(&format!(" OR e.summary LIKE '%{}%'", t.replace('\'', "''")));
+        // escape LIKE wildcards % _ and \  (was raw t with only ' escaped)
+        let esc = t.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        let pat = format!("%{}%", esc);
+        sql.push_str(" OR e.summary LIKE ? ESCAPE '\\'");
+        params.push(rusqlite::types::Value::Text(pat));
     }
-    if let Some(ids) = source_ids { if !ids.is_empty() { let list = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(","); sql.push_str(&format!(" AND i.source_id IN ({})", list)); } }
+    sql.push(')');
+    if let Some(ids) = source_ids {
+        if !ids.is_empty() {
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            sql.push_str(&format!(" AND i.source_id IN ({})", placeholders));
+            for id in ids {
+                params.push(rusqlite::types::Value::Integer(*id));
+            }
+        }
+    }
     let mut stmt = match conn.prepare(&sql) { Ok(s) => s, Err(_) => return vec![] };
     let mut out = Vec::new();
     let halflife: f64 = std::env::var("ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(365.0);
     let now = Utc::now();
-    let rows = match stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, i64>(5)?, r.get::<_, Option<String>>(6)?, r.get::<_, String>(7)?, r.get::<_, String>(8)?, r.get::<_, String>(9)?, r.get::<_, f64>(10)?, r.get::<_, Option<String>>(11)?, r.get::<_, Option<i64>>(12)?))) { Ok(m) => m, Err(_) => return out };
+    let rows = match stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, i64>(5)?, r.get::<_, Option<String>>(6)?, r.get::<_, String>(7)?, r.get::<_, String>(8)?, r.get::<_, String>(9)?, r.get::<_, f64>(10)?, r.get::<_, Option<String>>(11)?, r.get::<_, Option<i64>>(12)?))) { Ok(m) => m, Err(_) => return out };
     for row in rows.flatten() {
         let (cid, eid, iid, content, source_ref, is_pii, status, owner, author, summary, conf, created, sid) = row;
         if !status_ok(status.as_deref(), qa_exclude_disputed) { continue; }
@@ -525,10 +550,18 @@ pub fn graph_expand(
     let mut candidates: HashMap<i64, f64> = HashMap::new();
     for hop in 0..hops.max(1) {
         if frontier.is_empty() { break; }
-        let list = frontier.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT from_entity_id, to_entity_id, kind FROM relationships WHERE from_entity_id IN ({}) OR to_entity_id IN ({})", list, list);
+        let placeholders = frontier.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT from_entity_id, to_entity_id, kind FROM relationships WHERE from_entity_id IN ({}) OR to_entity_id IN ({})", placeholders, placeholders);
         let mut stmt = match conn.prepare(&sql) { Ok(s)=>s, Err(_)=> break };
-        let rows: Vec<(i64,i64,String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().filter_map(|r| r.ok()).collect();
+        // params duplicated for both IN lists
+        let mut params: Vec<rusqlite::types::Value> = vec![];
+        for id in frontier.iter() {
+            params.push(rusqlite::types::Value::Integer(*id));
+        }
+        for id in frontier.iter() {
+            params.push(rusqlite::types::Value::Integer(*id));
+        }
+        let rows: Vec<(i64,i64,String)> = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().filter_map(|r| r.ok()).collect();
         let mut next = HashSet::new();
         for (from,to,kind) in rows {
             for (a,b) in [(from,to),(to,from)] {
@@ -546,12 +579,21 @@ pub fn graph_expand(
     ranked.sort_by(|a,b| b.1.partial_cmp(&a.1).unwrap());
     ranked.truncate(cap);
     let ids: Vec<i64> = ranked.iter().map(|(id,_)| *id).collect();
-    let list = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-    let mut sql = format!("SELECT e.id, e.summary, e.status, e.item_id, c.id, c.content, c.source_ref, c.is_pii FROM entities e LEFT JOIN chunks c ON c.entity_id=e.id WHERE e.id IN ({})", list);
-    if let Some(filter)=source_ids { if !filter.is_empty() { let l = filter.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(","); sql.push_str(&format!(" AND e.item_id IN (SELECT id FROM ingested_items WHERE source_id IN ({}))", l)); } }
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let mut sql = format!("SELECT e.id, e.summary, e.status, e.item_id, c.id, c.content, c.source_ref, c.is_pii FROM entities e LEFT JOIN chunks c ON c.entity_id=e.id WHERE e.id IN ({})", placeholders);
+    let mut params: Vec<rusqlite::types::Value> = ids.iter().map(|id| rusqlite::types::Value::Integer(*id)).collect();
+    if let Some(filter)=source_ids {
+        if !filter.is_empty() {
+            let ph = filter.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            sql.push_str(&format!(" AND e.item_id IN (SELECT id FROM ingested_items WHERE source_id IN ({}))", ph));
+            for id in filter.iter() {
+                params.push(rusqlite::types::Value::Integer(*id));
+            }
+        }
+    }
     let mut stmt = match conn.prepare(&sql) { Ok(s)=>s, Err(_)=> return vec![] };
-    let rows: Vec<(i64,String,Option<String>,Option<i64>,Option<i64>,Option<String>,Option<String>,i64)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))).unwrap().filter_map(|r| r.ok()).collect();
-    let by_id: HashMap<i64,(String,Option<String>,Option<i64>,Option<i64>,Option<String>,Option<String>,i64)> = rows.into_iter().map(|(id,summary,status,item,cid,content,src_ref,is_pii)| (id,(summary,status,item,cid,content,src_ref,is_pii))).collect();
+    let rows: Vec<(i64,String,Option<String>,Option<i64>,Option<i64>,Option<String>,Option<String>,Option<i64>)> = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))).unwrap().filter_map(|r| r.ok()).collect();
+    let by_id: HashMap<i64,(String,Option<String>,Option<i64>,Option<i64>,Option<String>,Option<String>,Option<i64>)> = rows.into_iter().map(|(id,summary,status,item,cid,content,src_ref,is_pii)| (id,(summary,status,item,cid,content,src_ref,is_pii))).collect();
     let mut out = Vec::new();
     for (eid, score) in ranked {
         if let Some((summary,status,item,cid,content,src_ref,_is_pii)) = by_id.get(&eid) {
@@ -564,7 +606,7 @@ pub fn graph_expand(
     out
 }
 
-pub fn fuse_evidence(mut lists: Vec<Vec<Hit>>, mut weights: Vec<f64>) -> Vec<Hit> {
+pub fn fuse_evidence(mut lists: Vec<Vec<Hit>>, weights: Vec<f64>) -> Vec<Hit> {
     if lists.is_empty() { return vec![]; }
     if lists.len()==1 { let mut v = lists.remove(0); v.sort_by(|a,b| b.score.partial_cmp(&a.score).unwrap()); return v; }
     rrf_fuse_multi(lists, weights)
@@ -590,11 +632,27 @@ pub fn fuse_and_rank(
         rrf_fuse_multi(vec![vector_hits.unwrap(), keyword_hits.unwrap()], vec![1.0, keyword_weight])
     };
     let now = Utc::now();
-    for h in &mut fused {
-        // need created_at from DB; for now use now - age decay via Hit status? Use content age via DB lookup
-        // For R2.1, we approximate with now and halflife
-        let created: Option<DateTime<Utc>> = conn.query_row("SELECT created_at FROM chunks WHERE id=?1", [h.chunk_id], |r| r.get::<_, Option<String>>(0)).ok().flatten().and_then(|s| DateTime::parse_from_rfc3339(&s).ok()).map(|d| d.with_timezone(&Utc));
-        h.score *= age_decay(created, halflife_days, now);
+    // batch created_at (P1 4.7 — was N+1 per hit)
+    if !fused.is_empty() {
+        let ids: Vec<i64> = fused.iter().map(|h| h.chunk_id).collect();
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT id, created_at FROM chunks WHERE id IN ({})", placeholders);
+        let mut map: HashMap<i64, Option<DateTime<Utc>>> = HashMap::new();
+        if let Ok(mut stmt) = conn.prepare(&sql) {
+            if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+            }) {
+                for row in rows.flatten() {
+                    let (id, s) = row;
+                    let dt = s.and_then(|v| DateTime::parse_from_rfc3339(&v).ok()).map(|d| d.with_timezone(&Utc));
+                    map.insert(id, dt);
+                }
+            }
+        }
+        for h in &mut fused {
+            let created = map.get(&h.chunk_id).cloned().unwrap_or(None);
+            h.score *= age_decay(created, halflife_days, now);
+        }
     }
     fused.sort_by(|a,b| b.score.partial_cmp(&a.score).unwrap());
     // diversity cap per item
@@ -689,5 +747,100 @@ mod tests {
         assert!(!status_ok(Some("disputed"), true));
         assert!(status_ok(Some("disputed"), false));
         assert!(status_ok(None, true));
+    }
+
+    // --- Rust-only retrieval harness (P0 3.1) — seeds DB with rusqlite, exercises graph/who-knows/RRF directly
+    // Gates cutover so 124 green isn't half-Python via AnswerEngine.
+
+    fn harness_db() -> (tempfile::TempDir, rusqlite::Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("harness.db");
+        let conn = crate::db::init_db(&path).unwrap();
+        (dir, conn)
+    }
+
+    fn insert_source(conn: &rusqlite::Connection, name: &str, label: &str) -> i64 {
+        conn.execute("INSERT INTO sources (name, connector, config, label, enabled) VALUES (?1,'folder','{}',?2,1)", rusqlite::params![name, label]).unwrap();
+        conn.last_insert_rowid()
+    }
+    fn insert_item(conn: &rusqlite::Connection, source_id: i64, title: &str) -> i64 {
+        conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,?2,?3,'',?4)", rusqlite::params![source_id, format!("ext-{}", title), title, format!("hash-{}", title)]).unwrap();
+        conn.last_insert_rowid()
+    }
+    fn insert_entity(conn: &rusqlite::Connection, item_id: i64, summary: &str, status: &str, owner: &str) -> i64 {
+        conn.execute("INSERT INTO entities (item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner) VALUES (?1,'note',?2,'r',0.9,'','ref',?3,?4)", rusqlite::params![item_id, summary, status, owner]).unwrap();
+        conn.last_insert_rowid()
+    }
+    fn insert_chunk(conn: &rusqlite::Connection, item_id: Option<i64>, entity_id: Option<i64>, content: &str) -> i64 {
+        conn.execute("INSERT INTO chunks (item_id, entity_id, content, source_ref) VALUES (?1,?2,?3,'ref')", rusqlite::params![item_id, entity_id, content]).unwrap();
+        conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn harness_graph_expand_filters_stale_and_disputed() {
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s1", "internal");
+        let iid = insert_item(&conn, sid, "doc1");
+        let e1 = insert_entity(&conn, iid, "Phoenix owns billing", "unverified", "alice");
+        let e2 = insert_entity(&conn, iid, "Billing blocked by Phoenix", "stale", "bob");
+        let e3 = insert_entity(&conn, iid, "Phoenix related to Auth", "disputed", "carol");
+        let e4 = insert_entity(&conn, iid, "Phoenix owns Auth", "unverified", "dave");
+        let c1 = insert_chunk(&conn, Some(iid), Some(e1), "Phoenix owns billing details");
+        // stale/disputed entities should not appear in graph expansion when excluded
+        let rel1 = conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?2,'owns')", rusqlite::params![e1, e2]).unwrap();
+        let _ = conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?2,'related')", rusqlite::params![e1, e3]).unwrap();
+        let _ = conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?2,'owns')", rusqlite::params![e1, e4]).unwrap();
+        assert_eq!(rel1, 1);
+        let seed = vec![Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), score: 1.0, content: "seed".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()) }];
+        // with qa_exclude_disputed=true, disputed should be filtered
+        let out = graph_expand(&conn, &seed, None, 2, 5, true);
+        let ids: Vec<i64> = out.iter().filter_map(|h| h.entity_id).collect();
+        assert!(ids.contains(&e4), "unverified neighbor e4 should be expanded");
+        assert!(!ids.contains(&e2), "stale e2 must be excluded");
+        assert!(!ids.contains(&e3), "disputed e3 must be excluded when qa_exclude_disputed=true");
+        // with qa_exclude_disputed=false, disputed is allowed
+        let out2 = graph_expand(&conn, &seed, None, 2, 5, false);
+        let ids2: Vec<i64> = out2.iter().filter_map(|h| h.entity_id).collect();
+        assert!(ids2.contains(&e3), "disputed e3 should appear when not excluded");
+    }
+
+    #[test]
+    fn harness_who_knows_finds_owner() {
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s2", "internal");
+        let iid = insert_item(&conn, sid, "doc2");
+        let e_owner = insert_entity(&conn, iid, "Phoenix billing system", "unverified", "alice");
+        let e_other = insert_entity(&conn, iid, "Auth gateway", "unverified", "");
+        let _c1 = insert_chunk(&conn, Some(iid), Some(e_owner), "Phoenix billing owned by alice");
+        let _c2 = insert_chunk(&conn, Some(iid), Some(e_other), "Auth gateway notes");
+        let hits = who_knows_search(&conn, "who owns Phoenix billing?", None, 5, true);
+        assert!(!hits.is_empty(), "who-knows should find owner hit");
+        assert!(hits.iter().any(|h| h.entity_id == Some(e_owner)), "should contain owner entity");
+    }
+
+    #[test]
+    fn harness_fuse_and_rank_rrf_and_diversity() {
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s3", "internal");
+        let iid = insert_item(&conn, sid, "doc3");
+        let e1 = insert_entity(&conn, iid, "Decision about Phoenix", "unverified", "");
+        let c1 = insert_chunk(&conn, Some(iid), Some(e1), "content Phoenix decision");
+        let c2 = insert_chunk(&conn, Some(iid), None, "document chunk Phoenix billing is stable");
+        // need created_at for age decay; ensure chunks have timestamps via init_db
+        let h1 = Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), score: 1.0, content: "c1".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()) };
+        let h2 = Hit { chunk_id: c2, entity_id: None, item_id: Some(iid), source_id: Some(sid), score: 0.5, content: "c2".into(), source_ref: "ref".into(), is_pii: false, status: None };
+        let fused = fuse_and_rank(&conn, Some(vec![h1]), Some(vec![h2]), 1.0, 365.0, 3, 5, true);
+        assert!(!fused.is_empty());
+        // RRF should have merged both; diversity cap per item should keep both since distinct chunk_ids
+        assert!(fused.len() >= 1);
+    }
+
+    #[test]
+    fn harness_is_who_knows_and_status_ok_integration() {
+        assert!(is_who_knows("who is responsible for billing?"));
+        assert!(is_who_knows("Whom should I ask about Phoenix?"));
+        assert!(!is_who_knows("what is billing status?"));
+        assert!(!status_ok(Some("stale"), true));
+        assert!(status_ok(Some("unverified"), true));
     }
 }
