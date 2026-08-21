@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports, unused_variables, unused_mut, clippy::unwrap_used)]
 //! AnchorCore Rust binary — R1.2: SQLite + migrations + /health.
 //! See `rust/BACKLOG.md:1` and `docs/rust-port.md:1`.
 //! Mirrors `backend/app/main.py:130` health shape + `backend/app/db.py:44` PRAGMAs.
