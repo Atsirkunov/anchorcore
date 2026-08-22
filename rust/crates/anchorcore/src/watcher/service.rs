@@ -214,7 +214,7 @@ async fn trigger_sync(state: AppState, sid: i64) {
         };
         let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
         let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
-        let pipeline = crate::pipeline::Pipeline::new(classifier, embedder, settings, data_dir);
+        let pipeline = crate::pipeline::Pipeline::new(classifier, embedder, settings, data_dir, jobs.clone());
         // box inner future to keep stack bounded (8 MB test thread previously overflowed)
         Box::pin(pipeline.sync_source(sid, job_id, false)).await;
     }));

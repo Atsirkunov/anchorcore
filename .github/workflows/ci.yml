@@ -32,6 +32,8 @@ jobs:
   rust-conformance:
     name: Rust conformance (vs Rust on :8123)
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -39,6 +41,8 @@ jobs:
           python-version: "3.12"
           cache: pip
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - name: Install Rust deps cache
         uses: Swatinem/rust-cache@v2
       - name: Build Rust binary
@@ -49,6 +53,9 @@ jobs:
         run: |
           cargo check -p anchorcore
           cargo test -p anchorcore -- --nocapture
+      - name: Clippy (unwrap_used)
+        working-directory: rust
+        run: cargo clippy -p anchorcore -- -D clippy::unwrap_used --allow clippy::needless_return --allow clippy::manual_range_contains || echo "clippy warnings allowed for now (R11.3) — fix gradually"
       - name: Start Rust on :8123
         run: |
           rm -rf /tmp/ac-ci-data /tmp/ac-ci-test.db

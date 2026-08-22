@@ -15,8 +15,12 @@ use axum::{
 };
 use serde_json::json;
 use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
 
 use crate::health::AppState;
+
+static CACHED_HOSTS: OnceLock<Mutex<(Option<String>, HashSet<String>)>> = OnceLock::new();
+static CACHED_ORIGINS: OnceLock<Mutex<(Option<String>, Vec<String>)>> = OnceLock::new();
 
 // ----- CSRF -----
 pub fn generate_csrf_token() -> String {
@@ -26,28 +30,28 @@ pub fn generate_csrf_token() -> String {
     hex::encode(bytes)
 }
 
-// ----- Allowlist -----
+// ----- Allowlist (R11.8: cached OnceLock) -----
 fn allowed_hosts_set() -> HashSet<String> {
+    let env_val = std::env::var("ANCHOR_CORS_ORIGINS").ok();
+    let cache = CACHED_HOSTS.get_or_init(|| Mutex::new((None, HashSet::new())));
+    let mut guard = cache.lock().unwrap();
+    if guard.0 == env_val && !guard.1.is_empty() {
+        return guard.1.clone();
+    }
     let mut set = HashSet::new();
-    // base allowlist
     for h in ["localhost", "127.0.0.1", "::1", "[::1]"] {
         set.insert(h.to_string());
     }
-    // from env ANCHOR_CORS_ORIGINS — comma separated origins or hosts
-    if let Ok(v) = std::env::var("ANCHOR_CORS_ORIGINS") {
+    if let Some(v) = &env_val {
         for part in v.split(',') {
             let part = part.trim();
             if part.is_empty() {
                 continue;
             }
-            // try to parse as origin URL, extract host
             let host = if part.contains("://") {
-                // e.g. https://example.com:3000/path
                 let after_scheme = part.split("://").nth(1).unwrap_or(part);
                 let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
-                // strip port
                 if host_port.starts_with('[') {
-                    // IPv6 [::1]:port
                     if let Some(end) = host_port.find(']') {
                         &host_port[..end + 1]
                     } else {
@@ -56,35 +60,39 @@ fn allowed_hosts_set() -> HashSet<String> {
                 } else {
                     host_port.split(':').next().unwrap_or(host_port)
                 }
-            } else {
-                // bare host
-                if part.starts_with('[') {
-                    if let Some(end) = part.find(']') {
-                        &part[..end + 1]
-                    } else {
-                        part
-                    }
+            } else if part.starts_with('[') {
+                if let Some(end) = part.find(']') {
+                    &part[..end + 1]
                 } else {
-                    part.split(':').next().unwrap_or(part)
+                    part
                 }
+            } else {
+                part.split(':').next().unwrap_or(part)
             };
             set.insert(host.to_lowercase());
-            // also insert without brackets for ::1
             if host == "[::1]" {
                 set.insert("::1".to_string());
             }
         }
     }
+    guard.0 = env_val;
+    guard.1 = set.clone();
     set
 }
 
 fn allowed_origin_prefixes() -> Vec<String> {
+    let env_val = std::env::var("ANCHOR_CORS_ORIGINS").ok();
+    let cache = CACHED_ORIGINS.get_or_init(|| Mutex::new((None, Vec::new())));
+    let mut guard = cache.lock().unwrap();
+    if guard.0 == env_val && !guard.1.is_empty() {
+        return guard.1.clone();
+    }
     let mut prefixes = vec![
         "http://localhost".to_string(),
         "http://127.0.0.1".to_string(),
         "http://[::1]".to_string(),
     ];
-    if let Ok(v) = std::env::var("ANCHOR_CORS_ORIGINS") {
+    if let Some(v) = &env_val {
         for part in v.split(',') {
             let p = part.trim().trim_end_matches('/');
             if !p.is_empty() {
@@ -92,6 +100,8 @@ fn allowed_origin_prefixes() -> Vec<String> {
             }
         }
     }
+    guard.0 = env_val.clone();
+    guard.1 = prefixes.clone();
     prefixes
 }
 
@@ -126,25 +136,15 @@ pub fn is_host_allowed(host: &str) -> bool {
 
 pub fn is_origin_allowed(origin: &str) -> bool {
     if origin.is_empty() {
-        return true; // allow missing Origin (same-origin GET, curl)
+        return true;
     }
     let origin = origin.trim().trim_end_matches('/');
     let prefixes = allowed_origin_prefixes();
     for prefix in prefixes {
-        if origin == prefix || origin.starts_with(&format!("{}:", prefix)) || origin.starts_with(&format!("{}/", prefix)) || origin.starts_with(&prefix) {
-            // for localhost with port, need prefix + ":" or "/"
-            // e.g. origin http://localhost:8123 should match http://localhost
-            if origin == prefix || origin.starts_with(&format!("{}:", prefix)) || origin.starts_with(&format!("{}/", prefix)) {
-                return true;
-            }
-            // also handle exact origin with port already included in allowlist
-            if origin == prefix {
-                return true;
-            }
+        if origin == prefix {
+            return true;
         }
-        // simpler: if origin starts with prefix (covers http://localhost:8123)
         if origin.starts_with(&prefix) {
-            // ensure next char is : or / or end, to avoid http://localhost.evil.com
             let rest = &origin[prefix.len()..];
             if rest.is_empty() || rest.starts_with(':') || rest.starts_with('/') {
                 return true;
@@ -208,21 +208,13 @@ pub async fn csrf_middleware(
         return Ok(next.run(request).await);
     }
 
-    // Allow requests with valid CSRF token
     let token = &state.csrf_token;
     let header_val = request
         .headers()
         .get("x-csrf-token")
-        .or_else(|| request.headers().get("x-anchor-csrf"))
-        .or_else(|| request.headers().get("x-requested-with"))
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    // Accept either exact token match, or X-Requested-With: XMLHttpRequest as alternative (common SPA pattern) if token matches?
-    // For strict per-session, require token match. Allow "XMLHttpRequest" only if token is also present? To avoid breaking existing tests that send no header, we allow empty only if request has no Origin and Host is local? But spec says require token for all mutating, so we must enforce.
-    // To keep backward compat for tests that don't send token, we allow if header is missing but request is from test harness (no Origin) and we are in test mode? Instead, we allow missing token for now but log warning? No, we must enforce.
-    // We will require header == token, or header == "XMLHttpRequest" and token is known? Simpler: require header value == token.
-    // For compatibility with existing conformance suite that doesn't send token, we will allow if env var ANCHOR_CSRF_DISABLE=1 (set in tests)
     if std::env::var("ANCHOR_CSRF_DISABLE").as_deref() == Ok("1") {
         return Ok(next.run(request).await);
     }
@@ -230,10 +222,6 @@ pub async fn csrf_middleware(
     if header_val == token {
         return Ok(next.run(request).await);
     }
-    // Also allow if header is "XMLHttpRequest" and we consider that as CSRF protection via custom header (browser will send preflight for custom header, so attacker cannot send it)
-    // But per-session token is stronger, so we require token. Allow XMLHttpRequest as fallback for frontend that hasn't fetched token yet? For now, allow it to not break frontend before it fetches token.
-    // We will allow any non-empty custom header as proof of non-simple request, but ideally token.
-    // For strict mode, reject if not token.
     Err((
         StatusCode::FORBIDDEN,
         Json(json!({"detail": "Forbidden: missing or invalid CSRF token (X-CSRF-Token)"})),

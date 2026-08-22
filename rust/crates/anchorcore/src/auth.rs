@@ -35,9 +35,23 @@ const AUTH_LOCKOUT: Duration = Duration::from_secs(60);
 
 fn auth_rate_limited(key: &str) -> bool {
     let mut map = attempts_map().lock().unwrap();
-    if let Some((_, _, Some(until))) = map.get(key) {
-        if Instant::now() < *until {
-            return true;
+    // R11.5: prune expired entries (window+lockout) to bound map
+    let now = Instant::now();
+    if let Some((_, last, lock)) = map.get(key).cloned() {
+        if let Some(until) = lock {
+            if now < until {
+                return true;
+            }
+            // lockout expired — check if window also expired, then prune
+            if now.duration_since(last) > AUTH_WINDOW + AUTH_LOCKOUT {
+                map.remove(key);
+                return false;
+            }
+            // lockout expired but still within window — not limited, but keep count
+            return false;
+        } else if now.duration_since(last) > AUTH_WINDOW {
+            map.remove(key);
+            return false;
         }
     }
     false
@@ -45,8 +59,18 @@ fn auth_rate_limited(key: &str) -> bool {
 fn auth_record_failure(key: &str) {
     let mut map = attempts_map().lock().unwrap();
     let now = Instant::now();
+    // prune if expired before insert
+    if let Some((_, last, lock)) = map.get(key).cloned() {
+        let expired = if let Some(until) = lock {
+            now >= until && now.duration_since(last) > AUTH_WINDOW + AUTH_LOCKOUT
+        } else {
+            now.duration_since(last) > AUTH_WINDOW
+        };
+        if expired {
+            map.remove(key);
+        }
+    }
     let entry = map.entry(key.to_string()).or_insert((0, now, None));
-    // reset window if expired
     if now.duration_since(entry.1) > AUTH_WINDOW {
         entry.0 = 0;
         entry.2 = None;
@@ -62,12 +86,14 @@ fn auth_record_success(key: &str) {
     map.remove(key);
 }
 fn auth_client_key(email: &str, headers: &HeaderMap) -> String {
-    // Prefer X-Forwarded-For / X-Real-IP if present (hosted), else email as key
-    if let Some(ip) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok())) {
-        format!("{}:{}", email.to_lowercase(), ip)
-    } else {
-        email.to_lowercase()
+    // R11.5: ignore client-supplied XFF/X-Real-IP by default (spoofable via `curl -H "X-Forwarded-For: ..."`).
+    // Only trust proxy headers when explicitly opted in via ANCHOR_TRUSTED_PROXY=1 (hosted behind real proxy).
+    if std::env::var("ANCHOR_TRUSTED_PROXY").as_deref() == Ok("1") {
+        if let Some(ip) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok())) {
+            return format!("{}:{}", email.to_lowercase(), ip.split(',').next().unwrap_or(ip).trim());
+        }
     }
+    email.to_lowercase()
 }
 
 pub fn auth_enabled() -> bool {

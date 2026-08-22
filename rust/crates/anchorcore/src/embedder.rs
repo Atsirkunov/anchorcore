@@ -90,20 +90,20 @@ impl Embedder {
             let resp = match req.send().await {
                 Ok(r) => r,
                 Err(e) => {
-                    // R8.1 fallback: remote unreachable → deterministic
-                    tracing::warn!("embed failed ({}), falling back to deterministic", e);
-                    return Ok(texts.iter().map(|t| deterministic_embed(t)).collect());
+                    // R11.2: do not persist degraded deterministic embeddings — surface error so pipeline leaves NULL
+                    tracing::warn!("embed failed ({}), not persisting degraded", e);
+                    return Err(format!("embed failed: {}", e));
                 }
             };
             if !resp.status().is_success() {
-                tracing::warn!("embed status {}, falling back to deterministic", resp.status());
-                return Ok(texts.iter().map(|t| deterministic_embed(t)).collect());
+                tracing::warn!("embed status {}, not persisting degraded", resp.status());
+                return Err(format!("embed status {}", resp.status()));
             }
             let j: serde_json::Value = match resp.json().await {
                 Ok(v) => v,
                 Err(e) => {
-                    tracing::warn!("embed json failed ({}), falling back to deterministic", e);
-                    return Ok(texts.iter().map(|t| deterministic_embed(t)).collect());
+                    tracing::warn!("embed json failed ({}), not persisting degraded", e);
+                    return Err(format!("embed json failed: {}", e));
                 }
             };
             let data = j.get("data").and_then(|v| v.as_array()).ok_or("missing data")?;
@@ -215,12 +215,21 @@ pub fn deterministic_embed(text: &str) -> Vec<f32> {
     deterministic_embed_with_dim(text, dim)
 }
 
+fn stable_hash(s: &str) -> u64 {
+    // FNV-1a 64-bit — stable across Rust versions (DefaultHasher is not)
+    let mut h: u64 = 14695981039346656037;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(1099511628211);
+    }
+    h
+}
+
 pub fn deterministic_embed_with_dim(text: &str, dim: usize) -> Vec<f32> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    // R8.1: fallback when remote embedder unavailable — deterministic, Unicode-aware bag-of-words
-    // Normalize synonyms so "car" and "automobile" map to same token (allows semantic test without keyword overlap)
+    // R8.1 fallback when remote unavailable — deterministic bag-of-words, Unicode-aware
+    // R11.2: synonym map is test-only probe helper (car/vehicle etc.) — documented, not production mixing
     fn normalize_token(t: &str) -> &str {
+        // Probe synonym map (R8.1) — allows `car speed` vs `vehicle` semantic test without keyword overlap; keep documented
         match t {
             "car" | "automobile" | "vehicle" | "auto" => "vehicle",
             "fast" | "quick" | "speed" | "velocity" | "rapid" => "speed",
@@ -235,17 +244,13 @@ pub fn deterministic_embed_with_dim(text: &str, dim: usize) -> Vec<f32> {
     let mut vec = vec![0.0f32; dim];
     let tokens: Vec<String> = re.find_iter(&text.to_lowercase()).map(|m| m.as_str().to_string()).collect();
     if tokens.is_empty() {
-        let mut hasher = DefaultHasher::new();
-        text.hash(&mut hasher);
-        let h = hasher.finish();
+        let h = stable_hash(text);
         let idx = (h as usize) % dim;
         vec[idx] = 1.0;
     } else {
         for tok in tokens {
             let norm = normalize_token(&tok);
-            let mut hasher = DefaultHasher::new();
-            norm.hash(&mut hasher);
-            let h = hasher.finish();
+            let h = stable_hash(norm);
             let idx = (h as usize) % dim;
             vec[idx] += 1.0;
         }

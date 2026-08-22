@@ -51,11 +51,16 @@ pub struct Pipeline {
     pub embedder: Arc<Embedder>,
     pub settings: Arc<SettingsService>,
     pub data_dir: String,
+    pub jobs: Arc<crate::jobs::JobManager>,
 }
 
 impl Pipeline {
-    pub fn new(classifier: Arc<Classifier>, embedder: Arc<Embedder>, settings: Arc<SettingsService>, data_dir: String) -> Self {
-        Self { classifier, embedder, settings, data_dir }
+    pub fn new(classifier: Arc<Classifier>, embedder: Arc<Embedder>, settings: Arc<SettingsService>, data_dir: String, jobs: Arc<crate::jobs::JobManager>) -> Self {
+        Self { classifier, embedder, settings, data_dir, jobs }
+    }
+    // legacy new for tests (creates dummy jobs)
+    pub fn new_for_test(classifier: Arc<Classifier>, embedder: Arc<Embedder>, settings: Arc<SettingsService>, data_dir: String) -> Self {
+        Self { classifier, embedder, settings, data_dir, jobs: crate::jobs::JobManager::new() }
     }
 
     pub async fn sync_source(&self, source_id: i64, job_id: i64, force_reclassify: bool) {
@@ -71,7 +76,7 @@ impl Pipeline {
             let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
             let status: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "pending".to_string());
             if status == "cancelled" {
-                crate::jobs::JobManager::new().maybe_promote(&conn);
+                self.jobs.maybe_promote(&conn);
                 return;
             }
             if status == "pending" {
@@ -108,7 +113,7 @@ impl Pipeline {
                 // R9.1: do not clobber concurrent cancel
                 let cur: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "done".to_string());
                 if cur == "cancelled" {
-                    crate::jobs::JobManager::new().maybe_promote(&conn);
+                    self.jobs.maybe_promote(&conn);
                 } else {
                     let result = serde_json::json!({"items": items, "entities": entities}).to_string();
                     let _ = conn.execute("UPDATE jobs SET status='done', finished_at=datetime('now'), result=?1, error=NULL WHERE id=?2", rusqlite::params![result, job_id]);
@@ -116,23 +121,23 @@ impl Pipeline {
                     // update job total/processed
                     let _ = conn.execute("UPDATE jobs SET total=?1, processed=?1 WHERE id=?2", rusqlite::params![items, job_id]);
                     // promote next pending
-                    crate::jobs::JobManager::new().maybe_promote(&conn);
+                    self.jobs.maybe_promote(&conn);
                 }
             }
             Err(e) if e == "job cancelled" => {
                 // R9.1: cancelled must stay cancelled, no error_count bump, promote next
                 let _ = conn.execute("UPDATE jobs SET status='cancelled', finished_at=datetime('now'), error='job cancelled' WHERE id=?1", [job_id]);
-                crate::jobs::JobManager::new().maybe_promote(&conn);
+                self.jobs.maybe_promote(&conn);
             }
             Err(e) => {
                 // do not clobber a concurrent cancel that already set cancelled
                 let cur: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "failed".to_string());
                 if cur == "cancelled" {
-                    crate::jobs::JobManager::new().maybe_promote(&conn);
+                    self.jobs.maybe_promote(&conn);
                 } else {
                     let _ = conn.execute("UPDATE jobs SET status='failed', finished_at=datetime('now'), error=?1 WHERE id=?2", rusqlite::params![e, job_id]);
                     record_sync_error(&conn, source_id, &e);
-                    crate::jobs::JobManager::new().maybe_promote(&conn);
+                    self.jobs.maybe_promote(&conn);
                 }
             }
         }

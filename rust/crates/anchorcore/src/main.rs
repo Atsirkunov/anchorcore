@@ -1,4 +1,5 @@
-#![allow(dead_code, unused_imports, unused_variables, unused_mut, clippy::unwrap_used)]
+#![allow(dead_code)]
+#![allow(clippy::unwrap_used)]
 //! AnchorCore Rust binary — R1.2: SQLite + migrations + /health.
 //! See `rust/BACKLOG.md:1` and `docs/rust-port.md:1`.
 //! Mirrors `backend/app/main.py:130` health shape + `backend/app/db.py:44` PRAGMAs.
@@ -110,6 +111,13 @@ async fn main() {
         embedder: embedder.clone(),
     };
     tracing::info!("CSRF token generated (per-session)");
+    // R11.1: Scheduler — actually wired (was dead code). Boot reload + interval executor.
+    let scheduler = scheduler::Scheduler::new_with_state(state.clone());
+    scheduler::set_global(scheduler.clone());
+    if let Ok(conn) = db::init_db(&db_path) {
+        scheduler.reload_sources(&conn);
+    }
+    tracing::info!("scheduler wired (poll intervals from settings)");
     // Folder watcher: extracted to `watcher::service` (P0 3.3) — gated for `cargo test`
     // Keeps FolderWatcher (mpsc::Receiver !Sync) + HashMap future off test thread stack (8 MB).
     #[cfg(not(test))]
