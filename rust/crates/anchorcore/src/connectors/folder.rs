@@ -57,13 +57,17 @@ impl FolderConnector {
         } else { p.to_string() };
         let path = PathBuf::from(&expanded);
         let path = path.canonicalize().unwrap_or(path);
-        if !path.is_dir() {
-            return Err(ConnectorError(format!("folder does not exist: {}", path.display())));
-        }
+        // R9.2: allow non-existent path at creation (config-only, like Jira) — sync will fail with "does not exist" and record error_count, mirroring Python which only validates on sync
         Ok(Self { path })
     }
 
     pub fn fetch(&self) -> Result<(Vec<IngestionDoc>, String), ConnectorError> {
+        if !self.path.exists() {
+            return Err(ConnectorError(format!("folder does not exist: {}", self.path.display())));
+        }
+        if !self.path.is_dir() {
+            return Err(ConnectorError(format!("folder does not exist: {}", self.path.display())));
+        }
         let mut docs = Vec::new();
         for entry in WalkDir::new(&self.path).into_iter().filter_map(|e| e.ok()) {
             let p = entry.path();

@@ -20,6 +20,56 @@ use crate::health::AppState;
 
 const ITER: u32 = 200_000;
 
+// R10.8: brute-force protection — per-key (email/IP) counter, 5 fails → 60s lockout
+use std::collections::HashMap;
+use std::sync::{OnceLock, Mutex};
+use std::time::{Duration, Instant};
+
+static AUTH_ATTEMPTS: OnceLock<Mutex<HashMap<String, (u32, Instant, Option<Instant>)>>> = OnceLock::new();
+fn attempts_map() -> &'static Mutex<HashMap<String, (u32, Instant, Option<Instant>)>> {
+    AUTH_ATTEMPTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+const MAX_AUTH_FAILS: u32 = 5;
+const AUTH_WINDOW: Duration = Duration::from_secs(60);
+const AUTH_LOCKOUT: Duration = Duration::from_secs(60);
+
+fn auth_rate_limited(key: &str) -> bool {
+    let mut map = attempts_map().lock().unwrap();
+    if let Some((_, _, Some(until))) = map.get(key) {
+        if Instant::now() < *until {
+            return true;
+        }
+    }
+    false
+}
+fn auth_record_failure(key: &str) {
+    let mut map = attempts_map().lock().unwrap();
+    let now = Instant::now();
+    let entry = map.entry(key.to_string()).or_insert((0, now, None));
+    // reset window if expired
+    if now.duration_since(entry.1) > AUTH_WINDOW {
+        entry.0 = 0;
+        entry.2 = None;
+    }
+    entry.0 += 1;
+    entry.1 = now;
+    if entry.0 >= MAX_AUTH_FAILS {
+        entry.2 = Some(now + AUTH_LOCKOUT);
+    }
+}
+fn auth_record_success(key: &str) {
+    let mut map = attempts_map().lock().unwrap();
+    map.remove(key);
+}
+fn auth_client_key(email: &str, headers: &HeaderMap) -> String {
+    // Prefer X-Forwarded-For / X-Real-IP if present (hosted), else email as key
+    if let Some(ip) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok())) {
+        format!("{}:{}", email.to_lowercase(), ip)
+    } else {
+        email.to_lowercase()
+    }
+}
+
 pub fn auth_enabled() -> bool {
     std::env::var("ANCHOR_AUTH_SECRET")
         .map(|s| !s.trim().is_empty())
@@ -135,7 +185,45 @@ pub fn decode_token(token: &str) -> Result<serde_json::Value, String> {
     Ok(data)
 }
 
-// --- Middleware (R6.3 polish + Week2 P0) ---
+// --- Middleware (R7.2 route-based) ---
+fn is_public_path(path: &str, method: &axum::http::Method) -> bool {
+    // CORS preflight
+    if method == axum::http::Method::OPTIONS {
+        return true;
+    }
+    // Explicit public endpoints
+    if path == "/health" || path == "/csrf" || path == "/auth/status" || path == "/auth/signup" || path == "/auth/login" {
+        return true;
+    }
+    // Frontend assets: SPA fallback + static files — must be public so login page can load when auth is on
+    if method == axum::http::Method::GET || method == axum::http::Method::HEAD {
+        if path == "/" || path == "/index.html" || path.starts_with("/assets/") {
+            return true;
+        }
+        // allow any path that doesn't look like API and has a file extension (e.g. /vite.svg, /favicon.ico)
+        // API routes are under /sources, /entities, /review, /pii, /projects, /qa, /system, /settings, /auth
+        let is_api = path.starts_with("/sources")
+            || path.starts_with("/entities")
+            || path.starts_with("/review")
+            || path.starts_with("/pii")
+            || path.starts_with("/projects")
+            || path.starts_with("/qa")
+            || path.starts_with("/system")
+            || path.starts_with("/settings")
+            || path.starts_with("/auth");
+        if !is_api {
+            // fallback SPA route (e.g. / or /login) — serve index.html, must be public
+            // also static files with extension
+            if !path.contains('.') {
+                return true; // SPA client route
+            }
+            // file with extension but not API
+            return true;
+        }
+    }
+    false
+}
+
 pub async fn require_auth_middleware(
     State(state): State<AppState>,
     request: Request,
@@ -146,15 +234,7 @@ pub async fn require_auth_middleware(
     }
     let path = request.uri().path().to_string();
     let method = request.method().clone();
-    // public: health, auth status/signup/login, and all GET/HEAD/OPTIONS (read-only)
-    if path == "/health"
-        || path == "/auth/status"
-        || path == "/auth/signup"
-        || path == "/auth/login"
-        || method == axum::http::Method::GET
-        || method == axum::http::Method::HEAD
-        || method == axum::http::Method::OPTIONS
-    {
+    if is_public_path(&path, &method) {
         return Ok(next.run(request).await);
     }
     let auth_header = request.headers().get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("");
@@ -203,10 +283,16 @@ pub struct AuthIn {
 
 pub async fn signup_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(payload): Json<AuthIn>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
     if !auth_enabled() {
         return Err((StatusCode::NOT_FOUND, Json(json!({"detail": "Auth disabled (set ANCHOR_AUTH_SECRET)"}))));
+    }
+    let email_raw = payload.email.clone();
+    let rate_key = auth_client_key(&email_raw, &headers);
+    if auth_rate_limited(&rate_key) {
+        return Err((StatusCode::TOO_MANY_REQUESTS, Json(json!({"detail": "Too many attempts, try again shortly"}))));
     }
     let email = match valid_email(&payload.email) {
         Some(e) => e,
@@ -232,8 +318,17 @@ pub async fn signup_handler(
     .await
     .unwrap();
     let user_id = match res {
-        Ok(id) => id,
-        Err(e) => return Err(e),
+        Ok(id) => {
+            auth_record_success(&rate_key);
+            id
+        },
+        Err(e) => {
+            // CONFLICT counts as failure for brute-force (enumeration)
+            if e.0 == StatusCode::CONFLICT {
+                auth_record_failure(&rate_key);
+            }
+            return Err(e);
+        },
     };
     let token = create_token(user_id, &email).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": e}))))?;
     Ok((StatusCode::CREATED, Json(json!({"access_token": token, "token_type": "bearer", "user": {"id": user_id, "email": email}}))))
@@ -241,10 +336,16 @@ pub async fn signup_handler(
 
 pub async fn login_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(payload): Json<AuthIn>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     if !auth_enabled() {
         return Err((StatusCode::NOT_FOUND, Json(json!({"detail": "Auth disabled"}))));
+    }
+    let email_raw = payload.email.clone();
+    let rate_key = auth_client_key(&email_raw, &headers);
+    if auth_rate_limited(&rate_key) {
+        return Err((StatusCode::TOO_MANY_REQUESTS, Json(json!({"detail": "Too many attempts, try again shortly"}))));
     }
     let email = match valid_email(&payload.email) {
         Some(e) => e,
@@ -263,11 +364,16 @@ pub async fn login_handler(
     .unwrap();
     let (uid, ph) = match row {
         Some(v) => v,
-        None => return Err((StatusCode::UNAUTHORIZED, Json(json!({"detail": "Invalid credentials"})))),
+        None => {
+            auth_record_failure(&rate_key);
+            return Err((StatusCode::UNAUTHORIZED, Json(json!({"detail": "Invalid credentials"}))));
+        },
     };
     if !verify_password(&pw, &ph) {
+        auth_record_failure(&rate_key);
         return Err((StatusCode::UNAUTHORIZED, Json(json!({"detail": "Invalid credentials"}))));
     }
+    auth_record_success(&rate_key);
     let token = create_token(uid, &email).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": e}))))?;
     Ok(Json(json!({"access_token": token, "token_type": "bearer", "user": {"id": uid, "email": email}})))
 }
@@ -355,15 +461,19 @@ mod tests {
         let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
         let svc = std::sync::Arc::new(crate::settings::SettingsService::new(store));
         let jobs = crate::jobs::JobManager::new();
+        let embedder = std::sync::Arc::new(crate::embedder::Embedder::new(svc.clone()));
         let state = crate::health::AppState {
             data_dir: dir.path().to_string_lossy().to_string(),
             settings: svc,
             jobs,
+            csrf_token: "test-csrf".to_string(),
+            embedder,
         };
         let db_path = crate::db::resolve_db_path(&state.data_dir);
         let _ = crate::db::init_db(&db_path).unwrap();
         let app = axum::Router::new()
-            .route("/sources", axum::routing::post(|| async { "ok" }))
+            .route("/sources", axum::routing::get(|| async { "ok" }).post(|| async { "ok" }))
+            .route("/health", axum::routing::get(|| async { "ok" }))
             .layer(axum::middleware::from_fn_with_state(state.clone(), crate::auth::require_auth_middleware))
             .with_state(state);
         // POST without token → 401
@@ -374,14 +484,23 @@ mod tests {
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-        // GET should be allowed even without token (public)
+        // R7.2: GET /sources is now protected when auth is on → 401
         let req2 = Request::builder()
             .uri("/sources")
             .method("GET")
             .body(Body::empty())
             .unwrap();
         let resp2 = app.clone().oneshot(req2).await.unwrap();
-        assert_ne!(resp2.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(resp2.status(), StatusCode::UNAUTHORIZED);
+        // GET /health stays public
+        let req3 = Request::builder()
+            .uri("/health")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let resp3 = app.clone().oneshot(req3).await.unwrap();
+        assert_ne!(resp3.status(), StatusCode::UNAUTHORIZED);
+        // GET / with frontend fallback should be public too
         std::env::remove_var("ANCHOR_AUTH_SECRET");
     }
 }

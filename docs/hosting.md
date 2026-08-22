@@ -1,8 +1,9 @@
-# AnchorCore — Hosted Infra Plan (v2)
+# AnchorCore — Hosted Infra Plan (v2 + R10.7)
 
 > Locked 2026-08-10 (decisions D8–D9 in [v2v3-scope.md](./v2v3-scope.md)). Operational
 > reference for the hosted tier (B35). One-box topology until real demand; no
 > K8s/multi-region/autoscaling.
+> **R10.7 (2026-08-22):** `hosting/` stays **Python** (FastAPI `psycopg`/`pgvector`); Rust `rust/` is **local/packaged** (`cargo build --release` `9.8M` SQLite + `frontend/dist`). Rust Postgres (`deadpool` + `sqlx`) deferred; if needed, Rust can run hosted against a SQLite volume (`sqlite:////data/...`) — no code fork.
 
 ## Topology
 
@@ -12,8 +13,8 @@ anchorcore.dev
         └── Cloudflare Tunnel (cloudflared) — egress-only ingress; no open ports
               └── Hetzner CX22 (2 vCPU / 4 GB / 40 GB, ~€4–5/mo)
                     └── Docker Compose
-                          ├── anchorcore  (FastAPI; same code, env-driven)
-                          └── postgres    (replaces SQLite; DB swap point)
+                          ├── anchorcore  (Python FastAPI — **hosting stays Python**, see R10.7)
+                          └── postgres    (replaces SQLite; DB swap point — Rust is local SQLite only)
   Files  → Cloudflare R2 (S3-compatible; free 10 GB / 1M Class A / 10M Class B ops/mo; $0 egress)
   Billing → Stripe Checkout (hosted pages) + payment webhooks → feature unlock
   Uptime → UptimeRobot (free) → email on failure

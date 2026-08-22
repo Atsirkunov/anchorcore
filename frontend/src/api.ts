@@ -9,6 +9,23 @@ export class RequestAbortedError extends Error {
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
+// R7.1: per-session CSRF token for local-mode mutating requests
+let csrfToken: string | null = null;
+async function getCsrfToken(): Promise<string | null> {
+  if (csrfToken !== null) return csrfToken;
+  try {
+    const res = await fetch("/csrf", { method: "GET" });
+    if (res.ok) {
+      const data = await res.json();
+      csrfToken = data.csrf_token ?? null;
+      return csrfToken;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -18,9 +35,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     if (init.signal.aborted) controller.abort();
     else init.signal.addEventListener("abort", onExternalAbort, { once: true });
   }
+  // R7.1: attach CSRF token for mutating requests when auth is off (local mode)
+  const method = (init?.method ?? "GET").toUpperCase();
+  const isMutating = method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE";
+  let csrfHeaders: Record<string, string> = {};
+  if (isMutating && path !== "/csrf") {
+    const token = await getCsrfToken();
+    if (token) csrfHeaders["X-CSRF-Token"] = token;
+  }
+  const mergedInit: RequestInit = {
+    ...init,
+    headers: { ...(init?.headers as Record<string, string> | undefined), ...csrfHeaders },
+    signal: controller.signal,
+  };
   let res: Response;
   try {
-    res = await fetch(path, { ...init, signal: controller.signal });
+    res = await fetch(path, mergedInit);
   } catch (e) {
     if (controller.signal.aborted) throw new RequestAbortedError();
     throw e;

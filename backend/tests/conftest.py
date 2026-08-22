@@ -40,22 +40,42 @@ def client():
             def __init__(self, base):
                 self.base = base.rstrip("/")
                 self.client = httpx.Client(base_url=self.base, timeout=30.0)
+                # R7.1: fetch per-session CSRF token for local-mode mutating requests
+                self._csrf = None
+                if os.environ.get("ANCHOR_CSRF_DISABLE") != "1":
+                    try:
+                        r = self.client.get("/csrf", timeout=5.0)
+                        if r.status_code == 200:
+                            self._csrf = r.json().get("csrf_token")
+                    except Exception:
+                        pass
+
+            def _csrf_headers(self, kw):
+                if self._csrf and "headers" not in kw:
+                    kw["headers"] = {}
+                if self._csrf:
+                    # httpx headers are case-insensitive; use X-CSRF-Token
+                    hdrs = kw.get("headers", {})
+                    # don't overwrite if already set
+                    hdrs.setdefault("X-CSRF-Token", self._csrf)
+                    kw["headers"] = hdrs
+                return kw
 
             def get(self, path, **kw):
                 return self.client.get(path, **kw)
 
             def post(self, path, **kw):
                 # httpx Client.post expects json=, same as TestClient
-                return self.client.post(path, **kw)
+                return self.client.post(path, **self._csrf_headers(kw))
 
             def put(self, path, **kw):
-                return self.client.put(path, **kw)
+                return self.client.put(path, **self._csrf_headers(kw))
 
             def patch(self, path, **kw):
-                return self.client.patch(path, **kw)
+                return self.client.patch(path, **self._csrf_headers(kw))
 
             def delete(self, path, **kw):
-                return self.client.delete(path, **kw)
+                return self.client.delete(path, **self._csrf_headers(kw))
 
         c = RustClient(rust_url)
         yield c

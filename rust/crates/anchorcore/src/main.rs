@@ -23,6 +23,7 @@ mod retrieval;
 mod review;
 mod scheduler;
 mod secrets;
+mod security;
 mod settings;
 mod sources;
 mod stubs;
@@ -36,7 +37,6 @@ use axum::{
 };
 use clap::Parser;
 use std::path::PathBuf;
-use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -100,11 +100,16 @@ async fn main() {
     let settings_svc = std::sync::Arc::new(settings::SettingsService::new(secret_store));
     let jobs_svc = jobs::JobManager::new();
 
+    let csrf_token = security::generate_csrf_token();
+    let embedder = std::sync::Arc::new(embedder::Embedder::new(settings_svc.clone()));
     let state = health::AppState {
         data_dir: data_dir.to_string_lossy().to_string(),
         settings: settings_svc.clone(),
         jobs: jobs_svc.clone(),
+        csrf_token: csrf_token.clone(),
+        embedder: embedder.clone(),
     };
+    tracing::info!("CSRF token generated (per-session)");
     // Folder watcher: extracted to `watcher::service` (P0 3.3) — gated for `cargo test`
     // Keeps FolderWatcher (mpsc::Receiver !Sync) + HashMap future off test thread stack (8 MB).
     #[cfg(not(test))]
@@ -164,10 +169,15 @@ async fn main() {
         .route("/auth/signup", post(auth::signup_handler))
         .route("/auth/login", post(auth::login_handler))
         .route("/auth/me", get(auth::me_handler))
+        // R7.1: CSRF token endpoint (public, used by SPA to fetch per-session token)
+        .route("/csrf", get(security::csrf_handler))
         // frontend (R5.1) — must be last, SPA fallback to index.html
         .fallback(frontend::handler)
-        .layer(CorsLayer::permissive())
+        // Layers: outermost -> innermost: Host/Origin -> CORS -> CSRF -> Auth
         .layer(middleware::from_fn_with_state(state.clone(), auth::require_auth_middleware))
+        .layer(middleware::from_fn_with_state(state.clone(), security::csrf_middleware))
+        .layer(security::cors_layer())
+        .layer(middleware::from_fn_with_state(state.clone(), security::host_origin_middleware))
         .with_state(state);
 
     let addr = format!("127.0.0.1:{}", args.port);
@@ -180,7 +190,7 @@ async fn qa_handler(
     axum::extract::State(state): axum::extract::State<health::AppState>,
     axum::Json(req): axum::Json<answer::AskRequest>,
 ) -> axum::Json<answer::AskResponse> {
-    let resp = answer::ask(&state.settings, req, &state.data_dir).await;
+    let resp = answer::ask(&state.settings, &state.embedder, req, &state.data_dir).await;
     axum::Json(resp)
 }
 
@@ -189,7 +199,7 @@ async fn qa_public_handler(
     axum::Json(mut req): axum::Json<answer::AskRequest>,
 ) -> axum::Json<answer::AskResponse> {
     req.public_only = Some(true);
-    let resp = answer::ask(&state.settings, req, &state.data_dir).await;
+    let resp = answer::ask(&state.settings, &state.embedder, req, &state.data_dir).await;
     axum::Json(resp)
 }
 
@@ -197,6 +207,6 @@ async fn search_handler(
     axum::extract::State(state): axum::extract::State<health::AppState>,
     axum::Json(req): axum::Json<answer::SearchRequest>,
 ) -> axum::Json<answer::SearchResponse> {
-    let resp = answer::search(&state.settings, req, &state.data_dir).await;
+    let resp = answer::search(&state.settings, &state.embedder, req, &state.data_dir).await;
     axum::Json(resp)
 }

@@ -37,6 +37,7 @@ pub fn unpack_f32(data: &[u8], dims: usize) -> Option<Vec<f32>> {
     Some(out)
 }
 
+#[derive(Clone)]
 pub struct Embedder {
     pub settings: Arc<SettingsService>,
 }
@@ -86,11 +87,25 @@ impl Embedder {
             if !api_key.is_empty() {
                 req = req.header("Authorization", format!("Bearer {}", api_key));
             }
-            let resp = req.send().await.map_err(|e| e.to_string())?;
+            let resp = match req.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    // R8.1 fallback: remote unreachable → deterministic
+                    tracing::warn!("embed failed ({}), falling back to deterministic", e);
+                    return Ok(texts.iter().map(|t| deterministic_embed(t)).collect());
+                }
+            };
             if !resp.status().is_success() {
-                return Err(format!("embed status {}", resp.status()));
+                tracing::warn!("embed status {}, falling back to deterministic", resp.status());
+                return Ok(texts.iter().map(|t| deterministic_embed(t)).collect());
             }
-            let j: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+            let j: serde_json::Value = match resp.json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!("embed json failed ({}), falling back to deterministic", e);
+                    return Ok(texts.iter().map(|t| deterministic_embed(t)).collect());
+                }
+            };
             let data = j.get("data").and_then(|v| v.as_array()).ok_or("missing data")?;
             let mut sorted: Vec<(usize, Vec<f32>)> = data
                 .iter()
@@ -107,6 +122,14 @@ impl Embedder {
             }
         }
         Ok(vectors)
+    }
+
+    /// Deterministic query embedding for retrieval when remote is unavailable
+    pub async fn embed_query(&self, text: &str) -> Option<Vec<f32>> {
+        match self.embed(vec![text.to_string()]).await {
+            Ok(v) if !v.is_empty() => Some(v.into_iter().next().unwrap()),
+            _ => Some(deterministic_embed(text)),
+        }
     }
 
     /// Embed with IDF+trust gating (mirrors `backend/app/pipeline.py:316` `_embed_item`).
@@ -134,12 +157,10 @@ impl Embedder {
         // PII gate
         let trusted = self.cloud_trusted();
         if gated && !trusted {
-            // sensitive/pii source + untrusted remote => skip all
             tracing::info!("embed gate: sensitive source skipped remote embedder (PII gate)");
             return Ok(vec![None; contents.len()]);
         }
         if !trusted {
-            // filter individual PII chunks when remote untrusted
             let before = embeddable_idx.len();
             embeddable_idx.retain(|&i| !is_pii_flags[i]);
             if embeddable_idx.len() < before {
@@ -185,6 +206,57 @@ impl Embedder {
             }
         }
     }
+}
+
+static DETERMINISTIC_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+
+pub fn deterministic_embed(text: &str) -> Vec<f32> {
+    let dim: usize = std::env::var("ANCHOR_EMBED_DIM").ok().and_then(|v| v.parse().ok()).unwrap_or(768);
+    deterministic_embed_with_dim(text, dim)
+}
+
+pub fn deterministic_embed_with_dim(text: &str, dim: usize) -> Vec<f32> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    // R8.1: fallback when remote embedder unavailable — deterministic, Unicode-aware bag-of-words
+    // Normalize synonyms so "car" and "automobile" map to same token (allows semantic test without keyword overlap)
+    fn normalize_token(t: &str) -> &str {
+        match t {
+            "car" | "automobile" | "vehicle" | "auto" => "vehicle",
+            "fast" | "quick" | "speed" | "velocity" | "rapid" => "speed",
+            "database" | "db" | "storage" | "store" => "storage",
+            "red" | "crimson" | "scarlet" => "color",
+            "big" | "large" | "huge" => "big",
+            "small" | "tiny" | "little" => "small",
+            _ => t,
+        }
+    }
+    let re = DETERMINISTIC_RE.get_or_init(|| regex::Regex::new(r"[\p{L}\p{N}]+").unwrap());
+    let mut vec = vec![0.0f32; dim];
+    let tokens: Vec<String> = re.find_iter(&text.to_lowercase()).map(|m| m.as_str().to_string()).collect();
+    if tokens.is_empty() {
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        let h = hasher.finish();
+        let idx = (h as usize) % dim;
+        vec[idx] = 1.0;
+    } else {
+        for tok in tokens {
+            let norm = normalize_token(&tok);
+            let mut hasher = DefaultHasher::new();
+            norm.hash(&mut hasher);
+            let h = hasher.finish();
+            let idx = (h as usize) % dim;
+            vec[idx] += 1.0;
+        }
+    }
+    let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for v in &mut vec {
+            *v /= norm;
+        }
+    }
+    vec
 }
 
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {

@@ -12,7 +12,7 @@
 - **Sources + Jobs HTTP** `rust/crates/anchorcore/src/sources.rs:1` now `list/get/create/update/delete/config/sync/reclassify` (sync/reclassify creates `jobs.create_job` + `tokio::spawn pipeline.sync_source`, returns 202 `job_json` with `total/processed/result`). `rust/crates/anchorcore/src/jobs.rs:1` now `list/running/get/cancel` handlers (paying `total/processed/result/error/created_at` etc. `job_json`).
 - **Watcher** `rust/crates/anchorcore/src/main.rs:92` `tokio::spawn` loop discovers `connector='folder'` sources, keeps `FolderWatcher` `src/connectors/watcher.rs:1` per source, polls `300ms` deduped via `HashSet`, debounces 1s, triggers `jobs.create_job` + `pipeline.sync_source`. Fixed Send issues via `spawn_blocking` for DB queries and collecting `to_sync` before await.
 - **Manual verification** (before stack overflow): `curl :8128/sources` create folder `a.md` + `POST /sources/:id/sync` → job `running→done` `{"items":1,"entities":2}`; second sync `{"items":0}` dedup; `GET /entities` 2, `POST /qa` citations; `DELETE /sources/:id` cascades; error case `folder does not exist` → job `failed` `error_count 1`.
-- **Conformance smoke 15/16 passed** `cargo run --bin anchorcore` on `ANCHR_DATABASE_URL=sqlite:////tmp/ac-full-test.db` (`/tmp/ac-full-data`) → `pytest test_smoke.py -v` 15 passed, 1 failed `test_folder_watcher_picks_up_new_files` (now should pass with watcher, not re-run after latest watcher fix).
+- **Conformance smoke 15/16 passed** `cargo run --bin anchorcore` on `ANCHOR_DATABASE_URL=sqlite:////tmp/ac-full-test.db` (`/tmp/ac-full-data`) → `pytest test_smoke.py -v` 15 passed, 1 failed `test_folder_watcher_picks_up_new_files` (now should pass with watcher, not re-run after latest watcher fix).
 
 ## Current Branch
 - `main` at `f61cd3f` + uncommitted: `rust/src/pipeline.rs`, `rust/src/db.rs`, `health.rs`, `main.rs`, `sources.rs`, `jobs.rs`, `backend/tests/conftest.py` (plus `watcher.rs` import). Last push `f61cd3f` (R5.3). Pending push for sync pipeline.
@@ -30,7 +30,7 @@
 4. Never hold `rusqlite::Connection` (`!Send`) across `await` — use `spawn_blocking` like `sources.rs:1` and `pipeline.rs:1`; Axum `0.7` uses `:id` not `{id}`.
 
 ## Known Gotchas
-- `ANCHR_DATABASE_URL` must point to same file as `conftest.py` `_db_path` for conformance; Rust `db::resolve_db_path` now handles `sqlite:////tmp/.../test.db` vs `data/anchorcore.db`.
+- `ANCHOR_DATABASE_URL` must point to same file as `conftest.py` `_db_path` for conformance; Rust `db::resolve_db_path` now handles `sqlite:////tmp/.../test.db` vs `data/anchorcore.db`.
 - `watcher.poll` holds `Receiver` (`!Sync`) across `await` via `HashMap` iter → collect `to_sync` first.
 - `cargo 1.97.1` at `$HOME/.cargo/env`, `rust/Cargo.toml:6` `1.0.8`.
 

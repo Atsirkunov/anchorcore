@@ -1,11 +1,13 @@
 //! R2.2: Answer orchestration — port of `backend/app/answer_engine.py:169` `ask()`
 //! - project scoping, public_only gate, planner, executor, graph, B30 gate, generation
 
+use crate::embedder::Embedder;
 use crate::retrieval;
 use crate::settings::SettingsService;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::sync::Arc;
 
 #[derive(Deserialize)]
 pub struct AskRequest {
@@ -63,44 +65,51 @@ pub struct SearchResponse {
     pub hits: Vec<SearchHit>,
 }
 
-pub async fn ask_stub(settings: &SettingsService, req: AskRequest) -> AskResponse {
-    // Minimal stub for R2.2 to keep handler Send (no DB !Send across await)
-    // Returns context-aware answer like Python fallback when no hits
-    let _ = settings.get("answer_base_url", None);
-    AskResponse {
-        answer: format!("Answer for: {} (Rust stub R2.2 - DB retrieval pending)", req.question),
-        citations: vec![],
-    }
-}
-
 pub async fn ask(
     settings: &SettingsService,
+    embedder: &Arc<Embedder>,
     req: AskRequest,
     data_dir: &str,
 ) -> AskResponse {
+    // R10.1: follow-up rewrite — history + trusted gate (like Python ask: rewrite before retrieval)
+    let original_question = req.question.clone();
+    let history = req.history.clone().unwrap_or_default();
+    let filtered_history: Vec<AskTurn> = history.into_iter().filter(|t| !t.content.trim().is_empty()).collect();
+    let mut question = original_question.clone();
+    let trusted_for_rewrite = is_answer_trusted(settings);
+    if !filtered_history.is_empty() && trusted_for_rewrite {
+        if let Some(rewritten) = rewrite_followup(settings, &original_question, &filtered_history).await {
+            if !rewritten.trim().is_empty() && rewritten != original_question {
+                question = rewritten;
+            }
+        }
+    }
+    // R8.1: embed query for vector search (hybrid) — deterministic fallback when remote unavailable
+    let question_for_embed = question.clone();
+    let query_embedding = embedder.embed_query(&question_for_embed).await;
     // Do DB retrieval in blocking thread to avoid holding !Send Connection across await
     let data_dir_string = data_dir.to_string();
     let data_dir_for_hits = data_dir_string.clone();
     let data_dir_for_qa = data_dir_string.clone();
-    let question = req.question.clone();
     let project_id = req.project_id;
     let public_only = req.public_only.unwrap_or(false);
-    let history = req.history.clone();
+    let history_for_gen = filtered_history.clone();
     let settings_clone = settings_snapshot(settings);
     let q_for_block = question.clone();
     let hits = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir_for_hits);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
-        retrieve_sync(&conn, &q_for_block, project_id, public_only, &settings_clone)
+        retrieve_sync(&conn, &q_for_block, project_id, public_only, &settings_clone, query_embedding)
     })
     .await
     .unwrap_or_default();
 
-    // R6.2: record qa warning for degraded retrieval so test_qa_failure_records_warning passes
-    // (Python records "embedding failed; retrieval degraded" when Ollama unreachable)
-    {
+    // R10.5: only record qa warnings when retrieval actually degraded (hits empty) — not on every qa
+    // Python records these only when embedding failed / no hits; previously Rust spammed 2 warnings per qa
+    if hits.is_empty() {
+        let data_dir_qa_clone = data_dir_for_qa.clone();
         let _ = tokio::task::spawn_blocking(move || {
-            let db_path = crate::db::resolve_db_path(&data_dir_for_qa);
+            let db_path = crate::db::resolve_db_path(&data_dir_qa_clone);
             if let Ok(conn) = crate::db::init_db(&db_path) {
                 let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning','retrieval degraded to keyword-only','qa fallback')", []);
                 let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning','answer generation failed; returning matching context only','qa fallback')", []);
@@ -147,10 +156,10 @@ pub async fn ask(
         };
     }
 
-    // Build context and generate (no DB borrow across await)
-    let sections: Vec<String> = hits.iter().enumerate().map(|(i, h)| format!("[S{}] {}", i+1, &h.content[..h.content.len().min(2000)])).collect();
+    // Build context and generate (no DB borrow across await) — R10.6 UTF-8 safe (was byte slice)
+    let sections: Vec<String> = hits.iter().enumerate().map(|(i, h)| format!("[S{}] {}", i+1, h.content.chars().take(2000).collect::<String>())).collect();
     let context = sections.join("\n\n");
-    let answer = generate_answer(settings, &question, &context, history.as_deref().unwrap_or(&[])).await;
+    let answer = generate_answer(settings, &question, &context, &history_for_gen).await;
     let citations = hits.iter().take(5).map(|h| Citation {
         entity_id: h.entity_id,
         kind: if h.entity_id.is_some() { "entity".to_string() } else { "document".to_string() },
@@ -177,6 +186,7 @@ fn retrieve_sync(
     project_id: Option<i64>,
     public_only: bool,
     _settings_map: &std::collections::HashMap<String, String>,
+    query_embedding: Option<Vec<f32>>,
 ) -> Vec<crate::retrieval::Hit> {
     let project_ids = project_source_ids(conn, project_id);
     let mut source_ids = project_ids;
@@ -196,16 +206,27 @@ fn retrieve_sync(
     let halflife: f64 = std::env::var("ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(365.0);
     let max_per_source: usize = std::env::var("ANCHOR_RETRIEVAL_MAX_PER_SOURCE").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
 
+    // R8.1: hybrid search — vector + keyword
+    let vector_hits = query_embedding.as_ref().and_then(|emb| {
+        let hits = retrieval::vector_search(conn, emb, source_ids.as_ref(), top_k, qa_exclude_disputed);
+        if hits.is_empty() { None } else { Some(hits) }
+    });
     let keyword_hits = retrieval::keyword_search(conn, &query, source_ids.as_ref(), top_k, qa_exclude_disputed);
     let evidence = if keyword_hits.is_empty() {
-        retrieval::keyword_fallback(conn, source_ids.as_ref(), top_k, qa_exclude_disputed)
+        // fallback only if no keyword hits and no vector hits
+        if vector_hits.is_none() {
+            retrieval::keyword_fallback(conn, source_ids.as_ref(), top_k, qa_exclude_disputed)
+        } else {
+            vec![]
+        }
     } else {
         keyword_hits
     };
+    let keyword_opt = if evidence.is_empty() { None } else { Some(evidence) };
     let mut hits = retrieval::fuse_and_rank(
         conn,
-        None,
-        Some(evidence),
+        vector_hits,
+        keyword_opt,
         keyword_weight,
         halflife,
         max_per_source,
@@ -268,9 +289,12 @@ fn is_answer_trusted(settings: &SettingsService) -> bool {
 
 pub async fn search(
     settings: &SettingsService,
+    embedder: &Arc<Embedder>,
     req: SearchRequest,
     data_dir: &str,
 ) -> SearchResponse {
+    let query_for_embed = req.query.clone();
+    let query_embedding = embedder.embed_query(&query_for_embed).await;
     let data_dir = data_dir.to_string();
     let query = req.query.clone();
     let k = req.k.unwrap_or(8).clamp(1, 50);
@@ -279,7 +303,7 @@ pub async fn search(
     let hits = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
-        search_sync(&conn, &query, k, project_id)
+        search_sync(&conn, &query, k, project_id, query_embedding)
     })
     .await
     .unwrap_or_default();
@@ -298,7 +322,7 @@ pub async fn search(
     SearchResponse { hits }
 }
 
-fn search_sync(conn: &Connection, query: &str, k: usize, project_id: Option<i64>) -> Vec<crate::retrieval::Hit> {
+fn search_sync(conn: &Connection, query: &str, k: usize, project_id: Option<i64>, query_embedding: Option<Vec<f32>>) -> Vec<crate::retrieval::Hit> {
     let project_ids = project_source_ids(conn, project_id);
     let qa_exclude_disputed: bool = std::env::var("ANCHOR_QA_EXCLUDE_DISPUTED")
         .map(|v| v != "0" && v.to_lowercase() != "false")
@@ -307,16 +331,25 @@ fn search_sync(conn: &Connection, query: &str, k: usize, project_id: Option<i64>
     let keyword_weight: f64 = std::env::var("ANCHOR_RETRIEVAL_KEYWORD_WEIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let halflife: f64 = std::env::var("ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(365.0);
     let max_per_source: usize = std::env::var("ANCHOR_RETRIEVAL_MAX_PER_SOURCE").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+    let vector_hits = query_embedding.as_ref().and_then(|emb| {
+        let hits = retrieval::vector_search(conn, emb, project_ids.as_ref(), top_k, qa_exclude_disputed);
+        if hits.is_empty() { None } else { Some(hits) }
+    });
     let keyword_hits = retrieval::keyword_search(conn, query, project_ids.as_ref(), top_k, qa_exclude_disputed);
     let evidence = if keyword_hits.is_empty() {
-        retrieval::keyword_fallback(conn, project_ids.as_ref(), top_k, qa_exclude_disputed)
+        if vector_hits.is_none() {
+            retrieval::keyword_fallback(conn, project_ids.as_ref(), top_k, qa_exclude_disputed)
+        } else {
+            vec![]
+        }
     } else {
         keyword_hits
     };
+    let keyword_opt = if evidence.is_empty() { None } else { Some(evidence) };
     let mut hits = retrieval::fuse_and_rank(
         conn,
-        None,
-        Some(evidence),
+        vector_hits,
+        keyword_opt,
         keyword_weight,
         halflife,
         max_per_source,
@@ -332,12 +365,76 @@ fn search_sync(conn: &Connection, query: &str, k: usize, project_id: Option<i64>
     hits
 }
 
-async fn generate_answer(settings: &SettingsService, question: &str, context: &str, _history: &[AskTurn]) -> String {
+fn turn_text(turn: &AskTurn) -> String {
+    format!("{}: {}", turn.role, turn.content)
+}
+
+async fn rewrite_followup(settings: &SettingsService, question: &str, history: &[AskTurn]) -> Option<String> {
+    if history.is_empty() {
+        return None;
+    }
+    // B30: don't rewrite to untrusted cloud — Python returns None when no key and non-local
+    let base = settings.get("answer_base_url", None).unwrap_or_default();
+    let key = settings.get("answer_api_key", None).unwrap_or_default();
+    let is_local = base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1");
+    // if no history or same as question, skip
+    let transcript = history.iter().rev().take(6).rev().map(turn_text).collect::<Vec<_>>().join("\n");
+    if transcript.is_empty() {
+        return None;
+    }
+    // Try LLM rewrite when a model is available (local or keyed cloud)
+    let model = settings.get("answer_model", None).unwrap_or_else(|| "gpt-4o-mini".to_string());
+    if is_local || !key.is_empty() {
+        let url = format!("{}/chat/completions", base.trim_end_matches('/'));
+        // Only attempt LLM if base looks like an API endpoint (contains http)
+        if base.starts_with("http") {
+            let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().ok()?;
+            let mut headers = reqwest::header::HeaderMap::new();
+            if !key.is_empty() {
+                headers.insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", key).parse().ok()?);
+            }
+            let payload = serde_json::json!({
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "You rewrite a user's follow-up question into a standalone question that includes all context from the conversation needed to answer it alone. Respond with ONLY the rewritten question, no preamble."},
+                    {"role": "user", "content": format!("Conversation:\n{}\n\nFollow-up: {}", transcript, question)}
+                ],
+                "temperature": 0.0,
+                "max_tokens": 120
+            });
+            if let Ok(resp) = client.post(&url).headers(headers).json(&payload).send().await {
+                if resp.status().is_success() {
+                    if let Ok(j) = resp.json::<serde_json::Value>().await {
+                        if let Some(content) = j.pointer("/choices/0/message/content").and_then(|v| v.as_str()) {
+                            let trimmed = content.trim().to_string();
+                            if !trimmed.is_empty() {
+                                return Some(trimmed.chars().take(500).collect());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Fallback heuristic: if question looks like a follow-up (pronouns/short), prepend last user content
+    let q_lower = question.to_lowercase();
+    let is_followup = q_lower.split_whitespace().any(|w| matches!(w, "it" | "its" | "this" | "that" | "these" | "those" | "they" | "them" | "their" | "itself"))
+        || q_lower.contains("its ") || q_lower.contains(" for it") || q_lower.len() < 40;
+    if is_followup {
+        if let Some(last_user) = history.iter().rev().find(|t| t.role == "user").map(|t| t.content.clone()).or_else(|| history.last().map(|t| t.content.clone())) {
+            let combined = format!("{} {}", last_user, question);
+            return Some(combined.chars().take(500).collect());
+        }
+    }
+    None
+}
+
+async fn generate_answer(settings: &SettingsService, question: &str, context: &str, history: &[AskTurn]) -> String {
     let base = settings.get("answer_base_url", None).unwrap_or_else(|| "https://api.openai.com/v1".to_string());
     let key = settings.get("answer_api_key", None).unwrap_or_default();
     let is_local = base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1");
     if !is_local && key.is_empty() {
-        return format!("Answer for: {}\n\n[No model key configured. Matching context:]\n\n{}", question, &context[..context.len().min(1500)]);
+        return format!("Answer for: {}\n\n[No model key configured. Matching context:]\n\n{}", question, context.chars().take(1500).collect::<String>());
     }
     // For R2.2, we do not yet call LLM; return context stub (will be wired in R3.4)
     // Try to call LLM if configured (best-effort, like Python fallback)
@@ -345,17 +442,23 @@ async fn generate_answer(settings: &SettingsService, question: &str, context: &s
     let url = format!("{}/chat/completions", base.trim_end_matches('/'));
     let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build() {
         Ok(c) => c,
-        Err(_) => return format!("Answer for: {}\n\n{}", question, &context[..context.len().min(1500)]),
+        Err(_) => return format!("Answer for: {}\n\n{}", question, context.chars().take(1500).collect::<String>()),
     };
     let mut headers = reqwest::header::HeaderMap::new();
     if !key.is_empty() {
         headers.insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", key).parse().unwrap());
     }
+    let user_content = if history.is_empty() {
+        format!("Question: {}\n\nContext:\n{}", question, context)
+    } else {
+        let transcript = history.iter().map(turn_text).collect::<Vec<_>>().join("\n");
+        format!("Conversation so far:\n{}\n\nQuestion: {}\n\nContext:\n{}", transcript, question, context)
+    };
     let payload = serde_json::json!({
         "model": model,
         "messages": [
             {"role": "system", "content": "You are AnchorCore, answer using only context with citations [S1] etc."},
-            {"role": "user", "content": format!("Question: {}\n\nContext:\n{}", question, context)}
+            {"role": "user", "content": user_content}
         ],
         "temperature": 0.2
     });
@@ -366,8 +469,8 @@ async fn generate_answer(settings: &SettingsService, question: &str, context: &s
                     return content.to_string();
                 }
             }
-            format!("Answer for: {}\n\n{}", question, &context[..context.len().min(1500)])
+            format!("Answer for: {}\n\n{}", question, context.chars().take(1500).collect::<String>())
         }
-        _ => format!("Answer for: {}\n\n[Answer model unreachable; showing context]\n\n{}", question, &context[..context.len().min(1500)]),
+        _ => format!("Answer for: {}\n\n[Answer model unreachable; showing context]\n\n{}", question, context.chars().take(1500).collect::<String>()),
     }
 }

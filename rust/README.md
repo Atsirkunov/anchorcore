@@ -1,6 +1,6 @@
 # AnchorCore Rust Port — workspace
 
-> **Status: shipped as of `v1.0.9` `7131cfe` (2026-08-21).** Python `backend/` is now legacy conformance + hosted Postgres; Rust `rust/` is the shipped artifact (single source `rust/Cargo.toml:6` → `backend/app/config.py:11` via `scripts/sync_version.py`). All `backend/tests` `124/3` green vs Rust on `:8123` (`cargo test 44` + `cargo check 0`). See `docs/rust-port.md:1` (evaluation closed) + `rust/BACKLOG.md:1` (all R0–R6 done) + `docs/handover-2026-08-21-retire.md:1`.
+> **Status: shipped as of `v1.0.9` `7131cfe` (2026-08-21).** Python `backend/` is now legacy conformance + hosted Postgres (see R10.7: `hosting/` stays Python); Rust `rust/` is the shipped artifact (single source `rust/Cargo.toml:6` → `backend/app/config.py:11` via `scripts/sync_version.py`). All `backend/tests` `110/17` honest green vs Rust on `:8123` (`cargo test 47` + `cargo check 0` via CI `rust-conformance`). See `docs/rust-port.md:1` (evaluation closed) + `rust/BACKLOG.md:1` (all R0–R6 done, R7–R10.6 done) + `docs/handover-2026-08-21-retire.md:1`.
 
 ## Why a separate folder?
 
@@ -39,10 +39,10 @@ rust/
 source $HOME/.cargo/env
 cargo build -p anchorcore --release  # 9.8M anchorcore + 3.4M anchorcore-mcp, codesign valid
 cargo run -p anchorcore -- --port 8123 --data-dir /tmp/ac-data & curl http://127.0.0.1:8123/health
-cargo test -p anchorcore  # 44 passed (harness + jobs atomic + auth 401)
-cargo check -p anchorcore # 0 warnings (#![allow] for stub Jira/GDrive/Scheduler)
+cargo test -p anchorcore  # 47 passed (harness + jobs atomic + auth 401 + scheduler + R10.4 queue)
+cargo check -p anchorcore # 0 warnings
 scripts/sync_version.py --check # ok 1.0.9 (single source)
-PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=test_mcp.py # 124/3 vs Rust
+PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=test_mcp.py # 110/17 honest vs Rust (127 collect)
 ```
 
 Release is `rust/Cargo.toml:6` single edit → `scripts/sync_version.py` → `cargo test` + `cargo build --release` → `git tag vX.Y.Z` → `git push origin vX.Y.Z` (CI `release.yml` builds `AnchorCore-rust-*`).

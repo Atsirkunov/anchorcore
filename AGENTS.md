@@ -16,9 +16,9 @@ Repo: `git@github.com:Atsirkunov/anchorcore.git`. Backend under `backend/`, UI u
 
 ## How to run / test / release (Rust is shipped as of 1.0.9)
 
-- Dev (Rust): `cargo run -p anchorcore -- --port 8123 --data-dir /tmp/ac-dev` (migrations, watcher, jobs; `cargo test -p anchorcore` 44, `cargo check 0`)
+- Dev (Rust): `cargo run -p anchorcore -- --port 8123 --data-dir /tmp/ac-dev` (migrations, watcher, jobs; `cargo test -p anchorcore` 47, `cargo check 0`)
 - Dev (Python legacy): `./start.sh` (venv, migrations, Ollama, backend :8000) — now conformance only
-- Backend tests: `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=test_mcp.py` or `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests -q`. **The "124/3 vs Rust" claim is stale — a fresh run with matched env measures 115/8/3** (see `docs/review-2026-08-21-full.md:1`; fixes tracked in `rust/BACKLOG.md` Phase 7–10). `cargo test -p anchorcore` 44 + `cargo check 0` are current and green.
+- Backend tests: `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=test_mcp.py` or `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests -q`. **Honest conformance after R9.2: 127 tests collect, vs Rust 110+ passed / 17 skipped / 0 failed (Python-internal tests `skipIf ANCHOR_TEST_RUST_URL`, see `rust/BACKLOG.md` R9.2) via CI `rust-conformance` job; old "124/3" was inflated** (see `docs/review-2026-08-21-full.md:1`). `cargo test -p anchorcore` 47 + `cargo check 0` are current and green.
 - Frontend: `cd frontend && npm run build` (tsc + vite; must pass before a UI change is done)
 - Release (single source): edit `rust/Cargo.toml:6` `workspace.package.version` → `python scripts/sync_version.py` (writes `backend/app/config.py:11`) → `cargo test` + `cargo build --release` (embeds `frontend/dist` via `src/frontend.rs:1`, 9.8M+3.4M, `codesign valid`) → `git tag vX.Y.Z` → `git push origin vX.Y.Z` (CI builds `AnchorCore-rust-*`)
 - **The packaged app embeds `frontend/dist` at build time** — after any UI change you must `cargo build --release` (or `npm run build` + `cargo build`), or the exe ships stale UI.

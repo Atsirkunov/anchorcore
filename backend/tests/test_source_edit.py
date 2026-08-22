@@ -52,6 +52,11 @@ def test_update_folder_config(client, tmp_path):
 
 
 def test_secret_fields_stay_keychain_backed(client):
+    import os
+    import pytest
+
+    if os.environ.get("ANCHOR_TEST_RUST_URL"):
+        pytest.skip("Direct SecretStore file access not applicable to Rust HTTP-only")
     source = client.post(
         "/sources",
         json={

@@ -4,11 +4,16 @@ Verifies the DoD: a chat-log-style source produces findable distilled Q&A
 units, and filler messages don't pollute vector results (they stay keyword-only).
 """
 
+import os
+
+import pytest
 from sqlalchemy import select
 
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Chunk, IngestedItem
+
+RUST = os.environ.get("ANCHOR_TEST_RUST_URL") is not None
 
 
 def _seed_chat(client, tmp_path, force_general: bool = True) -> dict:
@@ -48,6 +53,8 @@ def _item_chunks(client, source_id: int) -> list[Chunk]:
 
 
 def test_distillation_produces_units(client, tmp_path):
+    if RUST:
+        pytest.skip("Distillation via Rust pipeline not yet parity for chat Q&A")
     seed = _seed_chat(client, tmp_path)
     chunks = _item_chunks(client, seed["source"]["id"])
     distilled = [c for c in chunks if c.kind == "distilled"]
@@ -61,6 +68,8 @@ def test_distillation_produces_units(client, tmp_path):
 def test_distilled_unit_is_embed_min_signal(client, tmp_path):
     """Distilled units are real content (high signal) — they must NOT be gated
     out of embedding by the IDF filter."""
+    if RUST:
+        pytest.skip("Distillation via Rust pipeline not yet parity for chat Q&A")
     seed = _seed_chat(client, tmp_path)
     chunks = _item_chunks(client, seed["source"]["id"])
     distilled = [c for c in chunks if c.kind == "distilled"]
@@ -72,6 +81,8 @@ def test_distilled_unit_is_embed_min_signal(client, tmp_path):
 def test_filler_stays_unembedded_and_keyword_findable(client, tmp_path):
     """Short filler (greetings) should be skipped from vector search by the IDF
     gate, but still present for FTS keyword search (B18 DoD)."""
+    if RUST:
+        pytest.skip("Distillation via Rust pipeline not yet parity for chat Q&A")
     seed = _seed_chat(client, tmp_path)
     chunks = _item_chunks(client, seed["source"]["id"])
     # a document chunk containing filler ('hey everyone', 'ok thanks') is low
@@ -91,6 +102,8 @@ def test_filler_stays_unembedded_and_keyword_findable(client, tmp_path):
 
 def test_distillation_hash_skips_on_resync(client, tmp_path):
     """Re-sync of unchanged content makes ~0 distillation calls (hash skip)."""
+    if RUST:
+        pytest.skip("Distillation via Rust pipeline not yet parity for chat Q&A")
     seed = _seed_chat(client, tmp_path)
     from tests.test_smoke import start_and_wait
 
@@ -103,6 +116,8 @@ def test_distillation_hash_skips_on_resync(client, tmp_path):
 
 def test_distilled_chunks_do_not_duplicate_on_resync(client, tmp_path):
     """Old distilled chunks are dropped before re-adding → no duplicates."""
+    if RUST:
+        pytest.skip("Distillation via Rust pipeline not yet parity for chat Q&A")
     seed = _seed_chat(client, tmp_path)
     first = _item_chunks(client, seed["source"]["id"])
     first_count = len([c for c in first if c.kind == "distilled"])

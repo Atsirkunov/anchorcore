@@ -3,13 +3,15 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use crate::{db, jobs::JobManager, settings::SettingsService};
+use crate::{db, embedder::Embedder, jobs::JobManager, settings::SettingsService};
 
 #[derive(Clone)]
 pub struct AppState {
     pub data_dir: String,
     pub settings: Arc<SettingsService>,
     pub jobs: Arc<JobManager>,
+    pub csrf_token: String,
+    pub embedder: Arc<Embedder>,
 }
 
 pub async fn health(State(state): State<AppState>) -> Json<Value> {
@@ -29,7 +31,7 @@ pub async fn health(State(state): State<AppState>) -> Json<Value> {
 
     Json(json!({
         "status": "ok",
-        "data_dir": state.data_dir,
+        "data_dir": "redacted",
         "components": {
             "ollama": ollama,
             "answer_key": answer_key,

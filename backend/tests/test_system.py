@@ -45,7 +45,14 @@ def test_version_is_single_source_of_truth():
     import app.main
     from app.routers import system
 
-    assert app.config.__version__ == "1.0.8"
+    # R9.2: read expected version from rust/Cargo.toml single source (was hardcoded 1.0.8)
+    cargo_toml = Path(__file__).resolve().parents[2] / "rust" / "Cargo.toml"
+    expected = "1.0.9"
+    if cargo_toml.exists():
+        m = re.search(r'version\s*=\s*"([^"]+)"', cargo_toml.read_text(encoding="utf-8"))
+        if m:
+            expected = m.group(1)
+    assert app.config.__version__ == expected
     # FastAPI's version= and /system/status's version both come from config
     assert app.main.app.version == app.config.__version__
     assert system.__version__ is app.config.__version__

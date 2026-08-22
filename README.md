@@ -38,7 +38,7 @@ executables automatically (see `docs/releasing.md`).
 on first run, applies Alembic migrations, starts Ollama, boots the backend at
 http://localhost:8000. Add `-Dev` for the Vite dev server at :5173.
 
-**Hosted (skeleton):** `docker compose -f hosting/docker-compose.yml up --build` — same app against Postgres (`pgvector/pg16`, see `hosting/README.md`).
+**Hosted (skeleton):** `docker compose -f hosting/docker-compose.yml up --build` — Python FastAPI image against Postgres (`pgvector/pg16`, see `hosting/README.md`). **R10.7 decision:** `hosting/` stays Python (Postgres/pgvector) — Rust is the local/packaged artifact (SQLite + `frontend/dist` embedded, `9.8M`, `codesign`); Rust Postgres is deferred (would need `deadpool` + `pgvector` migration, or SQLite-file volume on hosted).
 
 **Prerequisites:** Python 3.12+, Node 20+, [Ollama](https://ollama.com):
 

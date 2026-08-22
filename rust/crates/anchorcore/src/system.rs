@@ -65,8 +65,8 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
         let version = env!("CARGO_PKG_VERSION");
         serde_json::json!({
             "version": version,
-            "data_dir": data_dir,
-            "database": format!("sqlite:///{}", db_path.display()),
+            "data_dir": "redacted",
+            "database": "redacted",
             "ollama": {
                 "reachable": ollama_reachable,
                 "base_url": ollama_base.clone(),
@@ -339,8 +339,19 @@ pub async fn log_download_handler(
         return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail": "Log file not found"}))));
     }
     let data = tokio::fs::read(&path).await.map_err(|_| (StatusCode::NOT_FOUND, Json(serde_json::json!({"detail": "Log file not found"}))))?;
+    // R10.8: bound log download — cap at 512KB to avoid serving huge files
+    const MAX_LOG_BYTES: usize = 512 * 1024;
+    let (data, truncated) = if data.len() > MAX_LOG_BYTES {
+        (data[..MAX_LOG_BYTES].to_vec(), true)
+    } else {
+        (data, false)
+    };
     let mut resp = axum::response::Response::new(axum::body::Body::from(data));
     resp.headers_mut().insert("content-type", "text/plain".parse().unwrap());
     resp.headers_mut().insert("content-disposition", format!("attachment; filename=\"{}\"", filename).parse().unwrap());
+    if truncated {
+        resp.headers_mut().insert("x-truncated", "true".parse().unwrap());
+        resp.headers_mut().insert("x-truncated-limit", MAX_LOG_BYTES.to_string().parse().unwrap());
+    }
     Ok(resp)
 }
