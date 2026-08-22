@@ -67,6 +67,15 @@ fn resolve_data_dir(cli: &str) -> PathBuf {
             }
         }
     }
+    // Double-click app (no env, no --data-dir): use ~/.anchorcore like Python's run_app.py
+    // (was `data` — wrong when launched via Finder, CWD is /). Fallback to `data` for dev checkout.
+    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+        let p = PathBuf::from(home).join(".anchorcore");
+        // use home dir if it exists or can be created, else fallback to ./data for dev
+        if p.exists() || std::fs::create_dir_all(&p).is_ok() {
+            return p;
+        }
+    }
     PathBuf::from("data")
 }
 
@@ -190,6 +199,16 @@ async fn main() {
 
     let addr = format!("127.0.0.1:{}", args.port);
     tracing::info!("listening on {}", addr);
+    // Double-click app: open browser unless ANCHOR_OPEN_BROWSER=0 (CI/tests set 0)
+    let open_browser = std::env::var("ANCHOR_OPEN_BROWSER").as_deref() != Ok("0");
+    if open_browser {
+        let url = format!("http://{}", addr);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            let _ = open::that(&url);
+            tracing::info!("opened browser at {}", url);
+        });
+    }
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
