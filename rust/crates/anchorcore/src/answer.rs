@@ -382,16 +382,19 @@ async fn rewrite_followup(settings: &SettingsService, question: &str, history: &
     if transcript.is_empty() {
         return None;
     }
-    // Try LLM rewrite when a model is available (local or keyed cloud)
+    // R11.4: Python returns None without a model — don't pollute new-topic short questions
+    if !is_local && key.is_empty() {
+        return None;
+    }
     let model = settings.get("answer_model", None).unwrap_or_else(|| "gpt-4o-mini".to_string());
-    if is_local || !key.is_empty() {
-        let url = format!("{}/chat/completions", base.trim_end_matches('/'));
-        // Only attempt LLM if base looks like an API endpoint (contains http)
-        if base.starts_with("http") {
-            let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().ok()?;
+    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
+    if base.starts_with("http") {
+        if let Ok(client) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build() {
             let mut headers = reqwest::header::HeaderMap::new();
             if !key.is_empty() {
-                headers.insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", key).parse().ok()?);
+                if let Ok(h) = format!("Bearer {}", key).parse() {
+                    headers.insert(reqwest::header::AUTHORIZATION, h);
+                }
             }
             let payload = serde_json::json!({
                 "model": model,
@@ -416,10 +419,10 @@ async fn rewrite_followup(settings: &SettingsService, question: &str, history: &
             }
         }
     }
-    // Fallback heuristic: if question looks like a follow-up (pronouns/short), prepend last user content
+    // Fallback heuristic — only on pronoun/coref, not blanket len<40 (R11.4)
     let q_lower = question.to_lowercase();
     let is_followup = q_lower.split_whitespace().any(|w| matches!(w, "it" | "its" | "this" | "that" | "these" | "those" | "they" | "them" | "their" | "itself"))
-        || q_lower.contains("its ") || q_lower.contains(" for it") || q_lower.len() < 40;
+        || q_lower.contains("its ") || q_lower.contains(" for it");
     if is_followup {
         if let Some(last_user) = history.iter().rev().find(|t| t.role == "user").map(|t| t.content.clone()).or_else(|| history.last().map(|t| t.content.clone())) {
             let combined = format!("{} {}", last_user, question);
@@ -451,7 +454,9 @@ async fn generate_answer(settings: &SettingsService, question: &str, context: &s
     let user_content = if history.is_empty() {
         format!("Question: {}\n\nContext:\n{}", question, context)
     } else {
-        let transcript = history.iter().map(turn_text).collect::<Vec<_>>().join("\n");
+        // R11.7: Python parity — only last 6 turns (like backend/app/answer_engine.py:_generate history[-6:])
+        let start = history.len().saturating_sub(6);
+        let transcript = history[start..].iter().map(turn_text).collect::<Vec<_>>().join("\n");
         format!("Conversation so far:\n{}\n\nQuestion: {}\n\nContext:\n{}", transcript, question, context)
     };
     let payload = serde_json::json!({
