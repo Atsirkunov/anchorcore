@@ -36,7 +36,7 @@ dependencies = [
 
 [[package]]
 name = "anchorcore"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "axum",
  "base64",

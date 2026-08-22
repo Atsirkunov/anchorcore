@@ -166,14 +166,14 @@ reqwest (OnceLock Client) ───┤  AppState{data_dir, settings:Arc<RwLock>,
 | # | Area | Location | State after 7131cfe | Still to do (if time) |
 |---|---|---|---|---|
 | 4.1 | DB pool | `db.rs:22` | Fast path `OnceLock` + `open_db` (22 scans/s → 0) done, but not `deadpool_sqlite`/`r2d2` pool with `PRAGMA synchronous=NORMAL` + `journal_size_limit` | Add `deadpool` if `database is locked` still flakes under 2× concurrent sync + scheduler. |
-| 4.2 | Settings cache | `settings.rs:4` | `RwLock` + `open_db` done, but `ANCR_DATA_DIR` typo + `state.data_dir` vs env divergence still: `cached_get` reads `ANCHOR_DATA_DIR` env not `state.data_dir`; cache never invalidates other keys | Inject `DbPool`/`AppState.data_dir` into `SettingsService`, `RwLock<HashMap>` + `Instant`, open via pool. |
+| 4.2 | Settings cache | `settings.rs:4` | `RwLock` + `open_db` done, but `state.data_dir` vs env divergence still: `cached_get` reads `ANCHOR_DATA_DIR` env not `state.data_dir`; cache never invalidates other keys | Inject `DbPool`/`AppState.data_dir` into `SettingsService`, `RwLock<HashMap>` + `Instant`, open via pool. |
 | 4.4 | DocType | `pipeline.rs:203` | Now `detect_document_type` real via `Box::pin`, but `DISTILL_DOC_TYPES` only `general` may still mis-fire for meeting logs if `doc_type` wrong | Add `ANCHOR_DISTILL_FORCE=1` for tests, verify B18 `distilled` chunks for meeting. |
 | 4.5 | SQL param remaining | `retrieval.rs:197` etc. | Main `IN (?,?)`/`LIKE ?` param done, but still `format!(" ... IN ({})", placeholders)` with `format!` (safe placeholders, but `rg "format!.*IN \("` still 8 hits: `retrieval.rs` 6 + `answer.rs` 1 + `entities/projects/pii` now param but still `format!`). Also `retrieval.rs:81` `project_ids` loop still string. | Switch to `push_str("(")+placeholders+")"` to make `rg 0`, or keep as is (safe). |
 | 4.6/4.7 | RRF/batch | `retrieval.rs:54,629` | Fixed: `Hit::key` tuple + batch `created_at`. Remaining `expand_context` still mutates `Hit.content` (`retrieval.rs:652` `h.content = format!(...)` unbounded) — Python stores `hit["expanded"]` separate. | Store `Hit.expanded: Vec<String>` and render at answer layer. |
 | 4.8 | Status drift | `system.rs:18` | Fixed `status_handler` real probe (was heuristic always false). `onboarding_handler:227` still heuristic `localhost:1` (not real probe). `retrieval avg_latency_ms` still stub `0.0` + `vec0_calls` 0. | Share `health::is_ollama_reachable` (inject `SettingsService`), add `throughput::RetrievalTracker` port (calls/vec0_calls/avg_ms). |
 | 4.9 | Panic on schema drift | `sources.rs:123`, `entities.rs:91`, `projects.rs:50`, `system.rs:106` | Partial: `IN (?,?)` param fixes injection, but `conn.prepare(&sql).unwrap()` + `query_map(...).unwrap()` still panics tokio task → 500 with no log. | `match conn.prepare(&sql) { Ok(s)=>s, Err(e)=> { tracing::error!(...); return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(...))) } }`. |
 | 4.10 | Jobs race | `jobs.rs:97` | Fixed `BEGIN IMMEDIATE` + test. Remaining `pending:Mutex<VecDeque>` never used (in-memory queue complements DB). | Remove or use `deadpool` transaction `UPDATE ... RETURNING`. |
-| 4.11 | MCP churn | `bin/mcp.rs:22` | Fixed `OnceLock<Client>` + redacted `backend unreachable (e)`. Remaining `ANCR_MCP_TOKEN` leaked? Now masked, but `http_call` still builds `Authorization: Bearer ""` when empty. | Skip header when empty (already skips), `OnceLock<Client>` done. |
+| 4.11 | MCP churn | `bin/mcp.rs:22` | Fixed `OnceLock<Client>` + redacted `backend unreachable (e)`. Remaining `ANCHOR_MCP_TOKEN` header when empty? Now masked, but `http_call` still builds `Authorization: Bearer ""` when empty. | Skip header when empty (already skips), `OnceLock<Client>` done. |
 | 5.P2 | Answer gate hack | `answer.rs:112` | Removed `%trusted%` hack (was `LIKE '%trusted%'`), now pure `is_answer_trusted`. Tests relying on `CLOUD_TRUST` env at Rust start may need `cargo run` with `ANCHOR_CLOUD_TRUST=1` before suite, not DB hack. | Ensure `conformance.sh` exports `ANCHOR_CLOUD_TRUST=1` when starting Rust for `test_cloud_answer_trust_flag_allows_sensitive`. |
 | 5.P2 | Who-knows stopwords | `retrieval.rs:38,482` | Still duplicate `STOPWORDS` set; `is_who_knows:25` now `OnceLock` (fixed), but `who_knows_search` still builds `HashSet` per call. | Hoist `const STOPWORDS: &[&str]` + `OnceLock<Regex>` (already for `RE`). |
 | 5.P2 | connect_timeout split | `settings.rs:300` `ANCHOR_HTTP_CONNECT_TIMEOUT=0.2` vs `answer.rs:352` hardcode `10s` | Unify via `settings.get_float("http_connect_timeout",0.2)`. |
@@ -206,7 +206,7 @@ cargo check -p anchorcore # 0 warnings (allow for stubs)
 cargo test -p anchorcore  # 44 passed (harness + jobs atomic + auth 401)
 
 # Rust binary on :8123 with fresh DB (like conftest)
-ANCR_DATA_DIR=/tmp/ac-cutover ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 \
+ANCHOR_DATA_DIR=/tmp/ac-cutover ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 \
   cargo run -p anchorcore -- --port 8123 --data-dir /tmp/ac-cutover &
 curl http://127.0.0.1:8123/health | jq
 curl http://127.0.0.1:8123/system/status | jq .retrieval
@@ -243,7 +243,7 @@ PYTHONPATH=backend ANCHOR_DATABASE_URL=sqlite:////tmp/ac-full-test.db ANCHOR_DAT
 - `include_dir!` SPA fallback last (`frontend.rs:27`), `CorsLayer::permissive` for dev.
 - `cargo 1.97.1` at `$HOME/.cargo/env`, `rust/Cargo.toml:6` `1.0.9`.
 - `watcher.poll` 3s debounce (was 300ms) — `FolderWatcher` `mpsc::Receiver` !Sync, keep `#[cfg(not(test))]` + `Box::pin` to avoid 8 MB overflow; `display_str` not `display`.
-- `ANCHR_DATABASE_URL` typo vs `ANCHOR_DATABASE_URL` — `db.rs:5` handles `sqlite:////tmp/...` vs `data/anchorcore.db`, `watcher` uses `health.rs` via `resolve_db_path`.
+- `ANCHOR_DATABASE_URL` typo vs `ANCHOR_DATABASE_URL` — `db.rs:5` handles `sqlite:////tmp/...` vs `data/anchorcore.db`, `watcher` uses `health.rs` via `resolve_db_path` (historical typo fixed, now both use `ANCHOR_`).
 - `cargo 1.97.1` + `rust/Cargo.toml:6` `1.0.9` single source via `scripts/sync_version.py`.
 
 ---

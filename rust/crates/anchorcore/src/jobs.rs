@@ -16,6 +16,8 @@ use crate::health::AppState;
 
 pub const MAX_CONCURRENT: usize = 2;
 
+static PROMOTE_LOCK: Mutex<()> = Mutex::new(());
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {
@@ -94,8 +96,9 @@ impl JobManager {
     }
 
     /// Try to promote pending -> running up to MAX_CONCURRENT — atomic (P1 4.10).
-    /// Uses `BEGIN IMMEDIATE` so concurrent `create_job` cannot double-promote same pending.
+    /// Uses `BEGIN IMMEDIATE` + global `PROMOTE_LOCK` so concurrent `create_job` cannot double-promote same pending.
     pub fn maybe_promote(&self, conn: &Connection) {
+        let _guard = PROMOTE_LOCK.lock().unwrap();
         let _ = conn.execute("BEGIN IMMEDIATE", []);
         let running: i64 = conn
             .query_row("SELECT COUNT(*) FROM jobs WHERE status = 'running'", [], |r| r.get(0))
@@ -122,7 +125,7 @@ impl JobManager {
             return;
         }
         for id in &pending {
-            let _ = conn.execute("UPDATE jobs SET status = 'running' WHERE id = ?1 AND status='pending'", [*id]);
+            let _ = conn.execute("UPDATE jobs SET status = 'running', started_at = datetime('now') WHERE id = ?1 AND status='pending'", [*id]);
         }
         let _ = conn.execute("COMMIT", []);
         for id in pending {

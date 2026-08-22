@@ -1,6 +1,7 @@
-# Hosting skeleton (v1.5)
+# Hosting skeleton (v1.5 + R10.7)
 
 > Same FastAPI app, env-driven. Local = SQLite + keychain. Hosted = Postgres + env secrets. No fork.
+> **R10.7 parity decision (2026-08-22):** `hosting/` stays **Python** (FastAPI + `psycopg` + `pgvector`); Rust (`rust/target/release/anchorcore`, `9.8M`) is the **local/packaged** artifact (SQLite `WAL`, `frontend/dist` embedded, `cargo test 47`). Rust Postgres (deadpool + `sqlx`/`pgvector`) is deferred — would duplicate Alembic history + `vec0` triggers; hosted can alternatively run Rust binary against a SQLite file volume (`ANCHORED_DATABASE_URL=sqlite:////data/anchorcore.db`) until Postgres parity is prioritized.
 
 ## What this is
 A minimal skeleton so you can run the **hosted** shape tomorrow without rewriting the app:

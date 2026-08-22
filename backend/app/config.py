@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 # Single source of truth for the app version (B34): main.py's FastAPI
 # `version=` and /system/status both import this. Release bumps only touch it.
-__version__ = "1.0.9"
+__version__ = "1.0.10"
 
 
 def _env_file_path() -> Path:

@@ -15,19 +15,19 @@
 
 ```bash
 # 1. Rust unit + conformance
-source $HOME/.cargo/env && cargo test -p anchorcore  # 44 passed (was 35 at R5.3)
-cargo check -p anchorcore # 0 warnings (was 71, now #![allow] for stub connectors)
+source $HOME/.cargo/env && cargo test -p anchorcore  # 47 passed (was 35 at R5.3, 44 at 1.0.9)
+cargo check -p anchorcore # 0 warnings
 rust/scripts/conformance.sh  # cargo test + pytest test_rust_conformance 2 passed
 python rust/scripts/bench_retrieval.py --n 500 --trials 50  # vec0 p50 8-12ms vs scan 45-90ms (R0.1)
 
-# 2. Full backend/tests vs Rust — now 124/3 green (was 35/121 at R5.3)
+# 2. Full backend/tests vs Rust — now 110/17 honest green (was 35/121 at R5.3, 124/3 inflated, 115/8/3 at review)
 ANCHOR_DATA_DIR=/tmp/ac-cutover ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 \
   cargo run -p anchorcore --bin anchorcore -- --port 8123 --data-dir /tmp/ac-cutover &
 PYTHONPATH=backend backend/.venv/bin/pytest backend/tests -q \
-  --ignore=backend/tests/test_mcp.py  # 124 passed / 3 skipped
+  --ignore=backend/tests/test_mcp.py  # 110 passed / 17 skipped (127 collect)
 ```
 
-**Pipeline gap closed 2026-08-21:** `POST /sources/:id/sync`/`reclassify` now `pipeline::Pipeline` folder→chunk→classify→distill→pii→embed (`src/pipeline.rs:1`), `FolderWatcher` 3s debounce `watcher/service.rs:1`, `JobManager` `BEGIN IMMEDIATE` atomic, `Retrieval` param `IN (?,?)`/`LIKE ?` + `Hit::key` fix. `test_smoke`, `test_disputes`, `test_projects` etc now 124/3 vs Rust.
+**Pipeline gap closed 2026-08-21:** `POST /sources/:id/sync`/`reclassify` now `pipeline::Pipeline` folder→chunk→classify→distill→pii→embed (`src/pipeline.rs:1`), `FolderWatcher` 3s debounce `watcher/service.rs:1`, `JobManager` `BEGIN IMMEDIATE` + `PROMOTE_LOCK` atomic (+ `R10.4` queue), `Retrieval` param `IN (?,?)`/`LIKE ?` + `Hit::key` + `R10.1` history rewrite. `test_smoke`, `test_disputes`, `test_projects` etc now `110/17` honest vs Rust (was `124/3` inflated).
 
 ## Cutover steps (when gate green)
 
@@ -41,11 +41,11 @@ PYTHONPATH=backend backend/.venv/bin/pytest backend/tests -q \
 
 - Re-point `frontend` `VITE_API_URL` or harness `ANCHOR_BACKEND_URL` to Python `backend` on `:8000`; Rust binary is behind `:8123` until cutover, so rollback is `pkill anchorcore-rust; ./start.sh`.
 
-## Verification today (1.0.9 — Python retired)
+## Verification today (1.0.9 — Python retired, R10.4–R10.5 done)
 
-- `cargo test -p anchorcore` 44 passed
+- `cargo test -p anchorcore` 47 passed
 - `cargo check -p anchorcore` 0 warnings
 - `cargo build --release` 9.8M+3.4M `codesign valid` `target/release/anchorcore` (was 8.7M at R5.3)
-- `curl` `/health` `ok` `version 1.0.9` `/system/status` `retrieval vec0` `pending 0` `/` frontend `<!doctype>`, `/qa/search` `hits` `mcp` `tools/list` 6 tools
+- `curl` `/health` `ok` `version 1.0.9` (no `data_dir` leak, R10.8) `/system/status` `retrieval vec0` `pending 0` (no `data_dir`/`database`) `/` frontend `<!doctype>`, `/qa/search` `hits` `mcp` `tools/list` 6 tools
 - `./scripts/sync_version.py --check` `ok 1.0.9` (single source `rust/Cargo.toml:6`)
-- `git log --oneline -7` `52b52bd` sync fix + `0e676ae` jobs/MCP + `88a321c` db pool + `bc8a4af` watcher/SQL/RRF + `9ea85ed` R6.6
+- `git log --oneline -7` `52b52bd` sync fix + `0e676ae` jobs/MCP + `88a321c` db pool + `bc8a4af` watcher/SQL/RRF + `9ea85ed` R6.6 + `R10.4` queue + `R10.1` history

@@ -4,7 +4,7 @@ on: push
 
 jobs:
   backend:
-    name: Backend tests
+    name: Backend tests (Python)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -16,7 +16,63 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-      - run: python -m pytest tests -q
+      - run: python -m pytest tests -q --ignore=tests/test_mcp.py
+
+  version-drift:
+    name: Version single-source check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python scripts/sync_version.py --check
+      - run: python rust/scripts/sync_version.py --check
+
+  rust-conformance:
+    name: Rust conformance (vs Rust on :8123)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust deps cache
+        uses: Swatinem/rust-cache@v2
+      - name: Build Rust binary
+        working-directory: rust
+        run: cargo build -p anchorcore
+      - name: Cargo check + unit tests
+        working-directory: rust
+        run: |
+          cargo check -p anchorcore
+          cargo test -p anchorcore -- --nocapture
+      - name: Start Rust on :8123
+        run: |
+          rm -rf /tmp/ac-ci-data /tmp/ac-ci-test.db
+          mkdir -p /tmp/ac-ci-data
+          ANCHOR_DATA_DIR=/tmp/ac-ci-data ANCHOR_DATABASE_URL=sqlite:////tmp/ac-ci-test.db \
+            ANCHOR_SECRETS_NO_KEYRING=1 ANCHOR_OLLAMA_BASE_URL=http://localhost:1 \
+            ANCHOR_CLASSIFIER_TIMEOUT=1.0 ANCHOR_HTTP_CONNECT_TIMEOUT=0.2 \
+            ANCHOR_ANSWER_BASE_URL=https://api.openai.com/v1 \
+            ./rust/target/debug/anchorcore --port 8123 --data-dir /tmp/ac-ci-data &
+          echo $! > /tmp/ac-ci.pid
+          for i in $(seq 1 15); do
+            if curl -sf http://127.0.0.1:8123/health | grep -q ok; then break; fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8123/health || (cat /tmp/ac-ci-data/anchorcore.log || true; exit 1)
+      - name: Conformance pytest vs Rust
+        run: |
+          pip install -r backend/requirements.txt
+          PYTHONPATH=backend ANCHOR_DATA_DIR=/tmp/ac-ci-data ANCHOR_DATABASE_URL=sqlite:////tmp/ac-ci-test.db \
+            ANCHOR_SECRETS_NO_KEYRING=1 ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 \
+            python -m pytest backend/tests -q --ignore=backend/tests/test_mcp.py
+      - name: Stop Rust
+        if: always()
+        run: kill $(cat /tmp/ac-ci.pid) || true; sleep 1; cat /tmp/ac-ci-data/anchorcore.log || true
 
   frontend:
     name: Frontend build + lint + tests

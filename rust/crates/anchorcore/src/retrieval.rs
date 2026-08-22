@@ -29,10 +29,10 @@ pub fn is_who_knows(query: &str) -> bool {
     re.is_match(query)
 }
 
-/// Mirrors `answer_engine.py:71` _fts_match_query
+/// Mirrors `answer_engine.py:71` _fts_match_query — R8.2: Unicode-aware (was [a-z0-9_])
 pub fn fts_match_query(question: &str) -> Option<String> {
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"[a-z0-9_§\-]+").unwrap());
+    let re = RE.get_or_init(|| Regex::new(r"[\p{L}\p{N}_§\-]+").unwrap());
     let stopwords: HashSet<&str> = [
         "a", "an", "the", "and", "or", "but", "of", "in", "on", "at", "to", "for", "with",
         "about", "is", "are", "was", "were", "be", "been", "being", "am", "do", "does", "did",
@@ -488,7 +488,7 @@ pub fn who_knows_search(
     qa_exclude_disputed: bool,
 ) -> Vec<Hit> {
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"[a-z0-9_]+").unwrap());
+    let re = RE.get_or_init(|| Regex::new(r"[\p{L}\p{N}_]+").unwrap());
     let stopwords: HashSet<&str> = ["a","an","the","and","or","but","of","in","on","at","to","for","with","about","is","are","was","were","be","been","being","am","do","does","did","have","has","had","will","would","can","could","should","shall","may","might","must","what","which","who","whom","whose","when","where","why","how","this","that","these","those","it","its","not","no","so","if","then","than","too","very","s","t","you","your","we","our","they","their","i","me","my"].into();
     let terms: Vec<String> = re.find_iter(&query.to_lowercase()).map(|m| m.as_str().to_string()).filter(|t| t.len()>=3 && !stopwords.contains(t.as_str())).collect();
     if terms.is_empty() { return vec![]; }
@@ -622,12 +622,13 @@ pub fn fuse_and_rank(
     top_k: usize,
     qa_exclude_disputed: bool,
 ) -> Vec<Hit> {
+    // R8.1: preserve single-list scores (was 1/61 constant, discarding BM25/cosine)
     let mut fused = if vector_hits.is_none() && keyword_hits.is_none() {
         vec![]
     } else if vector_hits.is_none() {
-        keyword_hits.unwrap().into_iter().map(|mut h| { h.score = 1.0/(RRF_K+1.0); h }).collect()
+        keyword_hits.unwrap()
     } else if keyword_hits.is_none() {
-        vector_hits.unwrap().into_iter().map(|mut h| { h.score = 1.0/(RRF_K+1.0); h }).collect()
+        vector_hits.unwrap()
     } else {
         rrf_fuse_multi(vec![vector_hits.unwrap(), keyword_hits.unwrap()], vec![1.0, keyword_weight])
     };
