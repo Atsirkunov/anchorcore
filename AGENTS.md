@@ -101,12 +101,12 @@ Key rules:
 6. Run `npm run build` for UI changes. Sync docs in the same commit (product-plan `— DONE` marker).
 7. Bump version + tag only when releasing.
 
-## Rust port — shipped as of `v1.0.9` `7131cfe` (Python retired)
+## Rust port — shipped as of `v1.0.10` `c37202e` (Python retired, `R11.1` wired)
 
-* Now **shipped artifact**: `rust/` workspace is source of truth (`rust/Cargo.toml:6` `1.0.9` single source via `scripts/sync_version.py`), same API + same SQLite file as Python. Contract-first incremental is done; `backend/` is legacy conformance + hosted Postgres only.
-* `cargo run -p anchorcore -- --port 8123` on `:8123` vs `PYTHONPATH=backend pytest` conformance (see caveat above — measured **115/8/3**, not 124/3), `cargo test 44` + `cargo check 0`. Watcher `watcher/service.rs:12` 3s debounce, `db.rs:22` `open_db` fast path, `jobs.rs:97` `BEGIN IMMEDIATE` atomic, `retrieval.rs:54` RRF tuple key + batch `created_at`, `auth.rs:139` `require_auth` 401.
-* **Rust is shipped but has release-blocking debt** — security (`CorsLayer::permissive` + no Host/Origin check, GET-all-reads-public auth), keyword-only retrieval (vector search unused), and a non-reproducible "124/3" conformance claim. Do **not** tag a new `v*` until `rust/BACKLOG.md` **Phase 7 (R7.1/R7.2) + 8 + 9** land. Full write-up: `docs/review-2026-08-21-full.md:1`.
-* AI agents: pick one task from `rust/BACKLOG.md` **Phase 7–10** (`R7.1`–`R10.9`) or the `P*` remainder in `docs/port-review-2026-08-21-lead.md:44` (expand_context, logs pagination, deadpool); branch `rust/R7.1` etc.; keep `PRAGMA foreign_keys=ON` + `spawn_blocking` + per-key `secrets.enc.<sha256>` 64 hex.
+* Now **shipped artifact**: `rust/` workspace is source of truth (`rust/Cargo.toml:6` `1.0.10` single source via `scripts/sync_version.py`), same API + same SQLite file as Python. `backend/` is legacy conformance + hosted Postgres (R10.7 `hosting/` stays Python). `cargo test 47` + `cargo check 0` + `110/17` honest vs Rust (`127` collect) via `ci.yml:12` `rust-conformance`.
+* `cargo run -p anchorcore -- --port 8123` on `:8123` vs `PYTHONPATH=backend pytest` conformance (`110/17` honest, was `115/8/3`/`124/3`), `cargo test 47` + `cargo check 0` (R11.3 `RUSTFLAGS="-D warnings"` + `clippy -- -D unwrap_used` with local `allow`), watcher `watcher/service.rs:12` `3s` debounce + `scheduler.rs:30` `reload_sources` `interval.tick → jobs.create_job` + `Pipeline` executor (`R11.1`), `db.rs:22` `open_db` fast path, `jobs.rs:101` `PROMOTE_LOCK` + `pipeline.rs:61` wait-loop, `answer.rs:78` `rewrite_followup` + `generate_answer` `Conversation so far` (`R11.4` only pronoun, `R11.7` `6` cap), `auth.rs:21` `429` `5/60s` per-email (`R11.5` `ANCHOR_TRUSTED_PROXY`).
+* **Post-1.0.10 polish:** `rust/BACKLOG.md:127` Phase 11 `R11.1–R11.10` (P0 `R11.1` wiring + `R11.2` no degraded persist `stable_hash` FNV, P1 `R11.3` lints + `R11.4` heuristic + `R11.5` XFF, P2 `R11.6` score normalize + `R11.8` `OnceLock` cache + `R11.9` real `JobManager`). Full write-up: `docs/handover-2026-08-22-v1.0.10.md:1` + `docs/review-2026-08-21-full.md:1`.
+* AI agents: pick one task from `rust/BACKLOG.md` **Phase 11** (`R11.1`→`R11.2`→`R11.3`→`R11.4/5`→`R11.6-10`); keep `PRAGMA foreign_keys=ON` + `spawn_blocking` + per-key `secrets.enc.<sha256>` 64 hex.
 
 ## Gotchas (learned the hard way — don't reintroduce)
 
@@ -135,7 +135,7 @@ Key rules:
   `b33a0c1` and kept in sync by triggers; `AnswerEngine._vector_search` queries it (`k = :limit`)
   and falls back to the pure-Python cosine scan when the extension/table is unavailable or the
   embedding dims don't match. `/system/status.retrieval` exposes latency + backend (vec0 vs scan).
-- **Single version source:** `__version__` in `app/config.py` (B34). Release = bump it → tag → push.
+- **Single version source:** `rust/Cargo.toml:6` `workspace.package.version` (`1.0.10` via `scripts/sync_version.py` → `backend/app/config.py:11`, see `rust/BACKLOG.md:63` R5.3; `ci.yml:12` `version-drift` checks both `scripts/sync_version.py` + `rust/scripts/sync_version.py` — they are identical, duplicate kept for `cargo run` from `rust/` vs root, drift risk noted `rust/BACKLOG.md:127` R11.10; `rust-conformance` job only gates merges when branch protection is enabled).
 - **Job concurrency is bounded (B34):** `JobManager.MAX_CONCURRENT` (2) pipeline runs at once; excess
   syncs persist as `pending` and queue. `_age_decay` takes a fixed `now` per query.
 - **PII gate (B39):** `sources.label` (internal|public|sensitive|pii) + provider trust — local
