@@ -39,6 +39,12 @@ fn record_sync_error(conn: &Connection, source_id: i64, err: &str) {
 fn record_sync_success(conn: &Connection, source_id: i64) {
     let _ = conn.execute("UPDATE sources SET last_error = NULL, error_count = 0, last_synced_at = datetime('now') WHERE id = ?1", [source_id]);
 }
+fn is_cancelled(data_dir: &str, job_id: i64) -> bool {
+    let db_path = crate::db::resolve_db_path(data_dir);
+    let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+    let status: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "running".to_string());
+    status == "cancelled"
+}
 
 pub struct Pipeline {
     pub classifier: Arc<Classifier>,
@@ -57,29 +63,77 @@ impl Pipeline {
         let settings = self.settings.clone();
         let classifier = self.classifier.clone();
         let embedder = self.embedder.clone();
-        // update job to running with total
+        // R10.4: respect bounded concurrency — do NOT flip pending→running here
+        // JobManager::maybe_promote is the sole owner of pending→running.
+        // If this job is pending, wait for a slot (poll DB until promoted or cancelled).
         {
             let db_path = crate::db::resolve_db_path(&data_dir);
             let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
-            let _ = conn.execute("UPDATE jobs SET status='running', started_at=datetime('now'), total=0, processed=0 WHERE id=?1", [job_id]);
+            let status: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "pending".to_string());
+            if status == "cancelled" {
+                crate::jobs::JobManager::new().maybe_promote(&conn);
+                return;
+            }
+            if status == "pending" {
+                drop(conn);
+                // wait for promotion (MAX_CONCURRENT gate)
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    let db_path2 = crate::db::resolve_db_path(&data_dir);
+                    let conn2 = crate::db::init_db(&db_path2).unwrap_or_else(|_| Connection::open(&db_path2).unwrap());
+                    let cur: String = conn2.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "pending".to_string());
+                    if cur == "cancelled" {
+                        crate::jobs::JobManager::new().maybe_promote(&conn2);
+                        return;
+                    }
+                    if cur == "running" {
+                        break;
+                    }
+                    if cur != "pending" {
+                        // failed/done — should not happen for pending waiter, just exit
+                        return;
+                    }
+                }
+            } else if status != "running" {
+                // unexpected state (failed/done) — nothing to do
+                return;
+            }
+            // job is now running (promoted by JobManager); proceed without extra UPDATE
         }
         let res = Box::pin(self.run_sync_inner(source_id, job_id, force_reclassify, &data_dir, settings.clone(), classifier.clone(), embedder.clone())).await;
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
         match res {
             Ok((items, entities)) => {
-                let result = serde_json::json!({"items": items, "entities": entities}).to_string();
-                let _ = conn.execute("UPDATE jobs SET status='done', finished_at=datetime('now'), result=?1, error=NULL WHERE id=?2", rusqlite::params![result, job_id]);
-                record_sync_success(&conn, source_id);
-                // update job total/processed
-                let _ = conn.execute("UPDATE jobs SET total=?1, processed=?1 WHERE id=?2", rusqlite::params![items, job_id]);
-                // promote next pending
+                // R9.1: do not clobber concurrent cancel
+                let cur: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "done".to_string());
+                if cur == "cancelled" {
+                    crate::jobs::JobManager::new().maybe_promote(&conn);
+                } else {
+                    let result = serde_json::json!({"items": items, "entities": entities}).to_string();
+                    let _ = conn.execute("UPDATE jobs SET status='done', finished_at=datetime('now'), result=?1, error=NULL WHERE id=?2", rusqlite::params![result, job_id]);
+                    record_sync_success(&conn, source_id);
+                    // update job total/processed
+                    let _ = conn.execute("UPDATE jobs SET total=?1, processed=?1 WHERE id=?2", rusqlite::params![items, job_id]);
+                    // promote next pending
+                    crate::jobs::JobManager::new().maybe_promote(&conn);
+                }
+            }
+            Err(e) if e == "job cancelled" => {
+                // R9.1: cancelled must stay cancelled, no error_count bump, promote next
+                let _ = conn.execute("UPDATE jobs SET status='cancelled', finished_at=datetime('now'), error='job cancelled' WHERE id=?1", [job_id]);
                 crate::jobs::JobManager::new().maybe_promote(&conn);
             }
             Err(e) => {
-                let _ = conn.execute("UPDATE jobs SET status='failed', finished_at=datetime('now'), error=?1 WHERE id=?2", rusqlite::params![e, job_id]);
-                record_sync_error(&conn, source_id, &e);
-                crate::jobs::JobManager::new().maybe_promote(&conn);
+                // do not clobber a concurrent cancel that already set cancelled
+                let cur: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "failed".to_string());
+                if cur == "cancelled" {
+                    crate::jobs::JobManager::new().maybe_promote(&conn);
+                } else {
+                    let _ = conn.execute("UPDATE jobs SET status='failed', finished_at=datetime('now'), error=?1 WHERE id=?2", rusqlite::params![e, job_id]);
+                    record_sync_error(&conn, source_id, &e);
+                    crate::jobs::JobManager::new().maybe_promote(&conn);
+                }
             }
         }
     }
@@ -103,7 +157,7 @@ impl Pipeline {
             row
         };
         let config: serde_json::Value = serde_json::from_str(&config_str).unwrap_or(serde_json::json!({}));
-        // fetch docs
+        // fetch docs — R10.2: Jira/GDrive must not silently succeed with 0 items
         let docs: Vec<IngestionDoc> = match connector_type.as_str() {
             "folder" => {
                 let fc = FolderConnector::new(&config).map_err(|e| e.to_string())?;
@@ -111,12 +165,14 @@ impl Pipeline {
                 docs
             }
             "jira" => {
-                // For tests, Jira not used for ingestion; return empty to avoid network
-                // In real, would call JiraConnector::fetch
-                vec![]
+                return Err("Jira ingestion not yet wired in Rust pipeline: configure folder connector or implement JiraConnector::fetch".to_string());
             }
-            "gdrive" => vec![],
-            _ => vec![],
+            "gdrive" => {
+                return Err("GDrive ingestion not yet wired in Rust pipeline: configure folder connector or implement GDriveConnector::fetch".to_string());
+            }
+            _ => {
+                return Err(format!("unknown connector '{}'", connector_type));
+            }
         };
         // update job total
         {
@@ -140,7 +196,7 @@ impl Pipeline {
             let upserted = Box::pin(self.upsert_doc(data_dir, source_id, &doc, force_reclassify)).await.map_err(|e| e.to_string())?;
             if upserted || force_reclassify {
                 created_items += 1;
-                let n = Box::pin(self.classify_and_store(data_dir, source_id, &doc, force_reclassify, settings.clone(), classifier.clone(), embedder.clone())).await.map_err(|e| e.to_string())?;
+                let n = Box::pin(self.classify_and_store(data_dir, source_id, job_id, &doc, force_reclassify, settings.clone(), classifier.clone(), embedder.clone())).await.map_err(|e| e.to_string())?;
                 new_entities += n as i64;
             }
             processed += 1;
@@ -181,6 +237,7 @@ impl Pipeline {
         &self,
         data_dir: &str,
         source_id: i64,
+        job_id: i64,
         doc: &IngestionDoc,
         force_reclassify: bool,
         settings: Arc<SettingsService>,
@@ -246,8 +303,15 @@ impl Pipeline {
                 }
             }).await.map_err(|e| e.to_string())?;
         }
+        // R9.1: abort early if cancelled before windowing
+        if is_cancelled(data_dir, job_id) {
+            return Err("job cancelled".to_string());
+        }
         // classify each window
         for (idx, window) in windows.iter().enumerate() {
+            if is_cancelled(data_dir, job_id) {
+                return Err("job cancelled".to_string());
+            }
             let index = (idx + 1) as i64;
             let h = window_hash(window);
             if !force_reclassify {

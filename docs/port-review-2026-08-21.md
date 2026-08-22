@@ -71,19 +71,19 @@
 
 ```bash
 source $HOME/.cargo/env
-cargo check -p anchorcore  # warnings only (68)
-cargo test -p anchorcore   # 37 passed (35 +2 auth)
-cargo build -p anchorcore  # warnings only
+cargo check -p anchorcore  # 0 warnings
+cargo test -p anchorcore   # 47 passed
+cargo build -p anchorcore  # 0 warnings
 
-# Rust on :8123 vs Python harness
+# Rust on :8123 vs Python harness — ANCHOR_* (not ANCHR_*) must match on both sides
 rm -rf /tmp/ac-full-data /tmp/ac-full-test.db; mkdir -p /tmp/ac-full-data
-ANCHR_SECRETS_NO_KEYRING=1 ANCHOR_OLLAMA_BASE_URL=http://localhost:1 \
-ANCHR_CLASSIFIER_TIMEOUT=1.0 ANCHOR_HTTP_CONNECT_TIMEOUT=0.2 \
-ANCHR_DATA_DIR=/tmp/ac-full-data ANCHR_DATABASE_URL=sqlite:////tmp/ac-full-test.db \
+ANCHOR_SECRETS_NO_KEYRING=1 ANCHOR_OLLAMA_BASE_URL=http://localhost:1 \
+ANCHOR_CLASSIFIER_TIMEOUT=1.0 ANCHOR_HTTP_CONNECT_TIMEOUT=0.2 \
+ANCHOR_DATA_DIR=/tmp/ac-full-data ANCHOR_DATABASE_URL=sqlite:////tmp/ac-full-test.db \
   cargo run -p anchorcore -- --port 8123 --data-dir /tmp/ac-full-data &
 PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 \
   pytest backend/tests -q --ignore=backend/tests/test_mcp.py
-# → 124 passed, 3 skipped (gdrive mock + pipeline probe) in 86s
+# → 114 passed, 10 failed (R9.2 debt: 1.0.8→1.0.9, secrets, cloud trust, distillation, watcher flaky), 3 skipped — honest 115/8/3 was pre-R8.1
 # → before R6.4: 96/30; after R6.1+6.2: 113/13
 cargo build --release && codesign --force --deep --sign - target/release/anchorcore
 curl http://127.0.0.1:8123/health # {"status":"ok"}
@@ -111,7 +111,7 @@ curl http://127.0.0.1:8123/auth/status # {"enabled":false}
 ## 8) Risks & gotchas (from `AGENTS.md:1`)
 
 * `PRAGMA foreign_keys=ON` must stay; `validate-before-write` to avoid `db.flush()` 422 lock; `sqlite single-writer flake` (scheduler auto-sync) → rerun suite.
-* Shared test DB across run — assert deltas, never emptiness; `observer.unschedule` takes watch object; `ANCHR_DATABASE_URL` + `ANCHR_DATA_DIR` must match for Rust vs Python; `ANCHR_SECRETS_NO_KEYRING=1` for file fallback; `ANCHR_HTTP_CONNECT_TIMEOUT=0.2` for suite speed; `watcher.poll` `Receiver` `!Sync` → collect `to_sync` first; `rusqlite::Connection` `!Send` → `spawn_blocking`.
+* Shared test DB across run — assert deltas, never emptiness; `observer.unschedule` takes watch object; `ANCHOR_DATABASE_URL` + `ANCHOR_DATA_DIR` must match for Rust vs Python; `ANCHOR_SECRETS_NO_KEYRING=1` for file fallback; `ANCHOR_HTTP_CONNECT_TIMEOUT=0.2` for suite speed; `watcher.poll` `Receiver` `!Sync` → collect `to_sync` first; `rusqlite::Connection` `!Send` → `spawn_blocking`.
 
 ---
 
@@ -129,7 +129,7 @@ Parallel: `R6.5` (`retrieval.rs` vs `pipeline.rs` already file-disjoint) can run
 ## 10) Review checklist
 
 * [ ] `cargo test` 37 green, `pytest` 124/3 vs Rust, `cargo check` warnings only
-* [ ] `curl` smoke above passes on fresh `ANCHR_DATABASE_URL`
+* [ ] `curl` smoke above passes on fresh `ANCHOR_DATABASE_URL`
 * [ ] `git log --oneline -3` shows `9eaa9a4` R6.1–R6.4, `faae332` R5.3, `8d4e883` R5.2
 * [ ] `rust/BACKLOG.md:65` Phase 6 `R6.4 done`, `R6.5` `todo`
 * [ ] `docs/handover-2026-08-21.md:1` handover for next agent
