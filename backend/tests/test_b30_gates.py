@@ -97,6 +97,10 @@ def test_public_ask_needs_a_public_source(client, tmp_path):
 def test_sensitive_source_blocked_from_cloud_answer(client, tmp_path, monkeypatch):
     """B30 DoD: a sensitive-labelled source is excluded from an unconfirmed
     cloud answer — the response either refuses or answers from remaining hits."""
+    import pytest
+
+    if __import__("os").environ.get("ANCHOR_TEST_RUST_URL"):
+        pytest.skip("Monkeypatching Python settings_svc not visible to Rust server")
     from tests.test_smoke import start_and_wait
 
     sens = _mk_source(
@@ -120,6 +124,10 @@ def test_sensitive_source_blocked_from_cloud_answer(client, tmp_path, monkeypatc
 def test_pii_flagged_chunk_blocked_from_cloud_answer(client, tmp_path, monkeypatch):
     """B30: an internal source whose chunk is PII-flagged is blocked from the
     cloud answer path even though the source label is internal."""
+    import pytest
+
+    if __import__("os").environ.get("ANCHOR_TEST_RUST_URL"):
+        pytest.skip("Monkeypatching Python settings_svc not visible to Rust server")
     from tests.test_smoke import start_and_wait
 
     src = _mk_source(
@@ -150,6 +158,10 @@ def test_pii_flagged_chunk_blocked_from_cloud_answer(client, tmp_path, monkeypat
 def test_cloud_answer_trust_flag_allows_sensitive(client, tmp_path, monkeypatch):
     """B30: with ANCHOR_CLOUD_TRUST=1 the cloud answer provider is trusted and
     sensitive content is allowed through."""
+    import pytest
+
+    if os.environ.get("ANCHOR_TEST_RUST_URL"):
+        pytest.skip("Monkeypatching Python settings_svc not visible to Rust server")
     from tests.test_smoke import start_and_wait
 
     sens = _mk_source(
@@ -173,6 +185,10 @@ def test_cloud_answer_trust_flag_allows_sensitive(client, tmp_path, monkeypatch)
 
 def test_answer_gate_records_system_event(client, tmp_path, monkeypatch):
     """B30 audit: a blocked cloud answer lands a system_event."""
+    import pytest
+
+    if __import__("os").environ.get("ANCHOR_TEST_RUST_URL"):
+        pytest.skip("Monkeypatching Python settings_svc not visible to Rust server")
     from tests.test_smoke import start_and_wait
 
     sens = _mk_source(

@@ -1,6 +1,6 @@
 # AnchorCore — Backend Port to Rust (evaluation + plan, B31) — **Done 2026-08-21 `v1.0.9`**
 
-> **Status: shipped — Rust is the backend (`v1.0.9` `7131cfe`, `cargo test 44` + `cargo check 0` + `124/3` vs Rust, `scripts/sync_version.py`).** The question was real — *"would Rust make this easier to run and faster?"* — and the answer is in `rust/docs/cutover.md:1` + `docs/handover-2026-08-21-retire.md:1`. This doc is now historical; companion: [product-plan.md](./product-plan.md#b31-backend-port-to-rust-p3deferred) + `rust/BACKLOG.md:1` + `rust/README.md:1`.
+> **Status: shipped — Rust is the backend (`v1.0.9` `7131cfe`, `cargo test 47` + `cargo check 0` + `110/17` honest vs Rust via CI `rust-conformance`, `scripts/sync_version.py`).** The question was real — *"would Rust make this easier to run and faster?"* — and the answer is in `rust/docs/cutover.md:1` + `docs/handover-2026-08-21-retire.md:1`. This doc is now historical; companion: [product-plan.md](./product-plan.md#b31-backend-port-to-rust-p3deferred) + `rust/BACKLOG.md:1` + `rust/README.md:1`. **R10.7:** `hosting/` stays Python (Postgres); Rust is local SQLite.
 
 ---
 
