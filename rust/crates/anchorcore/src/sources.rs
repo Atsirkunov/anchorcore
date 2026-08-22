@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::health::AppState;
+use crate::scheduler;
 use crate::secrets::SECRET_SOURCE_FIELDS as SECRET_FIELDS;
 
 fn secret_store(data_dir: &str) -> crate::secrets::SecretStore {
@@ -167,6 +168,10 @@ pub async fn create_handler(State(state): State<AppState>, Json(payload): Json<V
         store_secret_fields(&data_dir, id, &mut config_val);
         let safe_str = serde_json::to_string(&config_val).unwrap();
         let _ = conn.execute("UPDATE sources SET config=?1 WHERE id=?2", rusqlite::params![safe_str, id]);
+        // R11.1: reload scheduler on CRUD
+        if let Some(sched) = scheduler::global() {
+            sched.reload_sources(&conn);
+        }
         let mut stmt = conn.prepare("SELECT id, name, connector, config, enabled, label, last_synced_at, last_error, error_count, created_at FROM sources WHERE id = ?1").unwrap();
         let v = stmt.query_row([id], |r| source_json(r)).unwrap();
         Ok((StatusCode::CREATED, Json(v)))
@@ -226,6 +231,9 @@ pub async fn update_handler(State(state): State<AppState>, Path(source_id): Path
             let s = serde_json::to_string(&existing).unwrap();
             let _ = conn.execute("UPDATE sources SET config=?1 WHERE id=?2", rusqlite::params![s, source_id]);
         }
+        if let Some(sched) = scheduler::global() {
+            sched.reload_sources(&conn);
+        }
         let mut stmt = conn.prepare("SELECT id, name, connector, config, enabled, label, last_synced_at, last_error, error_count, created_at FROM sources WHERE id=?1").unwrap();
         let v = stmt.query_row([source_id], |r| source_json(r)).unwrap();
         Ok(Json(v))
@@ -245,6 +253,9 @@ pub async fn delete_handler(State(state): State<AppState>, Path(source_id): Path
         // FK cascade will delete items/entities/chunks/jobs via ON DELETE CASCADE, but we also need to clean project_sources
         let _ = conn.execute("DELETE FROM project_sources WHERE source_id=?1", [source_id]);
         let _ = conn.execute("DELETE FROM sources WHERE id=?1", [source_id]);
+        if let Some(sched) = scheduler::global() {
+            sched.reload_sources(&conn);
+        }
         Ok(Json(serde_json::json!({"deleted": true})))
     }).await.unwrap();
     result
@@ -303,11 +314,9 @@ async fn sync_inner(state: AppState, source_id: i64, force: bool) -> Result<(Sta
         // create classifier/embedder on demand
         let classifier = std::sync::Arc::new(crate::classifier::Classifier::new(settings_clone.clone()));
         let embedder = std::sync::Arc::new(crate::embedder::Embedder::new(settings_clone.clone()));
-        let pipeline = crate::pipeline::Pipeline::new(classifier, embedder, settings_clone, data_dir_clone.clone());
+        let pipeline = crate::pipeline::Pipeline::new(classifier, embedder, settings_clone, data_dir_clone.clone(), jobs_clone.clone());
         // Box large pipeline future to avoid 8 MB stack overflow (see docs/handover-2026-08-20-sync.md)
         Box::pin(pipeline.sync_source(source_id, job_id, force)).await;
-        // ensure jobs maybe_promote already handled inside pipeline
-        let _ = jobs_clone;
     }));
     // fetch job to return 202
     let job_val = tokio::task::spawn_blocking(move || {
