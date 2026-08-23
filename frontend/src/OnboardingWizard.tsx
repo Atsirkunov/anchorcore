@@ -3,7 +3,7 @@ import { api } from "./api";
 import { theme } from "./theme";
 import type { Citation, OnboardingState } from "./types";
 
-const STEPS = ["Setup checks", "Connect a source", "Ask a question"];
+const STEPS = ["Setup checks", "Configure model", "Connect a source", "Ask a question"];
 
 function delay(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -26,10 +26,49 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
   const [answer, setAnswer] = useState<{ text: string; citations: Citation[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const hints = platformHints();
+  // Configure model (new step 1)
+  const [ollamaBaseUrl, setOllamaBaseUrl] = useState("http://localhost:11434");
+  const [answerBaseUrl, setAnswerBaseUrl] = useState("");
+  const [answerApiKey, setAnswerApiKey] = useState("");
+  const [answerModel, setAnswerModel] = useState("");
+  const [savingConfig, setSavingConfig] = useState(false);
+  const [configMsg, setConfigMsg] = useState<string | null>(null);
 
   useEffect(() => {
     api.onboarding().then(setState).catch((e) => setError(String(e)));
   }, []);
+
+  useEffect(() => {
+    if (step === 1) {
+      api.getSettings().then((s) => {
+        setOllamaBaseUrl((s as unknown as Record<string, string>).ollama_base_url || "http://localhost:11434");
+        setAnswerBaseUrl((s as unknown as Record<string, string>).answer_base_url || "");
+        const k = (s as unknown as Record<string, string>).answer_api_key || "";
+        setAnswerApiKey(k === "***set***" ? "" : k);
+        setAnswerModel((s as unknown as Record<string, string>).answer_model || "");
+      }).catch(() => {});
+    }
+  }, [step]);
+
+  async function saveConfig() {
+    setSavingConfig(true);
+    setConfigMsg(null);
+    try {
+      const payload: Record<string, string> = {};
+      if (ollamaBaseUrl.trim()) payload.ollama_base_url = ollamaBaseUrl.trim();
+      if (answerBaseUrl.trim()) payload.answer_base_url = answerBaseUrl.trim();
+      if (answerApiKey.trim()) payload.answer_api_key = answerApiKey.trim();
+      if (answerModel.trim()) payload.answer_model = answerModel.trim();
+      await api.updateSettings(payload as unknown as Parameters<typeof api.updateSettings>[0]);
+      setConfigMsg("Saved — re-checking…");
+      await recheck();
+      setTimeout(() => setStep(2), 600);
+    } catch (e) {
+      setConfigMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingConfig(false);
+    }
+  }
 
   async function recheck() {
     setError(null);
@@ -52,7 +91,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
           break;
         }
       }
-      setStep(2);
+      setStep(3);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -164,6 +203,33 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
         {step === 1 && (
           <div style={styles.body}>
             <div style={styles.note}>
+              Configure where AnchorCore gets its models. Ollama is local and free; or point answers at any OpenAI-compatible API. You can change this anytime in Settings.
+            </div>
+            <div style={{ display: "grid", gap: 8 }}>
+              <label style={{ fontSize: 13, color: theme.textMuted }}>Ollama base URL (local LLM)</label>
+              <input style={styles.input} value={ollamaBaseUrl} onChange={(e) => setOllamaBaseUrl(e.target.value)} placeholder="http://localhost:11434" />
+              <label style={{ fontSize: 13, color: theme.textMuted }}>Answer API base URL (cloud, e.g. https://api.openai.com/v1 — leave empty to use Ollama)</label>
+              <input style={styles.input} value={answerBaseUrl} onChange={(e) => setAnswerBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1 or empty for Ollama" />
+              <label style={{ fontSize: 13, color: theme.textMuted }}>Answer API key (if cloud) — stored in OS keychain</label>
+              <input style={styles.input} type="password" value={answerApiKey} onChange={(e) => setAnswerApiKey(e.target.value)} placeholder="sk-..." />
+              <label style={{ fontSize: 13, color: theme.textMuted }}>Answer model</label>
+              <input style={styles.input} value={answerModel} onChange={(e) => setAnswerModel(e.target.value)} placeholder="gpt-4o-mini or llama3.2:3b" />
+            </div>
+            {configMsg && <div style={{ fontSize: 12, color: theme.accentAlt }}>{configMsg}</div>}
+            <div style={styles.actions}>
+              <button style={styles.button} onClick={() => setStep(0)}>← Back</button>
+              <button style={{ ...styles.button, background: "transparent", border: `1px solid ${theme.border}`, color: theme.textMuted }} onClick={() => setStep(2)}>Skip</button>
+              <button style={{ ...styles.button, background: theme.accent, color: "#fff" }} disabled={savingConfig} onClick={saveConfig}>{savingConfig ? "Saving…" : "Save & continue →"}</button>
+            </div>
+            <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
+              Ollama: <a href="https://ollama.com/download" target="_blank" rel="noreferrer" style={{ color: theme.accentAlt }}>Download</a> then `ollama pull llama3.2:3b && ollama pull nomic-embed-text` — or set a cloud key above.
+            </div>
+          </div>
+        )}
+
+        {step === 2 && (
+          <div style={styles.body}>
+            <div style={styles.note}>
               AnchorCore ingests a folder of notes/docs (Markdown, txt, PDF). You can also use the bundled sample corpus to try it.
             </div>
             {state?.sample.available && (
@@ -190,13 +256,13 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
             )}
             {!busy && (
               <div style={styles.actions}>
-                <button style={styles.button} onClick={() => setStep(0)}>← Back</button>
+                <button style={styles.button} onClick={() => setStep(1)}>← Back</button>
               </div>
             )}
           </div>
         )}
 
-        {step === 2 && (
+        {step === 3 && (
           <div style={styles.body}>
             <div style={styles.note}>Ask a question about what you just connected — the answer cites its sources.</div>
             <div style={{ display: "flex", gap: 8 }}>
@@ -227,7 +293,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
               </div>
             )}
             <div style={styles.actions}>
-              <button style={styles.button} onClick={() => setStep(1)}>← Back</button>
+              <button style={styles.button} onClick={() => setStep(2)}>← Back</button>
               <button style={{ ...styles.button, background: theme.buttonBg }} onClick={onClose}>Done — open AnchorCore</button>
             </div>
           </div>

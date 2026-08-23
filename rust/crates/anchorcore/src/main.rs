@@ -283,10 +283,26 @@ async fn main() {
     let open_browser = std::env::var("ANCHOR_OPEN_BROWSER").as_deref() != Ok("0");
     if open_browser {
         let url = format!("http://{}", addr);
+        let url_clone = url.clone();
+        let addr_clone = addr.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-            let _ = open::that(&url);
-            tracing::info!("opened browser at {}", url);
+            // Use /usr/bin/open on macOS (Finder launch has minimal PATH), fallback to `open` crate elsewhere
+            let res = if cfg!(target_os = "macos") {
+                std::process::Command::new("/usr/bin/open")
+                    .arg(&url_clone)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            } else {
+                open::that(&url_clone).map_err(|e| e.to_string())
+            };
+            match res {
+                Ok(_) => tracing::info!("opened browser at {}", url_clone),
+                Err(e) => tracing::warn!("failed to open browser at {}: {} (try open http://{} manually)", url_clone, e, addr_clone),
+            }
         });
     }
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
