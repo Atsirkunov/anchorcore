@@ -41,8 +41,8 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
     // real probe like health.rs (was heuristic localhost:1 and always false)
     let ollama_reachable = {
         let url = format!("{}/api/tags", ollama_base.trim_end_matches('/'));
-        // quick heuristic for test suite when base is intentionally invalid (localhost:1)
-        if ollama_base.contains("localhost:1") || ollama_base.contains("127.0.0.1:1") {
+        // quick heuristic for test suite when base is intentionally invalid (localhost:1) — exact port 1, not 11434
+        if ollama_base == "http://localhost:1" || ollama_base == "http://127.0.0.1:1" || ollama_base == "http://localhost:1/" || ollama_base == "http://127.0.0.1:1/" {
             false
         } else {
             match reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).build() {
@@ -234,7 +234,7 @@ pub async fn onboarding_handler(State(state): State<AppState>) -> Json<Value> {
         let sources_count: i64 = conn.query_row("SELECT COUNT(*) FROM sources", [], |r| r.get(0)).unwrap_or(0);
         let needs_wizard = sources_count == 0;
         let ollama_base = settings.get("ollama_base_url", None).unwrap_or_else(|| "http://localhost:11434".to_string());
-        let ollama_reachable = !(ollama_base.contains("localhost:1") || ollama_base.contains("127.0.0.1:1"));
+        let ollama_reachable = !(ollama_base == "http://localhost:1" || ollama_base == "http://127.0.0.1:1" || ollama_base == "http://localhost:1/" || ollama_base == "http://127.0.0.1:1/");
         let answer_base = settings.get("answer_base_url", None).unwrap_or_else(|| "https://api.openai.com/v1".to_string());
         let answer_api_key = settings.get("answer_api_key", None).unwrap_or_default();
         let answer_provider = if answer_base.starts_with("http://localhost") || answer_base.starts_with("http://127.0.0.1") {
@@ -354,4 +354,70 @@ pub async fn log_download_handler(
         resp.headers_mut().insert("x-truncated-limit", MAX_LOG_BYTES.to_string().parse().unwrap());
     }
     Ok(resp)
+}
+
+pub async fn ollama_start_handler(State(state): State<AppState>) -> Json<Value> {
+    let base = state.settings.get("ollama_base_url", None).unwrap_or_else(|| "http://localhost:11434".to_string());
+    if base == "http://localhost:1" || base == "http://127.0.0.1:1" || base == "http://localhost:1/" || base == "http://127.0.0.1:1/" {
+        return Json(serde_json::json!({"ok": false, "error": "ollama probe disabled for tests (localhost:1)"}));
+    }
+    // quick probe
+    let probe_url = format!("{}/api/tags", base.trim_end_matches('/'));
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(2)).build();
+    if let Ok(c) = &client {
+        if let Ok(r) = c.get(&probe_url).send().await {
+            if r.status().is_success() {
+                return Json(serde_json::json!({"ok": true, "already_running": true}));
+            }
+        }
+    }
+    // find binary
+    let candidates = [
+        "/opt/homebrew/bin/ollama",
+        "/usr/local/bin/ollama",
+        "/Applications/Ollama.app/Contents/Resources/ollama",
+        "/usr/bin/ollama",
+    ];
+    let mut ollama_path: Option<std::path::PathBuf> = None;
+    for p in candidates {
+        if std::path::Path::new(p).exists() {
+            ollama_path = Some(p.into());
+            break;
+        }
+    }
+    if ollama_path.is_none() {
+        if let Ok(out) = std::process::Command::new("which").arg("ollama").output() {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !s.is_empty() && std::path::Path::new(&s).exists() {
+                    ollama_path = Some(s.into());
+                }
+            }
+        }
+    }
+    if ollama_path.is_none() && std::process::Command::new("ollama").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+        ollama_path = Some("ollama".into());
+    }
+    let Some(path) = ollama_path else {
+        return Json(serde_json::json!({"ok": false, "error": "ollama not found — install from https://ollama.com"}));
+    };
+    tracing::info!("ollama start requested via API, launching {:?} serve", path);
+    let _ = std::process::Command::new(&path)
+        .arg("serve")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null())
+        .spawn();
+    // poll 8s
+    for _ in 0..16 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if let Ok(c) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(1)).build() {
+            if let Ok(r) = c.get(&probe_url).send().await {
+                if r.status().is_success() {
+                    return Json(serde_json::json!({"ok": true, "launched": true}));
+                }
+            }
+        }
+    }
+    Json(serde_json::json!({"ok": false, "error": "ollama launched but not reachable at ".to_string() + &base, "launched": true}))
 }

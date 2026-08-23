@@ -159,7 +159,7 @@ export default function App() {
           {tab === "settings" && <SettingsTab />}
         </ErrorBoundary>
         <ErrorBoundary label="System">
-          {tab === "system" && <SystemTab />}
+          {tab === "system" && <SystemTab onConfigure={() => setTab("settings")} />}
         </ErrorBoundary>
       </main>
     </div>

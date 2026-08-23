@@ -5,13 +5,15 @@ import type { Job, LogFile, SystemEvent, SystemStatus } from "../types";
 
 const POLL_MS = 10000;
 
-export function SystemTab() {
+export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [events, setEvents] = useState<SystemEvent[]>([]);
   const [logs, setLogs] = useState<LogFile[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [componentFilter, setComponentFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [startingOllama, setStartingOllama] = useState(false);
+  const [ollamaMsg, setOllamaMsg] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     api
@@ -82,6 +84,43 @@ export function SystemTab() {
                 missing: {status.ollama.missing_models.join(", ")}
               </div>
             )}
+            <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+              {!status.ollama.reachable && (
+                <button
+                  onClick={async () => {
+                    setStartingOllama(true);
+                    setOllamaMsg(null);
+                    try {
+                      const res = await api.startOllama();
+                      if (res.ok) {
+                        setOllamaMsg(res.already_running ? "Ollama already running" : "Ollama started — refreshing…");
+                        setTimeout(refresh, 1500);
+                      } else {
+                        setOllamaMsg(res.error ?? "Failed to start Ollama");
+                      }
+                    } catch (e) {
+                      setOllamaMsg(e instanceof Error ? e.message : String(e));
+                    } finally {
+                      setStartingOllama(false);
+                    }
+                  }}
+                  disabled={startingOllama}
+                  style={{ ...styles.button, background: theme.accent, color: "#fff", fontSize: 12, padding: "0.35rem 0.7rem", opacity: startingOllama ? 0.6 : 1 }}
+                >
+                  {startingOllama ? "Starting…" : "Start local LLM"}
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  if (onConfigure) onConfigure();
+                  else window.dispatchEvent(new CustomEvent("anchorcore:openSettings"));
+                }}
+                style={{ ...styles.button, background: theme.bgHover, border: `1px solid ${theme.border}`, fontSize: 12, padding: "0.35rem 0.7rem" }}
+              >
+                Configure model
+              </button>
+            </div>
+            {ollamaMsg && <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>{ollamaMsg}</div>}
           </div>
           <div style={styles.card}>
             <div style={styles.cardTitle}>Answer model</div>

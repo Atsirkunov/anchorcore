@@ -140,7 +140,7 @@ async fn main() {
         let settings_clone = settings_svc.clone();
         tokio::spawn(async move {
             let base = settings_clone.get("ollama_base_url", None).unwrap_or_else(|| "http://localhost:11434".to_string());
-            if base.contains("localhost:1") || base.contains("127.0.0.1:1") {
+            if base == "http://localhost:1" || base == "http://127.0.0.1:1" || base == "http://localhost:1/" || base == "http://127.0.0.1:1/" {
                 return;
             }
             // quick probe - if already reachable, nothing to do
@@ -254,12 +254,13 @@ async fn main() {
         // settings (R6.1)
         .route("/settings", get(settings::get_handler).put(settings::put_handler))
         .route("/settings/test-connection", post(settings::test_connection_handler))
-        // system (R6.2)
+        // system (R6.2 + R11 manual ollama start)
         .route("/system/status", get(system::status_handler))
         .route("/system/onboarding", get(system::onboarding_handler))
         .route("/system/errors", get(system::errors_handler))
         .route("/system/logs", get(system::logs_handler))
         .route("/system/logs/:name", get(system::log_download_handler))
+        .route("/system/ollama/start", post(system::ollama_start_handler))
         // auth (R6.3 B40)
         .route("/auth/status", get(auth::status_handler))
         .route("/auth/signup", post(auth::signup_handler))
