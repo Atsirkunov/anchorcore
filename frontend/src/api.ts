@@ -198,6 +198,8 @@ export const api = {
   systemLogs: () => request<LogFile[]>("/system/logs"),
   logDownloadUrl: (name: string) => `/system/logs/${encodeURIComponent(name)}`,
 
+  startOllama: () => request<{ ok: boolean; already_running?: boolean; launched?: boolean; error?: string }>("/system/ollama/start", { method: "POST" }),
+
   piiConfig: () => request<PiiConfig>("/pii/config"),
   updatePiiConfig: (payload: { custom_words?: string[]; disabled_categories?: string[] }) =>
     request<PiiConfig>("/pii/config", {
