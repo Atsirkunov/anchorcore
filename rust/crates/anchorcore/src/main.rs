@@ -134,6 +134,85 @@ async fn main() {
         watcher::service::spawn(state.clone());
     }
 
+    // Ollama: try to launch if installed but not reachable (double-click app should auto-start Ollama)
+    // Skip when tests point at localhost:1 or ANCHOR_OLLAMA_BASE_URL is explicitly localhost:1
+    {
+        let settings_clone = settings_svc.clone();
+        tokio::spawn(async move {
+            let base = settings_clone.get("ollama_base_url", None).unwrap_or_else(|| "http://localhost:11434".to_string());
+            if base.contains("localhost:1") || base.contains("127.0.0.1:1") {
+                return;
+            }
+            // quick probe - if already reachable, nothing to do
+            let probe_url = format!("{}/api/tags", base.trim_end_matches('/'));
+            let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(2)).build();
+            if let Ok(c) = client {
+                if let Ok(r) = c.get(&probe_url).send().await {
+                    if r.status().is_success() {
+                        tracing::info!("ollama already reachable at {}", base);
+                        return;
+                    }
+                }
+            }
+            // try to find ollama binary
+            let candidates = [
+                "/opt/homebrew/bin/ollama",
+                "/usr/local/bin/ollama",
+                "/Applications/Ollama.app/Contents/Resources/ollama",
+                "/usr/bin/ollama",
+            ];
+            let mut ollama_path: Option<std::path::PathBuf> = None;
+            for p in candidates {
+                if std::path::Path::new(p).exists() {
+                    ollama_path = Some(p.into());
+                    break;
+                }
+            }
+            if ollama_path.is_none() {
+                // try PATH
+                if let Ok(out) = std::process::Command::new("which").arg("ollama").output() {
+                    if out.status.success() {
+                        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        if !s.is_empty() && std::path::Path::new(&s).exists() {
+                            ollama_path = Some(s.into());
+                        }
+                    }
+                }
+            }
+            // also try `ollama` via PATH directly
+            if ollama_path.is_none() {
+                // check if `ollama` is runnable via `command -v` style - try spawning `ollama --version`
+                if std::process::Command::new("ollama").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+                    ollama_path = Some("ollama".into());
+                }
+            }
+            let Some(path) = ollama_path else {
+                tracing::info!("ollama not found in PATH or common locations, skipping auto-launch (install from https://ollama.com)");
+                return;
+            };
+            tracing::info!("ollama not reachable at {}, trying to launch via {:?} serve", base, path);
+            let _ = std::process::Command::new(&path)
+                .arg("serve")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .stdin(std::process::Stdio::null())
+                .spawn();
+            // poll for 5s
+            for _ in 0..10 {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                if let Ok(c) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(1)).build() {
+                    if let Ok(r) = c.get(&probe_url).send().await {
+                        if r.status().is_success() {
+                            tracing::info!("ollama launched and reachable at {}", base);
+                            return;
+                        }
+                    }
+                }
+            }
+            tracing::info!("ollama launch attempted but still not reachable at {} (will use rule fallback)", base);
+        });
+    }
+
     // R1.3: stub all routers with 501, keep /health real (already done in R1.2)
     // Note: axum 0.7 uses `/:id` style; keep literal routes before param routes
     let app = Router::new()
