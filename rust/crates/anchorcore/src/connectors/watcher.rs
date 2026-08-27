@@ -55,6 +55,6 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
         let evs = w.poll(Duration::from_millis(300));
         // may or may not have event depending on FS, just check no panic
-        assert!(evs.len() >= 0);
+        assert!(evs.len() < 1000);
     }
 }

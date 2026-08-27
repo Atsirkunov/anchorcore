@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn placeholder_keeps_secret() {
         let dir = tempdir().unwrap();
-        let store = SecretStore::new(dir.path().join("secrets.enc"));
+        let _store = SecretStore::new(dir.path().join("secrets.enc"));
         // set via env force fallback
         std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", "1");
         let store2 = SecretStore::new(dir.path().join("secrets.enc"));

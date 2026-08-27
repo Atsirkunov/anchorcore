@@ -3,7 +3,9 @@
 //! and triggers `pipeline.sync_source` via bounded `JobManager`.
 //! Keeps `rusqlite::Connection` off async stack via `spawn_blocking`.
 
+#[allow(unused_imports)]
 use std::collections::{HashMap, HashSet};
+#[allow(unused_imports)]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
