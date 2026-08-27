@@ -38,10 +38,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // R7.1: attach CSRF token for mutating requests when auth is off (local mode)
   const method = (init?.method ?? "GET").toUpperCase();
   const isMutating = method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE";
-  let csrfHeaders: Record<string, string> = {};
+  const csrfHeaders: Record<string, string> = {};
   if (isMutating && path !== "/csrf") {
     const token = await getCsrfToken();
-    if (token) csrfHeaders["X-CSRF-Token"] = token;
+    if (token) (csrfHeaders as Record<string, string>)["X-CSRF-Token"] = token;
   }
   const mergedInit: RequestInit = {
     ...init,
