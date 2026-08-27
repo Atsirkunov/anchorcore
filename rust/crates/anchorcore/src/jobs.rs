@@ -86,7 +86,7 @@ impl JobManager {
     /// Create a job row and enqueue. Returns job id. Mirrors `backend/app/routers/sources.py: POST /sync`.
     pub fn create_job(&self, conn: &Connection, source_id: i64, kind: &str) -> rusqlite::Result<i64> {
         conn.execute(
-            "INSERT INTO jobs (source_id, kind, status) VALUES (?1, ?2, 'pending')",
+            "INSERT INTO jobs (source_id, kind, status, total, processed, result, created_at) VALUES (?1, ?2, 'pending', 0, 0, '{}', datetime('now'))",
             rusqlite::params![source_id, kind],
         )?;
         let id = conn.last_insert_rowid();
@@ -324,7 +324,7 @@ mod tests {
         let conn = crate::db::init_db(&path).unwrap();
         let mgr = JobManager::new();
         // need a source for FK
-        conn.execute("INSERT INTO sources (name, connector, config, enabled) VALUES ('s','folder','{}',1)", []).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count, created_at) VALUES ('s','folder','{}',1,'',0,datetime('now'))", []).unwrap();
         let sid = conn.last_insert_rowid();
         for _ in 0..4 {
             mgr.create_job(&conn, sid, "sync").unwrap();
@@ -340,7 +340,7 @@ mod tests {
         let path = dir.path().join("test2.db");
         let conn = crate::db::init_db(&path).unwrap();
         let mgr = JobManager::new();
-        conn.execute("INSERT INTO sources (name, connector, config, enabled) VALUES ('s','folder','{}',1)", []).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count, created_at) VALUES ('s','folder','{}',1,'',0,datetime('now'))", []).unwrap();
         let sid = conn.last_insert_rowid();
         // fill running
         mgr.create_job(&conn, sid, "sync").unwrap();
@@ -355,7 +355,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test3.db");
         let conn = crate::db::init_db(&path).unwrap();
-        conn.execute("INSERT INTO sources (name, connector, config, enabled) VALUES ('s','folder','{}',1)", []).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count, created_at) VALUES ('s','folder','{}',1,'',0,datetime('now'))", []).unwrap();
         let sid = conn.last_insert_rowid();
         let mgr = JobManager::new();
         let mgr2 = mgr.clone();
