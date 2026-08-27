@@ -243,6 +243,7 @@ async fn main() {
         .route("/pii/review", get(pii::review_handler))
         .route("/pii/review/:id", post(pii::decide_handler))
         .route("/pii/scan/:id", post(pii::scan_handler))
+        .route("/pii/item/:id", get(pii::item_pii_handler))
         // projects (R4.4)
         .route("/projects", get(projects::list_handler).post(projects::create_handler))
         .route("/projects/default", get(projects::default_handler))

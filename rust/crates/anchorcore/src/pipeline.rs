@@ -230,7 +230,7 @@ impl Pipeline {
                     let _ = conn.execute("UPDATE ingested_items SET content_hash=?1, title=?2, author=?3, text=?4, stale=0 WHERE id=?5", rusqlite::params![digest, doc.title, doc.author, doc.text, id]);
                     Ok(true)
                 } else {
-                    conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author) VALUES (?1,?2,?3,?4,?5,?6)", rusqlite::params![source_id, doc.external_id, doc.title, doc.text, digest, doc.author]).map_err(|e| e.to_string())?;
+                    conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale, created_at) VALUES (?1,?2,?3,?4,?5,?6, 0, datetime('now'))", rusqlite::params![source_id, doc.external_id, doc.title, doc.text, digest, doc.author]).map_err(|e| e.to_string())?;
                     Ok(true)
                 }
             }
@@ -365,10 +365,11 @@ impl Pipeline {
                 let db_path = crate::db::resolve_db_path(&data_dir_clone);
                 let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
                 for it in to_insert {
-                    conn.execute("INSERT INTO entities (item_id, kind, summary, reasoning, confidence, author, source_ref, window_text, window_index, status) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'unverified')", rusqlite::params![item_id, it.kind, it.summary, it.reasoning, it.confidence, it.author, it.source_ref, it.window_text, it.window_index]).unwrap();
+                    let status = if it.confidence >= 0.7 { "verified" } else { "unverified" };
+                    conn.execute("INSERT INTO entities (item_id, kind, summary, reasoning, confidence, author, source_ref, window_text, window_index, status, owner, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'',datetime('now'),datetime('now'))", rusqlite::params![item_id, it.kind, it.summary, it.reasoning, it.confidence, it.author, it.source_ref, it.window_text, it.window_index, status]).unwrap();
                     let eid = conn.last_insert_rowid();
                     for chunk_content in crate::chunking::chunk_text(&it.summary) {
-                        let _ = conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content) VALUES (?1,'entity',?2,?3)", rusqlite::params![eid, it.source_ref, chunk_content]);
+                        let _ = conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content, created_at) VALUES (?1,'entity',?2,?3,datetime('now'))", rusqlite::params![eid, it.source_ref, chunk_content]);
                     }
                 }
             }).await.map_err(|e| e.to_string())?;
@@ -397,7 +398,7 @@ impl Pipeline {
                 let doc_chunks = crate::chunking::chunk_document(&cleaned);
                 for (idx, chunk_content) in doc_chunks.iter().enumerate() {
                     let r = if doc_chunks.len() > 1 { format!("{} §{}", base_ref, idx+1) } else { base_ref.clone() };
-                    let _ = conn.execute("INSERT INTO chunks (item_id, kind, source_ref, content) VALUES (?1,'document',?2,?3)", rusqlite::params![item_id, r, chunk_content]);
+                    let _ = conn.execute("INSERT INTO chunks (item_id, kind, source_ref, content, created_at) VALUES (?1,'document',?2,?3,datetime('now'))", rusqlite::params![item_id, r, chunk_content]);
                 }
             }
         }).await.map_err(|e| e.to_string())?;
@@ -459,7 +460,7 @@ impl Pipeline {
                             if !unit.systems.is_empty() {
                                 content.push_str(&format!("\nSystems: {}", unit.systems.join(", ")));
                             }
-                            let _ = conn.execute("INSERT INTO chunks (item_id, kind, source_ref, content) VALUES (?1,'distilled',?2,?3)", rusqlite::params![item_id, refs, content]);
+                            let _ = conn.execute("INSERT INTO chunks (item_id, kind, source_ref, content, created_at) VALUES (?1,'distilled',?2,?3,datetime('now'))", rusqlite::params![item_id, refs, content]);
                         }
                     }
                     let j = serde_json::to_string(&new_hashes).unwrap_or_else(|_| "{}".to_string());
