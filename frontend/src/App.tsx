@@ -27,7 +27,7 @@ const TABS: { id: Tab; label: string }[] = [
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("ask");
-  const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [dismissedSig, setDismissedSig] = useState<string | null>(() => localStorage.getItem("banner-dismissed"));
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
   const [showWizard, setShowWizard] = useState(false);
   // B37: projects come from the shared context (no duplicate fetch here)
@@ -65,13 +65,20 @@ export default function App() {
     };
   }, []);
 
+  const failingForBanner = health
+    ? health.components.failing_sources.filter(
+        (s) => !runningJobs?.some((j) => j.source_id === s.id && (j.status === "running" || j.status === "pending")),
+      )
+    : [];
   const issues = health
     ? [
         ...(health.components.ollama === "offline" ? ["Classification model not configured — classification falls back to rules, answers are limited (check Settings → Test Ollama)"] : []),
         ...(health.components.answer_key === "missing" ? ["No answer model configured — answers show matching context only (set ANCHOR_ANSWER_API_KEY or point ANCHOR_ANSWER_BASE_URL at Ollama)"] : []),
-        ...health.components.failing_sources.map((s) => `Sync failing: ${s.name} (${s.count}×) — ${s.error ?? "unknown error"}`),
+        ...failingForBanner.map((s) => `Sync failing: ${s.name} (${s.count}×) — ${s.error ?? "unknown error"}`),
       ]
     : [];
+  const issuesSig = JSON.stringify(issues);
+  const bannerVisible = issues.length > 0 && dismissedSig !== issuesSig;
 
   return (
     <div style={styles.wrap}>
@@ -123,18 +130,24 @@ export default function App() {
             </option>
           ))}
         </select>
-        <span style={{ color: online === false ? "#f87171" : online ? "#4ade80" : "#6b7280", fontSize: 12 }}>
+        <span style={{ color: online === false ? theme.red : online ? theme.green : theme.textDim, fontSize: 12 }}>
           {online === false ? "API offline" : online ? "API online" : "checking…"}
         </span>
       </header>
-      {!bannerDismissed && issues.length > 0 && (
+      {bannerVisible && (
         <div style={styles.banner}>
           <div style={{ flex: 1 }}>
             {issues.map((issue, i) => (
               <div key={i}>• {issue}</div>
             ))}
           </div>
-          <button onClick={() => setBannerDismissed(true)} style={styles.dismiss}>
+          <button
+            onClick={() => {
+              localStorage.setItem("banner-dismissed", issuesSig);
+              setDismissedSig(issuesSig);
+            }}
+            style={styles.dismiss}
+          >
             Dismiss
           </button>
         </div>
@@ -196,7 +209,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: theme.redText,
     padding: "0.6rem 1.5rem",
     fontSize: 13,
-    borderBottom: "1px solid #4c2626",
+    borderBottom: `1px solid ${theme.redBorder}`,
   },
   dismiss: { background: "none", border: `1px solid ${theme.redBorder}`, color: theme.redText, borderRadius: 6, padding: "0.2rem 0.6rem", cursor: "pointer" },
   main: { padding: "1.5rem", maxWidth: 1000, margin: "0 auto" },
@@ -205,7 +218,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     gap: 6,
     background: theme.bgHover,
-    border: `1px solid ${theme.blue}`,
+    border: `1px solid ${theme.accentAlt}`,
     color: theme.accentAlt,
     padding: "0.25rem 0.6rem",
     borderRadius: 999,
@@ -226,7 +239,7 @@ const styles: Record<string, React.CSSProperties> = {
     height: 10,
     borderRadius: "50%",
     border: `2px solid ${theme.border}`,
-    borderTopColor: theme.blue,
+    borderTopColor: theme.accentAlt,
     animation: "spin 0.8s linear infinite",
     flexShrink: 0,
   },

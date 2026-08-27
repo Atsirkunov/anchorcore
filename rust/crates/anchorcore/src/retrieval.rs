@@ -761,11 +761,11 @@ mod tests {
     }
 
     fn insert_source(conn: &rusqlite::Connection, name: &str, label: &str) -> i64 {
-        conn.execute("INSERT INTO sources (name, connector, config, label, enabled) VALUES (?1,'folder','{}',?2,1)", rusqlite::params![name, label]).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, label, enabled, last_sync_cursor, error_count, created_at) VALUES (?1,'folder','{}',?2,1,'',0,datetime('now'))", rusqlite::params![name, label]).unwrap();
         conn.last_insert_rowid()
     }
     fn insert_item(conn: &rusqlite::Connection, source_id: i64, title: &str) -> i64 {
-        conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,?2,?3,'',?4)", rusqlite::params![source_id, format!("ext-{}", title), title, format!("hash-{}", title)]).unwrap();
+        conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale, created_at) VALUES (?1,?2,?3,'',?4,'',0,datetime('now'))", rusqlite::params![source_id, format!("ext-{}", title), title, format!("hash-{}", title)]).unwrap();
         conn.last_insert_rowid()
     }
     fn insert_entity(conn: &rusqlite::Connection, item_id: i64, summary: &str, status: &str, owner: &str) -> i64 {
@@ -773,7 +773,7 @@ mod tests {
         conn.last_insert_rowid()
     }
     fn insert_chunk(conn: &rusqlite::Connection, item_id: Option<i64>, entity_id: Option<i64>, content: &str) -> i64 {
-        conn.execute("INSERT INTO chunks (item_id, entity_id, content, source_ref) VALUES (?1,?2,?3,'ref')", rusqlite::params![item_id, entity_id, content]).unwrap();
+        conn.execute("INSERT INTO chunks (item_id, entity_id, content, source_ref, created_at) VALUES (?1,?2,?3,'ref',datetime('now'))", rusqlite::params![item_id, entity_id, content]).unwrap();
         conn.last_insert_rowid()
     }
 

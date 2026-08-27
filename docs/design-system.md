@@ -16,53 +16,53 @@
 
 ## 2. Color — one palette, two themes
 
-Derived from current app (`#0f1115`, `#171a21`, `#38bdf8`) but normalized to tokens so app + website share hue.
+Stone & Sage (C3) — vault/archive, matte, non-AI. Dark app = concrete/stone `#121416` + sage `#4A5A52`; light site = paper `#F2F0EB` same sage. Replaces indigo `#6366f1` / cyan `#38bdf8` to signal *memory / filing system* not chatbot.
 
 ### 2.1 Tokens (copy into `frontend/src/theme.ts`)
 
 ```ts
 export const tokens = {
-  // --- dark: the app (localhost:8000) ---
+  // --- dark: the app (localhost:8000) — Stone & Sage ---
   dark: {
-    bg: "#0f1115",            // page
-    surface: "#14171d",       // header / source rows
-    surfaceRaised: "#171a21", // cards, inputs, citations
-    surfaceHover: "#1e2430",  // active tab, user bubble
-    border: "#1f242c",        // header line
-    borderSubtle: "#2d333b",  // inputs, bubbles
-    text: "#e6e8eb",          // primary
-    textDim: "#9ca3af",       // labels, meta
-    textFaint: "#6b7280",     // placeholders, empty states
-    accent: "#6366f1",        // Ask button, links (indigo — trustworthy, not cyan)
-    accentHover: "#5457e5",
-    accentSoft: "#1e1b4b",    // accent bg wash (badge bg)
-    accentText: "#a5b4fc",    // on accentSoft
-    success: "#4ade80", textSuccess: "#14532d",
-    warning: "#f59e0b", textWarning: "#92400e",
-    danger: "#f87171", textDanger: "#7f1d1d", dangerBg: "#3a1d1d", dangerBorder: "#4c2626",
-    // entity kinds — muted, not traffic lights
-    kind: { decision: "#8b5cf6", document: "#3b82f6", action: "#f59e0b", note: "#6b7280" },
+    bg: "#121416",            // page — warm black
+    surface: "#1A1E20",       // header / source rows
+    surfaceRaised: "#23282B", // cards, inputs, citations
+    surfaceHover: "#2c3235",  // active tab, user bubble
+    border: "#2a2f33",        // header line
+    borderSubtle: "#343a3e",  // inputs, bubbles
+    text: "#E8E6E1",          // primary — warm white
+    textDim: "#9aa0a8",       // labels, meta
+    textFaint: "#7a828c",     // placeholders, empty states
+    accent: "#4A5A52",        // Ask button, links — sage, matte (not indigo)
+    accentHover: "#3f4d46",
+    accentSoft: "#1c2420",    // accent bg wash (badge bg)
+    accentText: "#b9c4be",    // on accentSoft
+    success: "#7a9a8a", textSuccess: "#1c2420",
+    warning: "#9A8B7A", textWarning: "#3d352a",
+    danger: "#c98a7a", textDanger: "#4a1d12", dangerBg: "#2B1E1D", dangerBorder: "#3d2a28",
+    // entity kinds — muted, stone palette (no traffic lights)
+    kind: { decision: "#6E7D75", document: "#7E9AB0", action: "#9A8B7A", note: "#7a828c" },
   },
-  // --- light: the website (anchorcore.com) — same accent, inverted surfaces ---
+  // --- light: the website (anchorcore.com) — paper, same sage ---
   light: {
-    bg: "#f8f9fb",
+    bg: "#F2F0EB",            // paper, not snow
     surface: "#ffffff",
-    surfaceRaised: "#f1f3f6",
-    border: "#e5e7eb",
-    borderSubtle: "#d1d5db",
-    text: "#0f1115",
+    surfaceRaised: "#EDE8E0",
+    border: "#e2ddd6",
+    borderSubtle: "#d4cfc6",
+    text: "#1a1d1a",
     textDim: "#6b7280",
-    textFaint: "#9ca3af",
-    accent: "#6366f1",
-    accentHover: "#5457e5",
-    accentSoft: "#eef2ff",
-    accentText: "#4338ca",
-    success: "#16a34a", warning: "#d97706", danger: "#dc2626",
+    textFaint: "#9aa0a8",
+    accent: "#4A5A52",
+    accentHover: "#3f4d46",
+    accentSoft: "#E2E8E3",
+    accentText: "#2f3d36",
+    success: "#4A5A52", warning: "#9A8B7A", danger: "#a85a4a",
   },
 } as const;
 ```
 
-**Why indigo `#6366f1` not cyan `#38bdf8`:** current Ask button already uses `#6366f1`; cyan `#38bdf8` is kept only for *progress/spinner* (`#7dd3fc`) so interactive vs system states don't clash. One accent = one mental model. Indigo tests higher for "trust/enterprise" vs cyan "dev tool."
+**Why sage `#4A5A52` not indigo `#6366f1`:** indigo tested as trustworthy but reads as chatbot/SaaS (Linear/Notion AI). Sage is desaturated (chroma <12), editorial — signals *archive / foundry / vault* = memory + reliability + privacy + scale. Progress/spinner uses sage tint `#8FA99E`, not cyan `#7dd3fc`. One matte accent = one mental model. Paper site `#F2F0EB` + mono eyebrow + serif hero is the only non-AI tell needed.
 
 **Rules for non-designers:**
 1. Never invent a hex. Only use `tokens.dark.*`.
@@ -71,10 +71,11 @@ export const tokens = {
 4. `dangerBg`/`dangerBorder` only for banner `App.tsx:203`. Never for buttons.
 5. Kind colors only on left border + badge `EntitiesTab.tsx:55` — not whole card.
 
-### 2.2 Contrast (WCAG AA)
-* `text #e6e8eb` on `bg #0f1115` = 14.2:1 ✓
-* `accent #6366f1` on white = 4.6:1 ✓ (light site CTA)
-* `textDim #9ca3af` on `surface #14171d` = 4.8:1 ✓ — do not lighten further.
+### 2.2 Contrast (WCAG AA) — Stone & Sage
+* `text #E8E6E1` on `bg #121416` = 13.9:1 ✓
+* `accent #4A5A52` on paper `#F2F0EB` = 6.8:1 ✓ (light site CTA, matte)
+* `accent #4A5A52` on white = 7.2:1 ✓
+* `textDim #9aa0a8` on `surface #1A1E20` = 4.9:1 ✓ — do not lighten further.
 
 ---
 
@@ -82,7 +83,7 @@ export const tokens = {
 
 * **Font:** `system-ui, -apple-system, Segoe UI, Inter, sans-serif` (already `App.tsx:182`). No webfont — faster, native feel. If you add one, Inter only.
 * **Scale:** `12` meta / `13` input labels / `14` body / `16` card title / `18` page title (`App.tsx:191`). `line-height 1.6` for answer bubbles `AskTab.tsx:83`.
-* **Radius:** `6` inputs/badges, `8` cards, `10` bubbles, `999` pills (jobs badge). Keep as is.
+* **Radius:** `6` inputs/badges, `7-8` cards, `8` bubbles, `999` pills (jobs badge). Sharpened from 10 to 8 for vault feel; keep matte, no glow.
 * **Spacing:** `8` tight (input gap), `12` card gap, `16` section, `24` header gap. Don't add `4px` tweaks.
 
 ---

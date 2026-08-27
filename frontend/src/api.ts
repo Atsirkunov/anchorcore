@@ -133,8 +133,14 @@ export const api = {
   deleteProject: (id: number) => request<{ deleted: boolean }>(`/projects/${id}`, { method: "DELETE" }),
   defaultProject: () => request<Project | null>("/projects/default"),
 
-  listEntities: (params?: { kind?: string }) =>
-    request<Entity[]>(`/entities${params?.kind ? `?kind=${params.kind}` : ""}`),
+  listEntities: (params?: { kind?: string; status?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.kind) q.set("kind", params.kind);
+    if (params?.status) q.set("status", params.status);
+    if (params?.limit) q.set("limit", String(params.limit));
+    const qs = q.toString();
+    return request<Entity[]>(`/entities${qs ? `?${qs}` : ""}`);
+  },
   updateEntity: (id: number, payload: Partial<Pick<Entity, "kind" | "status" | "owner">>) =>
     request<Entity>(`/entities/${id}`, {
       method: "PATCH",
@@ -222,4 +228,6 @@ export const api = {
     }),
   scanPiiSource: (sourceId: number) =>
     request<{ source_id: number; chunks: number; flagged: number }>(`/pii/scan/${sourceId}`, { method: "POST" }),
+  itemPii: (itemId: number) =>
+    request<{ item_id: number; is_pii: boolean; flagged: number; total: number; categories: string[]; matches: { category: string; label: string; match: string }[] }>(`/pii/item/${itemId}`),
 };

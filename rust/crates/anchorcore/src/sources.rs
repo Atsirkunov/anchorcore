@@ -162,7 +162,7 @@ pub async fn create_handler(State(state): State<AppState>, Json(payload): Json<V
         // initial insert with safe config (without secrets) – we need id first to store secrets
         // Insert with empty config first, then update with safe config after storing secrets
         let initial_str = serde_json::to_string(&Value::Object(Default::default())).unwrap();
-        conn.execute("INSERT INTO sources (name, connector, config, label, enabled) VALUES (?1, ?2, ?3, ?4, 1)", rusqlite::params![name, connector, initial_str, label]).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, label, enabled, last_sync_cursor, error_count, created_at) VALUES (?1, ?2, ?3, ?4, 1, '', 0, datetime('now'))", rusqlite::params![name, connector, initial_str, label]).unwrap();
         let id = conn.last_insert_rowid();
         // store secrets and get safe config
         store_secret_fields(&data_dir, id, &mut config_val);

@@ -65,7 +65,7 @@ fn entity_json_from_row(row: &rusqlite::Row) -> rusqlite::Result<Value> {
 
 pub async fn list_handler(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
-    let limit = q.limit.unwrap_or(100).clamp(1, 500);
+    let limit = q.limit.unwrap_or(500).clamp(1, 2000);
     let kind = q.kind.clone();
     let status = q.status.clone();
     let result = tokio::task::spawn_blocking(move || {
