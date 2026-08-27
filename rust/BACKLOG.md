@@ -145,6 +145,21 @@ Status: `todo` | `doing` | `done`. Update this file when you pick/complete a tas
 
 ---
 
+## Phase 12 — v1.0.11 Stone & Sage + doc-review + scale (from 2026-08-27 session)
+
+> All P0/P1 hardening + Rust port shipped. This phase is doc-centric review + scale corpus for website free tier.
+
+| ID | Title | Priority | Est | DoD | Files |
+|---|---|---|---|---|---|
+| R12.1 | Stone & Sage palette | P1 | 0.25d | `theme.ts` `C3 #4A5A52/#F2F0EB` replaces indigo, `design-system.md:17` `docs` + `App.tsx` banner/spinner `SystemTab` | done (`frontend/src/theme.ts:1` `C3`, `docs/design-system.md:17`, `frontend/src/App.tsx:126,199,208,229`, `cargo build` 1.0.11) |
+| R12.2 | Doc-grouped Entities + PII shield | P1 | 0.5d | `EntitiesTab` `Map<item_id>` `Grouped/Flat` default `>200`, `Whole doc` via `GET /entities/{id}/context` + `GET /pii/item/:id` `PII ●` `Reveal` mask `••••`, `Verify all & collapse` → navigable `✓ Verified` | done (`frontend/src/tabs/EntitiesTab.tsx:1` + `frontend/src/api.ts:224` + `rust/crates/anchorcore/src/pii.rs:480` `item_pii_handler` + `src/main.rs:246`) |
+| R12.3 | A dozen review + banner persist + limit | P1 | 0.25d | `classifier` selective `note` anchor + `0.78/0.72` conf, `pipeline` `verified≥0.70`, `1577→12 unverified` backfill, `App.tsx` `localStorage["banner-dismissed"]` + suppress while `running`, `entities limit 2000` `Needs review` flag | done (`rust/crates/anchorcore/src/classifier.rs:283` + `pipeline.rs:368` + `frontend/src/tabs/EntitiesTab.tsx:34` + `frontend/src/App.tsx:30` + `entities.rs:68`) |
+| R12.4 | Business-scale corpus + Rust NOT NULL fixes | P1 | 0.5d | `scripts/build_business_corpus.py` `tech/finance/AI` `800→5k` (`data/business-scale`), fix `sources/jobs/ingested_items/entities/chunks` `NOT NULL` panics (`owner, created_at, last_sync_cursor`) | done (`scripts/build_business_corpus.py:1`, `rust/crates/anchorcore/src/sources.rs:165`, `jobs.rs:88`, `pipeline.rs:233,368,371,400,462`, `retrieval.rs:768`, `cargo build` 1.0.11 `job 6→7` 813 docs) |
+| R12.5 | MCP local without UI (next) | P1 | 0.5d | `mcp` stdio + HTTP `ask/search` against `business-scale` without browser, audited `system_events`, `public_only` gate | todo |
+| R12.6 | Website + free tier (next) | P1 | 1d | `v2v3-scope.md` landing `Personal|Team` `paper #F2F0EB`, `Free while in validation` | todo |
+
+---
+
 ## How to pick a task (agents)
 
 1. Claim `R*.*` by setting `doing` + branch `rust/R2.1`, etc.
