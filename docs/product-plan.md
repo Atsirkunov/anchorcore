@@ -635,23 +635,42 @@ rollback-safe — OR a documented decision to stay on Python.
 
 **Done (B39 thin gate):** migration `b39a0c1` adds `sources.label` (internal|public|sensitive|pii); `SourceCreate/Update` accept + validate it (frontend label select in add/edit forms); provider trust helpers in `status.py` (`cloud_classifier_trusted`/`cloud_embedder_trusted`, `ANCHOR_CLOUD_TRUST=1` for cloud); `Classifier.classify/distill/detect_document_type` take `cloud_trusted` and fall back to rules; pipeline gate records a `system_event` and skips cloud embedding for gated sources. Tests: `tests/test_gate.py` (label plumbing, invalid-label 422, local-trusted, remote-untrusted-until-flag, pii source still ingests). *B30 full model/share/MCP gating + bundled inference remain (needs product input).*
 
+### B40. Stone & Sage palette (P1 — design) — DONE (v1.0.11)
+**Problem:** indigo `#6366f1` reads as chatbot/SaaS `docs/design-system.md:17`, cold for `memory`; app + website need one non-AI vault/archive signal.
+
+**Done:** `C3 #4A5A52 / #F2F0EB` replaces indigo — `frontend/src/theme.ts:1` `C3`, `docs/design-system.md:17` `tokens.dark/light`, `App.tsx:126,199,208,229` banner/spinner `accentAlt #8FA99E`, `SystemTab` `blue→ #7E9AB0`. Build `vite 315kB` + Rust `1.0.11` embedded.
+
+### B41. Doc-grouped Entities + PII shield (P1 — review) — DONE (v1.0.11)
+**Problem:** flat `EntitiesTab.tsx:6` at `1.6k` entities is unreviewable; chunks exposed as review surface; PII hidden in 250-page filing invisible.
+
+**Done:** `EntitiesTab` `Map<item_id, Entity[]>` client-side `Grouped/Flat` default `>200`, `Whole doc` via `GET /entities/{id}/context` `full_text` + `GET /pii/item/:id` `PII ●` `Reveal` mask `••••`, `Verify all & collapse` → navigable `✓ Verified` doc. Chunks fully internal (`chunk_document 1600c` hidden). No migration.
+
+### B42. A dozen review + banner persist (P1 — trust) — DONE (v1.0.11)
+**Problem:** `1577 unverified` is not review — everything looks like a conflict; banner `Load failed` nags while retrying, dismiss resets on refresh; `limit 100` shows `100/1617`.
+
+**Done:** `classifier 0.5→0.78/0.72` selective + `note` anchor gate `classifier.rs:283`, `pipeline verified≥0.70` `pipeline.rs:368`, backfill `1577→12 unverified` (lowest `conf`), `App.tsx:30` `localStorage["banner-dismissed"]` + suppress `failing_sources` while `runningJobs`, `entities limit 100→500/2000` `entities.rs:68` `api.ts:136` `needs_review` `⚠` flag + `avg` sort.
+
+### B43. Business-scale corpus + Rust NOT NULL fixes (P1 — scale) — DONE (v1.0.11)
+**Problem:** `sample/` 10 docs can't prove scale; Rust `NOT NULL` panics `sources/jobs/ingested_items/entities/chunks` block `800→5k` `tech/finance/AI`.
+
+**Done:** `scripts/build_business_corpus.py` `tech/finance/AI` `800→5k` (`data/business-scale` gitignored) `813 docs` `964 entities` live `job 7` + `reclassify 11`; Rust fixes `sources.rs:165` `last_sync_cursor`, `jobs.rs:88` `total`, `pipeline.rs:233,368,371,400,462` `stale/owner/created_at`, `retrieval.rs:768` `cargo build 1.0.11` `vec0` + `chunks` now `73→` growing.
+
 ---
 
 ## Current execution priorities (agreed 2026-08-07 — updated after Aug review, amended for no-UX constraint)
 
-Explicit order — retrieval/answer is DONE, hardening is next. **B32, B17, B18, B15 are DONE** (v1.0.3–v1.0.6); the queue below reflects review findings.
-B30 remains large/cross-cutting and **needs product input before implementation** (see [B30 open question](#b30-data-labeling-piisensitive-gating-of-models-sharing-and-answers-p1-for-pii--v1-risk-p2-rest)); B39 is the thin pre-gate.
+Explicit order — retrieval/answer + hardening + doc-review are DONE (v1.0.10–v1.0.11). **B30 full, B27, B28 skeleton, Rust port shipped**; queue below is pre-website.
 
-> **Hardening & scale (P0/P1) before new connectors. No UX expertise needed for P0 — P0 is pure engineering (proxy/abort/boundary). Visual polish deferred; B37 uses off-the-shelf components so taste is not required.**
+> **Hardening & scale (P0/P1) before new connectors. No UX expertise needed for P0 — P0 is pure engineering. Visual polish via Stone & Sage tokens — taste-free.**
 
-> **UX constraint (owner: no UX/UI background):** B27 (Review context expansion) and any visual redesign are **deprioritized to P2** until validation. B36 and B37 are scoped as engineer-only: B36 fixes bugs with no visual change; B37 decomposition can ship with current dark styles untouched — swapping to `shadcn/ui` is a token mapping, not a design exercise. When real testers complain about a specific screen, fix that screen — no speculative redesign.
+> **UX constraint (owner: no UX/UI background):** Grouped doc view shipped engineer-only (`EntitiesTab` `Map<item_id>` + `PII ●` + `Needs review` filter) — no custom design. When testers complain about a specific screen, fix that screen.
 
 | # | Item | Status | Why here |
 |---|---|---|---|
-| 1 | B32 Graph-based retrieval | ✅ DONE (v1.0.3) | graph walk after RRF → connected entities in context + citations |
-| 2 | B17 Planner→Executor→Synthesis | ✅ DONE (v1.0.4) | tool planner + executor + evidence fusion; who_knows tool |
-| 3 | B18 Distillation | ✅ DONE (v1.0.5) | normalized Q&A units + IDF-gated embedding |
-| 4 | B15 Scoped search / projects | ✅ DONE (v1.0.6) | project bundles of sources; QA scoped via project picker |
+| — | B32 Graph-based retrieval | ✅ DONE (v1.0.3) | graph walk after RRF → connected entities in context + citations |
+| — | B17 Planner→Executor→Synthesis | ✅ DONE (v1.0.4) | tool planner + executor + evidence fusion; who_knows tool |
+| — | B18 Distillation | ✅ DONE (v1.0.5) | normalized Q&A units + IDF-gated embedding |
+| — | B15 Scoped search / projects | ✅ DONE (v1.0.6) | project bundles of sources; QA scoped via project picker |
 | — | B19 newest answer on top | ✅ DONE (v1.0.7) | Ask renders newest-first |
 | — | B3 Dispute tracking | ✅ DONE (v1.0.7) | audit trail + counter; disputed excluded from Q&A |
 | — | B7 Source config editing | ✅ DONE (v1.0.7) | PUT /sources/{id} + edit form; keychain-backed secrets |
@@ -663,14 +682,19 @@ B30 remains large/cross-cutting and **needs product input before implementation*
 | — | B35 Pipeline decomposition | ✅ DONE | chunking.py/hashing.py/distill.py; commit-before-LLM invariant tested |
 | — | B38 Testing uplift | ✅ DONE | vitest + eslint + CI; paginated duplicates; isolated_db fixture |
 | — | B39 PII thin gate | ✅ DONE | sources.label + provider trust; cloud blocked until ANCHOR_CLOUD_TRUST |
-| 5 | **B30 PII gating (full)** | ✅ DONE | labels + provider trust; cloud classify/embed/answer gating (source + chunk); `/qa/public` share-safe scope; PII config + review |
-| 6 | B27 Review context expansion | ✅ DONE | ReviewTab/EntitiesTab neighbour sections + highlight + full-doc |
-| 7 | B28 Google Drive connector | ✅ DONE (skeleton) | Drive API direct ingest (mocked tests); OAuth + mirror polish next |
-| 8 | B22 Jira/Linear validation | **P1** | parity — sandbox fixtures |
-| 9 | B14 MCP agent connectivity | **P1** | see `mcp.md:1` — stdio + HTTP after hardening |
-| 10 | B9 Document type coverage | **P1** | `.docx`/`.pptx`/`.odt` extraction |
-| 11 | B16 who_knows (full) | **P1** | expertise queries — ranking + evidence |
-| 12 | B29 v2/v3 scoping | **P2** | see `v2v3-scope.md` — business/platform direction |
-| 13 | B31 Rust port | **P2** deferred | see `rust-port.md:1` — after vec0 + bundled inference |
+| — | B30 PII gating (full) | ✅ DONE (v1.0.8) | labels + provider trust; cloud classify/embed/answer gating (source + chunk); `/qa/public` share-safe scope; PII config + review |
+| — | B27 Review context expansion | ✅ DONE | ReviewTab/EntitiesTab neighbour sections + highlight + full-doc |
+| — | B28 Google Drive connector | ✅ DONE (skeleton) | Drive API direct ingest (mocked tests); OAuth + mirror polish next |
+| — | B31 Rust port | ✅ DONE (v1.0.10) | `rust/` shipped artifact, `1.0.10` single source `Cargo.toml:6`, honest `110/17` vs Rust |
+| — | B40 Stone & Sage palette | ✅ DONE (v1.0.11) | `C3 #4A5A52 / #F2F0EB` replaces indigo `docs/design-system.md:17` `theme.ts`, banner/spinner `App.tsx` |
+| — | B41 Doc-grouped Entities + PII shield | ✅ DONE (v1.0.11) | `EntitiesTab` `Map<item_id>` `Grouped/Flat` default `>200`, `Whole doc` `GET /entities/{id}/context` + `GET /pii/item/:id` `PII ●` `Reveal`, `Verify all & collapse` → navigable doc |
+| — | B42 A dozen review + banner persist | ✅ DONE (v1.0.11) | `classifier 0.5→0.78/0.72` selective, `pipeline verified≥0.70`, `1577→12 unverified`, `App.tsx` `localStorage["banner-dismissed"]` + suppress while `running`, `Entities` `Needs review` `⚠` flag + `limit 2000` |
+| — | B43 Business-scale corpus | ✅ DONE (v1.0.11) | `scripts/build_business_corpus.py` `tech/finance/AI` `800→5k docs` (`data/business-scale` gitignored) + Rust `NOT NULL` fixes `sources/jobs/ingested_items/entities/chunks` |
+| 1 | **B14 MCP agent connectivity** | **P1** | **never tested local without UI** `mcp.md:1` — stdio + HTTP `ask/search` against `business-scale`, audited `system_events`, `public_only` gate |
+| 2 | B22 Jira/Linear validation | **P1** | sandbox fixtures + `Linear` connector |
+| 3 | B9 Document type coverage | **P1** | `.docx`/`.pptx`/`.odt` extraction |
+| 4 | B16 who_knows (full) | **P1** | expertise ranking + evidence (minimal `who_knows` tool shipped in B17) |
+| 5 | B29 v2/v3 scoping + website | **P1** | `v2v3-scope.md` — landing `Personal|Team` toggle `paper #F2F0EB`, `Free while in validation` |
+| 6 | B28 Drive OAuth polish | **P2** | OAuth browser flow + `data/drive/<name>/` mirror |
 
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md), [design-system.md](./design-system.md)*
