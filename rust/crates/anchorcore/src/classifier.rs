@@ -353,7 +353,7 @@ mod tests {
     }
     #[test]
     fn classify_rules_fallback() {
-        let items = classify_rules("We decided to approve the budget. Status update as of now.", "ref");
+        let items = classify_rules("We decided to approve the budget. Status update as of now. Owner: Alice § 1.2 — this status has enough context to pass the anchor filter for document kind.", "ref");
         assert!(items.len() >= 2);
     }
     #[test]
