@@ -35,7 +35,7 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
   }, [refresh]);
 
   const levelColor = (level: string) =>
-    level === "error" ? theme.red : level === "warning" ? theme.amber : "#93c5fd";
+    level === "error" ? theme.red : level === "warning" ? theme.amber : theme.blue;
 
   return (
     <div>
