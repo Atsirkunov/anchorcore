@@ -40,6 +40,16 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build frontend (for Rust embed)
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
