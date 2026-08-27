@@ -598,6 +598,53 @@ pub async fn decide_handler(
     }
 }
 
+pub async fn item_pii_handler(State(state): State<AppState>, Path(item_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let data_dir = state.data_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let exists: bool = conn.query_row("SELECT 1 FROM ingested_items WHERE id=?1", [item_id], |_| Ok(())).is_ok();
+        if !exists {
+            return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Item not found"}))));
+        }
+        let (disabled, custom) = load_config(&conn);
+        // chunks for this item (direct + via entity)
+        let mut stmt = conn.prepare("SELECT c.id, c.content, c.is_pii, c.pii_categories FROM chunks c LEFT JOIN entities e ON e.id=c.entity_id WHERE c.item_id=?1 OR e.item_id=?1").unwrap();
+        let rows: Vec<(i64, String, i64, String)> = stmt.query_map([item_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().filter_map(|r| r.ok()).collect();
+        let mut flagged = 0;
+        let mut all_cats: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut matches: Vec<Value> = Vec::new();
+        for (_, content, is_pii, pii_cats) in &rows {
+            if *is_pii != 0 { flagged += 1; }
+            if let Ok(cats) = serde_json::from_str::<Vec<String>>(pii_cats) {
+                for c in cats { if c != "_dismissed" { all_cats.insert(c); } }
+            }
+            // live scan for display highlight (strong matches)
+            for m in scan_text(content, &disabled, &custom).into_iter().filter(|m| m.strong) {
+                all_cats.insert(m.category.clone());
+                matches.push(serde_json::json!({"category": m.category, "label": m.label, "match": m.m}));
+            }
+        }
+        let is_pii = flagged > 0 || !matches.is_empty();
+        // dedupe matches by match string
+        let mut seen = std::collections::HashSet::new();
+        let mut deduped = Vec::new();
+        for m in matches { let s = m["match"].as_str().unwrap_or("").to_string(); if seen.insert(s) { deduped.push(m); } }
+        Ok(serde_json::json!({
+            "item_id": item_id,
+            "is_pii": is_pii,
+            "flagged": flagged,
+            "total": rows.len(),
+            "categories": all_cats.into_iter().collect::<Vec<_>>(),
+            "matches": deduped.into_iter().take(20).collect::<Vec<_>>()
+        }))
+    }).await.unwrap();
+    match result {
+        Ok(v) => Ok(Json(v)),
+        Err(e) => Err(e),
+    }
+}
+
 pub async fn scan_handler(State(state): State<AppState>, Path(source_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {

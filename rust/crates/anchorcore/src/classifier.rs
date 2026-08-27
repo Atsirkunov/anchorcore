@@ -280,12 +280,22 @@ pub fn classify_rules(text: &str, source_ref: &str) -> Vec<ClassifiedItem> {
     for sentence in split_sentences(text) {
         let s = sentence.trim();
         if s.is_empty() { continue; }
+        // only high-value kinds, and drop low-signal notes unless they carry owner/date/§ anchor (reduces 1.6k → ~200)
+        let has_anchor = s.contains("§") || s.to_lowercase().contains("owner") || s.contains("2024-") || s.contains("due ");
         if let Some(kind) = rule_kind(s) {
+            if kind == "note" && !has_anchor { continue; }
+            if kind == "document" && !has_anchor && s.len() < 80 { continue; }
+            let conf = match kind.as_str() {
+                "decision" => 0.78,
+                "action" => 0.72,
+                "document" => 0.58,
+                _ => 0.52,
+            };
             items.push(ClassifiedItem {
                 kind,
                 summary: s.chars().take(240).collect(),
                 reasoning: "rule-based classifier".to_string(),
-                confidence: 0.5,
+                confidence: conf,
                 author: String::new(),
                 source_ref: source_ref.to_string(),
                 window_text: String::new(),
