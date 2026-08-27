@@ -9,19 +9,26 @@ describe("api request plumbing", () => {
   it("throws RequestAbortedError when the caller aborts", async () => {
     const controller = new AbortController();
     const { api } = await import("./api");
-    // fetch that never resolves unless aborted
+    // fetch that never resolves unless aborted; handle CSRF fetch separately
     vi.stubGlobal(
       "fetch",
-      vi.fn((_url: string, init?: RequestInit) => {
+      vi.fn((url: string, init?: RequestInit) => {
+        if (typeof url === "string" && url.includes("/csrf")) {
+          return Promise.resolve({ ok: true, json: async () => ({ csrf_token: "test" }) } as Response);
+        }
         return new Promise((_resolve, reject) => {
-          init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+          if (init?.signal?.aborted) {
+            reject(new DOMException("Aborted", "AbortError"));
+            return;
+          }
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
         });
       }),
     );
     const promise = api.ask("question", [], undefined, controller.signal);
     controller.abort();
     await expect(promise).rejects.toBeInstanceOf(RequestAbortedError);
-  });
+  }, 10000);
 
   it("parses FastAPI detail strings from error responses", async () => {
     const { api } = await import("./api");

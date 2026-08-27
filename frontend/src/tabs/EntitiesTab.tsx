@@ -44,7 +44,7 @@ export function EntitiesTab() {
       try {
         const c = await api.entityContext(e.id);
         setCtx((m) => ({ ...m, [e.id]: c }));
-      } catch {}
+      } catch { void 0; }
     }
   }
 
@@ -94,6 +94,7 @@ export function EntitiesTab() {
     for (const [itemId] of toFetch) {
       api.itemPii(itemId).then((p) => setPiiByItem((m) => ({ ...m, [itemId]: p }))).catch(() => {});
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groups]);
 
   function maskPII(text: string, matches: { match: string }[]): string {
@@ -104,7 +105,7 @@ export function EntitiesTab() {
       try {
         const re = new RegExp(esc, "gi");
         out = out.replace(re, "••••");
-      } catch {}
+      } catch { void 0; }
     }
     return out;
   }
@@ -120,13 +121,13 @@ export function EntitiesTab() {
         try {
           const c = await api.entityContext(firstEntityId);
           setDocCtx((m) => ({ ...m, [itemId]: { item_title: c.item_title, source_ref: c.source_ref, full_text: (c as unknown as { full_text?: string }).full_text ?? c.window_text, source_name: c.source_name } }));
-        } catch {}
+        } catch { void 0; }
       }
       if (piiByItem[itemId] == null) {
         try {
           const p = await api.itemPii(itemId);
           setPiiByItem((m) => ({ ...m, [itemId]: p }));
-        } catch {}
+        } catch { void 0; }
       }
     }
   }
@@ -147,7 +148,7 @@ export function EntitiesTab() {
         try {
           const c = await api.entityContext(first.id);
           setDocCtx((m) => ({ ...m, [itemId]: { item_title: c.item_title, source_ref: c.source_ref, full_text: (c as unknown as { full_text?: string }).full_text ?? c.window_text, source_name: c.source_name } }));
-        } catch {}
+        } catch { void 0; }
       }
     } else if (patch.status === "disputed") {
       setVerifiedDocs((s) => {

@@ -144,7 +144,6 @@ impl Scheduler {
 mod tests {
     use super::*;
     use crate::jobs::JobManager;
-    use std::sync::Arc;
     use tempfile::tempdir;
     #[test]
     fn reload_idempotent() {
