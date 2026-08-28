@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AnchorCore — Your memory, finally searchable.</title>
+  <meta name="description" content="Connect folders, Jira, Linear. Ask what was decided about X, and why — get a cited answer. Private by default, on your machine." />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <!-- tweakable copy lives in src/main.ts + this HTML — no build system magic -->
+  <header class="site-header">
+    <div class="wrap">
+      <div class="brand">AnchorCore</div>
+      <nav class="nav">
+        <a href="#how">How it works</a>
+        <a href="#demo">Demo</a>
+        <a href="#roadmap">Roadmap</a>
+        <a class="nav-cta" href="#download">Download</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- Hero — tweak headline/sub/track in src/main.ts -->
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <div class="eyebrow">LOCAL • PRIVATE • CITED</div>
+          <h1 id="hero-title">Your memory — finally searchable.</h1>
+          <p id="hero-sub" class="sub">Connect folders, Jira, Linear. Ask “what was decided about X, and why?” — get a cited answer that shows exactly where it came from. Private by default, on your machine.</p>
+
+          <div class="track-toggle" role="tablist" aria-label="Personal or Team">
+            <button data-track="personal" class="toggle active" role="tab" aria-selected="true">Personal</button>
+            <button data-track="team" class="toggle" role="tab" aria-selected="false">Team</button>
+          </div>
+          <p id="track-proof" class="proof">300-page PDF? Page 250 still cited. Your second brain, not another chatbot.</p>
+
+          <div class="cta" id="download">
+            <a class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download — Free while in validation</a>
+            <a class="btn secondary" href="#demo">See 60-second demo</a>
+          </div>
+          <div class="cta-note">macOS & Windows • one file, no Docker • data stays in <code>~/.anchorcore</code></div>
+
+          <form class="capture" onsubmit="return false">
+            <input id="email" type="email" placeholder="Work email for early access" aria-label="Work email" />
+            <button class="btn small" onclick="capture()">Notify me</button>
+          </form>
+          <div id="capture-msg" class="capture-msg"></div>
+        </div>
+
+        <div class="shot">
+          <div class="shot-bar">Ask your memory — cited answer</div>
+          <div class="shot-body">
+            <div class="q">What was decided about DVCA movements and why?</div>
+            <div class="a">DVCA movements are restricted to settlement-only. Decision excluded incoming transfers due to reconciliation complexity. Cited from PRD v3 §4.25 and planning notes.</div>
+            <div class="cites">
+              <div class="cite"><span class="bar" style="background:#4A5A52"></span><div><b>PRD v3 §4.25 — DVCA</b> <small>decision · 82%</small><p>“Security Transfers MVP excludes incoming transfers — reconciliation complexity.”</p><small>prd-v3.pdf · chunk 12</small></div></div>
+              <div class="cite"><span class="bar" style="background:#9A8B7A"></span><div><b>Planning notes 11-02</b> <small>note · owner: Sarah</small><p>“Sarah owns billing migration — supersedes DVCA flow.”</p><small>meetings/planning.md · graph 1 hop</small></div></div>
+            </div>
+          </div>
+          <div class="shot-foot">Stone & Sage — paper #F2F0EB · sage #4A5A52 · citations are the brand</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Problem → Solution -->
+    <section class="alt">
+      <div class="wrap">
+        <h2>Fragmented knowledge → lost reasoning → AnchorCore</h2>
+        <div class="cols">
+          <div class="col"><h3>Fragmented</h3><p>Slack, Jira, Confluence, Drive, PDFs — decisions live everywhere, no single memory.</p></div>
+          <div class="col"><h3>Lost reasoning</h3><p>Not what was decided, but <em>why</em>. Context windows drop it, people leave with it.</p></div>
+          <div class="col"><h3>AnchorCore</h3><p>Entities + provenance + citations. Every answer shows source + section, not a guess.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- How it works -->
+    <section id="how">
+      <div class="wrap">
+        <h2>How it works</h2>
+        <div class="steps">
+          <div class="step"><span>1</span><h4>Connect</h4><p>Folder, Jira, Linear. Watcher + incremental cursor, hash dedup.</p><code>Sources → extract → hash</code></div>
+          <div class="step"><span>2</span><h4>Classify</h4><p>Doc-aware: <code>standards→note</code> only, no spurious decisions. Window context kept for review.</p><code>16k windows → entities</code></div>
+          <div class="step"><span>3</span><h4>Ask, cited</h4><p>Hybrid <code>vec0+F T S RRF</code> + graph 1–2 hops → LLM with citations. <code>who owns X?</code> via <code>who_knows</code>.</p><code>Ask → cited answer</code></div>
+        </div>
+        <div class="code">Sources → extract → classify (doc_type) → embed (vec0 768d, FTS5) → RRF k=60 + age decay + graph → cited answer</div>
+      </div>
+    </section>
+
+    <!-- Trust strip -->
+    <section class="trust">
+      <div class="wrap trust-grid">
+        <div>🔒 Private by default</div>
+        <div>🔑 OS keychain</div>
+        <div>📎 Every answer cited</div>
+        <div>🏠 On your machine</div>
+      </div>
+      <p class="wrap small">No data leaves your machine unless you add a cloud key. <code>sensitive/pii</code> sources stay local (<code>ANCHOR_CLOUD_TRUST=1</code> to confirm). <code>/qa/public</code> + <code>MCP</code> never share <code>non-public</code>.</p>
+    </section>
+
+    <!-- Live demo -->
+    <section id="demo" class="alt">
+      <div class="wrap">
+        <h2>60-second demo</h2>
+        <ol class="demo">
+          <li><b>Connect</b> <code>sample/</code> (10 files → 47 entities) or <code>data/business-scale</code> (813 docs → 964 entities).</li>
+          <li>Ask: <code>What was decided about security transfers, and why?</code> → cited <code>PRD v3 §4.2</code>.</li>
+          <li>Follow-up: <code>show the movements for it</code> → <code>security-transfers-spec.md</code> steps 1–6.</li>
+          <li>Ask: <code>Who owns billing migration?</code> → <code>Sarah</code> + graph supersedes.</li>
+        </ol>
+        <p class="small">Run: <code>cargo run -p anchorcore -- --port 8000</code> then <code>http://127.0.0.1:8000</code> → Sources → Local folder → <code>sample</code> → Sync → Ask. Or headless: <code>ANCHOR_BACKEND_URL=http://127.0.0.1:8000 cargo run -p anchorcore --bin anchorcore-mcp</code> → <code>search/ask</code> without browser.</p>
+      </div>
+    </section>
+
+    <!-- Roadmap -->
+    <section id="roadmap">
+      <div class="wrap">
+        <h2>Roadmap — Team memory, Slack, Drive — coming soon</h2>
+        <p>Join the <code id="roadmap-track">personal</code> list for `hosted` free tier (no-install demo) + `Drive` OAuth + `Slack` decisions.</p>
+        <form class="capture" onsubmit="return false">
+          <input id="email2" type="email" placeholder="Work email" aria-label="Work email" />
+          <button class="btn small" onclick="capture2()">Join waitlist</button>
+        </form>
+        <div id="capture2-msg" class="capture-msg"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap foot">
+      <div><b>AnchorCore</b> v1 local. Free during validation. Flat license at pilot €25/mo. <a href="https://github.com/Atsirkunov/anchorcore">GitHub</a></div>
+      <div class="mono">Stone & Sage — paper #F2F0EB · sage #4A5A52 · system-ui, -apple-system, Inter</div>
+    </div>
+  </footer>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
