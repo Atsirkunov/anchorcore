@@ -1,6 +1,7 @@
 pub mod folder;
 pub mod gdrive;
 pub mod jira;
+pub mod linear;
 pub mod watcher;
 
 use chrono::{DateTime, Utc};
