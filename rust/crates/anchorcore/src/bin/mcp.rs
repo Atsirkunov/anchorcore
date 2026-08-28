@@ -24,6 +24,27 @@ fn http_client() -> &'static reqwest::Client {
     })
 }
 
+static CSRF_TOKEN: OnceLock<tokio::sync::Mutex<Option<String>>> = OnceLock::new();
+fn csrf_cache() -> &'static tokio::sync::Mutex<Option<String>> {
+    CSRF_TOKEN.get_or_init(|| tokio::sync::Mutex::new(None))
+}
+async fn get_csrf_token() -> Option<String> {
+    {
+        let guard = csrf_cache().lock().await;
+        if let Some(t) = &*guard { return Some(t.clone()); }
+    }
+    // fetch fresh
+    let base = backend_url();
+    let url = format!("{}/csrf", base.trim_end_matches('/'));
+    let resp = http_client().get(&url).send().await.ok()?;
+    if !resp.status().is_success() { return None; }
+    let v: Value = resp.json().await.ok()?;
+    let token = v.get("csrf_token")?.as_str()?.to_string();
+    let mut guard = csrf_cache().lock().await;
+    *guard = Some(token.clone());
+    Some(token)
+}
+
 fn backend_url() -> String {
     std::env::var("ANCHOR_BACKEND_URL").unwrap_or_else(|_| DEFAULT_URL.to_string())
 }
@@ -46,6 +67,12 @@ async fn http_call(method: &str, path: &str, body: Option<Value>) -> Result<Valu
     }
     if !token.is_empty() {
         req = req.header("Authorization", format!("Bearer {}", token));
+    }
+    // CSRF for local POST when auth disabled (R7.1)
+    if method == "POST" {
+        if let Some(csrf) = get_csrf_token().await {
+            req = req.header("X-CSRF-Token", csrf);
+        }
     }
     // token never appears in URL/path, but redact base if it ever contains token param
     let resp = req.send().await.map_err(|e| format!("backend unreachable ({}). Is the app running?", e))?;
