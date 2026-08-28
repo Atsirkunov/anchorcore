@@ -11,41 +11,38 @@
 `.github/workflows/release.yml`, which:
 
 1. Builds the frontend (`npm run build`)
-2. Builds the Windows exe (PyInstaller, Windows runner)
-3. Builds the macOS app (PyInstaller, macOS runner) + ad-hoc signs it
-4. Attaches both to the GitHub Release for that tag
+2. Builds Rust `AnchorCore-rust-*` (`cargo build --release`, `frontend/dist` embedded via `include_dir!`, `codesign` on macOS)
+3. Attaches to the GitHub Release for that tag (Python `dist/AnchorCore.*` legacy kept for `hosting` reference only)
 
-## Release checklist
+## Release checklist (Rust — shipped 1.0.11)
 
-1. **Verify locally** (Windows, the dev machine):
-   - [ ] `python -m pytest tests -q` from `backend/` — full suite green
-   - [ ] `npm run build` in `frontend/` — TypeScript + Vite clean
-   - [ ] Sanity: boot the app, ask a question, check the Settings tab
-2. **Bump the version** (in `backend/app/routers/system.py` `APP_VERSION`
-   and `backend/app/main.py` FastAPI `version=`)
-3. **Update docs** — backlog items marked done; changelog if we keep one
-4. **Tag and push**:
+1. **Verify locally:**
+   - [ ] `cargo test -p anchorcore` (47) + `cargo check 0` — Rust green
+   - [ ] `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q` — conformance `110/17`
+   - [ ] `npm run build` + `npm run lint` + `npm run test` in `frontend/` — TypeScript + Vite clean
+   - [ ] Sanity: `cargo run -p anchorcore -- --port 8000` → ask a question, check Settings
+2. **Bump the version** — edit `rust/Cargo.toml:6` `workspace.package.version` → `python scripts/sync_version.py` (writes `backend/app/config.py:11` for `hosting`)
+3. **Update docs** — backlog items marked `DONE`; handover `docs/handover-*.md`
+4. **Tag and push:**
    ```
-   git tag v0.x.0
-   git push origin v0.x.0
+   git tag v1.0.11
+   git push origin v1.0.11
    ```
-5. **Verify the Release** (github.com → Releases): both artifacts present;
-   download the Windows exe and smoke-test it on a clean machine
+5. **Verify the Release** (github.com → Releases): `AnchorCore-rust-*` present; smoke `curl /health` on clean machine
 6. **Hand off** — testers get the GitHub Release URL, not a repo checkout
 
 ## Why rebuild is mandatory
 
-`packaging.spec` bundles `frontend/dist` into the exe. The backend serves
-the bundled copy, so a stale exe shows stale UI even though the backend code
-on disk is current (classic B23 symptom: "API key field missing" while the
-source had it). The release workflow makes rebuilds automatic instead of
-remembered.
+Rust binary embeds `frontend/dist` via `include_dir!` at compile time (`rust/crates/anchorcore/src/frontend.rs:1`). A stale binary shows stale UI even though source has it (classic B23 symptom: "API key field missing"). `release.yml` makes rebuilds automatic.
 
 ## Manual rebuild (fallback, dev machine)
 
-```powershell
-.\build.ps1          # Windows: dist/AnchorCore.exe
-./build.sh           # macOS: dist/AnchorCore (ad-hoc signed)
+```bash
+cargo build --release -p anchorcore
+# artifact: rust/target/release/anchorcore (9.8M)
+# legacy Python (hosting only):
+.\build.ps1          # Windows: dist/AnchorCore.exe (deprecated)
+./build.sh           # macOS: dist/AnchorCore (ad-hoc signed, deprecated)
 ```
 
 ## Troubleshooting
