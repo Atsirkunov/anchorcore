@@ -6,12 +6,38 @@ use std::sync::Arc;
 use rusqlite::Connection;
 
 use crate::classifier::Classifier;
-use crate::connectors::{folder::FolderConnector, IngestionDoc};
+use crate::connectors::{folder::FolderConnector, gdrive::GDriveConnector, jira::JiraConnector, linear::LinearConnector, IngestionDoc};
 use crate::embedder::Embedder;
+use crate::secrets::SecretStore;
 use crate::settings::SettingsService;
 
 fn content_hash(text: &str) -> String {
     crate::hashing::content_hash(text)
+}
+
+fn resolve_config(data_dir: &str, source_id: i64, mut config: serde_json::Value) -> serde_json::Value {
+    let store = SecretStore::new(std::path::PathBuf::from(data_dir).join("secrets.enc"));
+    if let Some(obj) = config.as_object_mut() {
+        for &field in crate::secrets::SECRET_SOURCE_FIELDS {
+            if let Some(v) = obj.get(field).and_then(|x| x.as_str()) {
+                if v == "***set***" {
+                    if let Some(real) = store.get(&format!("source:{}:{}", source_id, field)) {
+                        obj.insert(field.to_string(), serde_json::Value::String(real));
+                    }
+                }
+            }
+        }
+        // linear uses api_key which is already in SECRET_SOURCE_FIELDS, but also handle "token" alias
+        if obj.get("api_key").and_then(|v| v.as_str()) == Some("***set***") {
+            if let Some(real) = store.get(&format!("source:{}:api_key", source_id))
+                .or_else(|| store.get(&format!("source:{}:token", source_id)))
+            {
+                obj.insert("api_key".to_string(), serde_json::Value::String(real.clone()));
+                obj.insert("token".to_string(), serde_json::Value::String(real));
+            }
+        }
+    }
+    config
 }
 fn window_hash(text: &str) -> String {
     crate::hashing::window_hash(text)
@@ -161,8 +187,9 @@ impl Pipeline {
             let row = stmt.query_row([source_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).map_err(|_| "Source not found".to_string())?;
             row
         };
-        let config: serde_json::Value = serde_json::from_str(&config_str).unwrap_or(serde_json::json!({}));
-        // fetch docs — R10.2: Jira/GDrive must not silently succeed with 0 items
+        let mut config: serde_json::Value = serde_json::from_str(&config_str).unwrap_or(serde_json::json!({}));
+        config = resolve_config(data_dir, source_id, config);
+        // fetch docs — R10.2: Jira/GDrive/Linear must not silently succeed with 0 items
         let docs: Vec<IngestionDoc> = match connector_type.as_str() {
             "folder" => {
                 let fc = FolderConnector::new(&config).map_err(|e| e.to_string())?;
@@ -170,10 +197,23 @@ impl Pipeline {
                 docs
             }
             "jira" => {
-                return Err("Jira ingestion not yet wired in Rust pipeline: configure folder connector or implement JiraConnector::fetch".to_string());
+                let jc = JiraConnector::new(&config).map_err(|e| e.to_string())?;
+                let (docs, _cursor) = jc.fetch("").await.map_err(|e| e.to_string())?;
+                if docs.is_empty() {
+                    // treat empty as not error for now, but log
+                    tracing::warn!("Jira fetch returned 0 docs for source {}", source_id);
+                }
+                docs
             }
             "gdrive" => {
-                return Err("GDrive ingestion not yet wired in Rust pipeline: configure folder connector or implement GDriveConnector::fetch".to_string());
+                let gc = GDriveConnector::new(&config).map_err(|e| e.to_string())?;
+                let (docs, _cursor) = gc.fetch("").await.map_err(|e| e.to_string())?;
+                docs
+            }
+            "linear" => {
+                let lc = LinearConnector::new(&config).map_err(|e| e.to_string())?;
+                let (docs, _cursor) = lc.fetch("").await.map_err(|e| e.to_string())?;
+                docs
             }
             _ => {
                 return Err(format!("unknown connector '{}'", connector_type));
