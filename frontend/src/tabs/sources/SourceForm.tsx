@@ -102,7 +102,7 @@ function JiraProjectPicker({
   );
 }
 
-/** B37: the "add source" form (folder, Jira or Drive), extracted from SourcesTab. */
+/** B37: the "add source" form (folder, Jira, Linear or Drive), extracted from SourcesTab. */
 export function SourceForm({ onAdded }: { onAdded: () => void }) {
   const [connector, setConnector] = useState("folder");
   const [name, setName] = useState("");
@@ -110,6 +110,7 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
   const [label, setLabel] = useState("internal");
   const [jira, setJira] = useState({ base_url: "", email: "", token: "", project: "" });
   const [gdrive, setGdrive] = useState({ folder_id: "", token: "" });
+  const [linear, setLinear] = useState({ api_key: "", team: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -122,12 +123,15 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
           ? { path }
           : connector === "gdrive"
             ? { folder_id: gdrive.folder_id, token: gdrive.token }
-            : { base_url: jira.base_url, email: jira.email, token: jira.token, project: jira.project };
+            : connector === "linear"
+              ? { api_key: linear.api_key, team: linear.team }
+              : { base_url: jira.base_url, email: jira.email, token: jira.token, project: jira.project };
       await api.createSource({ connector, name, config, label });
       setName("");
       setPath("");
       setJira({ base_url: "", email: "", token: "", project: "" });
       setGdrive({ folder_id: "", token: "" });
+      setLinear({ api_key: "", team: "" });
       setLabel("internal");
       onAdded();
     } catch (e) {
@@ -143,6 +147,7 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
         <select value={connector} onChange={(e) => setConnector(e.target.value)} style={commonStyles.input}>
           <option value="folder">Local folder</option>
           <option value="jira">Jira</option>
+          <option value="linear">Linear</option>
           <option value="gdrive">Google Drive</option>
         </select>
         <input style={commonStyles.input} placeholder="Source name" value={name} onChange={(e) => setName(e.target.value)} />
@@ -153,6 +158,12 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
             <input style={commonStyles.input} placeholder="Drive folder ID (from URL …/folders/…)" value={gdrive.folder_id} onChange={(e) => setGdrive({ ...gdrive, folder_id: e.target.value })} />
             <input style={commonStyles.input} type="password" placeholder="OAuth access token (Bearer)" value={gdrive.token} onChange={(e) => setGdrive({ ...gdrive, token: e.target.value })} />
             <div style={{ fontSize: 12, color: theme.textDim }}>Needs a Google Cloud OAuth token — see docs/sample-dataset.md or hosting/README for setup. Token is stored in OS keychain.</div>
+          </>
+        ) : connector === "linear" ? (
+          <>
+            <input style={commonStyles.input} type="password" placeholder="Linear API key (lin_api_...)" value={linear.api_key} onChange={(e) => setLinear({ ...linear, api_key: e.target.value })} />
+            <input style={commonStyles.input} placeholder="Team key, e.g. ENG or ENG,PM" value={linear.team} onChange={(e) => setLinear({ ...linear, team: e.target.value })} />
+            <div style={{ fontSize: 12, color: theme.textDim }}>Find API key at linear.app/settings/api · Team key is the 2–3 letter prefix (e.g. ENG). Token stored in OS keychain.</div>
           </>
         ) : (
           <>
@@ -199,6 +210,10 @@ export function SourceEditForm({
     folder_id: config.folder_id ?? "",
     token: config.token ?? "",
   });
+  const [editLinear, setEditLinear] = useState({
+    api_key: config.api_key ?? config.token ?? "",
+    team: config.team ?? config.project ?? "",
+  });
   const [error, setError] = useState<string | null>(null);
 
   async function saveEdit() {
@@ -213,6 +228,8 @@ export function SourceEditForm({
         payload.config = { path: editPath };
       } else if (source.connector === "gdrive") {
         payload.config = stripPlaceholders({ folder_id: editGdrive.folder_id, token: editGdrive.token }) as Record<string, string>;
+      } else if (source.connector === "linear") {
+        payload.config = stripPlaceholders({ api_key: editLinear.api_key, team: editLinear.team }) as Record<string, string>;
       } else {
         // strip the "***set***" token placeholder so it never overwrites the
         // stored secret (B36: shared helper with SettingsTab)
@@ -240,6 +257,17 @@ export function SourceEditForm({
             value={editGdrive.token}
             onChange={(e) => setEditGdrive({ ...editGdrive, token: e.target.value })}
           />
+        </>
+      ) : source.connector === "linear" ? (
+        <>
+          <input
+            style={commonStyles.input}
+            type="password"
+            placeholder={editLinear.api_key === "***set***" ? "•••••••• (stored — type to replace)" : "Linear API key"}
+            value={editLinear.api_key}
+            onChange={(e) => setEditLinear({ ...editLinear, api_key: e.target.value })}
+          />
+          <input style={commonStyles.input} placeholder="Team key, e.g. ENG or ENG,PM" value={editLinear.team} onChange={(e) => setEditLinear({ ...editLinear, team: e.target.value })} />
         </>
       ) : (
         <>
