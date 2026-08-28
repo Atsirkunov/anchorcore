@@ -1,13 +1,12 @@
 # AnchorCore — Architecture Overview (v1.0)
 
-> Locked through structured product/architecture drilldown (13 decisions).
-> Stack: **FastAPI · React (Vite) · SQLite (local) / Postgres (hosted `hosting/`) + sqlite-vec/vec0 + FTS5 · Ollama · BYO cloud LLM APIs** — env-driven via `ANCHOR_DATABASE_URL`
+> Stack: **Rust (Axum) · React (Vite) · SQLite (local, sqlite-vec vec0 + FTS5) / Postgres (hosted `hosting/` via Python, `pgvector/pg16`) + Ollama · BYO cloud LLM APIs** — env-driven via `ANCHOR_DATABASE_URL`. **Rust is shipped (1.0.11, `rust/Cargo.toml:6` single source); Python `backend/` is deprecated except `hosting/`** per `R10.7`.
 
 ---
 
 ## 1. Runtime Model: Local-First (Plex-Style), Hosted Env-Driven
 
-One local process = the entire product. No Docker, no sidecar services, no setup. Hosted (`hosting/` Docker + Postgres `pgvector/pg16`) is the **same FastAPI image, env-driven** via `ANCHOR_DATABASE_URL` — SQLite FTS5/vec0 triggers skip on Postgres (fallback to Python scan). See `hosting/README.md` + `docs/v2v3-scope.md:3`.
+One local process = the entire product. No Docker, no sidecar services, no setup. **Local:** Rust binary `anchorcore` (`rust/target/release/anchorcore`, `frontend/dist` embedded, SQLite `vec0` + FTS5). **Hosted (`hosting/` Docker + Postgres `pgvector/pg16`) stays Python FastAPI image, env-driven** via `ANCHOR_DATABASE_URL` — SQLite FTS5/vec0 triggers skip on Postgres (fallback to scan). See `hosting/README.md` + `docs/v2v3-scope.md:3`. `backend/` is deprecated except for `hosting` and conformance.
 
 ## 2. System Diagram
 
@@ -290,17 +289,17 @@ erDiagram
 | Container | Responsibility | Tech |
 |---|---|---|
 | Web UI | Connect sources, project scoping, review queue (B27 expanded context), PII review, Q&A chat, model settings | React SPA (Vite, TS, 7 tabs incl PII) |
-| API | All endpoints, orchestration, config | FastAPI (env-driven) |
-| Entity Store | Entities, provenance, window context, sync state | SQLite local / Postgres hosted + SQLAlchemy |
-| Vector Store | Chunk embeddings + similarity search | sqlite-vec vec0 (`vec_chunks`, B33) same file; pgvector/pgvector image for hosted (Python-scan fallback on Postgres) |
+| API | All endpoints, orchestration, config | **Rust Axum (shipped)** — FastAPI `backend/` deprecated except `hosting` |
+| Entity Store | Entities, provenance, window context, sync state | SQLite local (Rust `rusqlite`) / Postgres hosted + SQLAlchemy (Python legacy) |
+| Vector Store | Chunk embeddings + similarity search | sqlite-vec vec0 (`vec_chunks`, B33) same file (Rust static); pgvector image for hosted (Python-scan fallback on Postgres) |
 | Keyword Store | FTS5 bm25 for hybrid retrieval | SQLite FTS5 (`chunks_fts`, trigger-synced; skipped on Postgres) |
-| Classifier | Doc-type detection + entity extraction | Ollama or cloud OpenAI-compatible + rule fallback |
-| Embedder | Chunk embeddings | Ollama or cloud OpenAI-compatible |
-| Answer Engine | Planner (tool selection) → Executor (hybrid + who_knows) → RRF fusion → graph walk → cited answer | BYO cloud model or Ollama |
-| Retrieval (retrievers) | Vector cosine + FTS5 bm25, who_knows owner/author ranking, `relationships` graph walk (B32) | sqlite-vec + FTS5 + SQL |
-| Job Manager | Background sync/reclassify + cancel | asyncio tasks + `jobs` table |
-| Settings Service | Runtime-mutable model config | `app_settings` table + SecretStore |
-| Secret Store | Credentials (Jira token, model keys) | OS Keychain via `keyring` + encrypted-file fallback |
+| Classifier | Doc-type detection + entity extraction | Ollama or cloud OpenAI-compatible + rule fallback (Rust `classifier.rs` / Python `classifier.py` deprecated) |
+| Embedder | Chunk embeddings | Ollama or cloud OpenAI-compatible (Rust `embedder.rs`) |
+| Answer Engine | Planner (tool selection) → Executor (hybrid + who_knows) → RRF fusion → graph walk → cited answer | BYO cloud model or Ollama (Rust `answer.rs`/`retrieval.rs`) |
+| Retrieval (retrievers) | Vector cosine + FTS5 bm25, who_knows owner/author ranking, `relationships` graph walk (B32) | sqlite-vec + FTS5 + SQL (Rust) |
+| Job Manager | Background sync/reclassify + cancel | `jobs` table, `MAX_CONCURRENT=2` (Rust `jobs.rs` / Python `jobs.py` deprecated) |
+| Settings Service | Runtime-mutable model config | `app_settings` table + SecretStore (Rust `settings.rs`) |
+| Secret Store | Credentials (Jira token, model keys) | OS Keychain via `keyring` + encrypted-file fallback (Rust `secrets.rs`) |
 
 ## 7. Security
 

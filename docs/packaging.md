@@ -1,51 +1,42 @@
 # AnchorCore — Packaging Plan
 
 > Goal: ship AnchorCore as a runnable app a non-developer can launch.
-> Status: **Windows + macOS implemented (B20/B24)** — `dist/AnchorCore.exe` (Win,
-> windowed — no console window) and `dist/AnchorCore.app` (macOS, ad-hoc signed,
-> windowed — no Terminal window).
+> Status: **Rust shipped (1.0.11, B31)** — `rust/target/release/anchorcore` single binary (`frontend/dist` embedded via `include_dir!`, `9.8M`, ad-hoc `codesign`) is the local artifact. **Python `backend/` PyInstaller (`packaging.spec`) is deprecated** — keep for `hosting/` reference only. Legacy `dist/AnchorCore.exe/.app` (B20/B24) remain documented for history.
 
 ---
 
-## 1. What We're Shipping (current)
+## 1. What We're Shipping (current — Rust)
 
 | Piece | Form | Notes |
 |---|---|---|
-| API backend | Python + FastAPI (uvicorn in-process) | Single-file exe via PyInstaller |
-| UI | Vite static build (`frontend/dist`) | Bundled into the exe; served at `127.0.0.1:8000` |
-| Classifier/embed model | External Ollama | Auto-started by the exe; models pulled via Settings/sync |
-| Data | SQLite + sqlite-vec | Per-user: `~/.anchorcore` (frozen mode) |
+| API backend | **Rust Axum** (single binary) | `cargo build --release -p anchorcore` → `rust/target/release/anchorcore` (`frontend/dist` embedded) |
+| UI | Vite static build (`frontend/dist`) | Embedded via `rust/crates/anchorcore/src/frontend.rs:1` `include_dir!`; served at `127.0.0.1:8000` |
+| Classifier/embed model | External Ollama | Auto-started; models pulled via Settings/sync |
+| Data | SQLite + sqlite-vec `vec0` | Per-user: `~/.anchorcore` |
+| Legacy Python | FastAPI PyInstaller `dist/AnchorCore.*` `packaging.spec` | **Deprecated** — keep for `hosting/` only |
 
-## 2. Building (Windows)
-
-One command from the repo root:
-
-```powershell
-.\build.ps1
-```
-
-Steps it runs: `npm run build` → ensure venv + pyinstaller → `pyinstaller packaging.spec`
-→ `dist/AnchorCore/` (onedir folder) → zip → `dist/AnchorCore-windows.zip`.
-
-Spec details (`packaging.spec`):
-- Bundles `frontend/dist` → `_MEIPASS/frontend_dist` (mounted by `main.py` when frozen)
-- Bundles `backend/alembic/` + `alembic.ini` → startup migrations work
-- Collects the `sqlite_vec` native DLL (PyInstaller doesn't auto-find it)
-- **`console=False`** — the exe is a GUI-subsystem app, so no cmd window opens
-- Entry: `backend/run_app.py` — sets `ANCHOR_DATA_DIR=~/.anchorcore` when frozen,
-  auto-starts the local Ollama server, opens the browser, boots uvicorn
-
-## 3. Building (macOS)
+## 2. Building (Rust — shipped)
 
 One command from the repo root:
 
 ```bash
-./build.sh
+npm run build && cargo build --release -p anchorcore
+# artifact: rust/target/release/anchorcore (9.8M) + frontend/dist embedded
+# release zip: dist/AnchorCore-rust-macos.zip / windows.zip via release.yml
 ```
 
-Steps it runs: `npm run build` → ensure venv + pyinstaller → `pyinstaller packaging.spec`
-→ `dist/AnchorCore.app` (windowed onedir macOS bundle) → `codesign --force --deep --sign -`
-(ad-hoc, free — no Apple account needed) → `zip` → `dist/AnchorCore-macos.zip`.
+`release.yml` builds `AnchorCore-rust-*` on every `v*` tag (`frontend` → `cargo build --release` → `codesign`).
+
+## 3. Building (Python — deprecated, keep for hosting)
+
+Legacy — do not use for local dev:
+
+```powershell
+.\build.ps1   # Windows legacy
+./build.sh    # macOS legacy
+```
+
+Steps (legacy `packaging.spec`): `npm run build` → venv + pyinstaller → `pyinstaller packaging.spec` → `dist/AnchorCore/` / `.app` → `codesign --force --deep --sign -` (ad-hoc). Bundles `frontend/dist` → `_MEIPASS/frontend_dist`, `backend/alembic/`, `sqlite_vec` DLL/dylib, `console=False`, entry `backend/run_app.py`.
 
 The same `packaging.spec` works on both platforms: the sqlite_vec glob collects
 the native lib (`*.dll` on Windows, `*.dylib` on macOS). On macOS the spec wraps

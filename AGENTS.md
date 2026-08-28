@@ -6,29 +6,28 @@ learn something that would have helped at the start of a session.
 
 ## What this is
 
-Local-first "company memory": connect sources (folder, Jira) → classify into
+Local-first "company memory": connect sources (folder, Jira, Linear) → classify into
 entities with provenance → hybrid RAG Q&A with citations. React SPA served by one
-FastAPI process. Stack: Python 3.12 + FastAPI + SQLite (sqlite-vec + FTS5) ·
-React/Vite · Ollama local + BYO cloud OpenAI-compatible. Packaged via PyInstaller.
+Axum process. Stack: **Rust (Axum) + SQLite (sqlite-vec + FTS5)** · React/Vite · Ollama local + BYO cloud OpenAI-compatible. Packaged as single binary (`frontend/dist` embedded). **Python `backend/` is deprecated** — legacy conformance + `hosting/` Postgres only (see `rust/README.md` + `rust/BACKLOG.md` + `docs/rust-port.md`). Release cadence: bump `rust/Cargo.toml:6` → `python scripts/sync_version.py` → tag `vX.Y.Z` → push (CI builds `AnchorCore-rust-*`).
 
-Repo: `git@github.com:Atsirkunov/anchorcore.git`. Backend under `backend/`, UI under
-`frontend/`, Rust port under `rust/` (incremental, contract-first, see `rust/README.md` + `rust/BACKLOG.md` + `docs/rust-port.md`). Release cadence: bump version → tag `vX.Y.Z` → push (CI builds artifacts).
+Repo: `git@github.com:Atsirkunov/anchorcore.git`. Backend under `backend/` (deprecated), UI under `frontend/`, Rust under `rust/` (shipped 1.0.11, source of truth).
 
-## How to run / test / release (Rust is shipped as of 1.0.9)
+## How to run / test / release (Rust is shipped, Python deprecated as of 1.0.11)
 
-- Dev (Rust): `cargo run -p anchorcore -- --port 8123 --data-dir /tmp/ac-dev` (migrations, watcher, jobs; `cargo test -p anchorcore` 47, `cargo check 0`)
-- Dev (Python legacy): `./start.sh` (venv, migrations, Ollama, backend :8000) — now conformance only
-- Backend tests: `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=test_mcp.py` or `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests -q`. **Honest conformance after R9.2: 127 tests collect, vs Rust 110+ passed / 17 skipped / 0 failed (Python-internal tests `skipIf ANCHOR_TEST_RUST_URL`, see `rust/BACKLOG.md` R9.2) via CI `rust-conformance` job; old "124/3" was inflated** (see `docs/review-2026-08-21-full.md:1`). `cargo test -p anchorcore` 47 + `cargo check 0` are current and green.
-- Frontend: `cd frontend && npm run build` (tsc + vite; must pass before a UI change is done)
-- Release (single source): edit `rust/Cargo.toml:6` `workspace.package.version` → `python scripts/sync_version.py` (writes `backend/app/config.py:11`) → `cargo test` + `cargo build --release` (embeds `frontend/dist` via `src/frontend.rs:1`, 9.8M+3.4M, `codesign valid`) → `git tag vX.Y.Z` → `git push origin vX.Y.Z` (CI builds `AnchorCore-rust-*`)
-- **The packaged app embeds `frontend/dist` at build time** — after any UI change you must `cargo build --release` (or `npm run build` + `cargo build`), or the exe ships stale UI.
+- Dev (Rust — shipped): `cargo run -p anchorcore -- --port 8000 --data-dir ~/.anchorcore` (migrations, watcher, jobs; `cargo test -p anchorcore` 47, `cargo check 0`). For conformance vs Python: `cargo run -p anchorcore -- --port 8123 --data-dir /tmp/ac-dev` + `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=test_mcp.py`
+- Dev (Python legacy — deprecated): `./start.sh` (venv, migrations, Ollama, backend :8000) — conformance only + `hosting/` Postgres. Do not use for new features.
+- Backend tests (conformance): `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=test_mcp.py` (`110/17` honest, `127` collect, `skipIf` for Python-internal, `rust/BACKLOG.md` R9.2) via CI `rust-conformance`. `cargo test -p anchorcore` 47 + `cargo check 0` green.
+- Frontend: `cd frontend && npm run build` (tsc + vite; must pass before a UI change is done) — embedded via `rust/crates/anchorcore/src/frontend.rs:1`
+- Release (single source): edit `rust/Cargo.toml:6` `workspace.package.version` → `python scripts/sync_version.py` (writes `backend/app/config.py:11`) → `cargo test` + `cargo build --release` (`frontend/dist` embedded, `9.8M`, `codesign valid`) → `git tag vX.Y.Z` → `git push origin vX.Y.Z` (CI builds `AnchorCore-rust-*`)
+- **The Rust binary embeds `frontend/dist` at build time** — after any UI change you must `cargo build --release` (or `npm run build` + `cargo build`), or the exe ships stale UI. `hosting/` stays Python per R10.7.
 
-## Backend architecture map
+## Backend architecture map (Rust is source, `backend/` is legacy mirror)
 
-- `backend/app/main.py` — wires everything: `secrets`, `SettingsService`, `Classifier`, `Embedder`,
-  `IngestionPipeline`, `AnswerEngine`, `Scheduler`, `JobManager`; runs Alembic migrations in lifespan;
-  serves bundled UI last (must stay last).
-- `backend/app/models.py` — SQLAlchemy models: `Source` (`label` B39), `IngestedItem`, `Entity` (`window_text`/`window_index` B26, `dispute_count` B3), `Relationship`, `Chunk` (`kind`: document|entity|distilled B18, `is_pii`/`pii_categories` B30), `Job`, `Project` + `project_sources`, `SystemEvent`, `AppSetting`, `MergeAction`, `User` (B40 hosted auth). `content_hash()` helper (re-exported via `hashing.py`).
+- `rust/crates/anchorcore/src/main.rs` — wires everything: `secrets`, `SettingsService`, `Classifier`, `Embedder`, `Pipeline`, `AnswerEngine`, `Scheduler`, `JobManager`; runs migrations; serves bundled UI last.
+- `rust/crates/anchorcore/src/db.rs` — `open_db`/`init_db`, `PRAGMA foreign_keys=ON`, `WAL`, migrations via `rusqlite_migration`; same SQLite file as Python.
+- `rust/crates/anchorcore/src/sources.rs` / `entities.rs` / `jobs.rs` / `answer.rs` / `pipeline.rs` — mirror `backend/app/routers/*` + `answer_engine.py`/`pipeline.py`. Keep `spawn_blocking` + per-key `secrets.enc.<sha256>`.
+- `backend/app/main.py` (deprecated) — legacy FastAPI wiring, same logic as Rust `main.rs`. Use only for `hosting/` + conformance.
+- `backend/app/models.py` (deprecated) — SQLAlchemy models: `Source` (`label` B39), `IngestedItem`, `Entity` (`window_text`/`window_index` B26, `dispute_count` B3), `Relationship`, `Chunk` (`kind`: document|entity|distilled B18, `is_pii`/`pii_categories` B30), `Job`, `Project` + `project_sources`, `SystemEvent`, `AppSetting`, `MergeAction`, `User` (B40 hosted auth). `content_hash()` helper (re-exported via `hashing.py`).
 - `backend/app/schemas.py` — Pydantic request/response models. `SourceOut` does NOT include `config`
   (config is fetched via `GET /sources/{id}/config` which masks secrets); `SourceCreate/Update` validate `label` (B39).
 - `backend/app/answer_engine.py` — **the core retrieval pipeline** (see below). `vec_chunks` vec0 index (B33) with Python-scan fallback; gates `sensitive`/`pii` + `is_pii` chunks from cloud answer when `ANCHOR_CLOUD_TRUST` missing (B30).
@@ -74,32 +73,23 @@ Key rules:
 - Evidence hit shape: `{"chunk", "entity", "item", "source_id", "score"}` (+ optional `"graph": True`,
   `"expanded"`).
 
-## Packaging (PyInstaller)
+## Packaging (Rust binary — shipped, PyInstaller is legacy)
 
-- **onedir + `console=False`** in `packaging.spec` — windowed GUI app, **no terminal window**.
-  macOS: EXE→`COLLECT`→`BUNDLE` yields `dist/AnchorCore.app`; Windows: `COLLECT` yields
-  `dist/AnchorCore/` (zip the folder). Do NOT go back to onefile — PyInstaller rejects
-  onefile+`.app` from v7.0.
-- `dist/AnchorCore-macos.zip` (macOS) / `dist/AnchorCore-windows.zip` (Windows) are the ship artifacts;
-  `build.sh`/`build.ps1` produce them; `release.yml` rebuilds on every `v*` tag.
-- **`backend/run_app.py`** is the frozen entry: `_guard_windowed_stdio()` redirects stdout/stderr to
-  devnull before importing `app.main` (windowed builds have no stdio — printing/logging would crash).
-  Real logs go to `ANCHOR_DATA_DIR/anchorcore.log`.
-- macOS CI must use **Homebrew Python** (loadable sqlite extensions) or sqlite_vec crashes at startup.
-- Ad-hoc sign with `codesign --force --deep --sign - dist/AnchorCore.app` (free; notarization = $99/yr,
-  deferred). Recipients right-click → Open once.
-- Smoke-test a build with: `ANCHOR_PORT=8123 ANCHOR_OPEN_BROWSER=0 ANCHOR_DATA_DIR=/tmp/ac-smoke
-  dist/AnchorCore.app/Contents/MacOS/AnchorCore` then curl `/health` (kills cleanly with pkill).
+- **Rust:** `cargo build --release -p anchorcore` embeds `frontend/dist` via `src/frontend.rs:1` (`include_dir!`), yields `rust/target/release/anchorcore` (`9.8M`+`3.4M`, `codesign valid`). `dist/AnchorCore-rust-macos.zip` / `windows.zip` are the ship artifacts; `release.yml` builds on every `v*` tag. Ad-hoc sign `codesign --force --deep --sign -`.
+- **Legacy PyInstaller (hosting only):** `packaging.spec` `onedir + console=False` → `dist/AnchorCore.app` / `dist/AnchorCore/` — keep for `hosting/` reference, not for local. Do not add `backend/` features.
+- **Legacy `backend/run_app.py`** frozen entry: `_guard_windowed_stdio()` devnull — keep for `hosting` smoke only.
+- macOS CI: Rust uses `sqlite-vec` statically linked (no Homebrew Python needed for local); `hosting` Python still needs Homebrew for `vec0` if used.
+- Smoke-test Rust: `ANCHOR_OPEN_BROWSER=0 ANCHOR_DATA_DIR=/tmp/ac-smoke rust/target/release/anchorcore --port 8123` then `curl /health`.
 
-## Contract-first feature workflow (match existing conventions)
+## Contract-first feature workflow (Rust-only, `backend/` frozen)
 
-1. Schema: `models.py` + new Alembic migration in `backend/alembic/versions/` (down_revision = current head).
-2. API: schemas in `schemas.py` + router in `backend/app/routers/` (register in `main.py`).
-3. Wire into `AnswerEngine`/`pipeline` if it affects retrieval/ingestion.
-4. Frontend: `types.ts` + `api.ts` + tab component.
-5. Tests: new file `backend/tests/test_*.py` following existing style; run `pytest tests -q`.
-6. Run `npm run build` for UI changes. Sync docs in the same commit (product-plan `— DONE` marker).
-7. Bump version + tag only when releasing.
+1. Schema: `rust/crates/anchorcore/src/db.rs` + new migration in `rust/crates/anchorcore/migrations/*.sql` (add to `db.rs:migrations()` list; keep `PRAGMA foreign_keys=ON`). Mirror in `backend/alembic` only if `hosting/` needs it.
+2. API: handler in `rust/crates/anchorcore/src/*.rs` + route in `main.rs` (register last, `frontend` fallback stays last).
+3. Wire into `retrieval.rs`/`pipeline.rs` if it affects retrieval/ingestion.
+4. Frontend: `types.ts` + `api.ts` + tab component; keep `theme.ts` tokens, don't inline hex.
+5. Tests: `cargo test -p anchorcore` (47) + `cargo check 0`; conformance `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=backend/tests/test_mcp.py` (`110/17`). Add `backend/tests` only for `hosting` parity.
+6. Run `npm run build` for UI changes (must re-`cargo build --release` to embed). Sync docs in same commit (`product-plan` `— DONE`).
+7. Bump `rust/Cargo.toml:6` → `python scripts/sync_version.py` → tag only when releasing.
 
 ## Rust port — shipped as of `v1.0.10` `c37202e` (Python retired, `R11.1` wired)
 
