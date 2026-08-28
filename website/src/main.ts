@@ -7,10 +7,16 @@ const copy = {
     roadmap: "personal"
   },
   team: {
-    title: "Your company's memory — finally searchable.",
-    sub: "Decisions, owners, dependencies — so any AI answers like an employee of 3 years.",
-    proof: "Why was this delayed? Who owns billing migration? Answered with section + author, not a guess.",
+    title: "Run on your infrastructure — one container.",
+    sub: "Self-hosted in one command. Your data stays with you, same cited answers for the whole team. Deploy via Docker, no cloud required.",
+    proof: "One Docker container — your team's memory, on your infra. Who owns billing? Cited, not guessed.",
     roadmap: "team"
+  },
+  hosted: {
+    title: "Hosted — coming soon.",
+    sub: "We host it for you, same private memory, no setup. Join waitlist for early access.",
+    proof: "No Docker, no infra — just connect and ask. Your memory, hosted.",
+    roadmap: "hosted"
   }
 } as const;
 
@@ -22,10 +28,29 @@ function setTrack(t: Track) {
   const sub = document.getElementById("hero-sub");
   const proof = document.getElementById("track-proof");
   const roadmap = document.getElementById("roadmap-track");
+  const cta = document.getElementById("cta-primary") as HTMLAnchorElement | null;
+  const note = document.getElementById("cta-note");
   if (title) title.textContent = c.title;
   if (sub) sub.textContent = c.sub;
   if (proof) proof.textContent = c.proof;
   if (roadmap) roadmap.textContent = c.roadmap;
+  if (cta) {
+    if (t === "team") {
+      cta.textContent = "Deploy via Docker — Self-hosted";
+      cta.href = "https://github.com/Atsirkunov/anchorcore#hosting";
+    } else if (t === "hosted") {
+      cta.textContent = "Join waitlist — Hosted (soon)";
+      cta.href = "#roadmap";
+    } else {
+      cta.textContent = "Download — Free while in validation";
+      cta.href = "https://github.com/Atsirkunov/anchorcore/releases";
+    }
+  }
+  if (note) {
+    if (t === "team") note.innerHTML = "Docker • one container • your infra • data stays in your VPC";
+    else if (t === "hosted") note.innerHTML = "Coming soon — we host it, no setup · <code>hosted</code> tab";
+    else note.innerHTML = "macOS & Windows • one file, no Docker • data stays in <code>~/.anchorcore</code>";
+  }
 
   document.querySelectorAll<HTMLButtonElement>(".track-toggle .toggle").forEach(b => {
     const isActive = b.dataset.track === t;
@@ -43,7 +68,8 @@ function setTrack(t: Track) {
 function initTrack() {
   const params = new URL(location.href).searchParams.get("track") as Track | null;
   const stored = (() => { try { return localStorage.getItem("anchorcore.track") as Track | null; } catch { return null; } })();
-  const initial: Track = (params && (params === "personal" || params === "team") ? params : null) ?? stored ?? "personal";
+  const valid: Track[] = ["personal", "team", "hosted"];
+  const initial: Track = (params && valid.includes(params) ? params : null) ?? (stored && valid.includes(stored) ? stored : null) ?? "personal";
   // default to personal for faster validation (design-system.md:128)
   setTrack(initial);
   document.querySelectorAll<HTMLButtonElement>(".track-toggle .toggle").forEach(b => {
