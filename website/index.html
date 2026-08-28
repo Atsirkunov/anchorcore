@@ -30,17 +30,18 @@
           <h1 id="hero-title">Your memory — finally searchable.</h1>
           <p id="hero-sub" class="sub">Connect folders, Jira, Linear. Ask “what was decided about X, and why?” — get a cited answer that shows exactly where it came from. Private by default, on your machine.</p>
 
-          <div class="track-toggle" role="tablist" aria-label="Personal or Team">
+          <div class="track-toggle" role="tablist" aria-label="Personal, Team or Hosted">
             <button data-track="personal" class="toggle active" role="tab" aria-selected="true">Personal</button>
-            <button data-track="team" class="toggle" role="tab" aria-selected="false">Team</button>
+            <button data-track="team" class="toggle" role="tab" aria-selected="false">Team · Self-hosted</button>
+            <button data-track="hosted" class="toggle" role="tab" aria-selected="false">Hosted <span style="font-size:10px;opacity:0.7">soon</span></button>
           </div>
           <p id="track-proof" class="proof">300-page PDF? Page 250 still cited. Your second brain, not another chatbot.</p>
 
           <div class="cta" id="download">
-            <a class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download — Free while in validation</a>
+            <a id="cta-primary" class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download — Free while in validation</a>
             <a class="btn secondary" href="#demo">See 60-second demo</a>
           </div>
-          <div class="cta-note">macOS & Windows • one file, no Docker • data stays in <code>~/.anchorcore</code></div>
+          <div id="cta-note" class="cta-note">macOS & Windows • one file, no Docker • data stays in <code>~/.anchorcore</code></div>
 
           <form class="capture" onsubmit="return false">
             <input id="email" type="email" placeholder="Work email for early access" aria-label="Work email" />
