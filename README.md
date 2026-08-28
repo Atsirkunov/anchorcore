@@ -17,12 +17,13 @@ Connect your knowledge to any AI model. Your memory — finally searchable. — 
 ## Project layout
 
 ```
-backend/    FastAPI service (connectors, ingestion, classification, RAG Q&A)
+rust/       Rust service (Axum) — connectors, ingestion, classification, RAG Q&A — shipped artifact (1.0.11, single source rust/Cargo.toml)
 frontend/   React SPA (Vite) — Ask, Sources, Entities, Review, Settings, System
 sample/     Mini-company demo corpus — connect it as a folder source
             (guide: docs/sample-dataset.md)
-hosting/    Hosted skeleton — same image, Postgres (docker-compose), env-driven
-            (guide: hosting/README.md)
+hosting/    Hosted skeleton — Python FastAPI image, Postgres (docker-compose), env-driven
+            (guide: hosting/README.md) — stays Python per R10.7 until hosted is ported
+backend/    Deprecated — Python FastAPI legacy, conformance only + hosted base. Do not use for new dev.
 docs/       Product plan, architecture, packaging, releasing
 ```
 
@@ -34,21 +35,20 @@ produces `dist/AnchorCore.exe`, or `./build.sh` (macOS) produces
 data in `~/.anchorcore`. Pushing a `v*` tag builds Windows + macOS
 executables automatically (see `docs/releasing.md`).
 
-**Developers:** `.\start.ps1` (or `./start.sh`) — creates the venv + `.env`
-on first run, applies Alembic migrations, starts Ollama, boots the backend at
-http://localhost:8000. Add `-Dev` for the Vite dev server at :5173.
+**Developers (Rust — shipped):** `cargo run -p anchorcore -- --port 8000 --data-dir ~/.anchorcore` — applies migrations, starts Ollama, boots at http://localhost:8000. Add `cargo run -p anchorcore -- --port 8123` for conformance vs Python. Frontend dev: `cd frontend && npm run dev` at :5173 (proxies to :8000).
+
+**Legacy (Python — deprecated):** `.\start.ps1` (or `./start.sh`) — creates the venv + `.env`, Alembic, Ollama, backend at :8000. Use only for conformance `PYTHONPATH=backend pytest` vs Rust on :8123.
 
 **Hosted (skeleton):** `docker compose -f hosting/docker-compose.yml up --build` — Python FastAPI image against Postgres (`pgvector/pg16`, see `hosting/README.md`). **R10.7 decision:** `hosting/` stays Python (Postgres/pgvector) — Rust is the local/packaged artifact (SQLite + `frontend/dist` embedded, `9.8M`, `codesign`); Rust Postgres is deferred (would need `deadpool` + `pgvector` migration, or SQLite-file volume on hosted).
 
-**Prerequisites:** Python 3.12+, Node 20+, [Ollama](https://ollama.com):
+**Prerequisites:** Rust (stable) + Node 20+ for local dev, Python 3.12 only for `hosting/`/conformance, [Ollama](https://ollama.com):
 
 ```bash
 ollama pull llama3.2:3b       # classifier
 ollama pull nomic-embed-text  # embeddings
 ```
 
-**Tests** (from `backend/`): `python -m pytest tests -q` — catalog:
-[backend/tests/README.md](./backend/tests/README.md)
+**Tests — Rust is source:** `cargo test -p anchorcore` (47, `cargo check` 0) + `cargo build --release` embeds `frontend/dist` (`9.8M`). Conformance vs Python: `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=backend/tests/test_mcp.py` (`110/17` honest). Legacy Python unit: `python -m pytest backend/tests -q` (`backend/tests/README.md`).
 
 ## Model configuration (Settings tab — no restart)
 
