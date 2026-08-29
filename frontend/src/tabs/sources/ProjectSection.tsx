@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../../api";
-import { useProjects } from "../../ProjectsContext";
+import { useProjects } from "../../useProjects";
 import { theme, commonStyles } from "../../theme";
 import type { Source } from "../../types";
 
