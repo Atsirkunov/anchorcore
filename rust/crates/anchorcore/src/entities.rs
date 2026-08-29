@@ -249,6 +249,43 @@ pub async fn disputes_handler(State(state): State<AppState>, Path(entity_id): Pa
     }
 }
 
+fn expand_context(full_text: &str, window_text: &str, window_index: Option<i64>) -> (Vec<String>, Vec<String>) {
+    let mut before: Vec<String> = vec![];
+    let mut after: Vec<String> = vec![];
+    if full_text.is_empty() || window_text.is_empty() {
+        return (before, after);
+    }
+    let chunks = crate::chunking::chunk_document(full_text);
+    if chunks.is_empty() {
+        return (before, after);
+    }
+    let needle = window_text.chars().take(160).collect::<String>().trim().to_string();
+    let mut idx: Option<usize> = None;
+    for (i, c) in chunks.iter().enumerate() {
+        if !needle.is_empty() && c.contains(&needle) {
+            idx = Some(i);
+            break;
+        }
+    }
+    if idx.is_none() {
+        if let Some(wi) = window_index {
+            let cand = (wi - 1).max(0) as usize;
+            if cand < chunks.len() {
+                idx = Some(cand);
+            }
+        }
+    }
+    if let Some(i) = idx {
+        if i > 0 {
+            before.push(chunks[i - 1].clone());
+        }
+        if i + 1 < chunks.len() {
+            after.push(chunks[i + 1].clone());
+        }
+    }
+    (before, after)
+}
+
 pub async fn context_handler(State(state): State<AppState>, Path(entity_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -279,37 +316,7 @@ pub async fn context_handler(State(state): State<AppState>, Path(entity_id): Pat
             }
         };
         let source_name: Option<String> = conn.query_row("SELECT name FROM sources WHERE id = ?1", [source_id], |r| r.get(0)).ok();
-        let mut before: Vec<String> = vec![];
-        let mut after: Vec<String> = vec![];
-        if !full_text.is_empty() && !window_text.is_empty() {
-            let chunks = crate::chunking::chunk_document(&full_text);
-            if !chunks.is_empty() {
-                let needle = window_text.chars().take(160).collect::<String>().trim().to_string();
-                let mut idx: Option<usize> = None;
-                for (i, c) in chunks.iter().enumerate() {
-                    if !needle.is_empty() && c.contains(&needle) {
-                        idx = Some(i);
-                        break;
-                    }
-                }
-                if idx.is_none() {
-                    if let Some(wi) = window_index {
-                        let cand = (wi - 1).max(0) as usize;
-                        if cand < chunks.len() {
-                            idx = Some(cand);
-                        }
-                    }
-                }
-                if let Some(i) = idx {
-                    if i > 0 {
-                        before.push(chunks[i-1].clone());
-                    }
-                    if i + 1 < chunks.len() {
-                        after.push(chunks[i+1].clone());
-                    }
-                }
-            }
-        }
+        let (before, after) = expand_context(&full_text, &window_text, window_index);
         Ok(serde_json::json!({
             "entity_id": eid,
             "source_name": source_name,

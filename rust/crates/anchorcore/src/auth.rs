@@ -212,6 +212,7 @@ pub fn decode_token(token: &str) -> Result<serde_json::Value, String> {
 }
 
 // --- Middleware (R7.2 route-based) ---
+// NOTE (R13.6): CCN 22 is an accepted decision table — do NOT refactor (Phase 13 acceptance excludes it).
 fn is_public_path(path: &str, method: &axum::http::Method) -> bool {
     // CORS preflight
     if method == axum::http::Method::OPTIONS {

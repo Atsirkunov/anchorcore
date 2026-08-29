@@ -11,10 +11,36 @@ use std::path::PathBuf;
 
 use crate::health::AppState;
 
-pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
-    let data_dir = state.data_dir.clone();
-    let settings = state.settings.clone();
-    // capture settings values before blocking (use cached snapshot without DB conn for speed)
+fn provider_is_local(base: &str) -> bool {
+    base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1")
+}
+
+pub(crate) fn ollama_probe_disabled(base: &str) -> bool {
+    base == "http://localhost:1" || base == "http://127.0.0.1:1" || base == "http://localhost:1/" || base == "http://127.0.0.1:1/"
+}
+
+pub(crate) async fn probe_ollama(base: &str, timeout_secs: u64) -> bool {
+    // real probe like health.rs (was heuristic localhost:1 and always false)
+    let url = format!("{}/api/tags", base.trim_end_matches('/'));
+    match reqwest::Client::builder().timeout(std::time::Duration::from_secs(timeout_secs)).build() {
+        Ok(c) => c.get(&url).send().await.map(|r| r.status().is_success()).unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
+struct StatusSnapshot {
+    ollama_base: String,
+    classifier_model: String,
+    embed_model: String,
+    classifier_base: String,
+    embed_base: String,
+    answer_model: String,
+    answer_base: String,
+    answer_api_key: String,
+    answer_provider: String,
+}
+
+fn status_snapshot(settings: &crate::settings::SettingsService) -> StatusSnapshot {
     let ollama_base = settings.get("ollama_base_url", None).unwrap_or_else(|| "http://localhost:11434".to_string());
     let classifier_model = settings.get("classifier_model", None).unwrap_or_else(|| "llama3.2:3b".to_string());
     let embed_model = settings.get("embed_model", None).unwrap_or_else(|| "nomic-embed-text".to_string());
@@ -29,28 +55,37 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
     let answer_model = settings.get("answer_model", None).unwrap_or_else(|| "gpt-4o-mini".to_string());
     let answer_base = settings.get("answer_base_url", None).unwrap_or_else(|| "https://api.openai.com/v1".to_string());
     let answer_api_key = settings.get("answer_api_key", None).unwrap_or_default();
-    let classifier_is_local = classifier_base.starts_with("http://localhost") || classifier_base.starts_with("http://127.0.0.1");
-    let embed_is_local = embed_base.starts_with("http://localhost") || embed_base.starts_with("http://127.0.0.1");
-    let answer_provider = if answer_base.starts_with("http://localhost") || answer_base.starts_with("http://127.0.0.1") {
+    let answer_provider = if provider_is_local(&answer_base) {
         "ollama".to_string()
     } else if !answer_api_key.trim().is_empty() {
         "configured".to_string()
     } else {
         "missing".to_string()
     };
-    // real probe like health.rs (was heuristic localhost:1 and always false)
-    let ollama_reachable = {
-        let url = format!("{}/api/tags", ollama_base.trim_end_matches('/'));
-        // quick heuristic for test suite when base is intentionally invalid (localhost:1) — exact port 1, not 11434
-        if ollama_base == "http://localhost:1" || ollama_base == "http://127.0.0.1:1" || ollama_base == "http://localhost:1/" || ollama_base == "http://127.0.0.1:1/" {
-            false
-        } else {
-            match reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).build() {
-                Ok(c) => c.get(&url).send().await.map(|r| r.status().is_success()).unwrap_or(false),
-                Err(_) => false,
-            }
-        }
+    StatusSnapshot {
+        ollama_base,
+        classifier_model,
+        embed_model,
+        classifier_base,
+        embed_base,
+        answer_model,
+        answer_base,
+        answer_api_key,
+        answer_provider,
+    }
+}
+
+pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
+    let data_dir = state.data_dir.clone();
+    // capture settings values before blocking (use cached snapshot without DB conn for speed)
+    let snap = status_snapshot(&state.settings);
+    let ollama_reachable = if ollama_probe_disabled(&snap.ollama_base) {
+        false
+    } else {
+        probe_ollama(&snap.ollama_base, 3).await
     };
+    let classifier_is_local = provider_is_local(&snap.classifier_base);
+    let embed_is_local = provider_is_local(&snap.embed_base);
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
@@ -69,15 +104,15 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
             "database": "redacted",
             "ollama": {
                 "reachable": ollama_reachable,
-                "base_url": ollama_base.clone(),
-                "classifier_model": classifier_model.clone(),
-                "embed_model": embed_model.clone(),
+                "base_url": snap.ollama_base,
+                "classifier_model": snap.classifier_model,
+                "embed_model": snap.embed_model,
                 "missing_models": []
             },
             "classifier": {
                 "provider": if classifier_is_local { "local" } else { "cloud" },
-                "base_url": classifier_base.clone(),
-                "model": classifier_model.clone(),
+                "base_url": snap.classifier_base,
+                "model": snap.classifier_model,
                 "concurrency": 4
             },
             "retrieval": {
@@ -88,13 +123,13 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
             },
             "embedder": {
                 "provider": if embed_is_local { "local" } else { "cloud" },
-                "base_url": embed_base.clone(),
-                "model": embed_model.clone(),
+                "base_url": snap.embed_base,
+                "model": snap.embed_model,
             },
             "answer": {
-                "provider": answer_provider.clone(),
-                "model": answer_model.clone(),
-                "base_url": answer_base.clone(),
+                "provider": snap.answer_provider,
+                "model": snap.answer_model,
+                "base_url": snap.answer_base,
             },
             "pending_embeddings": pending,
             "failing_sources": failing,
@@ -109,6 +144,25 @@ pub struct ErrorsQuery {
     pub limit: Option<i64>,
     pub component: Option<String>,
     pub level: Option<String>,
+}
+
+fn error_row(conn: &rusqlite::Connection, r: &rusqlite::Row) -> rusqlite::Result<Value> {
+    let id: i64 = r.get(0)?;
+    let component: String = r.get(1)?;
+    let level: String = r.get(2)?;
+    let source_id: Option<i64> = r.get(3)?;
+    let message: String = r.get(4)?;
+    let detail: String = r.get(5)?;
+    let created_at: String = r.get(6)?;
+    let source_name: Option<String> = match source_id {
+        Some(sid) => conn.query_row("SELECT name FROM sources WHERE id=?1", [sid], |rr| rr.get(0)).ok(),
+        None => None,
+    };
+    Ok(serde_json::json!({
+        "id": id, "component": component, "level": level,
+        "source_id": source_id, "source_name": source_name,
+        "message": message, "detail": detail, "created_at": created_at
+    }))
 }
 
 pub async fn errors_handler(
@@ -136,88 +190,16 @@ pub async fn errors_handler(
         }
         sql.push_str(" ORDER BY created_at DESC LIMIT ?");
         let mut stmt = conn.prepare(&sql).unwrap();
-        let rows: Vec<Value> = match (component, level) {
-            (Some(c), Some(l)) => {
-                let map = stmt.query_map(rusqlite::params![c, l, limit], |r| {
-                    let id: i64 = r.get(0)?;
-                    let component: String = r.get(1)?;
-                    let level: String = r.get(2)?;
-                    let source_id: Option<i64> = r.get(3)?;
-                    let message: String = r.get(4)?;
-                    let detail: String = r.get(5)?;
-                    let created_at: String = r.get(6)?;
-                    let source_name: Option<String> = if let Some(sid) = source_id {
-                        conn.query_row("SELECT name FROM sources WHERE id=?1", [sid], |rr| rr.get(0)).ok()
-                    } else { None };
-                    Ok(serde_json::json!({
-                        "id": id, "component": component, "level": level,
-                        "source_id": source_id, "source_name": source_name,
-                        "message": message, "detail": detail, "created_at": created_at
-                    }))
-                }).unwrap();
-                map.filter_map(|r| r.ok()).collect()
-            },
-            (Some(c), None) => {
-                let map = stmt.query_map(rusqlite::params![c, limit], |r| {
-                    let id: i64 = r.get(0)?;
-                    let component: String = r.get(1)?;
-                    let level: String = r.get(2)?;
-                    let source_id: Option<i64> = r.get(3)?;
-                    let message: String = r.get(4)?;
-                    let detail: String = r.get(5)?;
-                    let created_at: String = r.get(6)?;
-                    let source_name: Option<String> = if let Some(sid) = source_id {
-                        conn.query_row("SELECT name FROM sources WHERE id=?1", [sid], |rr| rr.get(0)).ok()
-                    } else { None };
-                    Ok(serde_json::json!({
-                        "id": id, "component": component, "level": level,
-                        "source_id": source_id, "source_name": source_name,
-                        "message": message, "detail": detail, "created_at": created_at
-                    }))
-                }).unwrap();
-                map.filter_map(|r| r.ok()).collect()
-            },
-            (None, Some(l)) => {
-                let map = stmt.query_map(rusqlite::params![l, limit], |r| {
-                    let id: i64 = r.get(0)?;
-                    let component: String = r.get(1)?;
-                    let level: String = r.get(2)?;
-                    let source_id: Option<i64> = r.get(3)?;
-                    let message: String = r.get(4)?;
-                    let detail: String = r.get(5)?;
-                    let created_at: String = r.get(6)?;
-                    let source_name: Option<String> = if let Some(sid) = source_id {
-                        conn.query_row("SELECT name FROM sources WHERE id=?1", [sid], |rr| rr.get(0)).ok()
-                    } else { None };
-                    Ok(serde_json::json!({
-                        "id": id, "component": component, "level": level,
-                        "source_id": source_id, "source_name": source_name,
-                        "message": message, "detail": detail, "created_at": created_at
-                    }))
-                }).unwrap();
-                map.filter_map(|r| r.ok()).collect()
-            },
-            (None, None) => {
-                let map = stmt.query_map(rusqlite::params![limit], |r| {
-                    let id: i64 = r.get(0)?;
-                    let component: String = r.get(1)?;
-                    let level: String = r.get(2)?;
-                    let source_id: Option<i64> = r.get(3)?;
-                    let message: String = r.get(4)?;
-                    let detail: String = r.get(5)?;
-                    let created_at: String = r.get(6)?;
-                    let source_name: Option<String> = if let Some(sid) = source_id {
-                        conn.query_row("SELECT name FROM sources WHERE id=?1", [sid], |rr| rr.get(0)).ok()
-                    } else { None };
-                    Ok(serde_json::json!({
-                        "id": id, "component": component, "level": level,
-                        "source_id": source_id, "source_name": source_name,
-                        "message": message, "detail": detail, "created_at": created_at
-                    }))
-                }).unwrap();
-                map.filter_map(|r| r.ok()).collect()
-            },
-        };
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = vec![];
+        if let Some(c) = &component {
+            params.push(c);
+        }
+        if let Some(l) = &level {
+            params.push(l);
+        }
+        params.push(&limit);
+        let map = stmt.query_map(rusqlite::params_from_iter(params), |r| error_row(&conn, r)).unwrap();
+        let rows: Vec<Value> = map.filter_map(|r| r.ok()).collect();
         Value::Array(rows)
     })
     .await
@@ -356,49 +338,58 @@ pub async fn log_download_handler(
     Ok(resp)
 }
 
-pub async fn ollama_start_handler(State(state): State<AppState>) -> Json<Value> {
-    let base = state.settings.get("ollama_base_url", None).unwrap_or_else(|| "http://localhost:11434".to_string());
-    if base == "http://localhost:1" || base == "http://127.0.0.1:1" || base == "http://localhost:1/" || base == "http://127.0.0.1:1/" {
-        return Json(serde_json::json!({"ok": false, "error": "ollama probe disabled for tests (localhost:1)"}));
-    }
-    // quick probe
-    let probe_url = format!("{}/api/tags", base.trim_end_matches('/'));
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(2)).build();
-    if let Ok(c) = &client {
-        if let Ok(r) = c.get(&probe_url).send().await {
-            if r.status().is_success() {
-                return Json(serde_json::json!({"ok": true, "already_running": true}));
-            }
-        }
-    }
-    // find binary
+pub(crate) fn find_ollama_binary() -> Option<std::path::PathBuf> {    // find binary
     let candidates = [
         "/opt/homebrew/bin/ollama",
         "/usr/local/bin/ollama",
         "/Applications/Ollama.app/Contents/Resources/ollama",
         "/usr/bin/ollama",
     ];
-    let mut ollama_path: Option<std::path::PathBuf> = None;
     for p in candidates {
         if std::path::Path::new(p).exists() {
-            ollama_path = Some(p.into());
-            break;
+            return Some(p.into());
         }
     }
-    if ollama_path.is_none() {
-        if let Ok(out) = std::process::Command::new("which").arg("ollama").output() {
-            if out.status.success() {
-                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !s.is_empty() && std::path::Path::new(&s).exists() {
-                    ollama_path = Some(s.into());
+    if let Ok(out) = std::process::Command::new("which").arg("ollama").output() {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !s.is_empty() && std::path::Path::new(&s).exists() {
+                return Some(s.into());
+            }
+        }
+    }
+    if std::process::Command::new("ollama").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+        return Some("ollama".into());
+    }
+    None
+}
+
+pub(crate) async fn poll_ollama_up(probe_url: &str, attempts: u32) -> bool {
+    // poll in 500ms steps
+    for _ in 0..attempts {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if let Ok(c) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(1)).build() {
+            if let Ok(r) = c.get(probe_url).send().await {
+                if r.status().is_success() {
+                    return true;
                 }
             }
         }
     }
-    if ollama_path.is_none() && std::process::Command::new("ollama").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
-        ollama_path = Some("ollama".into());
+    false
+}
+
+pub async fn ollama_start_handler(State(state): State<AppState>) -> Json<Value> {
+    let base = state.settings.get("ollama_base_url", None).unwrap_or_else(|| "http://localhost:11434".to_string());
+    if ollama_probe_disabled(&base) {
+        return Json(serde_json::json!({"ok": false, "error": "ollama probe disabled for tests (localhost:1)"}));
     }
-    let Some(path) = ollama_path else {
+    // quick probe
+    let probe_url = format!("{}/api/tags", base.trim_end_matches('/'));
+    if probe_ollama(&base, 2).await {
+        return Json(serde_json::json!({"ok": true, "already_running": true}));
+    }
+    let Some(path) = find_ollama_binary() else {
         return Json(serde_json::json!({"ok": false, "error": "ollama not found — install from https://ollama.com"}));
     };
     tracing::info!("ollama start requested via API, launching {:?} serve", path);
@@ -408,16 +399,8 @@ pub async fn ollama_start_handler(State(state): State<AppState>) -> Json<Value> 
         .stderr(std::process::Stdio::null())
         .stdin(std::process::Stdio::null())
         .spawn();
-    // poll 8s
-    for _ in 0..16 {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        if let Ok(c) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(1)).build() {
-            if let Ok(r) = c.get(&probe_url).send().await {
-                if r.status().is_success() {
-                    return Json(serde_json::json!({"ok": true, "launched": true}));
-                }
-            }
-        }
+    if poll_ollama_up(&probe_url, 16).await {
+        return Json(serde_json::json!({"ok": true, "launched": true}));
     }
     Json(serde_json::json!({"ok": false, "error": "ollama launched but not reachable at ".to_string() + &base, "launched": true}))
 }

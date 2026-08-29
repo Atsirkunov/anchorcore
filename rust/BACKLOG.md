@@ -160,6 +160,23 @@ Status: `todo` | `doing` | `done`. Update this file when you pick/complete a tas
 
 ---
 
+## Phase 13 — Cyclomatic complexity reduction (high priority, from 2026-08-28 lizard sweep)
+
+> Lizard (`lizard -l rust -w rust/crates/anchorcore/src -C 15`): 24/329 functions warn, avg CCN 5.6, worst `classify_and_store` CCN 73. Goal: every function ≤ 15 CCN, warning count → 0. Pure refactors — no behavior change; `cargo test` 47 + `cargo check` 0 + conformance must stay green. File-disjoint → parallel. Branch `rust/R13.X`.
+
+| ID | Title | Priority | Est | DoD | Files |
+|---|---|---|---|---|---|
+| R13.1 | Split `classify_and_store` (CCN 73) + `run_sync_inner` (CCN 22, 8 params) | P0 | 1d | Extract the 5×-repeated `spawn_blocking` DB-open boilerplate into one `with_db<T>(data_dir, f)` helper; split into phases (`load_item_meta`, `delete_stale_entities`, `classify_window`, `store_batch`). CCN ≤ 15 per fn, `run_sync_inner` params cut. DoD: lizard reports no warning in `pipeline.rs`; `cargo test` 47 green; conformance green. | done (`src/pipeline.rs:59` `with_db`/`run_db`, `:128` `ClassifyCtx` phases, `:288` `fetch_docs`; lizard 0 warnings in pipeline.rs) |
+| R13.2 | Dedupe `errors_handler` (CCN 38) + `status_handler` (27) + `ollama_start_handler` (22) | P1 | 0.5d | `errors_handler`: the 4 identical match-arm row-mappers collapse into one closure + dynamic `params` vec (CCN → ~8); `status_handler`/`ollama_start_handler` extract helper fns. DoD: `system.rs` has no lizard warnings; same JSON shapes (conformance `test_system.py` green). | done (`src/system.rs:27` `error_row` + dynamic params, `:70` `status_snapshot`/`probe_ollama`, `:379` `find_ollama_binary`/`poll_ollama_up(attempts)`) |
+| R13.3 | Connector fetch guard-clause refactor (CCN 16–25) | P1 | 0.5d | `jira.rs` `fetch` (22) / `list_projects` (19), `linear.rs` `fetch_team` (25), `gdrive.rs` `fetch` (16): replace nested `if let` field-parsing with early `?`-returns + small parse helpers. DoD: no connector lizard warnings; mock-parity tests green. | done (`src/connectors/jira.rs:97` `parse_issue`/`advance_page`/`collect_projects`, `linear.rs:49` `parse_issue`/`graphql_error`, `gdrive.rs:31` `parse_file`) |
+| R13.4 | Entity / PII / review handler helper extraction (CCN 16–26) | P1 | 1d | `context_handler` (26), pii `review_handler` (24) / `scan_text` (19) / `item_pii_handler` (17) / `scan_handler` (16), review `duplicates_handler` (20) / `merge_handler` (20) / `low_confidence_handler` (16): extract sub-helper fns per branch. DoD: lizard warnings in these files → 0; `cargo test` 47 green. | done (`src/entities.rs:252` `expand_context`, `src/pii.rs:253` `scan_category`/`dedupe_matches`, `:496` `resolve_source`/`build_review_rows`, `:545` `scan_item_rows`/`scan_and_update`, `src/review.rs:41` `low_conf_row`, `:72` `propose_duplicates`, `:127` `run_merge`/`apply_merge`) |
+| R13.5 | `main` (CCN 29) + watcher `run` (CCN 26) phase extraction | P1 | 0.5d | `main.rs` → `build_router()` + `run_server()` phases (≤15 each); `watcher/service.rs` `run` loop body → named helpers. DoD: no warnings; boot smoke + watcher test green. | done (`src/main.rs:83` `build_state`/`wire_scheduler`/`build_router`/`maybe_open_browser`, `src/watcher/service.rs:63` `discover_folder_sources`/`ensure_watchers`/`poll_changed`/`fetch_and_compare`) |
+| R13.6 | answer/retrieval orchestrator trims (CCN 18–21) | P1 | 0.5d | `rewrite_followup` (21) → split heuristic vs LLM branches; `ask` (20) / `load_hits` (18) / `keyword_fallback` (19) → extract helpers. `auth.rs:215` `is_public_path` (22) accepted as-is (decision table). DoD: no warnings in `answer.rs`/`retrieval.rs`; conformance `test_retrieval.py` green. | done (`src/answer.rs:68` `rewrite_question`/`record_degraded`/`build_citations`, `:372` `llm_rewrite`/`heuristic_rewrite`, `src/retrieval.rs:265` `hit_from_row10`, `:424` `fallback_hit_from_row8`; `auth.rs:216` marked do-not-touch) |
+
+> Acceptance for the phase: `lizard -l rust -w rust/crates/anchorcore/src -C 15` prints 0 warnings; `cargo test` 47 + `cargo check` 0 + `110/17` conformance unchanged. Note: `is_public_path` (auth.rs:215) is an accepted decision table — do not refactor.
+
+---
+
 ## How to pick a task (agents)
 
 1. Claim `R*.*` by setting `doing` + branch `rust/R2.1`, etc.

@@ -65,35 +65,78 @@ pub struct SearchResponse {
     pub hits: Vec<SearchHit>,
 }
 
+async fn rewrite_question(settings: &SettingsService, req: &AskRequest) -> String {
+    // R10.1: follow-up rewrite — history + trusted gate (like Python ask: rewrite before retrieval)
+    let original_question = req.question.clone();
+    let history = req.history.clone().unwrap_or_default();
+    let filtered_history: Vec<AskTurn> = history.into_iter().filter(|t| !t.content.trim().is_empty()).collect();
+    let trusted_for_rewrite = is_answer_trusted(settings);
+    if filtered_history.is_empty() || !trusted_for_rewrite {
+        return original_question;
+    }
+    if let Some(rewritten) = rewrite_followup(settings, &original_question, &filtered_history).await {
+        if !rewritten.trim().is_empty() && rewritten != original_question {
+            return rewritten;
+        }
+    }
+    original_question
+}
+
+async fn record_degraded(data_dir: &str) {
+    // R10.5: only record qa warnings when retrieval actually degraded (hits empty) — not on every qa
+    // Python records these only when embedding failed / no hits; previously Rust spammed 2 warnings per qa
+    let data_dir = data_dir.to_string();
+    let _ = tokio::task::spawn_blocking(move || {
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        if let Ok(conn) = crate::db::init_db(&db_path) {
+            let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning','retrieval degraded to keyword-only','qa fallback')", []);
+            let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning','answer generation failed; returning matching context only','qa fallback')", []);
+        }
+    })
+    .await;
+}
+
+async fn record_gate_event(data_dir: &str, blocked: &[String]) {
+    let data_dir = data_dir.to_string();
+    let blocked_len = blocked.len();
+    let labels = blocked.to_vec();
+    let _ = tokio::task::spawn_blocking(move || {
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        if let Ok(conn) = crate::db::init_db(&db_path) {
+            let msg = format!("answer gate: {} hit(s) excluded from cloud answer (sensitive/pii source or PII chunk)", blocked_len);
+            let detail = format!("labels={:?}; set ANCHOR_CLOUD_TRUST=1 to allow", labels);
+            let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning',?1,?2)", rusqlite::params![msg, detail]);
+        }
+    })
+    .await;
+}
+
+fn build_citations(hits: &[crate::retrieval::Hit]) -> Vec<Citation> {
+    hits.iter().take(5).map(|h| Citation {
+        entity_id: h.entity_id,
+        kind: if h.entity_id.is_some() { "entity".to_string() } else { "document".to_string() },
+        summary: h.content.chars().take(200).collect(),
+        source_ref: if h.source_ref.is_empty() { format!("chunk:{}", h.chunk_id) } else { h.source_ref.clone() },
+        score: (h.score * 1000.0).round() / 1000.0,
+        snippet: h.content.chars().take(300).collect(),
+    }).collect()
+}
+
 pub async fn ask(
     settings: &SettingsService,
     embedder: &Arc<Embedder>,
     req: AskRequest,
     data_dir: &str,
 ) -> AskResponse {
-    // R10.1: follow-up rewrite — history + trusted gate (like Python ask: rewrite before retrieval)
-    let original_question = req.question.clone();
-    let history = req.history.clone().unwrap_or_default();
-    let filtered_history: Vec<AskTurn> = history.into_iter().filter(|t| !t.content.trim().is_empty()).collect();
-    let mut question = original_question.clone();
-    let trusted_for_rewrite = is_answer_trusted(settings);
-    if !filtered_history.is_empty() && trusted_for_rewrite {
-        if let Some(rewritten) = rewrite_followup(settings, &original_question, &filtered_history).await {
-            if !rewritten.trim().is_empty() && rewritten != original_question {
-                question = rewritten;
-            }
-        }
-    }
+    let question = rewrite_question(settings, &req).await;
     // R8.1: embed query for vector search (hybrid) — deterministic fallback when remote unavailable
-    let question_for_embed = question.clone();
-    let query_embedding = embedder.embed_query(&question_for_embed).await;
+    let query_embedding = embedder.embed_query(&question).await;
     // Do DB retrieval in blocking thread to avoid holding !Send Connection across await
     let data_dir_string = data_dir.to_string();
     let data_dir_for_hits = data_dir_string.clone();
-    let data_dir_for_qa = data_dir_string.clone();
     let project_id = req.project_id;
     let public_only = req.public_only.unwrap_or(false);
-    let history_for_gen = filtered_history.clone();
+    let history_for_gen: Vec<AskTurn> = req.history.clone().unwrap_or_default().into_iter().filter(|t| !t.content.trim().is_empty()).collect();
     let settings_clone = settings_snapshot(settings);
     let q_for_block = question.clone();
     let hits = tokio::task::spawn_blocking(move || {
@@ -104,23 +147,17 @@ pub async fn ask(
     .await
     .unwrap_or_default();
 
-    // R10.5: only record qa warnings when retrieval actually degraded (hits empty) — not on every qa
-    // Python records these only when embedding failed / no hits; previously Rust spammed 2 warnings per qa
     if hits.is_empty() {
-        let data_dir_qa_clone = data_dir_for_qa.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            let db_path = crate::db::resolve_db_path(&data_dir_qa_clone);
-            if let Ok(conn) = crate::db::init_db(&db_path) {
-                let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning','retrieval degraded to keyword-only','qa fallback')", []);
-                let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning','answer generation failed; returning matching context only','qa fallback')", []);
-            }
-        })
-        .await;
+        record_degraded(&data_dir_string).await;
+        return AskResponse {
+            answer: "No relevant knowledge found yet. Ingest sources first.".to_string(),
+            citations: vec![],
+        };
     }
 
     let trusted = is_answer_trusted(settings);
     let mut hits = hits;
-    if !trusted && !hits.is_empty() {
+    if !trusted {
         let hits_for_gate = hits.clone();
         let data_dir_gate = data_dir_string.clone();
         let (filtered, blocked) = tokio::task::spawn_blocking(move || {
@@ -129,16 +166,7 @@ pub async fn ask(
             gate_answer_hits(&conn, &hits_for_gate)
         }).await.unwrap_or((vec![], vec![]));
         if !blocked.is_empty() {
-            let data_dir_evt = data_dir_string.clone();
-            let blocked_len = blocked.len();
-            let _ = tokio::task::spawn_blocking(move || {
-                let db_path = crate::db::resolve_db_path(&data_dir_evt);
-                if let Ok(conn) = crate::db::init_db(&db_path) {
-                    let msg = format!("answer gate: {} hit(s) excluded from cloud answer (sensitive/pii source or PII chunk)", blocked_len);
-                    let detail = format!("labels={:?}; set ANCHOR_CLOUD_TRUST=1 to allow", blocked);
-                    let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning',?1,?2)", rusqlite::params![msg, detail]);
-                }
-            }).await;
+            record_gate_event(&data_dir_string, &blocked).await;
             if filtered.is_empty() {
                 return AskResponse {
                     answer: "Relevant knowledge was found but it is sensitive/PII and the answer provider is an unconfirmed cloud service. Enable a local provider or set ANCHOR_CLOUD_TRUST=1 to answer.".to_string(),
@@ -149,26 +177,12 @@ pub async fn ask(
         hits = filtered;
     }
 
-    if hits.is_empty() {
-        return AskResponse {
-            answer: "No relevant knowledge found yet. Ingest sources first.".to_string(),
-            citations: vec![],
-        };
-    }
-
     // Build context and generate (no DB borrow across await) — R10.6 UTF-8 safe (was byte slice)
     let sections: Vec<String> = hits.iter().enumerate().map(|(i, h)| format!("[S{}] {}", i+1, h.content.chars().take(2000).collect::<String>())).collect();
     let context = sections.join("\n\n");
     let answer = generate_answer(settings, &question, &context, &history_for_gen).await;
-    let citations = hits.iter().take(5).map(|h| Citation {
-        entity_id: h.entity_id,
-        kind: if h.entity_id.is_some() { "entity".to_string() } else { "document".to_string() },
-        summary: h.content.chars().take(200).collect(),
-        source_ref: if h.source_ref.is_empty() { format!("chunk:{}", h.chunk_id) } else { h.source_ref.clone() },
-        score: (h.score * 1000.0).round() / 1000.0,
-        snippet: h.content.chars().take(300).collect(),
-    }).collect();
-    return AskResponse { answer, citations };
+    let citations = build_citations(&hits);
+    AskResponse { answer, citations }
 }
 
 fn settings_snapshot(settings: &SettingsService) -> std::collections::HashMap<String, String> {
@@ -369,6 +383,53 @@ fn turn_text(turn: &AskTurn) -> String {
     format!("{}: {}", turn.role, turn.content)
 }
 
+async fn llm_rewrite(settings: &SettingsService, transcript: &str, question: &str) -> Option<String> {
+    let base = settings.get("answer_base_url", None).unwrap_or_default();
+    let key = settings.get("answer_api_key", None).unwrap_or_default();
+    let model = settings.get("answer_model", None).unwrap_or_else(|| "gpt-4o-mini".to_string());
+    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().ok()?;
+    let mut headers = reqwest::header::HeaderMap::new();
+    if !key.is_empty() {
+        if let Ok(h) = format!("Bearer {}", key).parse() {
+            headers.insert(reqwest::header::AUTHORIZATION, h);
+        }
+    }
+    let payload = serde_json::json!({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You rewrite a user's follow-up question into a standalone question that includes all context from the conversation needed to answer it alone. Respond with ONLY the rewritten question, no preamble."},
+            {"role": "user", "content": format!("Conversation:\n{}\n\nFollow-up: {}", transcript, question)}
+        ],
+        "temperature": 0.0,
+        "max_tokens": 120
+    });
+    let resp = client.post(&url).headers(headers).json(&payload).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let j = resp.json::<serde_json::Value>().await.ok()?;
+    let content = j.pointer("/choices/0/message/content").and_then(|v| v.as_str())?;
+    let trimmed = content.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.chars().take(500).collect())
+    }
+}
+
+fn heuristic_rewrite(question: &str, history: &[AskTurn]) -> Option<String> {
+    // Fallback heuristic — only on pronoun/coref, not blanket len<40 (R11.4)
+    let q_lower = question.to_lowercase();
+    let is_followup = q_lower.split_whitespace().any(|w| matches!(w, "it" | "its" | "this" | "that" | "these" | "those" | "they" | "them" | "their" | "itself"))
+        || q_lower.contains("its ") || q_lower.contains(" for it");
+    if !is_followup {
+        return None;
+    }
+    let last_user = history.iter().rev().find(|t| t.role == "user").map(|t| t.content.clone()).or_else(|| history.last().map(|t| t.content.clone()))?;
+    Some(format!("{} {}", last_user, question).chars().take(500).collect())
+}
+
 async fn rewrite_followup(settings: &SettingsService, question: &str, history: &[AskTurn]) -> Option<String> {
     if history.is_empty() {
         return None;
@@ -386,50 +447,12 @@ async fn rewrite_followup(settings: &SettingsService, question: &str, history: &
     if !is_local && key.is_empty() {
         return None;
     }
-    let model = settings.get("answer_model", None).unwrap_or_else(|| "gpt-4o-mini".to_string());
-    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
     if base.starts_with("http") {
-        if let Ok(client) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build() {
-            let mut headers = reqwest::header::HeaderMap::new();
-            if !key.is_empty() {
-                if let Ok(h) = format!("Bearer {}", key).parse() {
-                    headers.insert(reqwest::header::AUTHORIZATION, h);
-                }
-            }
-            let payload = serde_json::json!({
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": "You rewrite a user's follow-up question into a standalone question that includes all context from the conversation needed to answer it alone. Respond with ONLY the rewritten question, no preamble."},
-                    {"role": "user", "content": format!("Conversation:\n{}\n\nFollow-up: {}", transcript, question)}
-                ],
-                "temperature": 0.0,
-                "max_tokens": 120
-            });
-            if let Ok(resp) = client.post(&url).headers(headers).json(&payload).send().await {
-                if resp.status().is_success() {
-                    if let Ok(j) = resp.json::<serde_json::Value>().await {
-                        if let Some(content) = j.pointer("/choices/0/message/content").and_then(|v| v.as_str()) {
-                            let trimmed = content.trim().to_string();
-                            if !trimmed.is_empty() {
-                                return Some(trimmed.chars().take(500).collect());
-                            }
-                        }
-                    }
-                }
-            }
+        if let Some(r) = llm_rewrite(settings, &transcript, question).await {
+            return Some(r);
         }
     }
-    // Fallback heuristic — only on pronoun/coref, not blanket len<40 (R11.4)
-    let q_lower = question.to_lowercase();
-    let is_followup = q_lower.split_whitespace().any(|w| matches!(w, "it" | "its" | "this" | "that" | "these" | "those" | "they" | "them" | "their" | "itself"))
-        || q_lower.contains("its ") || q_lower.contains(" for it");
-    if is_followup {
-        if let Some(last_user) = history.iter().rev().find(|t| t.role == "user").map(|t| t.content.clone()).or_else(|| history.last().map(|t| t.content.clone())) {
-            let combined = format!("{} {}", last_user, question);
-            return Some(combined.chars().take(500).collect());
-        }
-    }
-    None
+    heuristic_rewrite(question, history)
 }
 
 async fn generate_answer(settings: &SettingsService, question: &str, context: &str, history: &[AskTurn]) -> String {

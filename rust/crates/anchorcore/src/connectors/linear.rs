@@ -15,6 +15,50 @@ pub struct LinearConnector {
     base_url: String,
 }
 
+fn graphql_error(data: &Value) -> Result<(), ConnectorError> {
+    if let Some(errors) = data.get("errors").and_then(|v| v.as_array()) {
+        if !errors.is_empty() {
+            let msg = errors[0].get("message").and_then(|v| v.as_str()).unwrap_or("graphql error");
+            return Err(ConnectorError(format!("Linear GraphQL: {}", msg)));
+        }
+    }
+    Ok(())
+}
+
+fn parse_issue(node: &Value, docs: &mut Vec<IngestionDoc>, next_cursor: &mut String) {
+    let id = node.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let identifier = node.get("identifier").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let title = node.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let desc = node.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let state = node.get("state").and_then(|v| v.get("name")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let assignee = node.get("assignee").and_then(|v| v.get("name")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let creator = node.get("creator").and_then(|v| v.get("name")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let updated_raw = node.get("updatedAt").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let updated = DateTime::parse_from_rfc3339(&updated_raw).ok().map(|d| d.with_timezone(&Utc));
+    let mut parts = vec![title.clone(), format!("State: {}", state), format!("Assignee: {}", assignee), desc.clone()];
+    if let Some(comments) = node.get("comments").and_then(|v| v.get("nodes")).and_then(|v| v.as_array()) {
+        for c in comments {
+            if let Some(b) = c.get("body").and_then(|v| v.as_str()) {
+                if !b.is_empty() { parts.push(b.to_string()); }
+            }
+        }
+    }
+    let text = parts.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
+    if let Some(dt) = updated {
+        let iso = dt.to_rfc3339();
+        if next_cursor.is_empty() || iso > *next_cursor { *next_cursor = iso; }
+    }
+    let author = if !creator.is_empty() { creator } else { assignee.clone() };
+    docs.push(IngestionDoc {
+        external_id: if identifier.is_empty() { id.clone() } else { identifier.clone() },
+        title: if title.is_empty() { identifier.clone() } else { title },
+        text,
+        author,
+        updated_at: updated,
+        source_ref: format!("Linear:{}", if identifier.is_empty() { id } else { identifier }),
+    });
+}
+
 impl LinearConnector {
     pub fn new(config: &Value) -> Result<Self, ConnectorError> {
         let api_key = config
@@ -133,14 +177,8 @@ impl LinearConnector {
                 return Err(ConnectorError(format!("Linear {}: {}", status, &text[..text.len().min(500)])));
             }
             let data: Value = resp.json().await.map_err(|e| ConnectorError(e.to_string()))?;
-
             // GraphQL errors
-            if let Some(errors) = data.get("errors").and_then(|v| v.as_array()) {
-                if !errors.is_empty() {
-                    let msg = errors[0].get("message").and_then(|v| v.as_str()).unwrap_or("graphql error");
-                    return Err(ConnectorError(format!("Linear GraphQL: {}", msg)));
-                }
-            }
+            graphql_error(&data)?;
 
             let nodes = data
                 .pointer("/data/issues/nodes")
@@ -150,51 +188,21 @@ impl LinearConnector {
                 .unwrap_or_default();
 
             for node in &nodes {
-                let id = node.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let identifier = node.get("identifier").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let title = node.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let desc = node.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let state = node.get("state").and_then(|v| v.get("name")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let assignee = node.get("assignee").and_then(|v| v.get("name")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let creator = node.get("creator").and_then(|v| v.get("name")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let updated_raw = node.get("updatedAt").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let updated = DateTime::parse_from_rfc3339(&updated_raw).ok().map(|d| d.with_timezone(&Utc));
-
-                let mut parts = vec![title.clone(), format!("State: {}", state), format!("Assignee: {}", assignee), desc.clone()];
-                if let Some(comments) = node.get("comments").and_then(|v| v.get("nodes")).and_then(|v| v.as_array()) {
-                    for c in comments {
-                        if let Some(b) = c.get("body").and_then(|v| v.as_str()) {
-                            if !b.is_empty() { parts.push(b.to_string()); }
-                        }
-                    }
-                }
-                let text = parts.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
-                if let Some(dt) = updated {
-                    let iso = dt.to_rfc3339();
-                    if next_cursor.is_empty() || iso > next_cursor { next_cursor = iso.clone(); }
-                    if iso > next_cursor.clone() { next_cursor = iso; }
-                }
-                let author = if !creator.is_empty() { creator } else { assignee.clone() };
-                docs.push(IngestionDoc {
-                    external_id: if identifier.is_empty() { id.clone() } else { identifier.clone() },
-                    title: if title.is_empty() { identifier.clone() } else { title },
-                    text,
-                    author,
-                    updated_at: updated,
-                    source_ref: format!("Linear:{}", if identifier.is_empty() { id } else { identifier }),
-                });
+                parse_issue(node, &mut docs, &mut next_cursor);
             }
 
             let page_info = data
                 .pointer("/data/issues/pageInfo")
                 .or_else(|| data.pointer("/data/team/issues/pageInfo"));
             let has_next = page_info.and_then(|v| v.get("hasNextPage")).and_then(|v| v.as_bool()).unwrap_or(false);
-            let end_cursor = page_info.and_then(|v| v.get("endCursor")).and_then(|v| v.as_str()).map(|s| s.to_string());
-            if has_next {
-                if let Some(ec) = end_cursor { cursor = Some(ec); } else { break; }
-            } else {
+            if !has_next {
                 break;
             }
+            let end_cursor = page_info.and_then(|v| v.get("endCursor")).and_then(|v| v.as_str());
+            let Some(ec) = end_cursor else {
+                break;
+            };
+            cursor = Some(ec.to_string());
         }
         Ok((docs, next_cursor))
     }

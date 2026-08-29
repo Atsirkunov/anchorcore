@@ -79,143 +79,89 @@ fn resolve_data_dir(cli: &str) -> PathBuf {
     PathBuf::from("data")
 }
 
-#[tokio::main]
-async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
-
-    let args = Args::parse();
-    let data_dir = resolve_data_dir(&args.data_dir);
-    std::fs::create_dir_all(&data_dir).ok();
-    let db_path = db::resolve_db_path(&data_dir.to_string_lossy());
-    // init DB for side-effect (migrations, pragmas) - health/qa open per-request
-    let _ = db::init_db(&db_path).expect("failed to init DB");
+fn ensure_log_file(data_dir: &std::path::Path) {
     // R6.2: ensure log file exists so GET /system/logs finds anchorcore.log (Python creates via RotatingFileHandler)
     let log_path = data_dir.join("anchorcore.log");
     if !log_path.exists() {
         let _ = std::fs::write(&log_path, format!("AnchorCore Rust {} started\n", env!("CARGO_PKG_VERSION")));
     }
+}
+
+fn sweep_orphan_jobs(db_path: &std::path::Path) {
     // R6.6: sweep orphan running jobs (like 44b7532) — previous binary crash leaves jobs running and blocks queue
-    if let Ok(conn) = db::init_db(&db_path) {
+    if let Ok(conn) = db::init_db(db_path) {
         let n = conn.execute("UPDATE jobs SET status='cancelled', finished_at=datetime('now'), error='orphaned (binary restarted)' WHERE status='running'", []).unwrap_or(0);
         if n > 0 {
             tracing::info!("swept {} orphan running jobs to cancelled", n);
         }
     }
-    tracing::info!("Rust anchorcore — data_dir {} db {}", data_dir.display(), db_path.display());
+}
 
+fn build_state(data_dir: &std::path::Path) -> health::AppState {
     // R1.4 + R1.5: secret store + settings service (mirrors Python wiring in main.py:55)
     let secret_store = secrets::SecretStore::new(data_dir.join("secrets.enc"));
     let settings_svc = std::sync::Arc::new(settings::SettingsService::new(secret_store));
     let jobs_svc = jobs::JobManager::new();
-
     let csrf_token = security::generate_csrf_token();
     let embedder = std::sync::Arc::new(embedder::Embedder::new(settings_svc.clone()));
-    let state = health::AppState {
+    health::AppState {
         data_dir: data_dir.to_string_lossy().to_string(),
         settings: settings_svc.clone(),
         jobs: jobs_svc.clone(),
         csrf_token: csrf_token.clone(),
         embedder: embedder.clone(),
-    };
-    tracing::info!("CSRF token generated (per-session)");
+    }
+}
+
+fn wire_scheduler(state: &health::AppState, db_path: &std::path::Path) {
     // R11.1: Scheduler — actually wired (was dead code). Boot reload + interval executor.
     let scheduler = scheduler::Scheduler::new_with_state(state.clone());
     scheduler::set_global(scheduler.clone());
-    if let Ok(conn) = db::init_db(&db_path) {
+    if let Ok(conn) = db::init_db(db_path) {
         scheduler.reload_sources(&conn);
     }
     tracing::info!("scheduler wired (poll intervals from settings)");
-    // Folder watcher: extracted to `watcher::service` (P0 3.3) — gated for `cargo test`
-    // Keeps FolderWatcher (mpsc::Receiver !Sync) + HashMap future off test thread stack (8 MB).
-    #[cfg(not(test))]
-    {
-        watcher::service::spawn(state.clone());
-    }
+}
 
+fn spawn_ollama_autolaunch(settings_svc: std::sync::Arc<settings::SettingsService>) {
     // Ollama: try to launch if installed but not reachable (double-click app should auto-start Ollama)
     // Skip when tests point at localhost:1 or ANCHOR_OLLAMA_BASE_URL is explicitly localhost:1
-    {
-        let settings_clone = settings_svc.clone();
-        tokio::spawn(async move {
-            let base = settings_clone.get("ollama_base_url", None).unwrap_or_else(|| "http://localhost:11434".to_string());
-            if base == "http://localhost:1" || base == "http://127.0.0.1:1" || base == "http://localhost:1/" || base == "http://127.0.0.1:1/" {
-                return;
-            }
-            // quick probe - if already reachable, nothing to do
-            let probe_url = format!("{}/api/tags", base.trim_end_matches('/'));
-            let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(2)).build();
-            if let Ok(c) = client {
-                if let Ok(r) = c.get(&probe_url).send().await {
-                    if r.status().is_success() {
-                        tracing::info!("ollama already reachable at {}", base);
-                        return;
-                    }
-                }
-            }
-            // try to find ollama binary
-            let candidates = [
-                "/opt/homebrew/bin/ollama",
-                "/usr/local/bin/ollama",
-                "/Applications/Ollama.app/Contents/Resources/ollama",
-                "/usr/bin/ollama",
-            ];
-            let mut ollama_path: Option<std::path::PathBuf> = None;
-            for p in candidates {
-                if std::path::Path::new(p).exists() {
-                    ollama_path = Some(p.into());
-                    break;
-                }
-            }
-            if ollama_path.is_none() {
-                // try PATH
-                if let Ok(out) = std::process::Command::new("which").arg("ollama").output() {
-                    if out.status.success() {
-                        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                        if !s.is_empty() && std::path::Path::new(&s).exists() {
-                            ollama_path = Some(s.into());
-                        }
-                    }
-                }
-            }
-            // also try `ollama` via PATH directly
-            if ollama_path.is_none() {
-                // check if `ollama` is runnable via `command -v` style - try spawning `ollama --version`
-                if std::process::Command::new("ollama").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
-                    ollama_path = Some("ollama".into());
-                }
-            }
-            let Some(path) = ollama_path else {
-                tracing::info!("ollama not found in PATH or common locations, skipping auto-launch (install from https://ollama.com)");
-                return;
-            };
-            tracing::info!("ollama not reachable at {}, trying to launch via {:?} serve", base, path);
-            let _ = std::process::Command::new(&path)
-                .arg("serve")
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .stdin(std::process::Stdio::null())
-                .spawn();
-            // poll for 5s
-            for _ in 0..10 {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                if let Ok(c) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(1)).build() {
-                    if let Ok(r) = c.get(&probe_url).send().await {
-                        if r.status().is_success() {
-                            tracing::info!("ollama launched and reachable at {}", base);
-                            return;
-                        }
-                    }
-                }
-            }
-            tracing::info!("ollama launch attempted but still not reachable at {} (will use rule fallback)", base);
-        });
-    }
+    tokio::spawn(async move {
+        let base = settings_svc.get("ollama_base_url", None).unwrap_or_else(|| "http://localhost:11434".to_string());
+        if system::ollama_probe_disabled(&base) {
+            return;
+        }
+        // quick probe - if already reachable, nothing to do
+        if system::probe_ollama(&base, 2).await {
+            tracing::info!("ollama already reachable at {}", base);
+            return;
+        }
+        // try to find ollama binary
+        let Some(path) = system::find_ollama_binary() else {
+            tracing::info!("ollama not found in PATH or common locations, skipping auto-launch (install from https://ollama.com)");
+            return;
+        };
+        tracing::info!("ollama not reachable at {}, trying to launch via {:?} serve", base, path);
+        let _ = std::process::Command::new(&path)
+            .arg("serve")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .stdin(std::process::Stdio::null())
+            .spawn();
+        // poll for 5s
+        let probe_url = format!("{}/api/tags", base.trim_end_matches('/'));
+        if system::poll_ollama_up(&probe_url, 10).await {
+            tracing::info!("ollama launched and reachable at {}", base);
+            return;
+        }
+        tracing::info!("ollama launch attempted but still not reachable at {} (will use rule fallback)", base);
+    });
+}
 
+fn build_router(state: health::AppState) -> Router {
     // R1.3: stub all routers with 501, keep /health real (already done in R1.2)
     // Note: axum 0.7 uses `/:id` style; keep literal routes before param routes
-    let app = Router::new()
+    Router::new()
         .route("/health", get(health::health))
         // sources (R4.5 + pipeline sync)
         .route("/sources", get(sources::list_handler).post(sources::create_handler))
@@ -276,36 +222,72 @@ async fn main() {
         .layer(middleware::from_fn_with_state(state.clone(), security::csrf_middleware))
         .layer(security::cors_layer())
         .layer(middleware::from_fn_with_state(state.clone(), security::host_origin_middleware))
-        .with_state(state);
+        .with_state(state)
+}
+
+fn maybe_open_browser(addr: &str) {
+    // Double-click app: open browser unless ANCHOR_OPEN_BROWSER=0 (CI/tests set 0)
+    let open_browser = std::env::var("ANCHOR_OPEN_BROWSER").as_deref() != Ok("0");
+    if !open_browser {
+        return;
+    }
+    let url = format!("http://{}", addr);
+    let url_clone = url.clone();
+    let addr_clone = addr.to_string();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        // Use /usr/bin/open on macOS (Finder launch has minimal PATH), fallback to `open` crate elsewhere
+        let res = if cfg!(target_os = "macos") {
+            std::process::Command::new("/usr/bin/open")
+                .arg(&url_clone)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        } else {
+            open::that(&url_clone).map_err(|e| e.to_string())
+        };
+        match res {
+            Ok(_) => tracing::info!("opened browser at {}", url_clone),
+            Err(e) => tracing::warn!("failed to open browser at {}: {} (try open http://{} manually)", url_clone, e, addr_clone),
+        }
+    });
+}
+
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+
+    let args = Args::parse();
+    let data_dir = resolve_data_dir(&args.data_dir);
+    std::fs::create_dir_all(&data_dir).ok();
+    let db_path = db::resolve_db_path(&data_dir.to_string_lossy());
+    // init DB for side-effect (migrations, pragmas) - health/qa open per-request
+    let _ = db::init_db(&db_path).expect("failed to init DB");
+    ensure_log_file(&data_dir);
+    sweep_orphan_jobs(&db_path);
+    tracing::info!("Rust anchorcore — data_dir {} db {}", data_dir.display(), db_path.display());
+
+    let state = build_state(&data_dir);
+    tracing::info!("CSRF token generated (per-session)");
+    wire_scheduler(&state, &db_path);
+    // Folder watcher: extracted to `watcher::service` (P0 3.3) — gated for `cargo test`
+    // Keeps FolderWatcher (mpsc::Receiver !Sync) + HashMap future off test thread stack (8 MB).
+    #[cfg(not(test))]
+    {
+        watcher::service::spawn(state.clone());
+    }
+
+    spawn_ollama_autolaunch(state.settings.clone());
+
+    let app = build_router(state);
 
     let addr = format!("127.0.0.1:{}", args.port);
     tracing::info!("listening on {}", addr);
-    // Double-click app: open browser unless ANCHOR_OPEN_BROWSER=0 (CI/tests set 0)
-    let open_browser = std::env::var("ANCHOR_OPEN_BROWSER").as_deref() != Ok("0");
-    if open_browser {
-        let url = format!("http://{}", addr);
-        let url_clone = url.clone();
-        let addr_clone = addr.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-            // Use /usr/bin/open on macOS (Finder launch has minimal PATH), fallback to `open` crate elsewhere
-            let res = if cfg!(target_os = "macos") {
-                std::process::Command::new("/usr/bin/open")
-                    .arg(&url_clone)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                    .map(|_| ())
-                    .map_err(|e| e.to_string())
-            } else {
-                open::that(&url_clone).map_err(|e| e.to_string())
-            };
-            match res {
-                Ok(_) => tracing::info!("opened browser at {}", url_clone),
-                Err(e) => tracing::warn!("failed to open browser at {}: {} (try open http://{} manually)", url_clone, e, addr_clone),
-            }
-        });
-    }
+    maybe_open_browser(&addr);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }

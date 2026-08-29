@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>AnchorCore — Palette Preview A/B/C</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,-apple-system,Segoe UI,Inter,sans-serif;background:#0a0c0f;color:#e6e8eb;line-height:1.5}
+  h1{font-size:22px;font-weight:650;letter-spacing:-0.02em}
+  h2{font-size:13px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;opacity:0.9}
+  h3{font-size:14px;font-weight:600}
+  p{font-size:13px}
+  .page{max-width:1280px;margin:0 auto;padding:28px 20px 40px}
+  .intro{display:flex;flex-wrap:wrap;gap:16px;align-items:end;justify-content:space-between;margin-bottom:22px;border-bottom:1px solid #1f242c;padding-bottom:18px}
+  .intro p{color:#9ca3af;max-width:620px;font-size:13px}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  @media(max-width:980px){.grid{grid-template-columns:1fr}}
+  .palette{border-radius:14px;overflow:hidden;border:1px solid #1f242c;background:#0f1115}
+  .palette-head{padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .palette-head strong{font-size:14px}
+  .palette-head span{font-size:11px;opacity:0.7;border:1px solid currentColor;border-radius:999px;padding:2px 8px}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  .chip{width:34px;height:22px;border-radius:6px;border:1px solid rgba(255,255,255,0.12);display:inline-block}
+  .label{font-size:11px;color:#6b7280;margin-top:4px}
+  /* shared mock ui */
+  .mock{padding:14px 14px 16px}
+  .hdr{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;margin-bottom:12px}
+  .hdr b{font-size:13px}
+  .hdr nav{display:flex;gap:4px;margin-left:8px}
+  .tab{font-size:12px;padding:4px 8px;border-radius:6px;border:none;cursor:pointer}
+  .tabActive{font-weight:600}
+  .badge{margin-left:auto;font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid;display:flex;align-items:center;gap:6px}
+  .dot{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:0.9}
+  .inputRow{display:flex;gap:8px;margin:14px 0 10px}
+  .inp{flex:1;padding:9px 11px;border-radius:8px;border:1px solid;font-size:13px}
+  .btn{padding:9px 14px;border-radius:8px;border:none;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+  .btnSec{border:1px solid;font-weight:500}
+  .answer{padding:12px 13px;border-radius:10px;border:1px solid;line-height:1.6;font-size:13px;margin-bottom:10px}
+  .answer small{opacity:0.7;font-size:11px}
+  .citations{display:grid;gap:8px}
+  .cite{padding:10px 11px;border-radius:8px;border:1px solid;display:flex;gap:10px}
+  .citeBar{width:3px;border-radius:999px;flex-shrink:0}
+  .cite b{font-size:12px}
+  .cite p{font-size:12px;opacity:0.85;margin-top:2px}
+  .cite small{font-size:11px;opacity:0.65}
+  .kinds{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+  .kind{font-size:11px;padding:3px 7px;border-radius:999px;border:1px solid;font-weight:500}
+  .lightHero{margin-top:14px;border-radius:10px;padding:14px;border:1px solid}
+  .lightHero h4{font-size:14px;margin-bottom:4px}
+  .lightHero p{font-size:12px;opacity:0.75}
+  .cta{margin-top:10px;display:flex;gap:8px}
+  .cta a{font-size:12px;font-weight:600;padding:7px 11px;border-radius:8px;text-decoration:none;display:inline-block}
+  .meta{font-size:11px;opacity:0.6;margin-top:10px;line-height:1.5}
+  .proscons{font-size:11.5px;line-height:1.6;margin-top:12px;padding:10px 11px;border-radius:8px;border:1px dashed;opacity:0.95}
+  .proscons b{font-size:11px;letter-spacing:0.04em;text-transform:uppercase}
+  /* palette-specific variables via data attr */
+  .pA{--bg:#0f1115;--surface:#14171d;--card:#171a21;--hover:#1e2430;--border:#1f242c;--border2:#2d333b;--text:#e6e8eb;--dim:#9ca3af;--faint:#6b7280;--accent:#6366f1;--accentH:#5457e5;--accentSoft:#1e1b4b;--accentText:#a5b4fc;--lightBg:#f8f9fb;--lightSurf:#ffffff;--lightBorder:#e5e7eb;--lightText:#0f1115;--lightDim:#6b7280}
+  .pB{--bg:#0F1214;--surface:#171A1E;--card:#1E2226;--hover:#242A32;--border:#252A30;--border2:#2d333b;--text:#E8E6E1;--dim:#9AA0A8;--faint:#7a828c;--accent:#5B5BD6;--accentH:#4A49C1;--accentSoft:#1E1B4B;--accentText:#c7c5ff;--ochre:#C9A86A;--lightBg:#F6F3EE;--lightSurf:#ffffff;--lightBorder:#e7e2d9;--lightText:#1a1d22;--lightDim:#6b7280}
+  .pC{--bg:#111619;--surface:#182027;--card:#1F2A33;--hover:#243041;--border:#243041;--border2:#2e3d4e;--text:#E6E8EB;--dim:#9aa3b0;--faint:#6b7a8a;--accent:#3F6F72;--accentH:#356061;--accentSoft:#13292b;--accentText:#9ecfd2;--copper:#C07A5A;--lightBg:#f1f3f5;--lightSurf:#ffffff;--lightBorder:#dde3e6;--lightText:#111619;--lightDim:#6b7a8a}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="intro">
+    <div>
+      <h1>AnchorCore — palette preview</h1>
+      <p>Three directions for <b>memory · reliability · privacy · scale</b>. Each column is a self-contained mock: dark app (header + Ask + citation) + light website hero below. Current tokens at <code>frontend/src/theme.ts</code> / <code>docs/design-system.md:17</code>.</p>
+    </div>
+    <div style="font-size:11px;color:#6b7280;line-height:1.6;text-align:right">WCAG AA checks in meta row &nbsp;·&nbsp; Open file at <code>palette-preview.html</code></div>
+  </div>
+
+  <div class="grid">
+
+    <!-- A -->
+    <div class="palette pA" style="background:var(--bg);border-color:var(--border)">
+      <div class="palette-head" style="background:var(--surface);border-bottom:1px solid var(--border);color:var(--text)">
+        <div><strong>A — Ink &amp; Indigo</strong><div style="font-size:11px;color:var(--dim);margin-top:2px">Evolve current · lowest risk · Linear-like trust</div></div>
+        <span style="color:var(--accent);border-color:var(--accent)">KEEP</span>
+      </div>
+      <div style="padding:12px 14px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <span class="chip" style="background:var(--bg)" title="bg #0f1115"></span>
+        <span class="chip" style="background:var(--surface)" title="surface #14171d"></span>
+        <span class="chip" style="background:var(--card)" title="card #171a21"></span>
+        <span class="chip" style="background:var(--hover)" title="hover #1e2430"></span>
+        <span class="chip" style="background:var(--accent)" title="accent #6366f1"></span>
+        <span class="chip" style="background:var(--accentSoft)" title="accentSoft #1e1b4b"></span>
+        <span style="font-size:10px;color:var(--faint);margin-left:6px">#0f1115 · #14171d · #171a21 · #6366f1</span>
+      </div>
+
+      <div class="mock">
+        <div class="hdr" style="background:var(--surface);border:1px solid var(--border);color:var(--text)">
+          <b>AnchorCore</b>
+          <nav><button class="tab tabActive" style="background:var(--hover);color:var(--text)">Ask</button><button class="tab" style="background:transparent;color:var(--dim)">Sources</button><button class="tab" style="background:transparent;color:var(--dim)">Entities</button></nav>
+          <span class="badge" style="background:var(--hover);border-color:var(--accent);color:var(--accentText)"><span class="dot"></span>1 running</span>
+        </div>
+
+        <div class="inputRow">
+          <input class="inp" style="background:var(--card);border-color:var(--border2);color:var(--text)" value="What was decided about DVCA movements and why?" readonly/>
+          <button class="btn" style="background:var(--accent);color:white">Ask</button>
+        </div>
+
+        <div class="answer" style="background:var(--card);border-color:var(--border);color:var(--text)">
+          <div style="font-weight:600;margin-bottom:4px">DVCA movements are restricted to settlement-only.</div>
+          Decision excluded incoming transfers due to reconciliation complexity. Cited from PRD v3 §4.25 and meeting notes.
+          <div style="margin-top:8px"><small style="color:var(--dim)">2 sources · 0.93 top score · shows provenance</small></div>
+        </div>
+
+        <div class="citations">
+          <div class="cite" style="background:var(--surface);border-color:var(--border)">
+            <div class="citeBar" style="background:#8b5cf6"></div>
+            <div>
+              <b style="color:var(--text)">PRD v3 §4.25 — DVCA <small style="color:var(--dim)"> decision · 82%</small></b>
+              <p style="color:var(--dim)">“Security Transfers MVP excludes incoming transfers — reconciliation complexity.”</p>
+              <small>Source: prd-v3.pdf · chunk 12 · 2024-11-02</small>
+            </div>
+          </div>
+          <div class="cite" style="background:var(--surface);border-color:var(--border)">
+            <div class="citeBar" style="background:#f59e0b"></div>
+            <div>
+              <b style="color:var(--text)">Planning notes 11-02 <small style="color:var(--dim)"> note · owner: Sarah</small></b>
+              <p style="color:var(--dim)">“Sarah owns billing migration — supersedes DVCA flow.”</p>
+              <small>Source: meetings/planning.md · graph 1 hop</small>
+            </div>
+          </div>
+        </div>
+
+        <div class="kinds">
+          <span class="kind" style="border-color:#8b5cf633;color:#a78bfa;background:#8b5cf614">decision</span>
+          <span class="kind" style="border-color:#3b82f633;color:#93c5fd;background:#3b82f614">document</span>
+          <span class="kind" style="border-color:#f59e0b33;color:#fcd34d;background:#f59e0b14">action</span>
+          <span class="kind" style="border-color:var(--border2);color:var(--dim)">note</span>
+        </div>
+
+        <div class="lightHero" style="background:var(--lightSurf);border-color:var(--lightBorder);color:var(--lightText)">
+          <div style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--lightDim);font-weight:600">Website · light</div>
+          <h4>Your memory — finally searchable.</h4>
+          <p>Connect folders and Jira. Ask “what was decided about X, and why?” — get a cited answer. Private by default.</p>
+          <div class="cta">
+            <a style="background:var(--accent);color:white" href="#">Download — Free</a>
+            <a style="background:var(--lightBg);color:var(--lightText);border:1px solid var(--lightBorder)" href="#">See 60s demo</a>
+          </div>
+        </div>
+
+        <div class="meta" style="color:var(--dim)">
+          Contrast: text 14.2:1 · accent on white 4.6:1 ✓ · <code>#6366f1</code> is SaaS-familiar, cold for “memory”
+        </div>
+        <div class="proscons" style="border-color:var(--border2);background:var(--surface);color:var(--dim)">
+          <b style="color:var(--text)">Pros / Cons</b><br>
+          + Strongest <i>reliability + privacy</i>, zero migration<br>
+          − Cold, undifferentiated (every AI tool is indigo)
+        </div>
+      </div>
+    </div>
+
+    <!-- B -->
+    <div class="palette pB" style="background:var(--bg);border-color:var(--border)">
+      <div class="palette-head" style="background:var(--surface);border-bottom:1px solid var(--border);color:var(--text)">
+        <div><strong>B — Archive</strong><div style="font-size:11px;color:var(--dim);margin-top:2px">Memory-first · paper + warm ink · recommended</div></div>
+        <span style="color:var(--accent);border-color:var(--accent)">★ PICK</span>
+      </div>
+      <div style="padding:12px 14px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <span class="chip" style="background:var(--bg)"></span>
+        <span class="chip" style="background:var(--surface)"></span>
+        <span class="chip" style="background:var(--card)"></span>
+        <span class="chip" style="background:var(--accent)"></span>
+        <span class="chip" style="background:var(--ochre)" title="ochre #C9A86A memory accent"></span>
+        <span class="chip" style="background:var(--lightBg);border-color:#ddd" title="paper #F6F3EE"></span>
+        <span style="font-size:10px;color:var(--faint);margin-left:6px">#0F1214 · #5B5BD6 · ochre #C9A86A · paper #F6F3EE</span>
+      </div>
+
+      <div class="mock">
+        <div class="hdr" style="background:var(--surface);border:1px solid var(--border);color:var(--text)">
+          <b>AnchorCore</b>
+          <nav><button class="tab tabActive" style="background:var(--hover);color:var(--text)">Ask</button><button class="tab" style="background:transparent;color:var(--dim)">Sources</button><button class="tab" style="background:transparent;color:var(--dim)">Entities</button></nav>
+          <span class="badge" style="background:var(--hover);border-color:var(--accent);color:var(--accentText)"><span class="dot"></span>1 running</span>
+        </div>
+
+        <div class="inputRow">
+          <input class="inp" style="background:var(--card);border-color:var(--border);color:var(--text)" value="What was decided about DVCA movements and why?" readonly/>
+          <button class="btn" style="background:var(--accent);color:white">Ask</button>
+        </div>
+
+        <div class="answer" style="background:var(--card);border-color:var(--border);color:var(--text)">
+          <div style="font-weight:600;margin-bottom:4px">DVCA movements are restricted to settlement-only.</div>
+          Decision excluded incoming transfers due to reconciliation complexity. Cited from PRD v3 §4.25 and meeting notes.
+          <div style="margin-top:8px"><small style="color:var(--dim)">2 sources · 0.93 top score · warm ink keeps it human</small></div>
+        </div>
+
+        <div class="citations">
+          <div class="cite" style="background:var(--surface);border-color:var(--border)">
+            <div class="citeBar" style="background:var(--accent)"></div>
+            <div>
+              <b style="color:var(--text)">PRD v3 §4.25 — DVCA <small style="color:var(--dim)"> decision · 82%</small></b>
+              <p style="color:var(--dim)">“Security Transfers MVP excludes incoming transfers — reconciliation complexity.”</p>
+              <small>Source: prd-v3.pdf · chunk 12 · 2024-11-02</small>
+            </div>
+          </div>
+          <div class="cite" style="background:var(--surface);border-color:var(--border)">
+            <div class="citeBar" style="background:var(--ochre)"></div>
+            <div>
+              <b style="color:var(--text)">Planning notes 11-02 <small style="color:var(--dim)"> note · owner: Sarah</small></b>
+              <p style="color:var(--dim)">“Sarah owns billing migration — supersedes DVCA flow.”</p>
+              <small>Source: meetings/planning.md · graph 1 hop</small>
+            </div>
+          </div>
+        </div>
+
+        <div class="kinds">
+          <span class="kind" style="border-color:var(--accent);color:var(--accentText);background:var(--accentSoft)">decision</span>
+          <span class="kind" style="border-color:#3b82f633;color:#93c5fd;background:#3b82f614">document</span>
+          <span class="kind" style="border-color:var(--ochre);color:var(--ochre);background:#C9A86A14">action</span>
+          <span class="kind" style="border-color:var(--border);color:var(--dim)">note</span>
+        </div>
+
+        <div class="lightHero" style="background:var(--lightSurf);border-color:var(--lightBorder);color:var(--lightText)">
+          <div style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--lightDim);font-weight:600">Website · light — paper</div>
+          <h4>Your memory — finally searchable.</h4>
+          <p>Connect folders and Jira. Ask “what was decided about X, and why?” — get a cited answer. Private by default.</p>
+          <div class="cta">
+            <a style="background:var(--accent);color:white" href="#">Download — Free</a>
+            <a style="background:var(--lightBg);color:var(--lightText);border:1px solid var(--lightBorder)" href="#">See 60s demo</a>
+          </div>
+        </div>
+
+        <div class="meta" style="color:var(--dim)">
+          Warm white 13.8:1 · accent #5B5BD6 5.1:1 on paper ✓ · ochre used only for borders/badges, never CTA
+        </div>
+        <div class="proscons" style="border-color:var(--border);background:var(--surface);color:var(--dim)">
+          <b style="color:var(--text)">Pros / Cons</b><br>
+          + Only palette that feels like <i>memory / archive</i> + still enterprise-trust<br>
+          + Paper site differentiates from stark SaaS white<br>
+          − Requires ochre discipline (accent creep risk)
+        </div>
+      </div>
+    </div>
+
+    <!-- C -->
+    <div class="palette pC" style="background:var(--bg);border-color:var(--border)">
+      <div class="palette-head" style="background:var(--surface);border-bottom:1px solid var(--border);color:var(--text)">
+        <div><strong>C — Vault / Steel</strong><div style="font-size:11px;color:var(--dim);margin-top:2px">Infra / scale-first · graphite + teal + copper</div></div>
+        <span style="color:var(--accent);border-color:var(--accent)">SCALE</span>
+      </div>
+      <div style="padding:12px 14px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <span class="chip" style="background:var(--bg)"></span>
+        <span class="chip" style="background:var(--surface)"></span>
+        <span class="chip" style="background:var(--card)"></span>
+        <span class="chip" style="background:var(--accent)" title="teal #3F6F72"></span>
+        <span class="chip" style="background:var(--copper)" title="copper #C07A5A"></span>
+        <span class="chip" style="background:var(--accentSoft)"></span>
+        <span style="font-size:10px;color:var(--faint);margin-left:6px">#111619 · #182027 · teal #3F6F72 · copper #C07A5A</span>
+      </div>
+
+      <div class="mock">
+        <div class="hdr" style="background:var(--surface);border:1px solid var(--border);color:var(--text)">
+          <b>AnchorCore</b>
+          <nav><button class="tab tabActive" style="background:var(--hover);color:var(--text)">Ask</button><button class="tab" style="background:transparent;color:var(--dim)">Sources</button><button class="tab" style="background:transparent;color:var(--dim)">Entities</button></nav>
+          <span class="badge" style="background:var(--hover);border-color:var(--accent);color:var(--accentText)"><span class="dot"></span>1 running</span>
+        </div>
+
+        <div class="inputRow">
+          <input class="inp" style="background:var(--card);border-color:var(--border2);color:var(--text)" value="What was decided about DVCA movements and why?" readonly/>
+          <button class="btn" style="background:var(--accent);color:white">Ask</button>
+        </div>
+
+        <div class="answer" style="background:var(--card);border-color:var(--border);color:var(--text)">
+          <div style="font-weight:600;margin-bottom:4px">DVCA movements are restricted to settlement-only.</div>
+          Decision excluded incoming transfers due to reconciliation complexity. Cited from PRD v3 §4.25 and meeting notes.
+          <div style="margin-top:8px"><small style="color:var(--dim)">2 sources · infrastructural, calm, vault-like</small></div>
+        </div>
+
+        <div class="citations">
+          <div class="cite" style="background:var(--surface);border-color:var(--border)">
+            <div class="citeBar" style="background:var(--accent)"></div>
+            <div>
+              <b style="color:var(--text)">PRD v3 §4.25 — DVCA <small style="color:var(--dim)"> decision · 82%</small></b>
+              <p style="color:var(--dim)">“Security Transfers MVP excludes incoming transfers — reconciliation complexity.”</p>
+              <small>Source: prd-v3.pdf · chunk 12 · 2024-11-02</small>
+            </div>
+          </div>
+          <div class="cite" style="background:var(--surface);border-color:var(--border)">
+            <div class="citeBar" style="background:var(--copper)"></div>
+            <div>
+              <b style="color:var(--text)">Planning notes 11-02 <small style="color:var(--dim)"> note · owner: Sarah</small></b>
+              <p style="color:var(--dim)">“Sarah owns billing migration — supersedes DVCA flow.”</p>
+              <small>Source: meetings/planning.md · graph 1 hop</small>
+            </div>
+          </div>
+        </div>
+
+        <div class="kinds">
+          <span class="kind" style="border-color:var(--accent);color:var(--accentText);background:var(--accentSoft)">decision</span>
+          <span class="kind" style="border-color:var(--border2);color:var(--dim)">document</span>
+          <span class="kind" style="border-color:var(--copper);color:var(--copper);background:#C07A5A14">action</span>
+          <span class="kind" style="border-color:var(--border2);color:var(--dim)">note</span>
+        </div>
+
+        <div class="lightHero" style="background:var(--lightSurf);border-color:var(--lightBorder);color:var(--lightText)">
+          <div style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--lightDim);font-weight:600">Website · light — steel</div>
+          <h4>Your memory — finally searchable.</h4>
+          <p>Connect folders and Jira. Ask “what was decided about X, and why?” — get a cited answer. Private by default.</p>
+          <div class="cta">
+            <a style="background:var(--accent);color:white" href="#">Download — Free</a>
+            <a style="background:var(--lightBg);color:var(--lightText);border:1px solid var(--lightBorder)" href="#">See 60s demo</a>
+          </div>
+        </div>
+
+        <div class="meta" style="color:var(--dim)">
+          Text 13.5:1 · teal on white 4.8:1 ✓ · most “infra” — calm but less personal-warm
+        </div>
+        <div class="proscons" style="border-color:var(--border);background:var(--surface);color:var(--dim)">
+          <b style="color:var(--text)">Pros / Cons</b><br>
+          + Strongest <i>privacy + scale</i>, distinct from Notion/Linear<br>
+          − Teal is less “second brain”, more “platform”; copper needs restraint
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div style="margin-top:18px;padding:16px;border-radius:12px;background:#14171d;border:1px solid #1f242c">
+    <h3 style="margin-bottom:6px">How to use this file</h3>
+    <p style="color:#9ca3af;font-size:12.5px;line-height:1.7">
+      1) Open <code>palette-preview.html</code> in browser (already at repo root). &nbsp;2) Compare dark app vs light hero per column. &nbsp;3) Tell me <b>A / B / C</b> (or hybrid like “B with A’s accent”). I’ll patch <code>frontend/src/theme.ts:1</code> + <code>docs/design-system.md:17</code> tokens in one edit and rebuild preview.<br>
+      Recommendation remains <b>B — Archive</b>: keeps trust, adds memory via paper + warm ink + ochre detail only. No gradients, no second brand.
+    </p>
+  </div>
+</div>
+</body>
+</html>

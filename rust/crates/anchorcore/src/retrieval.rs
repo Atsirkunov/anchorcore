@@ -262,6 +262,33 @@ fn vector_search_scan(
     scored
 }
 
+type HitRow10 = (i64, Option<i64>, Option<i64>, String, String, i64, Option<String>, Option<String>, Option<i64>, Option<i64>);
+
+fn hit_from_row10(row: HitRow10, source_ids: Option<&HashSet<i64>>, qa_exclude_disputed: bool) -> Option<Hit> {
+    let (cid, eid, iid, content, source_ref, is_pii, _created, status, _eff, sid) = row;
+    if !status_ok(status.as_deref(), qa_exclude_disputed) {
+        return None;
+    }
+    if let Some(filter) = source_ids {
+        if let Some(s) = sid {
+            if !filter.contains(&s) {
+                return None;
+            }
+        }
+    }
+    Some(Hit {
+        chunk_id: cid,
+        entity_id: eid,
+        item_id: iid,
+        source_id: sid,
+        score: 0.0,
+        content,
+        source_ref,
+        is_pii: is_pii != 0,
+        status,
+    })
+}
+
 fn load_hits(
     conn: &Connection,
     ids: &[i64],
@@ -303,28 +330,9 @@ fn load_hits(
         .unwrap();
     let mut out = Vec::new();
     for row in rows.flatten() {
-        let (cid, eid, iid, content, source_ref, is_pii, _created, status, _eff, sid) = row;
-        if !status_ok(status.as_deref(), qa_exclude_disputed) {
-            continue;
+        if let Some(h) = hit_from_row10(row, source_ids, qa_exclude_disputed) {
+            out.push(h);
         }
-        if let Some(filter) = source_ids {
-            if let Some(s) = sid {
-                if !filter.contains(&s) {
-                    continue;
-                }
-            }
-        }
-        out.push(Hit {
-            chunk_id: cid,
-            entity_id: eid,
-            item_id: iid,
-            source_id: sid,
-            score: 0.0,
-            content,
-            source_ref,
-            is_pii: is_pii != 0,
-            status,
-        });
     }
     out
 }
@@ -421,6 +429,35 @@ pub fn keyword_search(
     out
 }
 
+type HitRow8 = (i64, Option<i64>, Option<i64>, String, String, i64, Option<String>, Option<i64>);
+
+fn row8(r: &rusqlite::Row) -> rusqlite::Result<HitRow8> {
+    Ok((
+        r.get::<_, i64>(0)?,
+        r.get::<_, Option<i64>>(1)?,
+        r.get::<_, Option<i64>>(2)?,
+        r.get::<_, String>(3)?,
+        r.get::<_, String>(4)?,
+        r.get::<_, i64>(5)?,
+        r.get::<_, Option<String>>(6)?,
+        r.get::<_, Option<i64>>(7)?,
+    ))
+}
+
+fn fallback_hit_from_row8(row: HitRow8, source_ids: Option<&HashSet<i64>>, qa_exclude_disputed: bool) -> Option<Hit> {
+    let (cid, eid, iid, content, source_ref, is_pii, status, sid) = row;
+    if !status_ok(status.as_deref(), qa_exclude_disputed) {
+        return None;
+    }
+    if let Some(filter) = source_ids {
+        let s = sid?;
+        if !filter.contains(&s) {
+            return None;
+        }
+    }
+    Some(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, score: 0.0, content, source_ref, is_pii: is_pii != 0, status })
+}
+
 pub fn keyword_fallback(
     conn: &Connection,
     source_ids: Option<&HashSet<i64>>,
@@ -449,33 +486,15 @@ pub fn keyword_fallback(
         Ok(s) => s,
         Err(_) => return vec![],
     };
-    let rows = match stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
-        Ok((
-            r.get::<_, i64>(0)?,
-            r.get::<_, Option<i64>>(1)?,
-            r.get::<_, Option<i64>>(2)?,
-            r.get::<_, String>(3)?,
-            r.get::<_, String>(4)?,
-            r.get::<_, i64>(5)?,
-            r.get::<_, Option<String>>(6)?,
-            r.get::<_, Option<i64>>(7)?,
-        ))
-    }) {
+    let rows = match stmt.query_map(rusqlite::params_from_iter(params.iter()), row8) {
         Ok(m) => m,
         Err(_) => return vec![],
     };
     let mut out = Vec::new();
     for row in rows.flatten() {
-        let (cid, eid, iid, content, source_ref, is_pii, status, sid) = row;
-        if !status_ok(status.as_deref(), qa_exclude_disputed) {
-            continue;
+        if let Some(h) = fallback_hit_from_row8(row, source_ids, qa_exclude_disputed) {
+            out.push(h);
         }
-        if let Some(filter) = source_ids {
-            if let Some(s) = sid {
-                if !filter.contains(&s) { continue; }
-            } else { continue; }
-        }
-        out.push(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, score: 0.0, content, source_ref, is_pii: is_pii != 0, status });
     }
     out
 }
