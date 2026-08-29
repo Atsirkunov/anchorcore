@@ -243,7 +243,6 @@ impl LinearConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[test]
     fn requires_team_and_key() {

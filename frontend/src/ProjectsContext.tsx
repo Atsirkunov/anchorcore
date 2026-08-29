@@ -1,16 +1,7 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { api } from "./api";
 import type { Project } from "./types";
-
-type ProjectsContextValue = {
-  projects: Project[];
-  refreshProjects: () => void;
-};
-
-const ProjectsContext = createContext<ProjectsContextValue>({
-  projects: [],
-  refreshProjects: () => {},
-});
+import { ProjectsContext } from "./useProjects";
 
 /** B37: single source of truth for the projects list. App.tsx (project picker)
  * and SourcesTab (project membership) previously fetched /projects separately;
@@ -32,8 +23,4 @@ export function ProjectsProvider({ children }: { children: ReactNode }) {
   return (
     <ProjectsContext.Provider value={{ projects, refreshProjects }}>{children}</ProjectsContext.Provider>
   );
-}
-
-export function useProjects(): ProjectsContextValue {
-  return useContext(ProjectsContext);
 }
