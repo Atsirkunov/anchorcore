@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { useProjects } from "./ProjectsContext";
+import { useProjects } from "./useProjects";
 import { theme } from "./theme";
 import { OnboardingWizard } from "./OnboardingWizard";
 import { AskTab } from "./tabs/AskTab";
