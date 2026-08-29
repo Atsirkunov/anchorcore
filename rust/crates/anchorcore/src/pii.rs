@@ -250,78 +250,60 @@ pub fn save_config(
 
 // --- scan ---
 
-pub fn scan_text(
-    text: &str,
-    disabled: &HashSet<String>,
-    custom_words: &HashSet<String>,
-) -> Vec<PiiMatch> {
-    let lower = text.to_lowercase();
-    let mut matches: Vec<PiiMatch> = Vec::new();
-
-    for cat in CATEGORIES {
-        if disabled.contains(cat.id) {
-            continue;
-        }
-        let mut hit = false;
-        let mut strong = false;
-        let mut snippet = String::new();
-
-        for pattern in cat.patterns {
-            // Python uses re.IGNORECASE; build case-insensitive regex
-            let pat = format!("(?i){}", pattern);
-            if let Ok(re) = Regex::new(&pat) {
-                if let Some(m) = re.find(text) {
-                    hit = true;
-                    strong = cat.strong;
-                    snippet = m.as_str().to_string();
-                    break;
-                }
-            }
-        }
-        if !hit {
-            for name in cat.field_names {
-                let esc = regex::escape(name);
-                let pat = format!(r"\b{}\b", esc);
-                if let Ok(re) = Regex::new(&pat) {
-                    if re.is_match(&lower) {
-                        hit = true;
-                        strong = false;
-                        snippet = name.to_string();
-                        break;
-                    }
-                }
-            }
-        }
-        if hit {
-            matches.push(PiiMatch {
-                category: cat.id.to_string(),
-                label: cat.label.to_string(),
-                strong,
-                m: snippet,
-            });
-        }
-    }
-
-    for word in custom_words {
-        let w = word.trim();
-        if w.is_empty() {
-            continue;
-        }
-        let lower_w = w.to_lowercase();
-        let esc = regex::escape(&lower_w);
-        let pat = format!(r"\b{}\b", esc);
+fn scan_category(cat: &PiiCategory, text: &str, lower: &str) -> Option<PiiMatch> {
+    // Python uses re.IGNORECASE; build case-insensitive regex
+    for pattern in cat.patterns {
+        let pat = format!("(?i){}", pattern);
         if let Ok(re) = Regex::new(&pat) {
-            if re.is_match(&lower) {
-                matches.push(PiiMatch {
-                    category: "custom".to_string(),
-                    label: w.to_string(),
-                    strong: true,
-                    m: w.to_string(),
+            if let Some(m) = re.find(text) {
+                return Some(PiiMatch {
+                    category: cat.id.to_string(),
+                    label: cat.label.to_string(),
+                    strong: cat.strong,
+                    m: m.as_str().to_string(),
                 });
             }
         }
     }
+    for name in cat.field_names {
+        let esc = regex::escape(name);
+        let pat = format!(r"\b{}\b", esc);
+        if let Ok(re) = Regex::new(&pat) {
+            if re.is_match(lower) {
+                return Some(PiiMatch {
+                    category: cat.id.to_string(),
+                    label: cat.label.to_string(),
+                    strong: false,
+                    m: name.to_string(),
+                });
+            }
+        }
+    }
+    None
+}
 
+fn scan_custom(word: &str, lower: &str) -> Option<PiiMatch> {
+    let w = word.trim();
+    if w.is_empty() {
+        return None;
+    }
+    let lower_w = w.to_lowercase();
+    let esc = regex::escape(&lower_w);
+    let pat = format!(r"\b{}\b", esc);
+    if let Ok(re) = Regex::new(&pat) {
+        if re.is_match(lower) {
+            return Some(PiiMatch {
+                category: "custom".to_string(),
+                label: w.to_string(),
+                strong: true,
+                m: w.to_string(),
+            });
+        }
+    }
+    None
+}
+
+fn dedupe_matches(matches: Vec<PiiMatch>) -> Vec<PiiMatch> {
     // de-dupe by category (strong preferred)
     let mut seen: HashMap<String, PiiMatch> = HashMap::new();
     for m in matches {
@@ -337,6 +319,32 @@ pub fn scan_text(
         }
     }
     seen.into_values().collect()
+}
+
+pub fn scan_text(
+    text: &str,
+    disabled: &HashSet<String>,
+    custom_words: &HashSet<String>,
+) -> Vec<PiiMatch> {
+    let lower = text.to_lowercase();
+    let mut matches: Vec<PiiMatch> = Vec::new();
+
+    for cat in CATEGORIES {
+        if disabled.contains(cat.id) {
+            continue;
+        }
+        if let Some(m) = scan_category(cat, text, &lower) {
+            matches.push(m);
+        }
+    }
+
+    for word in custom_words {
+        if let Some(m) = scan_custom(word, &lower) {
+            matches.push(m);
+        }
+    }
+
+    dedupe_matches(matches)
 }
 
 pub fn categories_payload(disabled: &HashSet<String>) -> Vec<serde_json::Value> {
@@ -467,6 +475,58 @@ pub async fn put_config_handler(State(state): State<AppState>, Json(payload): Js
     Json(result)
 }
 
+fn resolve_source(conn: &Connection, entity_id: Option<i64>, item_id: Option<i64>) -> (Option<i64>, String, String) {
+    let iid = if let Some(eid) = entity_id {
+        conn.query_row("SELECT item_id FROM entities WHERE id=?1", [eid], |r| r.get::<_, i64>(0)).ok()
+    } else {
+        item_id
+    };
+    let Some(iid) = iid else {
+        return (None, String::new(), "internal".to_string());
+    };
+    let Some(sid) = conn.query_row("SELECT source_id FROM ingested_items WHERE id=?1", [iid], |r| r.get::<_, i64>(0)).ok() else {
+        return (None, String::new(), "internal".to_string());
+    };
+    conn.query_row("SELECT name, label FROM sources WHERE id=?1", [sid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .ok()
+        .map(|(n, l)| (Some(sid), n, l))
+        .unwrap_or((None, String::new(), "internal".to_string()))
+}
+
+type ReviewRow = (i64, Option<i64>, Option<i64>, String, String, i64, String, Option<String>);
+
+fn build_review_rows(conn: &Connection, rows: Vec<ReviewRow>, only_flagged: bool, disabled: &HashSet<String>, custom: &HashSet<String>) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for (cid, item_id, entity_id, kind, content, is_pii_db, pii_cats, _) in rows {
+        // resolve source via item
+        let (source_id, source_name, source_label) = resolve_source(conn, entity_id, item_id);
+        let stored_cats: Vec<String> = serde_json::from_str(&pii_cats).unwrap_or_default();
+        if stored_cats.contains(&"_dismissed".to_string()) {
+            continue;
+        }
+        let matches = scan_text(&content, disabled, custom);
+        if matches.is_empty() && is_pii_db == 0 {
+            continue;
+        }
+        if only_flagged && !(is_pii_db != 0 || matches.iter().any(|m| m.strong)) {
+            continue;
+        }
+        let is_pii = is_pii_db != 0;
+        out.push(serde_json::json!({
+            "chunk_id": cid,
+            "source_id": source_id,
+            "source_name": source_name,
+            "source_label": source_label,
+            "kind": kind,
+            "content": content,
+            "snippet": content.chars().take(300).collect::<String>(),
+            "is_pii": is_pii,
+            "categories": serialize_matches(&matches)
+        }));
+    }
+    out
+}
+
 pub async fn review_handler(State(state): State<AppState>, Query(q): Query<ReviewQuery>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let only_flagged = q.only_flagged.unwrap_or(true);
@@ -484,66 +544,14 @@ pub async fn review_handler(State(state): State<AppState>, Query(q): Query<Revie
             Ok(s) => s,
             Err(_) => return serde_json::json!([]),
         };
-        let rows: Vec<(i64, Option<i64>, Option<i64>, String, String, i64, String, Option<String>)> = stmt
+        let rows: Vec<ReviewRow> = stmt
             .query_map(rusqlite::params![limit, offset], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))
             })
             .unwrap()
             .filter_map(|r| r.ok())
             .collect();
-        let mut out: Vec<Value> = Vec::new();
-        for (cid, item_id, entity_id, kind, content, is_pii_db, pii_cats, _) in rows {
-            // resolve source via item
-            let (source_id, source_name, source_label) = if let Some(eid) = entity_id {
-                conn.query_row("SELECT item_id FROM entities WHERE id=?1", [eid], |r| r.get::<_, i64>(0))
-                    .ok()
-                    .and_then(|iid| {
-                        conn.query_row("SELECT source_id FROM ingested_items WHERE id=?1", [iid], |r| r.get::<_, i64>(0))
-                            .ok()
-                            .and_then(|sid| {
-                                conn.query_row("SELECT name, label FROM sources WHERE id=?1", [sid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-                                    .ok()
-                                    .map(|(n, l)| (Some(sid), n, l))
-                            })
-                    })
-                    .unwrap_or((None, String::new(), "internal".to_string()))
-            } else if let Some(iid) = item_id {
-                conn.query_row("SELECT source_id FROM ingested_items WHERE id=?1", [iid], |r| r.get::<_, i64>(0))
-                    .ok()
-                    .and_then(|sid| {
-                        conn.query_row("SELECT name, label FROM sources WHERE id=?1", [sid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-                            .ok()
-                            .map(|(n, l)| (Some(sid), n, l))
-                    })
-                    .unwrap_or((None, String::new(), "internal".to_string()))
-            } else {
-                (None, String::new(), "internal".to_string())
-            };
-            let stored_cats: Vec<String> = serde_json::from_str(&pii_cats).unwrap_or_default();
-            if stored_cats.contains(&"_dismissed".to_string()) {
-                continue;
-            }
-            let matches = scan_text(&content, &disabled, &custom);
-            if matches.is_empty() && is_pii_db == 0 {
-                continue;
-            }
-            if only_flagged && !(is_pii_db != 0 || matches.iter().any(|m| m.strong)) {
-                continue;
-            }
-            let is_pii = is_pii_db != 0;
-            out.push(serde_json::json!({
-                "chunk_id": cid,
-                "source_id": source_id,
-                "source_name": source_name,
-                "source_label": source_label,
-                "kind": kind,
-                "content": content,
-                "snippet": content.chars().take(300).collect::<String>(),
-                "is_pii": is_pii,
-                "categories": serialize_matches(&matches)
-            }));
-        }
-        Value::Array(out)
+        Value::Array(build_review_rows(&conn, rows, only_flagged, &disabled, &custom))
     })
     .await
     .unwrap();
@@ -598,6 +606,37 @@ pub async fn decide_handler(
     }
 }
 
+fn scan_item_rows(rows: &[(i64, String, i64, String)], disabled: &HashSet<String>, custom: &HashSet<String>) -> (i64, HashSet<String>, Vec<Value>) {
+    let mut flagged = 0;
+    let mut all_cats: HashSet<String> = HashSet::new();
+    let mut matches: Vec<Value> = Vec::new();
+    for (_, content, is_pii, pii_cats) in rows {
+        if *is_pii != 0 { flagged += 1; }
+        if let Ok(cats) = serde_json::from_str::<Vec<String>>(pii_cats) {
+            for c in cats { if c != "_dismissed" { all_cats.insert(c); } }
+        }
+        // live scan for display highlight (strong matches)
+        for m in scan_text(content, disabled, custom).into_iter().filter(|m| m.strong) {
+            all_cats.insert(m.category.clone());
+            matches.push(serde_json::json!({"category": m.category, "label": m.label, "match": m.m}));
+        }
+    }
+    (flagged, all_cats, matches)
+}
+
+fn dedupe_match_values(matches: Vec<Value>) -> Vec<Value> {
+    // dedupe matches by match string
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut deduped = Vec::new();
+    for m in matches {
+        let s = m["match"].as_str().unwrap_or("").to_string();
+        if seen.insert(s) {
+            deduped.push(m);
+        }
+    }
+    deduped
+}
+
 pub async fn item_pii_handler(State(state): State<AppState>, Path(item_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -611,25 +650,9 @@ pub async fn item_pii_handler(State(state): State<AppState>, Path(item_id): Path
         // chunks for this item (direct + via entity)
         let mut stmt = conn.prepare("SELECT c.id, c.content, c.is_pii, c.pii_categories FROM chunks c LEFT JOIN entities e ON e.id=c.entity_id WHERE c.item_id=?1 OR e.item_id=?1").unwrap();
         let rows: Vec<(i64, String, i64, String)> = stmt.query_map([item_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().filter_map(|r| r.ok()).collect();
-        let mut flagged = 0;
-        let mut all_cats: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut matches: Vec<Value> = Vec::new();
-        for (_, content, is_pii, pii_cats) in &rows {
-            if *is_pii != 0 { flagged += 1; }
-            if let Ok(cats) = serde_json::from_str::<Vec<String>>(pii_cats) {
-                for c in cats { if c != "_dismissed" { all_cats.insert(c); } }
-            }
-            // live scan for display highlight (strong matches)
-            for m in scan_text(content, &disabled, &custom).into_iter().filter(|m| m.strong) {
-                all_cats.insert(m.category.clone());
-                matches.push(serde_json::json!({"category": m.category, "label": m.label, "match": m.m}));
-            }
-        }
+        let (flagged, all_cats, matches) = scan_item_rows(&rows, &disabled, &custom);
         let is_pii = flagged > 0 || !matches.is_empty();
-        // dedupe matches by match string
-        let mut seen = std::collections::HashSet::new();
-        let mut deduped = Vec::new();
-        for m in matches { let s = m["match"].as_str().unwrap_or("").to_string(); if seen.insert(s) { deduped.push(m); } }
+        let deduped = dedupe_match_values(matches);
         Ok(serde_json::json!({
             "item_id": item_id,
             "is_pii": is_pii,
@@ -643,6 +666,19 @@ pub async fn item_pii_handler(State(state): State<AppState>, Path(item_id): Path
         Ok(v) => Ok(Json(v)),
         Err(e) => Err(e),
     }
+}
+
+fn scan_and_update(conn: &Connection, chunks: &[(i64, String)], disabled: &HashSet<String>, custom: &HashSet<String>) -> usize {
+    let mut flagged = 0;
+    for (cid, content) in chunks {
+        let matches = scan_text(content, disabled, custom);
+        let cats: Vec<String> = matches.iter().map(|m| m.category.clone()).collect();
+        let is_pii = matches.iter().any(|m| m.strong);
+        let cats_json = serde_json::to_string(&cats).unwrap();
+        let _ = conn.execute("UPDATE chunks SET pii_categories=?1, is_pii=?2 WHERE id=?3", rusqlite::params![cats_json, if is_pii {1} else {0}, cid]);
+        if is_pii { flagged += 1; }
+    }
+    flagged
 }
 
 pub async fn scan_handler(State(state): State<AppState>, Path(source_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -665,27 +701,12 @@ pub async fn scan_handler(State(state): State<AppState>, Path(source_id): Path<i
         let sql = format!("SELECT id, content FROM chunks WHERE item_id IN ({})", placeholders);
         let mut stmt2 = conn.prepare(&sql).unwrap();
         let chunks: Vec<(i64, String)> = stmt2.query_map(rusqlite::params_from_iter(item_ids.iter()), |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(|r| r.ok()).collect();
-        let mut flagged = 0;
-        for (cid, content) in &chunks {
-            let matches = scan_text(content, &disabled, &custom);
-            let cats: Vec<String> = matches.iter().map(|m| m.category.clone()).collect();
-            let is_pii = matches.iter().any(|m| m.strong);
-            let cats_json = serde_json::to_string(&cats).unwrap();
-            let _ = conn.execute("UPDATE chunks SET pii_categories=?1, is_pii=?2 WHERE id=?3", rusqlite::params![cats_json, if is_pii {1} else {0}, cid]);
-            if is_pii { flagged += 1; }
-        }
+        let mut flagged = scan_and_update(&conn, &chunks, &disabled, &custom);
         // also scan chunks via entities (reuse placeholders)
         let sql2 = format!("SELECT c.id, c.content FROM chunks c JOIN entities e ON e.id=c.entity_id WHERE e.item_id IN ({})", placeholders);
         if let Ok(mut stmt3) = conn.prepare(&sql2) {
             let chunks2: Vec<(i64, String)> = stmt3.query_map(rusqlite::params_from_iter(item_ids.iter()), |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(|r| r.ok()).collect();
-            for (cid, content) in &chunks2 {
-                let matches = scan_text(content, &disabled, &custom);
-                let cats: Vec<String> = matches.iter().map(|m| m.category.clone()).collect();
-                let is_pii = matches.iter().any(|m| m.strong);
-                let cats_json = serde_json::to_string(&cats).unwrap();
-                let _ = conn.execute("UPDATE chunks SET pii_categories=?1, is_pii=?2 WHERE id=?3", rusqlite::params![cats_json, if is_pii {1} else {0}, cid]);
-                if is_pii { flagged += 1; }
-            }
+            flagged += scan_and_update(&conn, &chunks2, &disabled, &custom);
         }
         let total = chunks.len();
         Ok(serde_json::json!({"source_id": source_id, "chunks": total, "flagged": flagged}))

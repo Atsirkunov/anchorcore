@@ -28,6 +28,26 @@ impl GDriveConnector {
 
     fn headers(&self) -> String { format!("Bearer {}", self.token) }
 
+    async fn parse_file(&self, client: &Client, f: &Value, docs: &mut Vec<IngestionDoc>, next_cursor: &mut String) {
+        let id = f.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let mime = f.get("mimeType").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let modified = f.get("modifiedTime").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let updated = DateTime::parse_from_rfc3339(&modified).ok().map(|d| d.with_timezone(&Utc));
+        if let Some(dt) = updated {
+            let iso = dt.to_rfc3339();
+            if next_cursor.is_empty() || iso > *next_cursor {
+                *next_cursor = iso;
+            }
+        }
+        // download content (text export)
+        let text = self.download_file(client, &id, &mime, &name).await.unwrap_or_default();
+        if text.trim().is_empty() {
+            return;
+        }
+        docs.push(IngestionDoc { external_id: id.clone(), title: name.clone(), text, author: String::new(), updated_at: updated, source_ref: format!("gdrive:{}", id) });
+    }
+
     pub async fn fetch(&self, since_cursor: &str) -> Result<(Vec<IngestionDoc>, String), ConnectorError> {
         let client = Client::builder().timeout(std::time::Duration::from_secs(60)).build().map_err(|e| ConnectorError(e.to_string()))?;
         let mut docs = Vec::new();
@@ -35,6 +55,7 @@ impl GDriveConnector {
         let mut page_token: Option<String> = None;
         let mut q = format!("'{}' in parents and trashed = false", self.folder_id);
         if !since_cursor.is_empty() { q.push_str(&format!(" and modifiedTime > '{}'", since_cursor)); }
+        let all_drives = if self.drive_id.is_empty() { "false" } else { "true" };
 
         loop {
             let mut params = vec![
@@ -42,8 +63,8 @@ impl GDriveConnector {
                 ("fields", LIST_FIELDS.to_string()),
                 ("pageSize", "100".to_string()),
                 ("orderBy", "modifiedTime asc".to_string()),
-                ("includeItemsFromAllDrives", if self.drive_id.is_empty() { "false".to_string() } else { "true".to_string() }),
-                ("supportsAllDrives", if self.drive_id.is_empty() { "false".to_string() } else { "true".to_string() }),
+                ("includeItemsFromAllDrives", all_drives.to_string()),
+                ("supportsAllDrives", all_drives.to_string()),
             ];
             if let Some(t) = &page_token { params.push(("pageToken", t.clone())); }
             let resp = client.get(format!("{}/files", DRIVE_BASE))
@@ -54,16 +75,7 @@ impl GDriveConnector {
             if !resp.status().is_success() { return Err(ConnectorError(format!("Drive {}: {}", resp.status(), resp.text().await.unwrap_or_default()))); }
             let data: Value = resp.json().await.map_err(|e| ConnectorError(e.to_string()))?;
             for f in data.get("files").and_then(|v| v.as_array()).unwrap_or(&vec![]) {
-                let id = f.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let mime = f.get("mimeType").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let modified = f.get("modifiedTime").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let updated = DateTime::parse_from_rfc3339(&modified).ok().map(|d| d.with_timezone(&Utc));
-                if let Some(dt) = updated { let iso = dt.to_rfc3339(); if next_cursor.is_empty() || iso > next_cursor { next_cursor = iso; } }
-                // download content (text export)
-                let text = self.download_file(&client, &id, &mime, &name).await.unwrap_or_default();
-                if text.trim().is_empty() { continue; }
-                docs.push(IngestionDoc { external_id: id.clone(), title: name.clone(), text, author: String::new(), updated_at: updated, source_ref: format!("gdrive:{}", id) });
+                self.parse_file(&client, f, &mut docs, &mut next_cursor).await;
             }
             page_token = data.get("nextPageToken").and_then(|v| v.as_str()).map(|s| s.to_string());
             if page_token.is_none() { break; }
