@@ -83,6 +83,7 @@ Key rules:
 
 ## Contract-first feature workflow (Rust-only, `backend/` frozen)
 
+0. Design for cyclomatic complexity: **every new/changed function must stay ≤ 15 CCN** (lizard) — split orchestrators into named phase helpers, use guard clauses (`let Some(x) = y else { return ... }`) instead of nested `if let`/`match`, and reuse `with_db`/`run_db` (`pipeline.rs`) for any `spawn_blocking` DB work. Gate: `lizard -l rust -w rust/crates/anchorcore/src -C 15` — no new warnings beyond the accepted `is_public_path` (auth.rs decision table, do-not-touch). See `rust/AGENTS.md` "Cyclomatic complexity" + `rust/BACKLOG.md` Phase 13.
 1. Schema: `rust/crates/anchorcore/src/db.rs` + new migration in `rust/crates/anchorcore/migrations/*.sql` (add to `db.rs:migrations()` list; keep `PRAGMA foreign_keys=ON`). Mirror in `backend/alembic` only if `hosting/` needs it.
 2. API: handler in `rust/crates/anchorcore/src/*.rs` + route in `main.rs` (register last, `frontend` fallback stays last).
 3. Wire into `retrieval.rs`/`pipeline.rs` if it affects retrieval/ingestion.

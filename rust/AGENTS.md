@@ -21,3 +21,10 @@ This mirrors `/AGENTS.md` but for the `rust/` workspace. **Rust is now shipped**
 * Retrieval must filter `stale`/`disputed` via `_status_ok` equivalent — every path must gate it.
 * Secrets via OS keychain (`keyring` crate) + `***set***` placeholder — same UX as `backend/app/secrets.py`.
 * `vec0` vs Python scan fallback — `rust` should use `sqlite-vec` statically linked.
+
+## Cyclomatic complexity (Phase 13 — design for it from day one)
+
+* **Design rule: keep every function ≤ 15 CCN** (lizard). When a handler/orchestrator grows past ~12, split it into named phase helpers (e.g. `pipeline.rs` `ClassifyCtx` phases, `system.rs` `status_snapshot`, `watcher/service.rs` `fetch_and_compare`) instead of nesting `if let`/`match` chains. Prefer guard clauses (`let Some(x) = y else { return ... }`) over nested conditionals.
+* **Acceptance gate:** `lizard -l rust -w rust/crates/anchorcore/src -C 15` must print no NEW warnings beyond the accepted `is_public_path` (auth.rs decision table — explicitly do-not-touch). Run it alongside `cargo test` + `cargo check` on every task.
+* Reusable patterns from R13: `with_db`/`run_db` in `pipeline.rs` for all `spawn_blocking` DB work; row-mapper helper fns (e.g. `error_row`, `hit_from_row10`) instead of inline closures; dynamic `params_from_iter` vecs instead of 4× match arms.
+* See `rust/BACKLOG.md` Phase 13 + `rust/docs/decisions.md` 2026-08-29 entry for the full rationale.
