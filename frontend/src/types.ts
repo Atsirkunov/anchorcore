@@ -12,6 +12,7 @@ export type AppSettings = {
   answer_api_key: string; // masked as "***set***" when stored
   classifier_api_key: string; // masked as "***set***" when stored
   embed_api_key: string; // masked as "***set***" when stored
+  tag_reuse_threshold?: string;
 };
 
 export type TestConnectionResult = {
@@ -160,8 +161,41 @@ export type Citation = {
   kind: string;
   summary: string;
   source_ref: string;
+  path?: string;
+  tags?: string[];
   score: number;
   snippet: string;
+};
+
+export type Section = {
+  id: number;
+  item_id: number;
+  parent_id: number | null;
+  level: number;
+  title: string;
+  path: string;
+  chunk_range: string;
+  summary: string;
+  created_at: string;
+};
+
+export type Tag = {
+  id: number;
+  name: string;
+  description: string;
+  count: number;
+  created_at: string;
+};
+
+export type ChunkInfo = {
+  id: number;
+  item_id: number | null;
+  section_id: number | null;
+  kind: string;
+  source_ref: string;
+  content: string;
+  path: string;
+  created_at: string;
 };
 
 export type AskTurn = {

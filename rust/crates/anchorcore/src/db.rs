@@ -119,6 +119,47 @@ fn ensure_columns(conn: &Connection) -> Result<()> {
     try_add_column(conn, "ALTER TABLE chunks ADD COLUMN kind VARCHAR(20) NOT NULL DEFAULT 'document'");
     try_add_column(conn, "ALTER TABLE chunks ADD COLUMN is_pii BOOLEAN NOT NULL DEFAULT 0");
     try_add_column(conn, "ALTER TABLE chunks ADD COLUMN pii_categories TEXT NOT NULL DEFAULT '[]'");
+    // R14.1 hierarchical TOC
+    try_add_column(conn, "ALTER TABLE chunks ADD COLUMN section_id INTEGER REFERENCES sections(id) ON DELETE SET NULL");
+    try_add_column(conn, "ALTER TABLE chunks ADD COLUMN level INTEGER NOT NULL DEFAULT 0");
+    try_add_column(conn, "ALTER TABLE chunks ADD COLUMN path TEXT NOT NULL DEFAULT ''");
+    // ensure sections table exists even on old DBs that migrated before 11_sections.sql
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS sections (
+            id INTEGER PRIMARY KEY,
+            item_id INTEGER NOT NULL REFERENCES ingested_items(id) ON DELETE CASCADE,
+            parent_id INTEGER REFERENCES sections(id) ON DELETE SET NULL,
+            level INTEGER NOT NULL DEFAULT 0,
+            title TEXT NOT NULL DEFAULT '',
+            path TEXT NOT NULL DEFAULT '',
+            chunk_range TEXT NOT NULL DEFAULT '',
+            summary TEXT NOT NULL DEFAULT '',
+            summary_embedding BLOB,
+            summary_hash TEXT NOT NULL DEFAULT '',
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_sections_item_id ON sections(item_id)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_sections_parent_id ON sections(parent_id)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_chunks_section_id ON chunks(section_id)", []);
+    try_add_column(conn, "ALTER TABLE sections ADD COLUMN summary_hash TEXT NOT NULL DEFAULT ''");
+    // R14.4 tags
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS tags (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            embedding BLOB,
+            count INTEGER NOT NULL DEFAULT 1,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_tags_name ON tags(name)", []);
+    let _ = conn.execute(
+        "CREATE TABLE IF NOT EXISTS chunk_tags (
+            chunk_id INTEGER NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+            tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+            PRIMARY KEY (chunk_id, tag_id)
+        )", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_chunk_tags_tag_id ON chunk_tags(tag_id)", []);
     Ok(())
 }
 
@@ -196,6 +237,10 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/09_pii.sql")),
         // b40a0c1_add_users
         M::up(include_str!("../migrations/10_users.sql")),
+        // R14.1 hierarchical TOC
+        M::up(include_str!("../migrations/11_sections.sql")),
+        // R14.4 dynamic tags
+        M::up(include_str!("../migrations/12_tags.sql")),
     ])
 }
 

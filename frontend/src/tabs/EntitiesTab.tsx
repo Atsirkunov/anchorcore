@@ -1,7 +1,39 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { theme } from "../theme";
-import type { Entity } from "../types";
+import type { Entity, Section, Tag } from "../types";
+
+function Breadcrumb({ path, onSelect }: { path: string; onSelect?: (part: string) => void }) {
+  if (!path) return null;
+  const parts = path.split(" > ");
+  return (
+    <span style={{ fontSize: 11, color: theme.textDim }}>
+      {parts.map((p, i) => (
+        <span key={i}>
+          {i > 0 && <span style={{ margin: "0 4px", color: theme.textMuted }}>›</span>}
+          <span
+            onClick={() => onSelect?.(p)}
+            style={{ cursor: onSelect ? "pointer" : "default", textDecoration: onSelect ? "underline" : "none", color: i === parts.length - 1 ? theme.text : theme.textDim }}
+            title={p}
+          >
+            {p}
+          </span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function TagChips({ names }: { names: string[] }) {
+  if (names.length === 0) return null;
+  return (
+    <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
+      {names.slice(0, 4).map((n) => (
+        <span key={n} style={{ fontSize: 10, background: theme.bgHover, color: theme.accentAlt, border: `1px solid ${theme.border}`, padding: "0.1rem 0.4rem", borderRadius: 999 }}>{n}</span>
+      ))}
+    </span>
+  );
+}
 
 const KIND_COLORS: Record<string, string> = {
   decision: theme.purple,
@@ -26,6 +58,12 @@ export function EntitiesTab() {
   const [piiByItem, setPiiByItem] = useState<Record<number, { is_pii: boolean; flagged: number; categories: string[]; matches: { category: string; label: string; match: string }[] }>>({});
   const [revealedDocs, setRevealedDocs] = useState<Set<number>>(new Set());
   const [verifiedDocs, setVerifiedDocs] = useState<Set<number>>(new Set());
+  const [sectionsByItem, setSectionsByItem] = useState<Record<number, Section[]>>({});
+  const [allTags, setAllTags] = useState<Tag[]>([]);
+
+  useEffect(() => {
+    api.tags().then(setAllTags).catch(() => {});
+  }, []);
 
   const refresh = useCallback(() => {
     const statusParam = statusFilter && statusFilter !== "needs_review" ? statusFilter : undefined;
@@ -94,8 +132,25 @@ export function EntitiesTab() {
     for (const [itemId] of toFetch) {
       api.itemPii(itemId).then((p) => setPiiByItem((m) => ({ ...m, [itemId]: p }))).catch(() => {});
     }
+    // also prefetch sections for grouped TOC chips
+    const secFetch = groups.slice(0, 30).filter(([id]) => sectionsByItem[id] == null);
+    for (const [itemId] of secFetch) {
+      api.sections({ item_id: itemId }).then((secs) => setSectionsByItem((m) => ({ ...m, [itemId]: secs }))).catch(() => {});
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groups]);
+
+  // flat view: also fetch sections for first 30 entities by item_id
+  useEffect(() => {
+    if (isGrouped) return;
+    const ids = Array.from(new Set(filtered.slice(0, 30).map((e) => e.item_id).filter((v): v is number => v != null)));
+    for (const itemId of ids) {
+      if (sectionsByItem[itemId] == null) {
+        api.sections({ item_id: itemId }).then((secs) => setSectionsByItem((m) => ({ ...m, [itemId]: secs }))).catch(() => {});
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, isGrouped]);
 
   function maskPII(text: string, matches: { match: string }[]): string {
     let out = text;
@@ -127,6 +182,12 @@ export function EntitiesTab() {
         try {
           const p = await api.itemPii(itemId);
           setPiiByItem((m) => ({ ...m, [itemId]: p }));
+        } catch { void 0; }
+      }
+      if (sectionsByItem[itemId] == null) {
+        try {
+          const secs = await api.sections({ item_id: itemId });
+          setSectionsByItem((m) => ({ ...m, [itemId]: secs }));
         } catch { void 0; }
       }
     }
@@ -205,6 +266,17 @@ export function EntitiesTab() {
                   <div style={{ flex: 1, minWidth: 220 }}>
                     <div style={{ fontWeight: 700, fontSize: 13, color: theme.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{docTitle}</div>
                     <div style={{ fontSize: 11, color: theme.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{docRef} · item #{itemId}</div>
+                    {sectionsByItem[itemId] && sectionsByItem[itemId].length > 0 && (
+                      <div style={{ marginTop: 4, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <Breadcrumb path={sectionsByItem[itemId][0].path} />
+                        <TagChips
+                          names={allTags
+                            .filter((t) => sectionsByItem[itemId].some((s) => s.path.toLowerCase().includes(t.name) || s.title.toLowerCase().includes(t.name)))
+                            .slice(0, 4)
+                            .map((t) => t.name)}
+                        />
+                      </div>
+                    )}
                   </div>
                   <span style={styles.docCount}>{list.length} entities</span>
                   {(() => {
@@ -245,6 +317,17 @@ export function EntitiesTab() {
                         </button>
                       )}
                     </div>
+                    {sectionsByItem[itemId] && sectionsByItem[itemId].length > 0 && (
+                      <div style={{ marginBottom: 8, display: "grid", gap: 3, padding: "0.4rem 0.5rem", background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: 6 }}>
+                        <div style={{ fontSize: 10, color: theme.textDim, textTransform: "uppercase" }}>Sections — TOC</div>
+                        {sectionsByItem[itemId].map((s) => (
+                          <div key={s.id} style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11 }}>
+                            <Breadcrumb path={s.path || s.title} />
+                            <span style={{ color: theme.textMuted, fontSize: 10 }}>lvl {s.level}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {isPii && !isRevealed && <div style={{ fontSize: 11, color: theme.amber, marginBottom: 6 }}>PII hidden — {pii?.categories.join(", ")} · click Reveal to show</div>}
                     <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontSize: 12, color: theme.textMuted, lineHeight: 1.5 }}>
                       {isPii && !isRevealed
@@ -327,14 +410,25 @@ export function EntitiesTab() {
         </div>
       ) : (
         <div style={{ display: "grid", gap: 8 }}>
-          {entities.map((e) => (
+          {filtered.map((e) => (
             <article key={e.id} style={{ ...styles.card, borderLeft: `4px solid ${KIND_COLORS[e.kind] ?? theme.textDim}` }}>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <span style={{ ...styles.badge, background: KIND_COLORS[e.kind] ?? theme.textDim }}>{e.kind}</span>
                 <span style={{ ...styles.badge, background: e.status === "verified" ? "#14532d" : e.status === "stale" ? "#3f3f46" : "#451a03" }}>{e.status}</span>
                 <span style={{ fontSize: 12, color: theme.textMuted }}>conf {(e.confidence * 100).toFixed(0)}%</span>
                 <span style={{ marginLeft: "auto", fontSize: 12, color: theme.textDim }}>{e.source_ref}</span>
               </div>
+              {e.item_id != null && sectionsByItem[e.item_id] && sectionsByItem[e.item_id].length > 0 && (
+                <div style={{ marginTop: 4, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <Breadcrumb path={sectionsByItem[e.item_id][0].path} />
+                  <TagChips
+                    names={allTags
+                      .filter((t) => sectionsByItem[e.item_id]!.some((s) => s.path.toLowerCase().includes(t.name) || s.title.toLowerCase().includes(t.name)))
+                      .slice(0, 4)
+                      .map((t) => t.name)}
+                  />
+                </div>
+              )}
               <p style={{ margin: "0.4rem 0", fontWeight: 600 }}>{e.summary}</p>
               {e.reasoning && <p style={{ margin: 0, color: theme.textMuted, fontSize: 13 }}>{e.reasoning}</p>}
               {e.window_text && (
