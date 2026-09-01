@@ -185,6 +185,23 @@ export function SettingsTab() {
         </div>
 
         <div style={styles.section}>
+          <div style={styles.sectionTitle}>TOC & Tags — hierarchical retrieval</div>
+          <div style={{ fontSize: 12, color: theme.textDim, lineHeight: 1.5 }}>
+            Sections are split at headings (<code>§434</code>, <code>4.2.1</code>, <code>Article 12</code>) into a tree (<code>level/path</code>) with per-section summaries. Tags are a dynamic taxonomy — per-section keywords are proposed and reused if cosine &gt; threshold else a new tag is created.
+          </div>
+          <label style={styles.label}>Tag reuse threshold (cosine 0–1, default 0.82)</label>
+          <input
+            style={styles.input}
+            value={form ? (form as unknown as Record<string, string>)["tag_reuse_threshold"] ?? "0.82" : "0.82"}
+            onChange={(e) => setForm({ ...(form as unknown as Record<string, string>), tag_reuse_threshold: e.target.value } as unknown as AppSettings)}
+            placeholder="0.82 — higher = stricter reuse, lower = more new tags"
+          />
+          <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 4 }}>
+            Env <code>ANCHOR_TAG_REUSE_THRESHOLD</code> overrides. Lower values create more tags, higher values reuse more aggressively. Effective threshold is read at ingest time.
+          </div>
+        </div>
+
+        <div style={styles.section}>
           <div style={styles.sectionTitle}>Answer model (Q&A)</div>
           {providerSelect(answerProvider, setAnswerProvider, "Local Ollama (free, private)", "Cloud OpenAI-compatible")}
           {keyInput("answer_api_key", answerProvider, "API key")}

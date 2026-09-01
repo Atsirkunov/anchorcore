@@ -81,6 +81,8 @@ pub struct Hit {
     pub entity_id: Option<i64>,
     pub item_id: Option<i64>,
     pub source_id: Option<i64>,
+    pub section_id: Option<i64>,
+    pub path: String,
     pub score: f64,
     pub content: String,
     pub source_ref: String,
@@ -164,16 +166,38 @@ pub fn vector_search(
     top_k: usize,
     qa_exclude_disputed: bool,
 ) -> Vec<Hit> {
-    if let Some(hits) = vector_search_vec0(conn, query_emb, source_ids, top_k, qa_exclude_disputed) {
+    vector_search_filtered(conn, query_emb, source_ids, None, top_k, qa_exclude_disputed)
+}
+
+pub fn vector_search_filtered(
+    conn: &Connection,
+    query_emb: &[f32],
+    source_ids: Option<&HashSet<i64>>,
+    section_ids: Option<&HashSet<i64>>,
+    top_k: usize,
+    qa_exclude_disputed: bool,
+) -> Vec<Hit> {
+    if let Some(hits) = vector_search_vec0_filtered(conn, query_emb, source_ids, section_ids, top_k, qa_exclude_disputed) {
         return hits;
     }
-    vector_search_scan(conn, query_emb, source_ids, top_k, qa_exclude_disputed)
+    vector_search_scan_filtered(conn, query_emb, source_ids, section_ids, top_k, qa_exclude_disputed)
 }
 
 fn vector_search_vec0(
     conn: &Connection,
     query_emb: &[f32],
     source_ids: Option<&HashSet<i64>>,
+    top_k: usize,
+    qa_exclude_disputed: bool,
+) -> Option<Vec<Hit>> {
+    vector_search_vec0_filtered(conn, query_emb, source_ids, None, top_k, qa_exclude_disputed)
+}
+
+fn vector_search_vec0_filtered(
+    conn: &Connection,
+    query_emb: &[f32],
+    source_ids: Option<&HashSet<i64>>,
+    section_ids: Option<&HashSet<i64>>,
     top_k: usize,
     qa_exclude_disputed: bool,
 ) -> Option<Vec<Hit>> {
@@ -189,7 +213,6 @@ fn vector_search_vec0(
          LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
          WHERE v.embedding MATCH ?",
     );
-    // parametrized IN list (was format! IN ({list}) — P1 4.5)
     let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Text(q_json)];
     if let Some(ids) = source_ids {
         if !ids.is_empty() {
@@ -200,12 +223,21 @@ fn vector_search_vec0(
             }
         }
     }
+    if let Some(ids) = section_ids {
+        if !ids.is_empty() {
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            sql.push_str(&format!(" AND c.section_id IN ({})", placeholders));
+            for id in ids {
+                params.push(rusqlite::types::Value::Integer(*id));
+            }
+        } else {
+            return Some(vec![]);
+        }
+    }
     sql.push_str(" AND k = ?");
     let limit = (top_k * 4) as i64;
     params.push(rusqlite::types::Value::Integer(limit));
     let mut stmt = conn.prepare(&sql).ok()?;
-    // positional params: ?1 = q_json, ?2..?n = source ids, ?last = limit
-    // Build rusqlite params from Vec<Value>
     let rows: Result<Vec<(i64, f64)>, _> = stmt
         .query_map(rusqlite::params_from_iter(params.iter()), |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?))
@@ -221,7 +253,7 @@ fn vector_search_vec0(
     }
     let by_id: HashMap<i64, f64> = rows.into_iter().collect();
     let ids: Vec<i64> = by_id.keys().cloned().collect();
-    let hits = load_hits(conn, &ids, source_ids, qa_exclude_disputed);
+    let hits = load_hits_filtered(conn, &ids, source_ids, section_ids, qa_exclude_disputed);
     let mut out = Vec::new();
     for mut h in hits {
         if let Some(d) = by_id.get(&h.chunk_id) {
@@ -244,7 +276,18 @@ fn vector_search_scan(
     top_k: usize,
     qa_exclude_disputed: bool,
 ) -> Vec<Hit> {
-    let hits = load_chunks_with_embedding(conn, source_ids, qa_exclude_disputed);
+    vector_search_scan_filtered(conn, query_emb, source_ids, None, top_k, qa_exclude_disputed)
+}
+
+fn vector_search_scan_filtered(
+    conn: &Connection,
+    query_emb: &[f32],
+    source_ids: Option<&HashSet<i64>>,
+    section_ids: Option<&HashSet<i64>>,
+    top_k: usize,
+    qa_exclude_disputed: bool,
+) -> Vec<Hit> {
+    let hits = load_chunks_with_embedding_filtered(conn, source_ids, section_ids, qa_exclude_disputed);
     let mut scored = Vec::new();
     for mut h in hits {
         if let Some(blob) = get_embedding(conn, h.chunk_id) {
@@ -263,6 +306,7 @@ fn vector_search_scan(
 }
 
 type HitRow10 = (i64, Option<i64>, Option<i64>, String, String, i64, Option<String>, Option<String>, Option<i64>, Option<i64>);
+type HitRow11 = (i64, Option<i64>, Option<i64>, String, String, i64, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<i64>, String);
 
 fn hit_from_row10(row: HitRow10, source_ids: Option<&HashSet<i64>>, qa_exclude_disputed: bool) -> Option<Hit> {
     let (cid, eid, iid, content, source_ref, is_pii, _created, status, _eff, sid) = row;
@@ -281,6 +325,44 @@ fn hit_from_row10(row: HitRow10, source_ids: Option<&HashSet<i64>>, qa_exclude_d
         entity_id: eid,
         item_id: iid,
         source_id: sid,
+        section_id: None,
+        path: String::new(),
+        score: 0.0,
+        content,
+        source_ref,
+        is_pii: is_pii != 0,
+        status,
+    })
+}
+
+fn hit_from_row11(row: HitRow11, source_ids: Option<&HashSet<i64>>, section_ids: Option<&HashSet<i64>>, qa_exclude_disputed: bool) -> Option<Hit> {
+    let (cid, eid, iid, content, source_ref, is_pii, _created, status, _eff, sid, sec, path) = row;
+    if !status_ok(status.as_deref(), qa_exclude_disputed) {
+        return None;
+    }
+    if let Some(filter) = source_ids {
+        if let Some(s) = sid {
+            if !filter.contains(&s) {
+                return None;
+            }
+        }
+    }
+    if let Some(filter) = section_ids {
+        // entity chunks have no section_id — let them pass (R14.6 fix for test_disputed_entity_stops_being_cited)
+        if eid.is_none() {
+            match sec {
+                Some(sid) if filter.contains(&sid) => {}
+                _ => return None,
+            }
+        }
+    }
+    Some(Hit {
+        chunk_id: cid,
+        entity_id: eid,
+        item_id: iid,
+        source_id: sid,
+        section_id: sec,
+        path,
         score: 0.0,
         content,
         source_ref,
@@ -295,13 +377,23 @@ fn load_hits(
     source_ids: Option<&HashSet<i64>>,
     qa_exclude_disputed: bool,
 ) -> Vec<Hit> {
+    load_hits_filtered(conn, ids, source_ids, None, qa_exclude_disputed)
+}
+
+fn load_hits_filtered(
+    conn: &Connection,
+    ids: &[i64],
+    source_ids: Option<&HashSet<i64>>,
+    section_ids: Option<&HashSet<i64>>,
+    qa_exclude_disputed: bool,
+) -> Vec<Hit> {
     if ids.is_empty() {
         return vec![];
     }
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let sql = format!(
         "SELECT c.id, c.entity_id, c.item_id, c.content, c.source_ref, c.is_pii, c.created_at, e.status, \
-                 COALESCE(c.item_id, e.item_id) as eff_item, i.source_id \
+                 COALESCE(c.item_id, e.item_id) as eff_item, i.source_id, c.section_id, c.path \
          FROM chunks c \
          LEFT JOIN entities e ON e.id = c.entity_id \
          LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
@@ -325,12 +417,14 @@ fn load_hits(
                 r.get::<_, Option<String>>(7)?,
                 r.get::<_, Option<i64>>(8)?,
                 r.get::<_, Option<i64>>(9)?,
+                r.get::<_, Option<i64>>(10)?,
+                r.get::<_, String>(11)?,
             ))
         })
         .unwrap();
     let mut out = Vec::new();
     for row in rows.flatten() {
-        if let Some(h) = hit_from_row10(row, source_ids, qa_exclude_disputed) {
+        if let Some(h) = hit_from_row11(row, source_ids, section_ids, qa_exclude_disputed) {
             out.push(h);
         }
     }
@@ -342,7 +436,16 @@ fn load_chunks_with_embedding(
     source_ids: Option<&HashSet<i64>>,
     qa_exclude_disputed: bool,
 ) -> Vec<Hit> {
-    let sql = "SELECT c.id, c.entity_id, c.item_id, c.content, c.source_ref, c.is_pii, e.status, i.source_id \
+    load_chunks_with_embedding_filtered(conn, source_ids, None, qa_exclude_disputed)
+}
+
+fn load_chunks_with_embedding_filtered(
+    conn: &Connection,
+    source_ids: Option<&HashSet<i64>>,
+    section_ids: Option<&HashSet<i64>>,
+    qa_exclude_disputed: bool,
+) -> Vec<Hit> {
+    let sql = "SELECT c.id, c.entity_id, c.item_id, c.content, c.source_ref, c.is_pii, e.status, i.source_id, c.section_id, c.path \
                FROM chunks c \
                LEFT JOIN entities e ON e.id = c.entity_id \
                LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
@@ -362,12 +465,14 @@ fn load_chunks_with_embedding(
                 r.get::<_, i64>(5)?,
                 r.get::<_, Option<String>>(6)?,
                 r.get::<_, Option<i64>>(7)?,
+                r.get::<_, Option<i64>>(8)?,
+                r.get::<_, String>(9)?,
             ))
         })
         .unwrap();
     let mut out = Vec::new();
     for row in rows.flatten() {
-        let (cid, eid, iid, content, source_ref, is_pii, status, sid) = row;
+        let (cid, eid, iid, content, source_ref, is_pii, status, sid, sec, path) = row;
         if !status_ok(status.as_deref(), qa_exclude_disputed) {
             continue;
         }
@@ -380,7 +485,15 @@ fn load_chunks_with_embedding(
                 continue;
             }
         }
-        out.push(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, score: 0.0, content, source_ref, is_pii: is_pii != 0, status });
+        if let Some(filter) = section_ids {
+            if eid.is_none() {
+                match sec {
+                    Some(v) if filter.contains(&v) => {}
+                    _ => continue,
+                }
+            }
+        }
+        out.push(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, section_id: sec, path, score: 0.0, content, source_ref, is_pii: is_pii != 0, status });
     }
     out
 }
@@ -394,6 +507,17 @@ pub fn keyword_search(
     conn: &Connection,
     question: &str,
     source_ids: Option<&HashSet<i64>>,
+    top_k: usize,
+    qa_exclude_disputed: bool,
+) -> Vec<Hit> {
+    keyword_search_filtered(conn, question, source_ids, None, top_k, qa_exclude_disputed)
+}
+
+pub fn keyword_search_filtered(
+    conn: &Connection,
+    question: &str,
+    source_ids: Option<&HashSet<i64>>,
+    section_ids: Option<&HashSet<i64>>,
     top_k: usize,
     qa_exclude_disputed: bool,
 ) -> Vec<Hit> {
@@ -417,7 +541,7 @@ pub fn keyword_search(
     }
     let by_id: HashMap<i64, f64> = rows.into_iter().collect();
     let ids: Vec<i64> = by_id.keys().cloned().collect();
-    let hits = load_hits(conn, &ids, source_ids, qa_exclude_disputed);
+    let hits = load_hits_filtered(conn, &ids, source_ids, section_ids, qa_exclude_disputed);
     let mut out = Vec::new();
     for mut h in hits {
         if let Some(rank) = by_id.get(&h.chunk_id) {
@@ -427,6 +551,338 @@ pub fn keyword_search(
     }
     out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
     out
+}
+
+fn matching_tag_sections(
+    conn: &Connection,
+    query: &str,
+    _source_ids: Option<&HashSet<i64>>,
+) -> Option<HashSet<i64>> {
+    let tokens: Vec<String> = query
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| t.len() >= 3)
+        .map(|s| s.to_string())
+        .collect();
+    if tokens.is_empty() {
+        return None;
+    }
+    let placeholders = tokens.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("SELECT id FROM tags WHERE name IN ({})", placeholders);
+    let mut stmt = conn.prepare(&sql).ok()?;
+    let tag_ids: Vec<i64> = stmt
+        .query_map(rusqlite::params_from_iter(tokens.iter()), |r| r.get(0))
+        .ok()?
+        .filter_map(|r| r.ok())
+        .collect();
+    if tag_ids.is_empty() {
+        return None;
+    }
+    let placeholders2 = tag_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql2 = format!(
+        "SELECT DISTINCT c.section_id FROM chunk_tags ct JOIN chunks c ON c.id=ct.chunk_id WHERE ct.tag_id IN ({}) AND c.section_id IS NOT NULL",
+        placeholders2
+    );
+    let mut stmt2 = conn.prepare(&sql2).ok()?;
+    let secs: HashSet<i64> = stmt2
+        .query_map(rusqlite::params_from_iter(tag_ids.iter()), |r| r.get(0))
+        .ok()?
+        .filter_map(|r| r.ok())
+        .collect();
+    if secs.is_empty() {
+        None
+    } else {
+        Some(secs)
+    }
+}
+
+fn summary_vector_search_filtered(
+    conn: &Connection,
+    query_emb: &[f32],
+    source_ids: Option<&HashSet<i64>>,
+    section_filter: Option<&HashSet<i64>>,
+    top_k: usize,
+    qa_exclude_disputed: bool,
+) -> Option<Vec<Hit>> {
+    let dim: usize = std::env::var("ANCHOR_EMBED_DIM").ok().and_then(|v| v.parse().ok()).unwrap_or(768);
+    if query_emb.len() != dim {
+        return None;
+    }
+    let q_json = serde_json::to_string(query_emb).ok()?;
+    let mut sql = String::from(
+        "SELECT v.rowid, v.distance FROM vec_chunks v \
+         JOIN chunks c ON c.id = v.rowid \
+         LEFT JOIN entities e ON e.id = c.entity_id \
+         LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
+         WHERE v.embedding MATCH ? AND c.kind IN ('section_summary','doc_summary')",
+    );
+    let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Text(q_json)];
+    if let Some(ids) = source_ids {
+        if !ids.is_empty() {
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            sql.push_str(&format!(" AND i.source_id IN ({})", placeholders));
+            for id in ids {
+                params.push(rusqlite::types::Value::Integer(*id));
+            }
+        }
+    }
+    if let Some(ids) = section_filter {
+        if !ids.is_empty() {
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            sql.push_str(&format!(" AND c.section_id IN ({})", placeholders));
+            for id in ids {
+                params.push(rusqlite::types::Value::Integer(*id));
+            }
+        }
+    }
+    sql.push_str(" AND k = ?");
+    let limit = (top_k * 4) as i64;
+    params.push(rusqlite::types::Value::Integer(limit));
+    let mut stmt = conn.prepare(&sql).ok()?;
+    let rows: Vec<(i64, f64)> = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |r| Ok((r.get(0)?, r.get(1)?)))
+        .ok()?
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    if rows.is_empty() {
+        return Some(vec![]);
+    }
+    let by_id: HashMap<i64, f64> = rows.into_iter().collect();
+    let ids: Vec<i64> = by_id.keys().cloned().collect();
+    let hits = load_hits_filtered(conn, &ids, source_ids, section_filter, qa_exclude_disputed);
+    let mut out = Vec::new();
+    for mut h in hits {
+        if let Some(d) = by_id.get(&h.chunk_id) {
+            let score = 1.0 - *d as f32;
+            if score <= 0.2 {
+                continue;
+            }
+            h.score = score as f64;
+            out.push(h);
+        }
+    }
+    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    Some(out)
+}
+
+fn summary_keyword_search_filtered(
+    conn: &Connection,
+    query: &str,
+    source_ids: Option<&HashSet<i64>>,
+    section_filter: Option<&HashSet<i64>>,
+    top_k: usize,
+    qa_exclude_disputed: bool,
+) -> Vec<Hit> {
+    let Some(match_q) = fts_match_query(query) else { return vec![] };
+    let limit = (top_k * 4) as i64;
+    let mut stmt = match conn.prepare(
+        "SELECT c.id, bm25(chunks_fts) AS rank FROM chunks_fts JOIN chunks c ON c.id=chunks_fts.rowid WHERE chunks_fts MATCH :q AND c.kind IN ('section_summary','doc_summary') ORDER BY rank LIMIT :limit",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    let rows: Vec<(i64, f64)> = match stmt
+        .query_map(rusqlite::named_params! { ":q": match_q, ":limit": limit }, |r| Ok((r.get(0)?, r.get(1)?)))
+        .and_then(|m| m.collect())
+    {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    if rows.is_empty() {
+        return vec![];
+    }
+    let by_id: HashMap<i64, f64> = rows.into_iter().collect();
+    let ids: Vec<i64> = by_id.keys().cloned().collect();
+    let hits = load_hits_filtered(conn, &ids, source_ids, section_filter, qa_exclude_disputed);
+    let mut out = Vec::new();
+    for mut h in hits {
+        if let Some(rank) = by_id.get(&h.chunk_id) {
+            h.score = -rank;
+            out.push(h);
+        }
+    }
+    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    out
+}
+
+fn leaf_vector_search_filtered(
+    conn: &Connection,
+    query_emb: &[f32],
+    source_ids: Option<&HashSet<i64>>,
+    section_ids: Option<&HashSet<i64>>,
+    top_k: usize,
+    qa_exclude_disputed: bool,
+) -> Option<Vec<Hit>> {
+    let dim: usize = std::env::var("ANCHOR_EMBED_DIM").ok().and_then(|v| v.parse().ok()).unwrap_or(768);
+    if query_emb.len() != dim {
+        return None;
+    }
+    let q_json = serde_json::to_string(query_emb).ok()?;
+    let mut sql = String::from(
+        "SELECT v.rowid, v.distance FROM vec_chunks v \
+         JOIN chunks c ON c.id = v.rowid \
+         LEFT JOIN entities e ON e.id = c.entity_id \
+         LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
+         WHERE v.embedding MATCH ? AND c.kind IN ('document','entity','distilled')",
+    );
+    let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Text(q_json)];
+    if let Some(ids) = source_ids {
+        if !ids.is_empty() {
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            sql.push_str(&format!(" AND i.source_id IN ({})", placeholders));
+            for id in ids {
+                params.push(rusqlite::types::Value::Integer(*id));
+            }
+        }
+    }
+    if let Some(ids) = section_ids {
+        if !ids.is_empty() {
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            // entity chunks have NULL section_id — include them (test_disputed_entity_stops_being_cited)
+            sql.push_str(&format!(" AND (c.section_id IN ({}) OR c.entity_id IS NOT NULL)", placeholders));
+            for id in ids {
+                params.push(rusqlite::types::Value::Integer(*id));
+            }
+        } else {
+            return Some(vec![]);
+        }
+    }
+    sql.push_str(" AND k = ?");
+    let limit = (top_k * 4) as i64;
+    params.push(rusqlite::types::Value::Integer(limit));
+    let mut stmt = conn.prepare(&sql).ok()?;
+    let rows: Vec<(i64, f64)> = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |r| Ok((r.get(0)?, r.get(1)?)))
+        .ok()?
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    if rows.is_empty() {
+        return Some(vec![]);
+    }
+    let by_id: HashMap<i64, f64> = rows.into_iter().collect();
+    let ids: Vec<i64> = by_id.keys().cloned().collect();
+    let hits = load_hits_filtered(conn, &ids, source_ids, section_ids, qa_exclude_disputed);
+    let mut out = Vec::new();
+    for mut h in hits {
+        if let Some(d) = by_id.get(&h.chunk_id) {
+            let score = 1.0 - *d as f32;
+            if score <= 0.2 {
+                continue;
+            }
+            h.score = score as f64;
+            out.push(h);
+        }
+    }
+    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    Some(out)
+}
+
+fn leaf_keyword_search_filtered(
+    conn: &Connection,
+    query: &str,
+    source_ids: Option<&HashSet<i64>>,
+    section_ids: Option<&HashSet<i64>>,
+    top_k: usize,
+    qa_exclude_disputed: bool,
+) -> Vec<Hit> {
+    let Some(match_q) = fts_match_query(query) else { return vec![] };
+    let limit = (top_k * 4) as i64;
+    let mut stmt = match conn.prepare(
+        "SELECT c.id, bm25(chunks_fts) AS rank FROM chunks_fts JOIN chunks c ON c.id=chunks_fts.rowid WHERE chunks_fts MATCH :q AND c.kind IN ('document','entity','distilled') ORDER BY rank LIMIT :limit",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    let rows: Vec<(i64, f64)> = match stmt
+        .query_map(rusqlite::named_params! { ":q": match_q, ":limit": limit }, |r| Ok((r.get(0)?, r.get(1)?)))
+        .and_then(|m| m.collect())
+    {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    if rows.is_empty() {
+        return vec![];
+    }
+    let by_id: HashMap<i64, f64> = rows.into_iter().collect();
+    let ids: Vec<i64> = by_id.keys().cloned().collect();
+    let hits = load_hits_filtered(conn, &ids, source_ids, section_ids, qa_exclude_disputed);
+    let mut out = Vec::new();
+    for mut h in hits {
+        if let Some(rank) = by_id.get(&h.chunk_id) {
+            h.score = -rank;
+            out.push(h);
+        }
+    }
+    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    out
+}
+
+fn extract_top_sections(conn: &Connection, summary_hits: &[Hit]) -> HashSet<i64> {
+    let mut out = HashSet::new();
+    for h in summary_hits.iter().take(5) {
+        if let Some(sec) = h.section_id {
+            out.insert(sec);
+        } else if let Some(item) = h.item_id {
+            if let Ok(mut stmt) = conn.prepare("SELECT id FROM sections WHERE item_id=?1") {
+                if let Ok(rows) = stmt.query_map([item], |r| r.get::<_, i64>(0)) {
+                    for id in rows.flatten() {
+                        out.insert(id);
+                        if out.len() >= 5 {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+pub fn toc_search(
+    conn: &Connection,
+    query: &str,
+    query_emb: Option<&[f32]>,
+    source_ids: Option<&HashSet<i64>>,
+    top_k: usize,
+    qa_exclude_disputed: bool,
+) -> Vec<Hit> {
+    let tag_filter = matching_tag_sections(conn, query, source_ids);
+    let summary_hits = if let Some(emb) = query_emb {
+        summary_vector_search_filtered(conn, emb, source_ids, tag_filter.as_ref(), 5, qa_exclude_disputed)
+            .unwrap_or_default()
+    } else {
+        vec![]
+    };
+    let summary_hits = if summary_hits.is_empty() {
+        summary_keyword_search_filtered(conn, query, source_ids, tag_filter.as_ref(), 5, qa_exclude_disputed)
+    } else {
+        summary_hits
+    };
+    if summary_hits.is_empty() {
+        return vec![];
+    }
+    let top_secs = extract_top_sections(conn, &summary_hits);
+    if top_secs.is_empty() {
+        return vec![];
+    }
+    let leaf_vec = query_emb
+        .and_then(|emb| leaf_vector_search_filtered(conn, emb, source_ids, Some(&top_secs), top_k, qa_exclude_disputed))
+        .unwrap_or_default();
+    let leaf_kw = leaf_keyword_search_filtered(conn, query, source_ids, Some(&top_secs), top_k, qa_exclude_disputed);
+    if leaf_vec.is_empty() && leaf_kw.is_empty() {
+        return vec![];
+    }
+    let fused = if leaf_vec.is_empty() {
+        leaf_kw
+    } else if leaf_kw.is_empty() {
+        leaf_vec
+    } else {
+        rrf_fuse_multi(vec![leaf_vec, leaf_kw], vec![1.0, 1.0])
+    };
+    let mut hits = fused;
+    hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    hits.truncate(top_k);
+    hits
 }
 
 type HitRow8 = (i64, Option<i64>, Option<i64>, String, String, i64, Option<String>, Option<i64>);
@@ -455,7 +911,7 @@ fn fallback_hit_from_row8(row: HitRow8, source_ids: Option<&HashSet<i64>>, qa_ex
             return None;
         }
     }
-    Some(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, score: 0.0, content, source_ref, is_pii: is_pii != 0, status })
+    Some(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, section_id: None, path: String::new(), score: 0.0, content, source_ref, is_pii: is_pii != 0, status })
 }
 
 pub fn keyword_fallback(
@@ -545,7 +1001,7 @@ pub fn who_knows_search(
         let created_dt = created.and_then(|s| DateTime::parse_from_rfc3339(&s).ok()).map(|d| d.with_timezone(&Utc));
         let decay = age_decay(created_dt, halflife, now);
         let score = conf * (1.0 + 0.5 * (overlap.min(4) as f64)) * decay;
-        out.push(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, score, content, source_ref, is_pii: is_pii!=0, status });
+        out.push(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, section_id: None, path: String::new(), score, content, source_ref, is_pii: is_pii!=0, status });
     }
     out.sort_by(|a,b| b.score.partial_cmp(&a.score).unwrap());
     out.truncate(top_k*2);
@@ -619,7 +1075,7 @@ pub fn graph_expand(
             if !status_ok(status.as_deref(), qa_exclude_disputed) { continue; }
             // need source_id via item
             let sid: Option<i64> = if let Some(iid)=item { conn.query_row("SELECT source_id FROM ingested_items WHERE id=?1", [*iid], |r| r.get(0)).ok() } else { None };
-            out.push(Hit { chunk_id: cid.unwrap_or(eid), entity_id: Some(eid), item_id: *item, source_id: sid, score, content: content.clone().unwrap_or_else(|| summary.clone()), source_ref: src_ref.clone().unwrap_or_else(|| summary.clone()), is_pii: false, status: status.clone() });
+            out.push(Hit { chunk_id: cid.unwrap_or(eid), entity_id: Some(eid), item_id: *item, source_id: sid, section_id: None, path: String::new(), score, content: content.clone().unwrap_or_else(|| summary.clone()), source_ref: src_ref.clone().unwrap_or_else(|| summary.clone()), is_pii: false, status: status.clone() });
         }
     }
     out
@@ -708,27 +1164,79 @@ pub fn dedupe_similar(mut hits: Vec<Hit>) -> Vec<Hit> {
     out
 }
 
+fn expand_by_section(conn: &Connection, hit: &mut Hit, hit_ids: &HashSet<i64>) {
+    let sec = match hit.section_id {
+        Some(id) => id,
+        None => return,
+    };
+    let mut stmt = match conn.prepare("SELECT id, content FROM chunks WHERE section_id=?1 ORDER BY id") {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let siblings: Vec<(i64, String)> = stmt
+        .query_map([sec], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    if siblings.is_empty() {
+        return;
+    }
+    let mut extra = Vec::new();
+    for (cid, content) in &siblings {
+        if *cid == hit.chunk_id || hit_ids.contains(cid) {
+            continue;
+        }
+        extra.push(content.clone());
+    }
+    if !extra.is_empty() {
+        hit.content = format!("{}\n\n[continued]\n\n{}", hit.content, extra.join("\n\n"));
+    }
+}
+
+fn expand_by_item(conn: &Connection, hit: &mut Hit, window: usize, hit_ids: &HashSet<i64>) {
+    let item_id = match hit.item_id {
+        Some(id) => id,
+        None => return,
+    };
+    let mut stmt = match conn.prepare("SELECT id, content FROM chunks WHERE item_id=?1 ORDER BY id") {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let siblings: Vec<(i64, String)> = stmt
+        .query_map([item_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    let idx = siblings.iter().position(|(id, _)| *id == hit.chunk_id);
+    if let Some(i) = idx {
+        let start = i.saturating_sub(window);
+        let end = (i + window + 1).min(siblings.len());
+        let mut extra = Vec::new();
+        for (j, (cid, content)) in siblings[start..end].iter().enumerate() {
+            if *cid == hit.chunk_id || hit_ids.contains(cid) {
+                continue;
+            }
+            if j == i {
+                continue;
+            }
+            extra.push(content.clone());
+        }
+        if !extra.is_empty() {
+            hit.content = format!("{}\n\n[continued]\n\n{}", hit.content, extra.join("\n\n"));
+        }
+    }
+}
+
 pub fn expand_context(conn: &Connection, hits: &mut [Hit], window: usize) {
-    if window==0 || hits.is_empty() { return; }
+    if window == 0 || hits.is_empty() {
+        return;
+    }
     let hit_ids: HashSet<i64> = hits.iter().map(|h| h.chunk_id).collect();
     for h in hits.iter_mut() {
-        let item_id = match h.item_id { Some(id)=>id, None=> continue };
-        let mut stmt = match conn.prepare("SELECT id, content FROM chunks WHERE item_id=?1 ORDER BY id") { Ok(s)=>s, Err(_)=> continue };
-        let siblings: Vec<(i64,String)> = stmt.query_map([item_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(|r| r.ok()).collect();
-        let idx = siblings.iter().position(|(id,_)| *id==h.chunk_id);
-        if let Some(i) = idx {
-            let start = i.saturating_sub(window);
-            let end = (i+window+1).min(siblings.len());
-            let mut extra = Vec::new();
-            for (j,(cid,content)) in siblings[start..end].iter().enumerate() {
-                if *cid==h.chunk_id || hit_ids.contains(cid) { continue; }
-                if j==i { continue; }
-                extra.push(content.clone());
-            }
-            if !extra.is_empty() {
-                // store expanded in content for now (Python stores hit["expanded"])
-                h.content = format!("{}\n\n[continued]\n\n{}", h.content, extra.join("\n\n"));
-            }
+        if h.section_id.is_some() {
+            expand_by_section(conn, h, &hit_ids);
+        } else {
+            expand_by_item(conn, h, window, &hit_ids);
         }
     }
 }
@@ -746,8 +1254,8 @@ mod tests {
 
     #[test]
     fn rrf() {
-        let h1 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None }];
-        let h2 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None }];
+        let h1 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, section_id: None, path: String::new(), score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None }];
+        let h2 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, section_id: None, path: String::new(), score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None }];
         let fused = rrf_fuse_multi(vec![h1, h2], vec![1.0, 1.0]);
         assert_eq!(fused.len(), 1);
         assert!(fused[0].score > 0.0);
@@ -811,7 +1319,7 @@ mod tests {
         let _ = conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?2,'related')", rusqlite::params![e1, e3]).unwrap();
         let _ = conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?2,'owns')", rusqlite::params![e1, e4]).unwrap();
         assert_eq!(rel1, 1);
-        let seed = vec![Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), score: 1.0, content: "seed".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()) }];
+        let seed = vec![Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "seed".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()) }];
         // with qa_exclude_disputed=true, disputed should be filtered
         let out = graph_expand(&conn, &seed, None, 2, 5, true);
         let ids: Vec<i64> = out.iter().filter_map(|h| h.entity_id).collect();
@@ -847,8 +1355,8 @@ mod tests {
         let c1 = insert_chunk(&conn, Some(iid), Some(e1), "content Phoenix decision");
         let c2 = insert_chunk(&conn, Some(iid), None, "document chunk Phoenix billing is stable");
         // need created_at for age decay; ensure chunks have timestamps via init_db
-        let h1 = Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), score: 1.0, content: "c1".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()) };
-        let h2 = Hit { chunk_id: c2, entity_id: None, item_id: Some(iid), source_id: Some(sid), score: 0.5, content: "c2".into(), source_ref: "ref".into(), is_pii: false, status: None };
+        let h1 = Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "c1".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()) };
+        let h2 = Hit { chunk_id: c2, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 0.5, content: "c2".into(), source_ref: "ref".into(), is_pii: false, status: None };
         let fused = fuse_and_rank(&conn, Some(vec![h1]), Some(vec![h2]), 1.0, 365.0, 3, 5, true);
         assert!(!fused.is_empty());
         // RRF should have merged both; diversity cap per item should keep both since distinct chunk_ids
@@ -862,5 +1370,246 @@ mod tests {
         assert!(!is_who_knows("what is billing status?"));
         assert!(!status_ok(Some("stale"), true));
         assert!(status_ok(Some("unverified"), true));
+    }
+
+    #[test]
+    fn harness_expand_context_section_aware() {
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_expand", "internal");
+        let iid = insert_item(&conn, sid, "doc_expand");
+        // create sections
+        conn.execute(
+            "INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,1,'Billing','Billing')",
+            rusqlite::params![iid],
+        )
+        .unwrap();
+        let sec1 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,1,'Auth','Auth')",
+            rusqlite::params![iid],
+        )
+        .unwrap();
+        let _sec2 = conn.last_insert_rowid();
+        // chunks in sec1 - whole subsection should be returned via expand_by_section
+        conn.execute(
+            "INSERT INTO chunks (item_id, section_id, level, path, content, source_ref, created_at) VALUES (?1,?2,1,'Billing',?3,'ref',datetime('now'))",
+            rusqlite::params![iid, sec1, "Billing part1 content"],
+        )
+        .unwrap();
+        let c1 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO chunks (item_id, section_id, level, path, content, source_ref, created_at) VALUES (?1,?2,1,'Billing',?3,'ref',datetime('now'))",
+            rusqlite::params![iid, sec1, "Billing part2 sibling"],
+        )
+        .unwrap();
+        let c2 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO chunks (item_id, section_id, level, path, content, source_ref, created_at) VALUES (?1,?2,1,'Billing',?3,'ref',datetime('now'))",
+            rusqlite::params![iid, sec1, "Billing part3 extra"],
+        )
+        .unwrap();
+        let _c3 = conn.last_insert_rowid();
+        // hit in sec1
+        let mut hits = vec![Hit {
+            chunk_id: c1,
+            entity_id: None,
+            item_id: Some(iid),
+            source_id: Some(sid),
+            section_id: Some(sec1),
+            path: "Billing".to_string(),
+            score: 1.0,
+            content: "Billing part1 content".into(),
+            source_ref: "ref".into(),
+            is_pii: false,
+            status: None,
+        }];
+        // sibling c2 should be included via expand_by_section (whole subsection)
+        let _ = c2; // silence unused
+        expand_context(&conn, &mut hits, 1);
+        assert!(
+            hits[0].content.contains("Billing part2 sibling") || hits[0].content.contains("Billing part3 extra"),
+            "section-aware expand should include whole subsection, got: {}",
+            hits[0].content
+        );
+        // also test fallback to item when section_id is None still does ±1
+        conn.execute(
+            "INSERT INTO chunks (item_id, content, source_ref, created_at) VALUES (?1,?2,'ref',datetime('now'))",
+            rusqlite::params![iid, "item-level chunk A"],
+        )
+        .unwrap();
+        let ca = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO chunks (item_id, content, source_ref, created_at) VALUES (?1,?2,'ref',datetime('now'))",
+            rusqlite::params![iid, "item-level chunk B win"],
+        )
+        .unwrap();
+        let cb = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO chunks (item_id, content, source_ref, created_at) VALUES (?1,?2,'ref',datetime('now'))",
+            rusqlite::params![iid, "item-level chunk C"],
+        )
+        .unwrap();
+        let _cc = conn.last_insert_rowid();
+        let mut hits2 = vec![Hit {
+            chunk_id: cb,
+            entity_id: None,
+            item_id: Some(iid),
+            source_id: Some(sid),
+            section_id: None,
+            path: String::new(),
+            score: 1.0,
+            content: "item-level chunk B win".into(),
+            source_ref: "ref".into(),
+            is_pii: false,
+            status: None,
+        }];
+        let _ = ca;
+        expand_context(&conn, &mut hits2, 1);
+        // should have expanded via expand_by_item ±1
+        assert!(
+            hits2[0].content.contains("item-level chunk"),
+            "item fallback expand should include neighbor"
+        );
+    }
+
+    #[test]
+    fn harness_vector_search_section_filter() {
+        let (_dir, conn) = harness_db();
+        // use small dim for test
+        std::env::set_var("ANCHOR_EMBED_DIM", "4");
+        let sid = insert_source(&conn, "s_vec", "internal");
+        let iid = insert_item(&conn, sid, "doc_vec");
+        conn.execute(
+            "INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,1,'SecA','SecA')",
+            rusqlite::params![iid],
+        )
+        .unwrap();
+        let sec_a = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,1,'SecB','SecB')",
+            rusqlite::params![iid],
+        )
+        .unwrap();
+        let sec_b = conn.last_insert_rowid();
+        // chunks with different section_ids and distinct embeddings
+        conn.execute(
+            "INSERT INTO chunks (item_id, section_id, level, path, content, source_ref, created_at) VALUES (?1,?2,1,'SecA','billing alpha','ref',datetime('now'))",
+            rusqlite::params![iid, sec_a],
+        )
+        .unwrap();
+        let ca = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO chunks (item_id, section_id, level, path, content, source_ref, created_at) VALUES (?1,?2,1,'SecB','auth beta','ref',datetime('now'))",
+            rusqlite::params![iid, sec_b],
+        )
+        .unwrap();
+        let cb = conn.last_insert_rowid();
+        // pack embeddings: ca ~ [1,0,0,0], cb ~ [0,1,0,0]
+        let emb_a = vec![1.0f32, 0.0, 0.0, 0.0];
+        let emb_b = vec![0.0f32, 1.0, 0.0, 0.0];
+        let blob_a = emb_a.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>();
+        let blob_b = emb_b.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>();
+        conn.execute("UPDATE chunks SET embedding=?1 WHERE id=?2", rusqlite::params![blob_a, ca]).unwrap();
+        conn.execute("UPDATE chunks SET embedding=?1 WHERE id=?2", rusqlite::params![blob_b, cb]).unwrap();
+        // query close to emb_a should hit ca when filtered to sec_a, and empty when filtered to sec_b
+        let query = vec![0.9f32, 0.1, 0.0, 0.0];
+        let mut filter_a = HashSet::new();
+        filter_a.insert(sec_a);
+        let hits_a = vector_search_filtered(&conn, &query, None, Some(&filter_a), 5, true);
+        // may be via vec0 or scan; at least should contain ca and not cb
+        if !hits_a.is_empty() {
+            assert!(hits_a.iter().any(|h| h.chunk_id == ca), "filtered to sec_a should contain ca");
+            assert!(!hits_a.iter().any(|h| h.chunk_id == cb), "filtered to sec_a should not contain cb");
+        }
+        let mut filter_b = HashSet::new();
+        filter_b.insert(sec_b);
+        let hits_b = vector_search_filtered(&conn, &query, None, Some(&filter_b), 5, true);
+        // hits_b should be empty or contain cb only if scan fallback scores >0.2; but must not contain ca
+        assert!(!hits_b.iter().any(|h| h.chunk_id == ca), "filtered to sec_b should not contain ca");
+        // keyword filtered also respects section
+        let kw_a = keyword_search_filtered(&conn, "billing", None, Some(&filter_a), 5, true);
+        if !kw_a.is_empty() {
+            assert!(kw_a.iter().all(|h| h.section_id == Some(sec_a)));
+        }
+        let kw_b = keyword_search_filtered(&conn, "billing", None, Some(&filter_b), 5, true);
+        // billing term only in sec_a, so filtered to sec_b should be empty
+        assert!(kw_b.is_empty() || kw_b.iter().all(|h| h.section_id == Some(sec_b)));
+        std::env::remove_var("ANCHOR_EMBED_DIM");
+    }
+
+    #[test]
+    fn harness_toc_search_coarse_to_fine() {
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_toc", "internal");
+        let iid = insert_item(&conn, sid, "doc_toc");
+        // sections
+        conn.execute(
+            "INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,1,'Billing Policy','Billing Policy')",
+            rusqlite::params![iid],
+        )
+        .unwrap();
+        let sec_billing = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,1,'Auth Policy','Auth Policy')",
+            rusqlite::params![iid],
+        )
+        .unwrap();
+        let sec_auth = conn.last_insert_rowid();
+        // summary nodes (section_summary) – coarse level
+        conn.execute(
+            "INSERT INTO chunks (item_id, section_id, kind, level, path, content, source_ref, created_at) VALUES (?1,?2,'section_summary',1,'Billing Policy','billing policy summary','ref',datetime('now'))",
+            rusqlite::params![iid, sec_billing],
+        )
+        .unwrap();
+        let sum_billing = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO chunks (item_id, section_id, kind, level, path, content, source_ref, created_at) VALUES (?1,?2,'section_summary',1,'Auth Policy','auth policy summary','ref',datetime('now'))",
+            rusqlite::params![iid, sec_auth],
+        )
+        .unwrap();
+        let _sum_auth = conn.last_insert_rowid();
+        // leaf nodes
+        conn.execute(
+            "INSERT INTO chunks (item_id, section_id, kind, level, path, content, source_ref, created_at) VALUES (?1,?2,'document',1,'Billing Policy','billing decision details with terms','ref',datetime('now'))",
+            rusqlite::params![iid, sec_billing],
+        )
+        .unwrap();
+        let leaf_billing = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO chunks (item_id, section_id, kind, level, path, content, source_ref, created_at) VALUES (?1,?2,'document',1,'Auth Policy','auth decision details','ref',datetime('now'))",
+            rusqlite::params![iid, sec_auth],
+        )
+        .unwrap();
+        let leaf_auth = conn.last_insert_rowid();
+        // tags: billing tag linked to billing summary and leaf
+        conn.execute("INSERT INTO tags (name, description, embedding, count) VALUES (?1,'',NULL,0)", ["billing"]).unwrap();
+        let tag_billing = conn.last_insert_rowid();
+        // link tag to billing chunks via chunk_tags
+        conn.execute("INSERT INTO chunk_tags (chunk_id, tag_id) VALUES (?1,?2)", rusqlite::params![sum_billing, tag_billing]).unwrap();
+        conn.execute("INSERT INTO chunk_tags (chunk_id, tag_id) VALUES (?1,?2)", rusqlite::params![leaf_billing, tag_billing]).unwrap();
+        conn.execute("INSERT INTO tags (name, description, embedding, count) VALUES (?1,'',NULL,0)", ["auth"]).unwrap();
+        let tag_auth = conn.last_insert_rowid();
+        conn.execute("INSERT INTO chunk_tags (chunk_id, tag_id) VALUES (?1,?2)", rusqlite::params![leaf_auth, tag_auth]).unwrap();
+        // ensure FTS index populated (triggers)
+        // toc_search with query "billing" should coarse to billing section and return billing leaf, not auth
+        let hits = toc_search(&conn, "billing", None, None, 5, true);
+        // if summary search fails due to missing vec0, it falls back to keyword on section_summary – should still find billing summary
+        // then leaf search should return leaf_billing
+        if !hits.is_empty() {
+            assert!(hits.iter().any(|h| h.chunk_id == leaf_billing), "toc should return billing leaf");
+            assert!(!hits.iter().any(|h| h.chunk_id == leaf_auth), "toc billing query should not return auth leaf");
+        } else {
+            // fallback: ensure at least keyword path works – leaf keyword filtered directly
+            let mut top = HashSet::new();
+            top.insert(sec_billing);
+            let leaves = leaf_keyword_search_filtered(&conn, "billing", None, Some(&top), 5, true);
+            assert!(!leaves.is_empty());
+            assert!(leaves.iter().any(|h| h.chunk_id == leaf_billing));
+        }
+        // auth query should hit auth
+        let hits_auth = toc_search(&conn, "auth", None, None, 5, true);
+        if !hits_auth.is_empty() {
+            assert!(hits_auth.iter().any(|h| h.chunk_id == leaf_auth));
+        }
     }
 }

@@ -35,6 +35,8 @@ pub struct Citation {
     pub kind: String,
     pub summary: String,
     pub source_ref: String,
+    pub path: String,
+    pub tags: Vec<String>,
     pub score: f64,
     pub snippet: String,
 }
@@ -54,6 +56,8 @@ pub struct SearchHit {
     pub summary: String,
     pub content: String,
     pub source_ref: String,
+    pub path: String,
+    pub tags: Vec<String>,
     pub source_id: Option<i64>,
     pub item_id: Option<i64>,
     pub item_title: String,
@@ -111,14 +115,31 @@ async fn record_gate_event(data_dir: &str, blocked: &[String]) {
     .await;
 }
 
-fn build_citations(hits: &[crate::retrieval::Hit]) -> Vec<Citation> {
-    hits.iter().take(5).map(|h| Citation {
-        entity_id: h.entity_id,
-        kind: if h.entity_id.is_some() { "entity".to_string() } else { "document".to_string() },
-        summary: h.content.chars().take(200).collect(),
-        source_ref: if h.source_ref.is_empty() { format!("chunk:{}", h.chunk_id) } else { h.source_ref.clone() },
-        score: (h.score * 1000.0).round() / 1000.0,
-        snippet: h.content.chars().take(300).collect(),
+fn tags_for_chunk(conn: &Connection, chunk_id: i64) -> Vec<String> {
+    let mut stmt = match conn.prepare("SELECT t.name FROM tags t JOIN chunk_tags ct ON ct.tag_id=t.id WHERE ct.chunk_id=?1 ORDER BY t.name") {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map([chunk_id], |r| r.get::<_, String>(0))
+        .map(|m| m.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
+fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str) -> Vec<Citation> {
+    let db_path = crate::db::resolve_db_path(data_dir);
+    let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+    hits.iter().take(5).map(|h| {
+        let tags = tags_for_chunk(&conn, h.chunk_id);
+        Citation {
+            entity_id: h.entity_id,
+            kind: if h.entity_id.is_some() { "entity".to_string() } else { "document".to_string() },
+            summary: h.content.chars().take(200).collect(),
+            source_ref: if h.source_ref.is_empty() { format!("chunk:{}", h.chunk_id) } else { h.source_ref.clone() },
+            path: h.path.clone(),
+            tags,
+            score: (h.score * 1000.0).round() / 1000.0,
+            snippet: h.content.chars().take(300).collect(),
+        }
     }).collect()
 }
 
@@ -181,7 +202,7 @@ pub async fn ask(
     let sections: Vec<String> = hits.iter().enumerate().map(|(i, h)| format!("[S{}] {}", i+1, h.content.chars().take(2000).collect::<String>())).collect();
     let context = sections.join("\n\n");
     let answer = generate_answer(settings, &question, &context, &history_for_gen).await;
-    let citations = build_citations(&hits);
+    let citations = build_citations(&hits, &data_dir_string);
     AskResponse { answer, citations }
 }
 
@@ -220,33 +241,51 @@ fn retrieve_sync(
     let halflife: f64 = std::env::var("ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(365.0);
     let max_per_source: usize = std::env::var("ANCHOR_RETRIEVAL_MAX_PER_SOURCE").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
 
-    // R8.1: hybrid search — vector + keyword
-    let vector_hits = query_embedding.as_ref().and_then(|emb| {
-        let hits = retrieval::vector_search(conn, emb, source_ids.as_ref(), top_k, qa_exclude_disputed);
-        if hits.is_empty() { None } else { Some(hits) }
-    });
-    let keyword_hits = retrieval::keyword_search(conn, &query, source_ids.as_ref(), top_k, qa_exclude_disputed);
-    let evidence = if keyword_hits.is_empty() {
-        // fallback only if no keyword hits and no vector hits
-        if vector_hits.is_none() {
-            retrieval::keyword_fallback(conn, source_ids.as_ref(), top_k, qa_exclude_disputed)
-        } else {
-            vec![]
-        }
-    } else {
-        keyword_hits
+    // R14.5: TOC coarse-to-fine — try toc_search first (prunes to ~200 candidates)
+    let toc_hits_opt = {
+        let emb_opt = query_embedding.as_ref().map(|v| v.as_slice());
+        let toc = retrieval::toc_search(conn, &query, emb_opt, source_ids.as_ref(), top_k, qa_exclude_disputed);
+        if toc.is_empty() { None } else { Some(toc) }
     };
-    let keyword_opt = if evidence.is_empty() { None } else { Some(evidence) };
-    let mut hits = retrieval::fuse_and_rank(
-        conn,
-        vector_hits,
-        keyword_opt,
-        keyword_weight,
-        halflife,
-        max_per_source,
-        top_k,
-        qa_exclude_disputed,
-    );
+    let mut hits = if let Some(toc) = toc_hits_opt {
+        retrieval::fuse_and_rank(
+            conn,
+            Some(toc),
+            None,
+            keyword_weight,
+            halflife,
+            max_per_source,
+            top_k,
+            qa_exclude_disputed,
+        )
+    } else {
+        // R8.1: hybrid search — vector + keyword
+        let vector_hits = query_embedding.as_ref().and_then(|emb| {
+            let hits = retrieval::vector_search(conn, emb, source_ids.as_ref(), top_k, qa_exclude_disputed);
+            if hits.is_empty() { None } else { Some(hits) }
+        });
+        let keyword_hits = retrieval::keyword_search(conn, &query, source_ids.as_ref(), top_k, qa_exclude_disputed);
+        let evidence = if keyword_hits.is_empty() {
+            if vector_hits.is_none() {
+                retrieval::keyword_fallback(conn, source_ids.as_ref(), top_k, qa_exclude_disputed)
+            } else {
+                vec![]
+            }
+        } else {
+            keyword_hits
+        };
+        let keyword_opt = if evidence.is_empty() { None } else { Some(evidence) };
+        retrieval::fuse_and_rank(
+            conn,
+            vector_hits,
+            keyword_opt,
+            keyword_weight,
+            halflife,
+            max_per_source,
+            top_k,
+            qa_exclude_disputed,
+        )
+    };
     let graph_hits = retrieval::graph_expand(conn, &hits, source_ids.as_ref(), 2, 3, qa_exclude_disputed);
     if !graph_hits.is_empty() {
         let lists = vec![hits, graph_hits];
@@ -309,29 +348,37 @@ pub async fn search(
 ) -> SearchResponse {
     let query_for_embed = req.query.clone();
     let query_embedding = embedder.embed_query(&query_for_embed).await;
-    let data_dir = data_dir.to_string();
+    let data_dir_string = data_dir.to_string();
+    let data_dir_for_block = data_dir_string.clone();
     let query = req.query.clone();
     let k = req.k.unwrap_or(8).clamp(1, 50);
     let project_id = req.project_id;
     let _settings_clone = settings_snapshot(settings);
     let hits = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
+        let db_path = crate::db::resolve_db_path(&data_dir_for_block);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
         search_sync(&conn, &query, k, project_id, query_embedding)
     })
     .await
     .unwrap_or_default();
-    let hits = hits.into_iter().map(|h| SearchHit {
-        chunk_id: Some(h.chunk_id),
-        entity_id: h.entity_id,
-        kind: if h.entity_id.is_some() { "entity".to_string() } else { "document".to_string() },
-        summary: h.content.chars().take(200).collect(),
-        content: h.content.chars().take(4000).collect(),
-        source_ref: if h.source_ref.is_empty() { format!("chunk:{}", h.chunk_id) } else { h.source_ref.clone() },
-        source_id: h.source_id,
-        item_id: h.item_id,
-        item_title: String::new(),
-        score: (h.score * 1000.0).round() / 1000.0,
+    let db_path = crate::db::resolve_db_path(&data_dir_string);
+    let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+    let hits = hits.into_iter().map(|h| {
+        let tags = tags_for_chunk(&conn, h.chunk_id);
+        SearchHit {
+            chunk_id: Some(h.chunk_id),
+            entity_id: h.entity_id,
+            kind: if h.entity_id.is_some() { "entity".to_string() } else { "document".to_string() },
+            summary: h.content.chars().take(200).collect(),
+            content: h.content.chars().take(4000).collect(),
+            source_ref: if h.source_ref.is_empty() { format!("chunk:{}", h.chunk_id) } else { h.source_ref.clone() },
+            path: h.path.clone(),
+            tags,
+            source_id: h.source_id,
+            item_id: h.item_id,
+            item_title: String::new(),
+            score: (h.score * 1000.0).round() / 1000.0,
+        }
     }).collect();
     SearchResponse { hits }
 }
@@ -345,6 +392,30 @@ fn search_sync(conn: &Connection, query: &str, k: usize, project_id: Option<i64>
     let keyword_weight: f64 = std::env::var("ANCHOR_RETRIEVAL_KEYWORD_WEIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let halflife: f64 = std::env::var("ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(365.0);
     let max_per_source: usize = std::env::var("ANCHOR_RETRIEVAL_MAX_PER_SOURCE").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+    let toc_opt = {
+        let emb_opt = query_embedding.as_ref().map(|v| v.as_slice());
+        let toc = retrieval::toc_search(conn, query, emb_opt, project_ids.as_ref(), top_k, qa_exclude_disputed);
+        if toc.is_empty() { None } else { Some(toc) }
+    };
+    if let Some(toc) = toc_opt {
+        let mut hits = retrieval::fuse_and_rank(
+            conn,
+            Some(toc),
+            None,
+            keyword_weight,
+            halflife,
+            max_per_source,
+            top_k,
+            qa_exclude_disputed,
+        );
+        let graph_hits = retrieval::graph_expand(conn, &hits, project_ids.as_ref(), 2, 3, qa_exclude_disputed);
+        if !graph_hits.is_empty() {
+            let lists = vec![hits, graph_hits];
+            hits = retrieval::fuse_evidence(lists, vec![1.0, 0.5]);
+            hits.truncate(top_k);
+        }
+        return hits;
+    }
     let vector_hits = query_embedding.as_ref().and_then(|emb| {
         let hits = retrieval::vector_search(conn, emb, project_ids.as_ref(), top_k, qa_exclude_disputed);
         if hits.is_empty() { None } else { Some(hits) }

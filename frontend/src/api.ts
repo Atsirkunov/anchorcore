@@ -230,4 +230,15 @@ export const api = {
     request<{ source_id: number; chunks: number; flagged: number }>(`/pii/scan/${sourceId}`, { method: "POST" }),
   itemPii: (itemId: number) =>
     request<{ item_id: number; is_pii: boolean; flagged: number; total: number; categories: string[]; matches: { category: string; label: string; match: string }[] }>(`/pii/item/${itemId}`),
+
+  sections: (params?: { item_id?: number; source_id?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.item_id) q.set("item_id", String(params.item_id));
+    if (params?.source_id) q.set("source_id", String(params.source_id));
+    const qs = q.toString();
+    return request<import("./types").Section[]>(`/sections${qs ? `?${qs}` : ""}`);
+  },
+  sectionChunks: (id: number) => request<import("./types").ChunkInfo[]>(`/sections/${id}/chunks`),
+  tags: () => request<import("./types").Tag[]>("/tags"),
+  tagChunks: (id: number) => request<import("./types").ChunkInfo[]>(`/tags/${id}/chunks`),
 };

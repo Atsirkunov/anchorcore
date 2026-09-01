@@ -61,10 +61,22 @@ flowchart LR
 
 **Deletion policy:** sources removed → marked `stale`; knowledge is never auto-deleted.
 
+**Chunking & cleaning (B5/B12/B35):**
+
+| Layer | Function | Config | Purpose |
+|---|---|---|---|
+| Cleaning | `cleaning.py:17` / `clean_text` + `repeated_lines`/`strip_repeated` | — | Strip control chars, page numbers (`Page 3 of 12`, `- 42 -`), repeated headers/footers, normalize whitespace *before* chunking so boundaries/embeddings/FTS tokens are clean |
+| Entity summary | `chunking.py:14` `chunk_text` / `chunking.rs:16` | `ANCHOR_CHUNK_SIZE=800`, `ANCHOR_CHUNK_OVERLAP=100` (char-based, UTF-8 safe) | Fixed-size 800/100 slices of each `entity.summary` → `chunks kind=entity` |
+| Full-document | `chunking.py:49` `chunk_document` / `chunking.rs:68` | `ANCHOR_CHUNK_MAX_CHARS=1600` | Section-aware: hard split at heading lines (`_is_heading`: `§434`, `4.2.1`, `Article 12`, ALL-CAPS), paragraph-packing within section up to 1600 chars, `chunk_text` fallback only for oversized paragraphs. Heading stays attached to section's first chunk. |
+| Classifier windows | `chunking.py:99` `classify_windows` / `chunking.rs:133` | `ANCHOR_CLASSIFY_WINDOW_CHARS=16000`, 50% overlap | Overlapping windows for `Classifier` — not stored as chunks, but governs `window_hash` dedup and cost |
+
+`Pipeline` `pipeline.py:283` / `pipeline.rs:485` does: `clean_text` → `strip_repeated` → `chunk_document` → `Chunk(kind=document, source_ref="title §N")` (old doc chunks deleted on re-sync). Entity chunks are created inline per summary `pipeline.py:256`. Rust currently skips `clean_text` (`pipeline.rs:491` `cleaned = full_text.clone()` parity gap).
+
 **Distillation (B18):** chat-like windows (meeting/decision_log/general) are
 normalized into searchable Q&A units (`Q: … A: …` + terms/systems) stored as
-`kind='distilled'` chunks. An IDF gate skips low-signal content (filler,
-sparse vocabulary) from vector embedding — it stays keyword-findable in FTS5.
+`kind='distilled'` chunks. An IDF gate (`embed_min_signal=0.15` `distill.py:signal`/`distill.rs:signal`) skips low-signal content from vector embedding — it stays keyword-findable in FTS5. Distill is hash-skipped via `distill_hashes`.
+
+**Scale note — flat chunks do not scale (→ Phase 14):** today every `Chunk` is flat (no `parent_section`, no `section_path`, no tag hierarchy). `chunk_document` *derives* `sections: list[str]` `chunking.py:55` then discards the tree. Hybrid retrieval fuses flat ranked lists (`vec_chunks` vec0 `k=top_k*4` + FTS5 bm25 `LIMIT top_k*4` + RRF `60+rank` `retrieval.rs:634`) with age decay, per-item diversity cap, and `±1` neighbor `expand_context`. This is indexed and fast at small scale but has no hierarchical pruning: a 5k-doc / ~150k-chunk corpus (see `scripts/build_business_corpus.py:12` `~150k chunks`) still ranks flat. Phase 14 adds a persisted hierarchical TOC: `sections` table (parent/level/path/summary + summary_embedding) + `tags`/`chunk_tags` dynamic taxonomy (reuse if `cosine >0.82` else create). Fetch becomes coarse-to-fine: (1) TOC/tag SQL prune → (2) summary-node vector search (5k sections) → (3) leaf-chunk vec0 search *within* winning sections. See `rust/BACKLOG.md:Phase 14`.
 
 ## 4. Data Flow — Q&A
 
@@ -92,6 +104,12 @@ sequenceDiagram
     M-->>A: answer + citations
     A-->>U: answer + clickable source chips
 ```
+
+### 4a. Access pattern — current vs hierarchical (Phase 14)
+
+*Current (flat):* `AnswerEngine.ask` `answer_engine.py:199` / `answer.rs` resolves `project source_ids` → planner `_plan_tools` (`hybrid` always, `who_knows` on ownership cues) → executor `_execute_tools` (one shared embed call; `hybrid = vector vec0 + FTS5` `answer_engine.py:538`) → `_fuse_and_rank` (RRF `score=Σ w/(60+rank)`, age decay `0.5^(age/halflife)`, per-item diversity cap `retrieval_max_per_source`, `expand_context ±1` `answer_engine.py:377`, near-duplicate dedupe `_content_signature`) → `_graph_expand` 1–2 hops `answer_engine.py:408` → `_gate_answer_hits` (B30 PII/sensitive filter when `ANCHOR_CLOUD_TRUST` missing) → cited generation. All `retrieval.*` methods take `source_ids: set[int]|None` (B15 scoping). Evidence hit shape `{"chunk","entity","item","source_id","score"}` `AGENTS.md`.
+
+*Hierarchical (Phase 14, planned):* same pipeline with a TOC pre-stage. Persisted `sections` + `tags` (see §3) let retrieval prune *before* vector search: (a) attribute/SQL filter on `sections.path`/`tags` and `project source_ids`, (b) vector search on summary nodes (section/doc summaries, ~5k not 150k), (c) vec0 leaf search constrained to `WHERE c.section_id IN (:top_sections)` — uses existing parametrized `IN` pattern `retrieval.rs:192`. Fallback full-scan `vector_search_scan` `retrieval.rs:240` is avoided at scale. Summary nodes reuse `chunks vec0` index (`kind=section_summary`) or `sections.summary_embedding`.
 
 ## 4b. Retrieval Design (informed by Cerebras' knowledge base)
 
@@ -197,13 +215,39 @@ erDiagram
         int id PK
         int item_id FK "full-document chunk"
         int entity_id FK "entity-summary chunk"
-        string kind "document|entity|distilled"
+        int section_id FK "→ sections.id (Phase 14)"
+        string kind "document|entity|distilled|section_summary|doc_summary (Phase 14)"
         string source_ref "section"
         string content
         bytes embedding "float32 blob"
         bool is_pii "auto-flagged B30"
         string pii_categories "JSON"
+        int level "heading level (Phase 14)"
+        string path "section path e.g. Art12 > 12.3 (Phase 14)"
         datetime created_at
+    }
+    SECTIONS {
+        int id PK
+        int item_id FK
+        int parent_id FK "self, null=root"
+        int level "0=root, 1=§, 2=4.2.1"
+        string title "heading text"
+        string path "full path"
+        string chunk_range "first/last chunk id"
+        text summary "LLM or extractive (Phase 14)"
+        bytes summary_embedding "float32 blob"
+        datetime created_at
+    }
+    TAGS {
+        int id PK
+        string name "unique, lowercased"
+        string description "LLM-generated"
+        bytes embedding "float32 blob"
+        int count "usage count"
+    }
+    CHUNK_TAGS {
+        int chunk_id FK
+        int tag_id FK
     }
     CHUNKS_FTS {
         int rowid "= chunks.id"
@@ -266,10 +310,15 @@ erDiagram
     SOURCES ||--o{ INGESTED_ITEMS : "contains"
     INGESTED_ITEMS ||--o{ ENTITIES : "classified into"
     INGESTED_ITEMS ||--o{ CHUNKS : "chunked"
+    INGESTED_ITEMS ||--o{ SECTIONS : "section tree (Phase 14)"
+    SECTIONS ||--o{ SECTIONS : "parent/children"
+    SECTIONS ||--o{ CHUNKS : "contains"
     ENTITIES ||--o{ RELATIONSHIPS : "participates"
     ENTITIES ||--o{ CHUNKS : "summarized into"
     ENTITIES ||--o{ MERGE_ACTIONS : "proposed"
     CHUNKS ||--o| CHUNKS_FTS : "indexed"
+    CHUNKS ||--o{ CHUNK_TAGS : "tagged"
+    TAGS ||--o{ CHUNK_TAGS : "labels"
     SOURCES ||--o{ JOBS : "processed by"
     PROJECTS ||--o{ PROJECT_SOURCES : "contains"
     SOURCES ||--o{ PROJECT_SOURCES : "belongs to"

@@ -24,11 +24,13 @@ mod retrieval;
 mod review;
 mod scheduler;
 mod secrets;
+mod sections;
 mod security;
 mod settings;
 mod sources;
 mod stubs;
 mod system;
+mod tags;
 mod watcher;
 
 use axum::{
@@ -194,6 +196,12 @@ fn build_router(state: health::AppState) -> Router {
         .route("/projects", get(projects::list_handler).post(projects::create_handler))
         .route("/projects/default", get(projects::default_handler))
         .route("/projects/:id", get(projects::get_handler).patch(projects::patch_handler).delete(projects::delete_handler))
+        // sections (R14.1)
+        .route("/sections", get(sections::list_handler))
+        .route("/sections/:id/chunks", get(sections::chunks_handler))
+        // tags (R14.4)
+        .route("/tags", get(tags::list_handler))
+        .route("/tags/:id/chunks", get(tags::chunks_handler))
         // qa (R2.2 + R4.5 search)
         .route("/qa", post(qa_handler))
         .route("/qa/public", post(qa_public_handler))
