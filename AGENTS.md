@@ -27,13 +27,13 @@ Repo: `git@github.com:Atsirkunov/anchorcore.git`. Backend under `backend/` (depr
 - `rust/crates/anchorcore/src/db.rs` — `open_db`/`init_db`, `PRAGMA foreign_keys=ON`, `WAL`, migrations via `rusqlite_migration`; same SQLite file as Python.
 - `rust/crates/anchorcore/src/sources.rs` / `entities.rs` / `jobs.rs` / `answer.rs` / `pipeline.rs` — mirror `backend/app/routers/*` + `answer_engine.py`/`pipeline.py`. Keep `spawn_blocking` + per-key `secrets.enc.<sha256>`.
 - `backend/app/main.py` (deprecated) — legacy FastAPI wiring, same logic as Rust `main.rs`. Use only for `hosting/` + conformance.
-- `backend/app/models.py` (deprecated) — SQLAlchemy models: `Source` (`label` B39), `IngestedItem`, `Entity` (`window_text`/`window_index` B26, `dispute_count` B3), `Relationship`, `Chunk` (`kind`: document|entity|distilled B18, `is_pii`/`pii_categories` B30), `Job`, `Project` + `project_sources`, `SystemEvent`, `AppSetting`, `MergeAction`, `User` (B40 hosted auth). `content_hash()` helper (re-exported via `hashing.py`).
+- `backend/app/models.py` (deprecated) — SQLAlchemy models: `Source` (`label` B39), `IngestedItem`, `Entity` (`window_text`/`window_index` B26, `dispute_count` B3), `Relationship`, `Chunk` (`kind`: document|entity|distilled B18, `is_pii`/`pii_categories` B30; Phase 14 adds `section_id`/`level`/`path` + `kind=section_summary|doc_summary`), `Job`, `Project` + `project_sources`, `SystemEvent`, `AppSetting`, `MergeAction`, `User` (B40 hosted auth). Phase 14 adds `Section` (parent/level/path/summary+embedding) + `Tag`/`ChunkTag` (dynamic taxonomy, reuse if `cosine>0.82`). `content_hash()` helper (re-exported via `hashing.py`).
 - `backend/app/schemas.py` — Pydantic request/response models. `SourceOut` does NOT include `config`
   (config is fetched via `GET /sources/{id}/config` which masks secrets); `SourceCreate/Update` validate `label` (B39).
 - `backend/app/answer_engine.py` — **the core retrieval pipeline** (see below). `vec_chunks` vec0 index (B33) with Python-scan fallback; gates `sensitive`/`pii` + `is_pii` chunks from cloud answer when `ANCHOR_CLOUD_TRUST` missing (B30).
 - `backend/app/pipeline.py` — ingestion orchestration: classify (windowed, hash-skipped, concurrency-limited),
-  distill (B18), embed (IDF-gated, `is_pii` chunks skip cloud embed B30, `_flag_pii`), PII gate (B39). Chunking split to `chunking.py`/`hashing.py`/`distill.py` (B35).
-- `backend/app/chunking.py` / `hashing.py` / `distill.py` — extracted from `pipeline.py` (B35).
+  distill (B18), embed (IDF-gated, `is_pii` chunks skip cloud embed B30, `_flag_pii`), PII gate (B39). Chunking split to `chunking.py`/`hashing.py`/`distill.py` (B35). **Scale gap (Phase 14):** `chunk_document` derives `sections` then discards the tree — no `section_id`/`path` persisted; retrieval is flat RRF over `vec_chunks`+FTS5 (no hierarchical pruning). Planned `sections` + `tags`/`chunk_tags` persisted tree + summary nodes → coarse-to-fine fetch.
+- `backend/app/chunking.py` / `hashing.py` / `distill.py` — extracted from `pipeline.py` (B35). `chunking.py:14` `chunk_text` (800/100 char-based), `chunking.py:49` `chunk_document` (heading-aware `_is_heading` `§434`/`4.2.1`/`Article 12`/ALL-CAPS → `1600` max paragraph-packed sections), `chunking.py:99` `classify_windows` (16000, 50% overlap). Rust parity `rust/crates/anchorcore/src/chunking.rs:16/68/133`. Cleaning before chunking `cleaning.py:17` (`clean_text` + `repeated_lines`).
 - `backend/app/pii.py` — PII knowledge base + `scan_text` (B30), categories + custom words, persisted in `app_settings`.
 - `backend/app/auth.py` — hosted auth (B40): PBKDF2 + HS256 JWT, `get_current_user`/`require_auth` (off when `ANCHOR_AUTH_SECRET` empty).
 - `backend/app/classifier.py` — per-doc-type extraction prompts, `detect_document_type`, `classify`,
@@ -60,6 +60,10 @@ Repo: `git@github.com:Atsirkunov/anchorcore.git`. Backend under `backend/` (depr
 who/whom/owns/owner/responsible/expert/knows) → **executor** `_execute_tools` (one shared embed call;
 hybrid = vector + FTS5; who_knows) → `_fuse_evidence` (RRF fusion) → `_graph_expand` (B32, 1–2 hop
 relationship walk, stale excluded) → generate with citations.
+
+Current access is **flat** — RRF over `vec_chunks` vec0 (`k=top_k*4` `answer_engine.py:639`) + FTS5 bm25 `LIMIT top_k*4` (`answer_engine.py:710`), scored `Σ w/(60+rank)` `retrieval.rs:634`, age-decayed, per-item diversity-capped, `expand_context ±1` `answer_engine.py:377`, deduped by `_content_signature`. `retrieval.rs:192` already parametriz-es `IN` for `source_ids` — extend same pattern for `section_id` filtering in Phase 14. Fallback `vector_search_scan` `retrieval.rs:240` full-scans `chunks WHERE embedding IS NOT NULL` (must be avoided at 150k scale via TOC pruning).
+
+**Phase 14 access (planned):** same pipeline with TOC pre-stage: (1) SQL/tag filter on `sections.path`/`chunk_tags` + `project source_ids`, (2) summary-node vector search (~5k sections vs 150k leaves, `kind=section_summary` or `sections.summary_embedding`), (3) leaf vec0 `WHERE c.section_id IN (:top_sections)`. Persists `chunk_document` `sections` tree instead of discarding it.
 
 Key rules:
 - RRF: `score = Σ weight/(60+rank)`. `_rrf_fuse` (2 lists) / `_rrf_fuse_multi` (N lists).

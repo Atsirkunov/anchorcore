@@ -3,6 +3,32 @@ import { api, RequestAbortedError } from "../api";
 import { theme } from "../theme";
 import type { AskTurn } from "../types";
 
+function Breadcrumb({ path }: { path?: string }) {
+  if (!path) return null;
+  const parts = path.split(" > ");
+  return (
+    <span style={{ fontSize: 11, color: theme.textDim }}>
+      {parts.map((p, i) => (
+        <span key={i}>
+          {i > 0 && <span style={{ margin: "0 4px", color: theme.textMuted }}>›</span>}
+          <span style={{ color: i === parts.length - 1 ? theme.text : theme.textDim }}>{p}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function TagChips({ tags }: { tags?: string[] }) {
+  if (!tags || tags.length === 0) return null;
+  return (
+    <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap", marginLeft: 6 }}>
+      {tags.slice(0, 4).map((t) => (
+        <span key={t} style={{ fontSize: 10, background: theme.bgHover, color: theme.accentAlt, border: `1px solid ${theme.border}`, padding: "0.1rem 0.4rem", borderRadius: 999 }}>{t}</span>
+      ))}
+    </span>
+  );
+}
+
 export function AskTab({ projectId }: { projectId?: number }) {
   const [turns, setTurns] = useState<AskTurn[]>([]);
   const [question, setQuestion] = useState("");
@@ -115,6 +141,12 @@ export function AskTab({ projectId }: { projectId?: number }) {
                       <div key={`${c.source_ref}-${j}`} style={{ marginTop: 6, padding: "0.5rem 0.75rem", background: theme.bgElevated, borderRadius: 6, fontSize: 13 }}>
                         <span style={{ color: theme.purple }}>[{c.kind}]</span> {c.summary}
                         <div style={{ color: theme.textDim, fontSize: 12 }}>{c.source_ref} · score {c.score}</div>
+                        {c.path && (
+                          <div style={{ marginTop: 3 }}>
+                            <Breadcrumb path={c.path} />
+                          </div>
+                        )}
+                        <TagChips tags={c.tags} />
                       </div>
                     ))}
                   </div>

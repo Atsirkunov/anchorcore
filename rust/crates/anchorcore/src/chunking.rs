@@ -66,29 +66,182 @@ fn is_heading(line: &str) -> bool {
 }
 
 pub fn chunk_document(text: &str) -> Vec<String> {
+    chunk_document_with_sections(text).1.into_iter().map(|c| c.content).collect()
+}
+
+/// Hierarchical TOC structures for R14.1.
+#[derive(Debug, Clone)]
+pub struct SectionMeta {
+    pub title: String,
+    pub level: i32,
+    pub parent: Option<usize>,
+    pub path: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChunkMeta {
+    pub content: String,
+    pub section_idx: Option<usize>,
+    pub level: i32,
+    pub path: String,
+}
+
+fn is_article_heading(s: &str) -> bool {
+    let lower = s.to_lowercase();
+    lower.starts_with("article ")
+        || lower.starts_with("annex ")
+        || lower.starts_with("section ")
+        || lower.starts_with("schedule ")
+        || lower.starts_with("rule ")
+        || lower.starts_with("appendix ")
+}
+
+fn level_for_section_symbol(s: &str) -> Option<i32> {
+    if !s.starts_with('§') {
+        return None;
+    }
+    let after = s.trim_start_matches('§').trim_start();
+    let prefix: String = after
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let dots = prefix.matches('.').count() as i32;
+    Some(1 + dots)
+}
+
+fn level_for_dotted(s: &str) -> Option<i32> {
+    if !s.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let token = s.split(&[' ', ':', ')', '-', '\t'][..]).next().unwrap_or("");
+    let token = token.trim_matches(|c| c == '.' || c == ')' || c == ':');
+    if token.contains('.') {
+        return Some(1 + token.matches('.').count() as i32);
+    }
+    Some(1)
+}
+
+fn heading_level(line: &str) -> i32 {
+    let s = line.trim();
+    if s.is_empty() {
+        return 0;
+    }
+    if let Some(l) = level_for_section_symbol(s) {
+        return l;
+    }
+    if is_article_heading(s) {
+        return 1;
+    }
+    if let Some(l) = level_for_dotted(s) {
+        return l;
+    }
+    1
+}
+
+pub fn chunk_document_with_sections(text: &str) -> (Vec<SectionMeta>, Vec<ChunkMeta>) {
     let max_chars = env_usize("ANCHOR_CHUNK_MAX_CHARS", CHUNK_MAX_CHARS);
     let lines: Vec<&str> = text.split('\n').collect();
-    let mut sections: Vec<String> = Vec::new();
-    let mut current: Vec<String> = Vec::new();
+    // intermediate per-section lines with meta
+    struct RawSection {
+        title: String,
+        level: i32,
+        parent: Option<usize>,
+        path: String,
+        lines: Vec<String>,
+    }
+    let mut raw_sections: Vec<RawSection> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+
     for line in lines {
         if is_heading(line) {
-            if !current.is_empty() {
-                sections.push(current.join("\n"));
-                current.clear();
+            let level = heading_level(line);
+            let title = line.trim().to_string();
+            // pop stack to find parent
+            while let Some(&top) = stack.last() {
+                if raw_sections[top].level >= level {
+                    stack.pop();
+                } else {
+                    break;
+                }
             }
-            current.push(line.to_string());
+            let parent = stack.last().copied();
+            let path = if let Some(p) = parent {
+                format!("{} > {}", raw_sections[p].path, title)
+            } else {
+                title.clone()
+            };
+            let idx = raw_sections.len();
+            raw_sections.push(RawSection {
+                title,
+                level,
+                parent,
+                path,
+                lines: vec![line.to_string()],
+            });
+            stack.push(idx);
         } else {
-            current.push(line.to_string());
+            if raw_sections.is_empty() {
+                // root section for leading content before first heading
+                let idx = raw_sections.len();
+                raw_sections.push(RawSection {
+                    title: String::new(),
+                    level: 0,
+                    parent: None,
+                    path: String::new(),
+                    lines: Vec::new(),
+                });
+                stack.push(idx);
+            }
+            if let Some(&top) = stack.last() {
+                raw_sections[top].lines.push(line.to_string());
+            }
         }
     }
-    if !current.is_empty() {
-        sections.push(current.join("\n"));
+
+    // if no sections (empty text), create empty root
+    if raw_sections.is_empty() {
+        raw_sections.push(RawSection {
+            title: String::new(),
+            level: 0,
+            parent: None,
+            path: String::new(),
+            lines: Vec::new(),
+        });
     }
-    let mut chunks = Vec::new();
-    for sec in sections {
-        chunks.extend(split_section(&sec, max_chars));
+
+    // build SectionMeta vec
+    let metas: Vec<SectionMeta> = raw_sections
+        .iter()
+        .map(|r| SectionMeta {
+            title: r.title.clone(),
+            level: r.level,
+            parent: r.parent,
+            path: r.path.clone(),
+        })
+        .collect();
+
+    // build chunks per section
+    let mut chunks: Vec<ChunkMeta> = Vec::new();
+    for (idx, rs) in raw_sections.iter().enumerate() {
+        let text = rs.lines.join("\n");
+        if text.trim().is_empty() {
+            continue;
+        }
+        let parts = split_section(&text, max_chars);
+        for p in parts {
+            chunks.push(ChunkMeta {
+                content: p,
+                section_idx: Some(idx),
+                level: rs.level,
+                path: rs.path.clone(),
+            });
+        }
     }
-    chunks
+
+    // if raw_sections was root-only with empty title, keep section but chunks will map to it
+    // filter empty metas? keep all for tree completeness (root with level 0 may be omitted if empty title and no parent)
+    // Keep metas as is; pipeline will skip inserting empty-title root if it has no content? but we keep it for now.
+    (metas, chunks)
 }
 
 fn split_section(section: &str, max_chars: usize) -> Vec<String> {
@@ -180,5 +333,27 @@ mod tests {
         let c = chunk_text(&t);
         assert!(c.len() >= 2);
         assert!(c.iter().all(|s| s.chars().count() <= 800));
+    }
+    #[test]
+    fn chunk_with_sections_hierarchy() {
+        let doc = "§434 Merger\ncontent a\n\n§437 Dates\njan\n\n4.2.1 Sub\nsub content";
+        let (secs, chunks) = chunk_document_with_sections(doc);
+        // 3 sections: §434, §437, 4.2.1 (child of §437)
+        assert_eq!(secs.len(), 3);
+        assert_eq!(secs[0].level, 1);
+        assert_eq!(secs[1].level, 1);
+        assert_eq!(secs[2].level, 3);
+        assert_eq!(secs[2].parent, Some(1));
+        assert_eq!(secs[2].path, "§437 Dates > 4.2.1 Sub");
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[2].section_idx, Some(2));
+        assert_eq!(chunks[2].path, "§437 Dates > 4.2.1 Sub");
+    }
+    #[test]
+    fn chunk_with_sections_root() {
+        let doc = "plain intro\nno heading\n\n§434 Merger\ncontent";
+        let (secs, chunks) = chunk_document_with_sections(doc);
+        assert!(secs.iter().any(|s| s.level == 0));
+        assert_eq!(chunks.len(), 2);
     }
 }

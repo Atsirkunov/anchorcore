@@ -408,10 +408,216 @@ impl ClassifyCtx {
     async fn finalize(&self) -> Result<(), String> {
         update_window_hashes(self).await?;
         store_doc_chunks(self).await?;
+        create_summaries(self).await?;
+        create_tags(self).await?;
         flag_pii(self).await?;
         distill_item(self).await?;
         embed_chunks(self).await
     }
+}
+
+fn extractive_section_summary(text: &str) -> String {
+    let paras: Vec<&str> = text.split("\n\n").collect();
+    let first_two = paras.iter().take(2).cloned().collect::<Vec<_>>().join("\n\n");
+    let trimmed = first_two.trim();
+    if trimmed.is_empty() {
+        return text.chars().take(800).collect::<String>().trim().to_string();
+    }
+    trimmed.chars().take(1200).collect::<String>().trim().to_string()
+}
+
+fn extractive_doc_summary(text: &str) -> String {
+    let cleaned = text.trim();
+    if cleaned.is_empty() {
+        return String::new();
+    }
+    cleaned.chars().take(1200).collect::<String>().trim().to_string()
+}
+
+async fn create_summaries(ctx: &ClassifyCtx) -> Result<(), String> {
+    let item_id = ctx.item_id;
+    let full_text = ctx.full_text.clone();
+    let base_ref = ctx.base_ref.clone();
+    let force = ctx.force;
+    run_db(&ctx.data_dir, move |conn| {
+        create_summaries_inner(conn, item_id, &full_text, &base_ref, force)
+    })
+    .await
+}
+
+fn create_summaries_inner(
+    conn: &Connection,
+    item_id: i64,
+    full_text: &str,
+    base_ref: &str,
+    force: bool,
+) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("SELECT id, title, path, level, summary_hash, summary FROM sections WHERE item_id=?1 ORDER BY id")
+        .map_err(|e| e.to_string())?;
+    let secs: Vec<(i64, String, String, i64, String, String)> = stmt
+        .query_map([item_id], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    for (sec_id, title, path, level, stored_hash, stored_summary) in secs {
+        if title.is_empty() && path.is_empty() && level == 0 {
+            continue;
+        }
+        let mut cstmt = conn
+            .prepare("SELECT content FROM chunks WHERE section_id=?1 ORDER BY id")
+            .map_err(|e| e.to_string())?;
+        let sec_text: String = cstmt
+            .query_map([sec_id], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if sec_text.trim().is_empty() {
+            continue;
+        }
+        let new_hash = window_hash(&sec_text);
+        if !force && stored_hash == new_hash && !stored_summary.is_empty() {
+            continue;
+        }
+        let summary = extractive_section_summary(&sec_text);
+        if summary.is_empty() {
+            continue;
+        }
+        conn.execute(
+            "UPDATE sections SET summary=?1, summary_hash=?2 WHERE id=?3",
+            rusqlite::params![summary, new_hash, sec_id],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM chunks WHERE section_id=?1 AND kind='section_summary'",
+            [sec_id],
+        )
+        .map_err(|e| e.to_string())?;
+        let src_ref = if title.is_empty() {
+            format!("{} summary", base_ref)
+        } else {
+            format!("{} summary: {}", base_ref, title)
+        };
+        conn.execute(
+            "INSERT INTO chunks (item_id, section_id, kind, source_ref, content, level, path, created_at) VALUES (?1,?2,'section_summary',?3,?4,?5,?6,datetime('now'))",
+            rusqlite::params![item_id, sec_id, src_ref, summary, level, path],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    // doc summary
+    if full_text.trim().is_empty() {
+        return Ok(());
+    }
+    let doc_summary = extractive_doc_summary(full_text);
+    if doc_summary.is_empty() {
+        return Ok(());
+    }
+    let new_doc_hash = window_hash(&doc_summary);
+    let existing_doc: Option<String> = conn
+        .query_row(
+            "SELECT content FROM chunks WHERE item_id=?1 AND kind='doc_summary' LIMIT 1",
+            [item_id],
+            |r| r.get::<_, String>(0),
+        )
+        .ok();
+    if !force {
+        if let Some(existing) = existing_doc {
+            if window_hash(&existing) == new_doc_hash {
+                return Ok(());
+            }
+        }
+    }
+    conn.execute(
+        "DELETE FROM chunks WHERE item_id=?1 AND kind='doc_summary'",
+        [item_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO chunks (item_id, kind, source_ref, content, level, path, created_at) VALUES (?1,'doc_summary',?2,?3,0,'',datetime('now'))",
+        rusqlite::params![item_id, format!("{} summary", base_ref), doc_summary],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn create_tags(ctx: &ClassifyCtx) -> Result<(), String> {
+    let item_id = ctx.item_id;
+    let full_text = ctx.full_text.clone();
+    run_db(&ctx.data_dir, move |conn| create_tags_inner(conn, item_id, &full_text)).await
+}
+
+fn create_tags_inner(conn: &Connection, item_id: i64, full_text: &str) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("SELECT id, title, path FROM sections WHERE item_id=?1 ORDER BY id")
+        .map_err(|e| e.to_string())?;
+    let secs: Vec<(i64, String, String)> = stmt
+        .query_map([item_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    for (sec_id, title, _path) in secs {
+        if title.is_empty() {
+            continue;
+        }
+        let mut cstmt = conn
+            .prepare("SELECT content FROM chunks WHERE section_id=?1 ORDER BY id")
+            .map_err(|e| e.to_string())?;
+        let mut sec_text: String = cstmt
+            .query_map([sec_id], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if sec_text.trim().is_empty() {
+            sec_text = title.clone();
+        }
+        let proposed = crate::tags::propose_tags(&sec_text, &title);
+        for tag_name in proposed {
+            let tag_id = crate::tags::ensure_tag(conn, &tag_name)?;
+            let chunk_ids: Vec<i64> = conn
+                .prepare("SELECT id FROM chunks WHERE section_id=?1")
+                .map_err(|e| e.to_string())?
+                .query_map([sec_id], |r| r.get::<_, i64>(0))
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+            for cid in chunk_ids {
+                let _ = conn.execute(
+                    "INSERT OR IGNORE INTO chunk_tags (chunk_id, tag_id) VALUES (?1,?2)",
+                    rusqlite::params![cid, tag_id],
+                );
+            }
+        }
+    }
+    // also tag doc-level chunks (doc_summary) with top tags from full_text
+    let doc_tags = crate::tags::propose_tags(full_text, "");
+    for tag_name in doc_tags.iter().take(2) {
+        let tag_id = crate::tags::ensure_tag(conn, tag_name)?;
+        let doc_chunks: Vec<i64> = conn
+            .prepare("SELECT id FROM chunks WHERE item_id=?1 AND kind='doc_summary'")
+            .map_err(|e| e.to_string())?
+            .query_map([item_id], |r| r.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        for cid in doc_chunks {
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO chunk_tags (chunk_id, tag_id) VALUES (?1,?2)",
+                rusqlite::params![cid, tag_id],
+            );
+        }
+    }
+    Ok(())
 }
 
 async fn delete_stale_entities(ctx: &ClassifyCtx, window_index: Option<i64>) -> Result<(), String> {
@@ -481,21 +687,48 @@ async fn update_window_hashes(ctx: &ClassifyCtx) -> Result<(), String> {
     }).await
 }
 
-// full-document chunks
+// full-document chunks + hierarchical sections (R14.1)
 async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
     let item_id = ctx.item_id;
     let full_text = ctx.full_text.clone();
     let base_ref = ctx.base_ref.clone();
     run_db(&ctx.data_dir, move |conn| {
-        let _ = conn.execute("DELETE FROM chunks WHERE item_id=?1 AND entity_id IS NULL AND kind != 'distilled'", [item_id]);
-        let cleaned = full_text.clone(); // no cleaning for now
-        let doc_chunks = crate::chunking::chunk_document(&cleaned);
-        for (idx, chunk_content) in doc_chunks.iter().enumerate() {
-            let r = if doc_chunks.len() > 1 { format!("{} §{}", base_ref, idx + 1) } else { base_ref.clone() };
-            let _ = conn.execute("INSERT INTO chunks (item_id, kind, source_ref, content, created_at) VALUES (?1,'document',?2,?3,datetime('now'))", rusqlite::params![item_id, r, chunk_content]);
+        let _ = conn.execute(
+            "DELETE FROM chunks WHERE item_id=?1 AND entity_id IS NULL AND kind != 'distilled'",
+            [item_id],
+        );
+        let _ = conn.execute("DELETE FROM sections WHERE item_id=?1", [item_id]);
+        let cleaned = full_text.clone();
+        let (metas, chunk_metas) = crate::chunking::chunk_document_with_sections(&cleaned);
+        // insert sections in order so parent idx maps correctly
+        let mut section_ids: Vec<i64> = Vec::with_capacity(metas.len());
+        for meta in &metas {
+            let parent_db = meta.parent.and_then(|p| section_ids.get(p).copied());
+            conn.execute(
+                "INSERT INTO sections (item_id, parent_id, level, title, path, created_at) VALUES (?1,?2,?3,?4,?5,datetime('now'))",
+                rusqlite::params![item_id, parent_db, meta.level, meta.title, meta.path],
+            )
+            .map_err(|e| e.to_string())?;
+            section_ids.push(conn.last_insert_rowid());
+        }
+        // skip empty-title root sections that had no content? we kept all, but if root is empty with path="" it will have been inserted;
+        // chunks from that root will still point to it — keep for completeness. Alternative: skip inserts where title empty and no chunks map.
+        for (idx, cm) in chunk_metas.iter().enumerate() {
+            let sec_db = cm.section_idx.and_then(|s| section_ids.get(s).copied());
+            let r = if chunk_metas.len() > 1 {
+                format!("{} §{}", base_ref, idx + 1)
+            } else {
+                base_ref.clone()
+            };
+            conn.execute(
+                "INSERT INTO chunks (item_id, kind, source_ref, content, section_id, level, path, created_at) VALUES (?1,'document',?2,?3,?4,?5,?6,datetime('now'))",
+                rusqlite::params![item_id, r, cm.content, sec_db, cm.level, cm.path],
+            )
+            .map_err(|e| e.to_string())?;
         }
         Ok(())
-    }).await
+    })
+    .await
 }
 
 async fn flag_pii(ctx: &ClassifyCtx) -> Result<(), String> {
@@ -617,4 +850,57 @@ async fn embed_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn extractive_helpers() {
+        let sec = "para1 line1\n\npara2 line2\n\npara3 line3";
+        let s = extractive_section_summary(sec);
+        assert!(s.contains("para1"));
+        assert!(s.contains("para2"));
+        assert!(!s.contains("para3") || s.len() <= 1200);
+        let doc = "doc intro\n\nmore";
+        let d = extractive_doc_summary(doc);
+        assert!(!d.is_empty());
+    }
+
+    #[test]
+    fn creates_section_summaries() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let conn = crate::db::init_db(&path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('s','folder','{}',1,'',0)", []).unwrap();
+        let sid = conn.last_insert_rowid();
+        let full_text = "§434 Merger\ncontent a merger details\n\n§437 Dates\ncontent b dates details\n\n4.2.1 Sub\ncontent c sub details";
+        let hash = crate::hashing::content_hash(full_text);
+        conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale) VALUES (?1,?2,'doc',?3,?4,'',0)", rusqlite::params![sid, "ext1", full_text, hash]).unwrap();
+        let iid = conn.last_insert_rowid();
+        // simulate store_doc_chunks
+        let (metas, chunk_metas) = crate::chunking::chunk_document_with_sections(full_text);
+        let mut sids = Vec::new();
+        for m in &metas {
+            let parent = m.parent.and_then(|p| sids.get(p).copied());
+            conn.execute("INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,?2,?3,?4,?5)", rusqlite::params![iid, parent, m.level, m.title, m.path]).unwrap();
+            sids.push(conn.last_insert_rowid());
+        }
+        for (idx, cm) in chunk_metas.iter().enumerate() {
+            let sec = cm.section_idx.and_then(|s| sids.get(s).copied());
+            conn.execute("INSERT INTO chunks (item_id, section_id, kind, source_ref, content, level, path) VALUES (?1,?2,'document',?3,?4,?5,?6)", rusqlite::params![iid, sec, format!("doc §{}", idx+1), cm.content, cm.level, cm.path]).unwrap();
+        }
+        let base = "doc";
+        create_summaries_inner(&conn, iid, full_text, base, false).unwrap();
+        let cnt: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE kind='section_summary'", [], |r| r.get(0)).unwrap();
+        assert_eq!(cnt, 3, "3 sections -> 3 section_summary");
+        let doc_cnt: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE kind='doc_summary'", [], |r| r.get(0)).unwrap();
+        assert_eq!(doc_cnt, 1);
+        // hash skip: second call should not create duplicates
+        create_summaries_inner(&conn, iid, full_text, base, false).unwrap();
+        let cnt2: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE kind='section_summary'", [], |r| r.get(0)).unwrap();
+        assert_eq!(cnt2, 3);
+    }
 }
