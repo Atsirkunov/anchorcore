@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="220" viewBox="0 0 640 220" role="img" aria-labelledby="title desc">
+<title id="title">AnchorCore TOC — hierarchical sections</title>
+<desc id="desc">Tree: §434 Scope and §437 Dates with 4.2.1 Subsection, showing parent/level/path</desc>
+<rect width="640" height="220" rx="12" fill="#F2F0EB" stroke="#e2ddd6"/>
+<!-- header -->
+<rect x="14" y="14" width="612" height="28" rx="8" fill="#ffffff" stroke="#e2ddd6"/>
+<text x="24" y="32" font-family="ui-monospace,Menlo,monospace" font-size="11" letter-spacing="0.06em" fill="#6b7280" font-weight="700">TOC — sections tree (Phase 14, 1.0.12)</text>
+<text x="612" y="32" text-anchor="end" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#9aa0a8">§434 · §437 · 4.2.1</text>
+<!-- vertical spine -->
+<line x1="28" y1="58" x2="28" y2="188" stroke="#4A5A52" stroke-width="1.5" stroke-linecap="round" opacity="0.9"/>
+<!-- §434 node -->
+<circle cx="28" cy="70" r="6" fill="#4A5A52" stroke="#ffffff" stroke-width="2"/>
+<rect x="44" y="58" width="260" height="26" rx="8" fill="#ffffff" stroke="#e2ddd6"/>
+<text x="54" y="75" font-family="Georgia,serif" font-size="12" fill="#1a1d1a" font-weight="700">§434 Scope</text>
+<text x="54" y="75" dx="92" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#9aa0a8">level 1</text>
+<text x="44" y="98" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#6b7280">path: §434 Scope — 2 chunks · tags: billing, scope</text>
+<!-- §437 node -->
+<circle cx="28" cy="120" r="6" fill="#4A5A52" stroke="#ffffff" stroke-width="2"/>
+<rect x="44" y="108" width="260" height="26" rx="8" fill="#ffffff" stroke="#e2ddd6"/>
+<text x="54" y="125" font-family="Georgia,serif" font-size="12" fill="#1a1d1a" font-weight="700">§437 Dates</text>
+<text x="54" y="125" dx="88" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#9aa0a8">level 1</text>
+<text x="44" y="148" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#6b7280">path: §437 Dates — 1 chunk</text>
+<!-- 4.2.1 child -->
+<line x1="28" y1="134" x2="48" y2="164" stroke="#9A8B7A" stroke-width="1.2" stroke-dasharray="3 3" opacity="0.9"/>
+<circle cx="52" cy="164" r="5" fill="#9A8B7A" stroke="#ffffff" stroke-width="2"/>
+<rect x="64" y="152" width="300" height="26" rx="8" fill="#ffffff" stroke="#e2ddd6"/>
+<text x="74" y="169" font-family="Georgia,serif" font-size="11" fill="#1a1d1a" font-weight="600">4.2.1 Subsection Detail</text>
+<text x="74" y="169" dx="158" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="#9aa0a8">lvl 3 · parent §437</text>
+<text x="64" y="190" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#6b7280">path: §437 Dates › 4.2.1 Subsection Detail — breadcrumb</text>
+<!-- right side: tags + summary hint -->
+<rect x="360" y="58" width="266" height="140" rx="10" fill="#ffffff" stroke="#e2ddd6"/>
+<text x="374" y="78" font-family="ui-monospace,Menlo,monospace" font-size="10" letter-spacing="0.06em" fill="#4A5A52" font-weight="700">TAGS — dynamic taxonomy</text>
+<g font-family="ui-monospace,Menlo,monospace" font-size="10">
+  <rect x="374" y="86" width="58" height="18" rx="999" fill="#E2E8E3" stroke="#d4cfc6"/><text x="403" y="98" text-anchor="middle" fill="#4A5A52" font-weight="700">billing</text>
+  <rect x="438" y="86" width="48" height="18" rx="999" fill="#EDE8E0" stroke="#e2ddd6"/><text x="462" y="98" text-anchor="middle" fill="#9A8B7A">dvca</text>
+  <rect x="492" y="86" width="52" height="18" rx="999" fill="#EDE8E0" stroke="#e2ddd6"/><text x="518" y="98" text-anchor="middle" fill="#9A8B7A">scope</text>
+</g>
+<text x="374" y="120" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#6b7280">cosine &gt;0.82 reuse, else create</text>
+<text x="374" y="134" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#6b7280">count: billing×3, dvca×1</text>
+<line x1="374" y1="144" x2="612" y2="144" stroke="#e2ddd6"/>
+<text x="374" y="160" font-family="ui-monospace,Menlo,monospace" font-size="10" letter-spacing="0.06em" fill="#4A5A52" font-weight="700">COARSE-TO-FINE</text>
+<text x="374" y="174" font-family="system-ui,Inter,sans-serif" font-size="11" fill="#1a1d1a">tag prune → summary 5k → leaf 200</text>
+<text x="374" y="188" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#9aa0a8">GET /sections · GET /tags · p50 &lt;50ms</text>
+</svg>

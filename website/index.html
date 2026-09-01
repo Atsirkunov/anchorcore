@@ -14,6 +14,8 @@
       <div class="brand">AnchorCore</div>
       <nav class="nav">
         <a href="#how">How it works</a>
+        <a href="#guides">Guides</a>
+        <a href="#faq">FAQ</a>
         <a href="#demo">Demo</a>
         <a href="#roadmap">Roadmap</a>
         <a class="nav-cta" href="#download">Download</a>
@@ -62,6 +64,10 @@
           </div>
           <div class="shot-foot">Stone & Sage — paper #F2F0EB · sage #4A5A52 · citations are the brand</div>
         </div>
+        <div style="margin-top:16px;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface)">
+          <img src="/hero-toc.svg" alt="Hierarchical TOC — sections tree Phase 14" style="display:block;width:100%;height:auto" loading="lazy" />
+        </div>
+        <div id="graph-mini" style="margin-top:16px"></div>
       </div>
     </section>
 
@@ -112,6 +118,39 @@
           <li>Ask: <code>Who owns billing migration?</code> → <code>Sarah</code> + graph supersedes.</li>
         </ol>
         <p class="small">Run: <code>cargo run -p anchorcore -- --port 8000</code> then <code>http://127.0.0.1:8000</code> → Sources → Local folder → <code>sample</code> → Sync → Ask. Or headless: <code>ANCHOR_BACKEND_URL=http://127.0.0.1:8000 cargo run -p anchorcore --bin anchorcore-mcp</code> → <code>search/ask</code> without browser.</p>
+      </div>
+    </section>
+
+    <!-- Guides -->
+    <section id="guides" class="alt">
+      <div class="wrap">
+        <div class="eyebrow">Guides — 60s each · paper mono</div>
+        <h2>Guides</h2>
+        <div class="cols" style="max-width:640px">
+          <div class="col"><h3>Quick start — folder</h3><p><code>cargo run -p anchorcore -- --port 8000</code> → <code>http://127.0.0.1:8000</code> → Sources → Local folder → <code>sample/</code> → Sync → Ask. Data in <code>~/.anchorcore</code>. No Docker.</p><small>10 files → 47 entities · <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/sample-dataset.md">sample guide</a></small></div>
+          <div class="col"><h3>Hierarchical TOC — Phase 14</h3><p>Headings <code>§434</code> / <code>4.2.1</code> / <code>Article 12</code> become a <code>sections</code> tree (<code>level/path</code>) + <code>section_summary</code> + <code>tags</code> (<code>cosine&gt;0.82</code> reuse). Retrieval: tag prune → summary 5k → leaf 200 <code>WHERE c.section_id IN (:top5)</code>. See <code>/hero-toc.svg</code> above + <code>GET /sections?item_id=</code> <code>GET /tags</code>.</p><small><a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/guides/hierarchical-toc.md">guide</a> · <code>rust/crates/anchorcore/src/retrieval.rs:836</code></small></div>
+          <div class="col"><h3>Projects — scoped search</h3><p>Group sources into <code>projects</code> (B15). Pick one in header to scope every question. <code>public_only</code> toggle for share-safe <code>/qa/public</code>.</p><small><code>POST /projects</code> <code>project_id</code> in Ask</small></div>
+          <div class="col"><h3>Jira / Linear</h3><p>Connect <code>base_url</code> + <code>email</code> + <code>token</code> → <code>GET /sources/jira/projects</code> → Sync. Incremental cursor, 15m poll. Folder stays local.</p><small><code>rust/crates/anchorcore/src/connectors/jira.rs:1</code></small></div>
+          <div class="col"><h3>PII gate</h3><p>Source label <code>public|internal|sensitive|pii</code> + <code>ANCHOR_CLOUD_TRUST=1</code>. <code>sensitive/pii</code> + <code>is_pii</code> chunks skip cloud, stay keyword-only, audited <code>system_events</code>. Review in <code>PII</code> tab.</p><small><code>/pii/config</code> <code>/pii/review</code></small></div>
+          <div class="col"><h3>MCP — without UI</h3><p>Headless: <code>ANCHOR_BACKEND_URL=http://127.0.0.1:8000 cargo run -p anchorcore --bin anchorcore-mcp</code> → stdio <code>ask/search</code> (share-safe <code>public_only</code>, audited <code>component=mcp</code>) against <code>business-scale</code> without browser.</p><small><a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">mcp.md</a> · <code>rust/crates/anchorcore/src/bin/mcp.rs:1</code></small></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section id="faq">
+      <div class="wrap">
+        <div class="eyebrow">FAQ — memo, not chatbot</div>
+        <h2>FAQ</h2>
+        <div class="steps" style="max-width:640px">
+          <div class="step"><h4>Is my data private?</h4><p>Yes. Binds <code>127.0.0.1</code>, data in <code>~/.anchorcore</code> SQLite, secrets in OS keychain. No data leaves unless you add a cloud key. <code>sensitive/pii</code> never sent to cloud without <code>ANCHOR_CLOUD_TRUST=1</code>.</p></div>
+          <div class="step"><h4>Why Sage #4A5A52 not indigo?</h4><p>Sage is desaturated (chroma &lt;12), editorial — vault/archive, not SaaS chatbot. Paper <code>#F2F0EB</code> + mono eyebrow + serif hero is the tell. See <code>docs/design-system.md:65</code>.</p></div>
+          <div class="step"><h4>How are chunks built?</h4><p>Clean → heading-aware <code>§434</code>/<code>4.2.1</code> hard split → <code>1600</code> pack, fallback <code>800/100</code> <code>chunking.rs:68</code>. Summaries <code>section_summary/doc_summary</code> + tags <code>cosine&gt;0.82</code> per section.</p></div>
+          <div class="step"><h4>How does retrieval work at scale?</h4><p>Coarse-to-fine: tag prune → summary 5k → leaf 200 <code>WHERE c.section_id IN</code> → RRF <code>k=60</code> + age decay + graph 1–2 hops. Flat <code>150k</code> fallbacks avoided. <code>p50 &lt;50ms</code> on <code>5k docs</code>.</p></div>
+          <div class="step"><h4>Free while in validation?</h4><p>Yes. Download from <code>releases</code> — free now, flat <code>€25/mo</code> at pilot. Team self-hosted = one Docker container, your VPC. Hosted soon — join waitlist.</p></div>
+          <div class="step"><h4>Do I need Ollama?</h4><p>No. Rule fallback for classify + keyword retrieval work degraded. Add <code>ollama pull llama3.2:3b</code> + <code>nomic-embed-text</code> for full hybrid + graph.</p></div>
+          <div class="step"><h4>Citations you can click?</h4><p>Every answer ships <code>source_ref + path</code> <code>Art 12 › 12.3</code> + <code>tags</code> + <code>score</code>. UI breadcrumb is clickable; MCP returns same shape.</p></div>
+        </div>
       </div>
     </section>
 
