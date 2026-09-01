@@ -68,11 +68,13 @@ Each section: provider dropdown, API key, base URL, model, **Test connection**.
 ## How knowledge is built
 
 ```
-Sources (folder, Jira) -> extract text -> classify -> entities + window context
+Sources (folder, Jira) -> extract text -> clean -> chunk -> classify -> entities + window context
                                           -> embed chunks (sqlite-vec)
                                           -> FTS5 keyword index (chunks_fts)
+                                          -> (Phase 14) section tree + summary nodes + tags
 ```
 
+- **Cleaning → chunking (B5/B12/B35):** text is cleaned (`clean_text` strips control chars, page numbers, repeated headers) then section-aware chunked: heading detection (`§434`, `4.2.1`, `Article 12`, ALL-CAPS) creates hard boundaries at `backend/app/chunking.py:49` / `rust/crates/anchorcore/src/chunking.rs:68`; paragraphs pack up to `ANCHOR_CHUNK_MAX_CHARS=1600`, oversized paras fall back to fixed `800/100` slices `chunk_text`. Entity summaries chunk separately at `800/100`. Classifier windows are `16000` chars with 50% overlap (`classify_windows`), hash-deduped for cheap reclassify.
 - **Document-aware classification**: one cheap call per document detects its
   type (standards/runbook/meeting/decision_log/prd/general); the extraction
   prompt adapts — e.g. regulatory standards produce only `note` entities
@@ -88,17 +90,15 @@ Sources (folder, Jira) -> extract text -> classify -> entities + window context
 - **Distillation (B18)**: chat-like sources (meetings, Slack exports) are
   normalized into searchable Q&A units (`Q: … A: …`) that embed well — so
   "how long does the idempotency key last?" is answered even when the raw
-  thread phrased it as "what's the timeout?". An IDF gate skips low-signal
+  thread phrased it as "what's the timeout?". An IDF gate (`0.15` signal) skips low-signal
   filler from vector search (it stays keyword-findable in FTS5).
 
-**Retrieval (B12/B12.1):** chunks are cleaned (page numbers, repeated headers,
-encoding artifacts) and split at section headings; Q&A fuses vector search
-with SQLite FTS5 keyword scores via **reciprocal rank fusion** (RRF, k=60),
-then applies age decay and a per-file diversity cap, expands winning chunks
-with neighboring sections, and dedupes near-identical chunks. Config:
+**Retrieval (B12/B12.1):** chunks are cleaned then split at section headings; Q&A fuses vector search (sqlite-vec `vec_chunks` vec0, `k=top_k*4`) with FTS5 bm25 via **RRF** (`score=Σ w/(60+rank)`, `k=60`), then age decay `0.5^(age/halflife)`, per-item diversity cap (3, relaxed for single-file corpora), `±1` neighbor `expand_context`, and near-duplicate dedupe. Config:
 `ANCHOR_RETRIEVAL_KEYWORD_WEIGHT` (1.0), `ANCHOR_RETRIEVAL_MAX_PER_SOURCE` (3),
 `ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS` (365), `ANCHOR_RETRIEVAL_CONTEXT_WINDOW`
-(1).
+(1). Planner picks `hybrid` + `who_knows`; graph walk (B32) adds 1–2 hop related entities.
+
+**Scale — hierarchical TOC (Phase 14, planned):** flat chunks don't scale to 150k+ chunks (5k docs, `scripts/build_business_corpus.py`). Current `chunk_document` derives `sections` then discards the tree — no `section_id`/`path`/`level`. Phase 14 persists `sections` (parent/level/path/summary + `summary_embedding`) + dynamic `tags`/`chunk_tags` (reuse if `cosine>0.82` else create). Retrieval becomes coarse-to-fine: TOC/tag SQL prune → summary-node vector search (~5k sections) → leaf vec0 search within winning sections, avoiding the flat full-scan fallback. See `docs/architecture.md:3` + `rust/BACKLOG.md:Phase 14`.
 
 **Planner → Executor → Synthesis (B17):** a lightweight planner picks the
 retrieval tools per query — `hybrid` (vector + keyword) always, plus a
@@ -156,7 +156,8 @@ resets the thread.
 | `projects` / `project_sources` | source bundles for scoped search (B15) |
 | `entities` | kinds decision/document/action/note; `window_text`/`window_index` = classifier input; status verified/disputed/stale |
 | `relationships` | typed links (supersedes/depends_on/owns/blocks) |
-| `chunks` | `kind` = document/entity/distilled; `is_pii` + `pii_categories` auto-flagged (B30); embeddings (float32 blobs); FTS5 `chunks_fts` + vec0 `vec_chunks` (B33) kept in sync by triggers (SQLite-only, skip on Postgres) |
+| `chunks` | `kind` = document/entity/distilled (+ section_summary/doc_summary Phase 14); `section_id`/`level`/`path` (Phase 14); `is_pii` + `pii_categories` (B30); embeddings (float32 blobs); FTS5 `chunks_fts` + vec0 `vec_chunks` (B33) kept in sync by triggers (SQLite-only, skip on Postgres) |
+| `sections` / `tags` / `chunk_tags` | Phase 14: hierarchical TOC (`sections` parent/level/path/summary + `summary_embedding`) + dynamic taxonomy (`tags` embedding + count, many:many via `chunk_tags`; reuse if `cosine>0.82` else create) |
 | `chunks_fts` / `vec_chunks` | FTS5 keyword index / vec0 cosine index (SQLite), triggers sync; Postgres skips (fallback to Python scan) |
 | `merge_actions` | duplicate proposals + decisions |
 | `jobs` | sync/reclassify progress + history |
