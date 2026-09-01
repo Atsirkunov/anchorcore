@@ -15,6 +15,7 @@ pub const SETTING_KEYS: &[&str] = &[
     "answer_base_url",
     "answer_timeout",
     "answer_reasoning_effort",
+    "tag_reuse_threshold",
 ];
 pub const SECRET_KEYS: &[&str] = &["answer_api_key", "classifier_api_key", "embed_api_key"];
 pub const ALL_KEYS: &[&str] = &[
@@ -28,6 +29,7 @@ pub const ALL_KEYS: &[&str] = &[
     "answer_base_url",
     "answer_timeout",
     "answer_reasoning_effort",
+    "tag_reuse_threshold",
     "answer_api_key",
     "classifier_api_key",
     "embed_api_key",
@@ -63,6 +65,7 @@ fn env_value(key: &str) -> Option<String> {
         "classifier_base_url" => None,
         "embed_base_url" => None,
         "answer_reasoning_effort" => Some("none".to_string()),
+        "tag_reuse_threshold" => Some("0.82".to_string()),
         _ => None,
     }
 }
