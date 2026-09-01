@@ -1,3 +1,5 @@
+import { renderGraphMini } from "./components/GraphMini";
+
 // tweakable copy — single source, no CMS
 const copy = {
   personal: {
@@ -97,9 +99,34 @@ function captureEmail(inputId: string, msgId: string) {
   if (el) el.value = "";
 }
 
+// Guides / FAQ hash routing — keep paper mono/serif, no new hex (C3)
+function initHashNav() {
+  const navLinks = document.querySelectorAll<HTMLAnchorElement>(".nav a[href^='#']");
+  function setActive() {
+    const hash = location.hash || "#how";
+    navLinks.forEach(a => {
+      const isActive = a.getAttribute("href") === hash;
+      a.style.textDecoration = isActive ? "underline" : "none";
+      a.style.textUnderlineOffset = isActive ? "3px" : "";
+      a.style.color = isActive ? "var(--sage)" : "var(--ink)";
+    });
+  }
+  window.addEventListener("hashchange", setActive);
+  setActive();
+}
+
+// GraphMini — 3 nodes, Stone & Sage, no new hex (uses CSS vars)
+
 // expose for inline onclick
 declare global { interface Window { capture: () => void; capture2: () => void; } }
 window.capture = () => captureEmail("email", "capture-msg");
 window.capture2 = () => captureEmail("email2", "capture2-msg");
 
 initTrack();
+initHashNav();
+// render after DOM ready (hero-toc.svg is static public asset, GraphMini is JS)
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => renderGraphMini("graph-mini"));
+} else {
+  renderGraphMini("graph-mini");
+}
