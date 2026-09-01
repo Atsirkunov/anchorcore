@@ -89,7 +89,25 @@ async fn http_call(method: &str, path: &str, body: Option<Value>) -> Result<Valu
 
 // --- tool implementations (mirrors backend/app/mcp/tools.py) ---
 
-async fn tool_ask(question: &str, project_id: Option<i64>) -> Result<Value, String> {
+fn audit_mcp(tool: &str, detail: &str) {
+    // best-effort audit to system_events (component=mcp) — like Python backend's system_events for MCP
+    let data_dir = std::env::var("ANCHOR_DATA_DIR").unwrap_or_else(|_| {
+        std::env::var("HOME").map(|h| format!("{}/.anchorcore", h)).unwrap_or_else(|_| "data".to_string())
+    });
+    let db_path = {
+        if let Ok(url) = std::env::var("ANCHOR_DATABASE_URL") {
+            if let Some(p) = url.strip_prefix("sqlite:///").or_else(|| url.strip_prefix("sqlite://")) {
+                if !p.is_empty() { std::path::PathBuf::from(p) } else { std::path::PathBuf::from(format!("{}/anchorcore.db", data_dir)) }
+            } else { std::path::PathBuf::from(format!("{}/anchorcore.db", data_dir)) }
+        } else { std::path::PathBuf::from(format!("{}/anchorcore.db", data_dir)) }
+    };
+    if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+        let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('mcp','info',?1,?2)",
+            rusqlite::params![format!("mcp tool {}", tool), detail.chars().take(800).collect::<String>()]);
+    }
+}
+
+async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool) -> Result<Value, String> {
     if question.trim().is_empty() {
         return Err("question must be a non-empty string".to_string());
     }
@@ -97,7 +115,12 @@ async fn tool_ask(question: &str, project_id: Option<i64>) -> Result<Value, Stri
     if let Some(pid) = project_id {
         payload["project_id"] = json!(pid);
     }
-    let result = http_call("POST", "/qa", Some(payload)).await?;
+    if public_only {
+        payload["public_only"] = json!(true);
+    }
+    let path = if public_only { "/qa/public" } else { "/qa" };
+    let result = http_call("POST", path, Some(payload)).await?;
+    audit_mcp("ask", &format!("q={} public_only={} hits={}", question.chars().take(80).collect::<String>(), public_only, result.get("citations").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0)));
     let answer = result.get("answer").and_then(|v| v.as_str()).unwrap_or("").chars().take(4000).collect::<String>();
     let citations: Vec<Value> = result.get("citations").and_then(|v| v.as_array()).cloned().unwrap_or_default().into_iter().map(|c| json!({
         "entity_id": c.get("entity_id"),
@@ -110,7 +133,7 @@ async fn tool_ask(question: &str, project_id: Option<i64>) -> Result<Value, Stri
     Ok(json!({"answer": answer, "citations": citations}))
 }
 
-async fn tool_search(query: &str, k: usize, project_id: Option<i64>) -> Result<Value, String> {
+async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only: bool) -> Result<Value, String> {
     if query.trim().is_empty() {
         return Err("query must be a non-empty string".to_string());
     }
@@ -121,7 +144,11 @@ async fn tool_search(query: &str, k: usize, project_id: Option<i64>) -> Result<V
     if let Some(pid) = project_id {
         payload["project_id"] = json!(pid);
     }
+    if public_only {
+        payload["public_only"] = json!(true);
+    }
     let result = http_call("POST", "/qa/search", Some(payload)).await?;
+    audit_mcp("search", &format!("q={} k={} public_only={} hits={}", query.chars().take(80).collect::<String>(), k, public_only, result.get("hits").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0)));
     let hits: Vec<Value> = result.get("hits").and_then(|v| v.as_array()).cloned().unwrap_or_default().into_iter().map(|h| json!({
         "chunk_id": h.get("chunk_id"),
         "entity_id": h.get("entity_id"),
@@ -207,7 +234,8 @@ fn tool_defs() -> Value {
                 "type": "object",
                 "properties": {
                     "question": {"type": "string", "description": "Question to answer"},
-                    "project_id": {"type": "integer", "description": "Optional project id to scope retrieval"}
+                    "project_id": {"type": "integer", "description": "Optional project id to scope retrieval"},
+                    "public_only": {"type": "boolean", "description": "If true, only public sources (B30) are searched — share-safe"}
                 },
                 "required": ["question"]
             }
@@ -220,7 +248,8 @@ fn tool_defs() -> Value {
                 "properties": {
                     "query": {"type": "string"},
                     "k": {"type": "integer", "default": 8, "minimum": 1, "maximum": 50},
-                    "project_id": {"type": "integer"}
+                    "project_id": {"type": "integer"},
+                    "public_only": {"type": "boolean", "description": "If true, only public sources are searched"}
                 },
                 "required": ["query"]
             }
@@ -292,13 +321,15 @@ async fn handle_request(req: Request) -> Option<Response> {
                 "ask" => {
                     let q = args.get("question").and_then(|v| v.as_str()).unwrap_or("");
                     let pid = args.get("project_id").and_then(|v| v.as_i64());
-                    tool_ask(q, pid).await
+                    let pub_only = args.get("public_only").and_then(|v| v.as_bool()).unwrap_or(false);
+                    tool_ask(q, pid, pub_only).await
                 }
                 "search" => {
                     let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
                     let k = args.get("k").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
                     let pid = args.get("project_id").and_then(|v| v.as_i64());
-                    tool_search(q, k, pid).await
+                    let pub_only = args.get("public_only").and_then(|v| v.as_bool()).unwrap_or(false);
+                    tool_search(q, k, pid, pub_only).await
                 }
                 "get_entity" => {
                     let eid = args.get("entity_id").and_then(|v| v.as_i64()).unwrap_or(0);
