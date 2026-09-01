@@ -46,6 +46,7 @@ pub struct SearchRequest {
     pub query: String,
     pub k: Option<usize>,
     pub project_id: Option<i64>,
+    pub public_only: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -353,11 +354,12 @@ pub async fn search(
     let query = req.query.clone();
     let k = req.k.unwrap_or(8).clamp(1, 50);
     let project_id = req.project_id;
+    let public_only = req.public_only.unwrap_or(false);
     let _settings_clone = settings_snapshot(settings);
     let hits = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir_for_block);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
-        search_sync(&conn, &query, k, project_id, query_embedding)
+        search_sync_inner(&conn, &query, k, project_id, public_only, query_embedding)
     })
     .await
     .unwrap_or_default();
@@ -384,7 +386,18 @@ pub async fn search(
 }
 
 fn search_sync(conn: &Connection, query: &str, k: usize, project_id: Option<i64>, query_embedding: Option<Vec<f32>>) -> Vec<crate::retrieval::Hit> {
-    let project_ids = project_source_ids(conn, project_id);
+    search_sync_inner(conn, query, k, project_id, false, query_embedding)
+}
+
+fn search_sync_inner(conn: &Connection, query: &str, k: usize, project_id: Option<i64>, public_only: bool, query_embedding: Option<Vec<f32>>) -> Vec<crate::retrieval::Hit> {
+    let mut project_ids = project_source_ids(conn, project_id);
+    if public_only {
+        let public_ids = public_source_ids(conn);
+        project_ids = match project_ids {
+            None => Some(public_ids),
+            Some(s) => Some(s.intersection(&public_ids).cloned().collect()),
+        };
+    }
     let qa_exclude_disputed: bool = std::env::var("ANCHOR_QA_EXCLUDE_DISPUTED")
         .map(|v| v != "0" && v.to_lowercase() != "false")
         .unwrap_or(true);
