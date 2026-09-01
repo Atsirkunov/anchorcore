@@ -3,8 +3,7 @@
 > Goal: let any AI harness (Claude Code, Codex, opencode, Cursor, …) connect
 > to AnchorCore's memory — locally or against a centralized instance — and
 > consume it with full provenance.
-> Status: **B14.1 shipped (v1.0.9)** — stdio sidecar + 6 read-only tools;
-> B14.2 (HTTP transport) and B14.3 (write-back) planned.
+> Status: **B14.1 shipped (v1.0.9)**, **R12.5 local without UI shipped (1.0.12)** — Rust sidecar `rust/crates/anchorcore/src/bin/mcp.rs:1` stdio + HTTP `ask/search` (public_only gate, audited `component=mcp`) against `business-scale` without browser; B14.2 (HTTP transport) and B14.3 (write-back) planned.
 
 ---
 
@@ -37,8 +36,8 @@ needs custom glue; MCP is the glue.
 
 | Tool | Signature | Maps to |
 |---|---|---|
-| `ask` | `ask(question: str)` → answer + citations | `AnswerEngine.ask` |
-| `search` | `search(query: str, k: int)` → chunks/entities + scores | Vector + keyword retrieval |
+| `ask` | `ask(question: str, project_id?: int, public_only?: bool)` → answer + citations | `AnswerEngine.ask` `POST /qa` / `POST /qa/public` `public_only` B30 |
+| `search` | `search(query: str, k: int, project_id?: int, public_only?: bool)` → chunks/entities + scores | Vector + keyword retrieval `POST /qa/search {public_only}` `answer.rs:44` |
 | `get_entity` | `get_entity(entity_id: int)` → entity + provenance | Entity graph |
 | `get_source` | `get_source(source_id: int)` → source config (secrets masked) | Sources |
 | `list_sources` | `list_sources()` → names, connectors, last sync | Sources |
@@ -73,6 +72,8 @@ harness workhorse), `get_entity`, `get_source`, `list_sources`,
 `memory_status`. `search` maps to `POST /qa/search` (same hybrid pipeline as
 `ask`, no LLM; status filters apply — agents never cite disputed/stale facts).
 Tests: `backend/tests/test_mcp.py` (drives the real app via ASGITransport).
+
+**Shipped as R12.5 (1.0.12):** Rust sidecar `rust/crates/anchorcore/src/bin/mcp.rs:1` mirrors Python — stdio JSON-RPC `initialize`/`tools/list`/`tools/call` + `ANCHOR_BACKEND_URL`/`ANCHOR_MCP_TOKEN` + `X-CSRF-Token` cache `OnceLock` for local `POST` when auth disabled (`R7.1`). `ask`/`search` now `public_only` (`tools_defs` `public_only` bool, `POST /qa/public` vs `POST /qa/search {public_only}` `answer.rs:44` `search_sync_inner` `public_source_ids` filter) + audited `audit_mcp()` `INSERT system_events (component='mcp', level='info', message='mcp tool ask/search')` (`GET /system/errors?component=mcp`). Verified without browser vs test corpus: `ask DVCA 2 cites`, `search MRGR public_only 1 vs 2` (filters `label=internal`), `system_events 4×`. `cargo build --bin anchorcore-mcp`.
 
 Not yet packaged into the frozen apps (no PyInstaller entry) — the dev-checkout
 command above is the documented path until B14.2 ships HTTP, which removes the

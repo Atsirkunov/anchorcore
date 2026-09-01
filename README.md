@@ -17,7 +17,7 @@ Connect your knowledge to any AI model. Your memory — finally searchable. — 
 ## Project layout
 
 ```
-rust/       Rust service (Axum) — connectors, ingestion, classification, RAG Q&A — shipped artifact (1.0.11, single source rust/Cargo.toml)
+rust/       Rust service (Axum) — connectors, ingestion, classification, RAG Q&A — shipped artifact (1.0.12, single source rust/Cargo.toml)
 frontend/   React SPA (Vite) — Ask, Sources, Entities, Review, Settings, System
 sample/     Mini-company demo corpus — connect it as a folder source
             (guide: docs/sample-dataset.md)
@@ -98,7 +98,7 @@ Sources (folder, Jira) -> extract text -> clean -> chunk -> classify -> entities
 `ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS` (365), `ANCHOR_RETRIEVAL_CONTEXT_WINDOW`
 (1). Planner picks `hybrid` + `who_knows`; graph walk (B32) adds 1–2 hop related entities.
 
-**Scale — hierarchical TOC (Phase 14, planned):** flat chunks don't scale to 150k+ chunks (5k docs, `scripts/build_business_corpus.py`). Current `chunk_document` derives `sections` then discards the tree — no `section_id`/`path`/`level`. Phase 14 persists `sections` (parent/level/path/summary + `summary_embedding`) + dynamic `tags`/`chunk_tags` (reuse if `cosine>0.82` else create). Retrieval becomes coarse-to-fine: TOC/tag SQL prune → summary-node vector search (~5k sections) → leaf vec0 search within winning sections, avoiding the flat full-scan fallback. See `docs/architecture.md:3` + `rust/BACKLOG.md:Phase 14`.
+**Scale — hierarchical TOC (Phase 14, shipped in 1.0.12):** flat chunks don't scale to 150k+ chunks (5k docs, `scripts/build_business_corpus.py`). Before, `chunk_document` derived `sections` then discarded the tree — no `section_id`/`path`/`level`. Now `sections` (parent/level/path/summary + `summary_embedding`) + dynamic `tags`/`chunk_tags` (reuse if `cosine>0.82` else create) are persisted (`migrations/11_sections.sql`, `12_tags.sql`). Retrieval is coarse-to-fine: TOC/tag SQL prune → summary-node vector search (~5k sections) → leaf vec0 `WHERE c.section_id IN (:top5)` within winning sections (`retrieval.rs:836` `toc_search`), avoiding flat `vector_search_scan` fallback. Endpoints `GET /sections?item_id=&source_id=`, `GET /sections/:id/chunks`, `GET /tags`, `GET /tags/:id/chunks`; UI shows `path` breadcrumb `Art 12 › 12.3` + tag chips + `tag_reuse_threshold` in Settings. See `docs/architecture.md:3` + `docs/guides/hierarchical-toc.md` + `rust/BACKLOG.md:Phase 14`.
 
 **Planner → Executor → Synthesis (B17):** a lightweight planner picks the
 retrieval tools per query — `hybrid` (vector + keyword) always, plus a
@@ -143,10 +143,11 @@ resets the thread.
 - `POST /qa` — ask (optionally with `history` turns, `project_id` scope, `public_only` B30), get answer with section-level citations; `POST /qa/public` — share-safe, public sources only (B30)
 - `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`, `GET /projects/default` — project bundles for scoped search
 - `GET /pii/config`, `PUT /pii/config`, `GET /pii/review`, `POST /pii/review/{id}`, `POST /pii/scan/{source}` — PII config + review (B30, Direct= pii / Indirect= sensitive, source-level for v1)
-- `GET /auth/status`, `POST /auth/signup`, `POST /auth/login`, `GET /auth/me` — hosted auth (B40, `ANCHOR_AUTH_SECRET` enables JWT; local stays no-auth)
-- `GET /settings`, `PUT /settings` — runtime model config (secrets masked)
-- `POST /settings/test-connection` — verify ollama/classifier/embedder/answer providers
-- `GET /system/status`, `GET /system/errors`, `GET /system/logs[/{file}]`, `GET /system/onboarding` — health, errors, log download, wizard trigger (B8, skippable)
+ - `GET /auth/status`, `POST /auth/signup`, `POST /auth/login`, `GET /auth/me` — hosted auth (B40, `ANCHOR_AUTH_SECRET` enables JWT; local stays no-auth)
+ - `GET /settings`, `PUT /settings` — runtime model config (`tag_reuse_threshold` 0.82, `PUT` persists to `app_settings`, `tags.rs:50` reads env `ANCHOR_TAG_REUSE_THRESHOLD` → DB fallback)
+ - `POST /settings/test-connection` — verify ollama/classifier/embedder/answer providers
+ - `GET /system/status`, `GET /system/errors`, `GET /system/logs[/{file}]`, `GET /system/onboarding` — health, errors, log download, wizard trigger (B8, skippable)
+ - `GET /sections?item_id=&source_id=`, `GET /sections/:id/chunks`, `GET /tags`, `GET /tags/:id/chunks` — hierarchical TOC & dynamic taxonomy (Phase 14, `sections.rs:1`, `tags.rs:1`)
 
 ## Data model (SQLite local / Postgres hosted + Alembic migrations)
 
