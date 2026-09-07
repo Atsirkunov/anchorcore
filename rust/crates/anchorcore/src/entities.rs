@@ -69,8 +69,7 @@ pub async fn list_handler(State(state): State<AppState>, Query(q): Query<ListQue
     let kind = q.kind.clone();
     let status = q.status.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_data_db(&data_dir);
         let mut sql = "SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities".to_string();
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![];
         let mut clauses = vec![];
@@ -105,8 +104,7 @@ pub async fn list_handler(State(state): State<AppState>, Query(q): Query<ListQue
 pub async fn get_handler(State(state): State<AppState>, Path(entity_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_data_db(&data_dir);
         let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities WHERE id = ?1").unwrap();
         let v = stmt.query_row([entity_id], |r| entity_json_from_row(r));
         match v {
@@ -129,12 +127,8 @@ pub async fn patch_handler(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        let exists: bool = conn.query_row("SELECT 1 FROM entities WHERE id = ?1", [entity_id], |_| Ok(())).is_ok();
-        if !exists {
-            return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Entity not found"}))));
-        }
+        let conn = crate::common::open_data_db(&data_dir);
+        crate::common::require_row(&conn, "entities", entity_id, "Entity not found")?;
         if let Some(k) = payload.kind {
             let _ = conn.execute("UPDATE entities SET kind = ?1 WHERE id = ?2", rusqlite::params![k, entity_id]);
         }
@@ -160,12 +154,8 @@ pub async fn patch_handler(
 pub async fn related_handler(State(state): State<AppState>, Path(entity_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        let exists: bool = conn.query_row("SELECT 1 FROM entities WHERE id = ?1", [entity_id], |_| Ok(())).is_ok();
-        if !exists {
-            return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Entity not found"}))));
-        }
+        let conn = crate::common::open_data_db(&data_dir);
+        crate::common::require_row(&conn, "entities", entity_id, "Entity not found")?;
         let mut stmt = conn.prepare("SELECT to_entity_id FROM relationships WHERE from_entity_id = ?1").unwrap();
         let out_ids: Vec<i64> = stmt.query_map([entity_id], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
         let mut stmt2 = conn.prepare("SELECT from_entity_id FROM relationships WHERE to_entity_id = ?1").unwrap();
@@ -175,8 +165,7 @@ pub async fn related_handler(State(state): State<AppState>, Path(entity_id): Pat
         if all.is_empty() {
             return Ok(Value::Array(vec![]));
         }
-        let placeholders = all.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities WHERE id IN ({})", placeholders);
+        let sql = format!("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities WHERE id IN ({})", crate::common::placeholders(all.len()));
         let mut stmt3 = conn.prepare(&sql).unwrap();
         let rows = stmt3.query_map(rusqlite::params_from_iter(all.iter()), |r| entity_json_from_row(r)).unwrap();
         let out: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
@@ -199,12 +188,8 @@ pub async fn dispute_handler(
     let reason = payload.reason.unwrap_or_default().trim().to_string();
     let user = payload.user.unwrap_or_default().trim().to_string();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        let exists: bool = conn.query_row("SELECT 1 FROM entities WHERE id = ?1", [entity_id], |_| Ok(())).is_ok();
-        if !exists {
-            return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Entity not found"}))));
-        }
+        let conn = crate::common::open_data_db(&data_dir);
+        crate::common::require_row(&conn, "entities", entity_id, "Entity not found")?;
         let _ = conn.execute("INSERT INTO disputes (entity_id, reason, user) VALUES (?1, ?2, ?3)", rusqlite::params![entity_id, reason, user]);
         let _ = conn.execute("UPDATE entities SET dispute_count = COALESCE(dispute_count,0)+1, status='disputed', updated_at=datetime('now') WHERE id=?1", [entity_id]);
         let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities WHERE id = ?1").unwrap();
@@ -222,12 +207,8 @@ pub async fn dispute_handler(
 pub async fn disputes_handler(State(state): State<AppState>, Path(entity_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        let exists: bool = conn.query_row("SELECT 1 FROM entities WHERE id = ?1", [entity_id], |_| Ok(())).is_ok();
-        if !exists {
-            return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Entity not found"}))));
-        }
+        let conn = crate::common::open_data_db(&data_dir);
+        crate::common::require_row(&conn, "entities", entity_id, "Entity not found")?;
         let mut stmt = conn.prepare("SELECT id, entity_id, reason, user, created_at FROM disputes WHERE entity_id = ?1 ORDER BY created_at DESC").unwrap();
         let rows = stmt.query_map([entity_id], |r| {
             Ok(serde_json::json!({
@@ -289,8 +270,7 @@ fn expand_context(full_text: &str, window_text: &str, window_index: Option<i64>)
 pub async fn context_handler(State(state): State<AppState>, Path(entity_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_data_db(&data_dir);
         let mut stmt = conn.prepare("SELECT id, item_id, source_ref, window_text, window_index, summary FROM entities WHERE id = ?1").unwrap();
         let row: Result<(i64,i64,String,String,Option<i64>,String), _> = stmt.query_row([entity_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)));
         let (eid, item_id, source_ref, window_text, window_index, summary) = match row {
