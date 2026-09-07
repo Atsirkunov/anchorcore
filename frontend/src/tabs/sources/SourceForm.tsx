@@ -102,7 +102,166 @@ function JiraProjectPicker({
   );
 }
 
-/** B37: the "add source" form (folder, Jira, Linear or Drive), extracted from SourcesTab. */
+const REST_DEFAULTS: Record<string, string> = {
+  base_url: "",
+  list_path: "",
+  method: "GET",
+  auth_mode: "none",
+  email: "",
+  token: "",
+  password: "",
+  api_key: "",
+  header_name: "X-Api-Key",
+  items_path: "",
+  map_id: "/id",
+  map_title: "/title",
+  map_text: "/body",
+  map_author: "/author",
+  map_updated: "/updated_at",
+  page_mode: "none",
+  page_param: "",
+  next_token_path: "/nextPageToken",
+  page_size_param: "",
+  page_size: "50",
+  page_start: "1",
+  offset_param: "",
+  limit_param: "",
+  max_pages: "20",
+  since_param: "",
+  body_json: "",
+  ref_prefix: "rest",
+};
+
+/** Generic REST API mapping form (B44): endpoint + auth, JSON-pointer field map, pagination, live preview. */
+function RestFields({
+  value,
+  onChange,
+}: {
+  value: Record<string, string>;
+  onChange: (next: Record<string, string>) => void;
+}) {
+  const [preview, setPreview] = useState<null | { count: number; truncated: boolean; docs: { external_id: string; title: string; text_preview: string; author: string; source_ref: string }[] }>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => onChange({ ...value, [k]: e.target.value });
+  const v = (k: string) => value[k] ?? REST_DEFAULTS[k] ?? "";
+
+  async function runPreview() {
+    setLoading(true);
+    setErr(null);
+    setPreview(null);
+    try {
+      if (value.token === "***set***" || value.api_key === "***set***" || value.password === "***set***") {
+        throw new Error("Re-enter the credential to preview (the stored secret is hidden)");
+      }
+      setPreview(await api.previewRest(value));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const input = (k: string, placeholder: string, type = "text") => (
+    <input style={commonStyles.input} type={type} placeholder={placeholder} value={v(k)} onChange={set(k)} />
+  );
+
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: theme.textDim }}>Endpoint</div>
+      {input("base_url", "Base URL, e.g. https://api.example.com")}
+      {input("list_path", "List path, e.g. /v1/tickets (full http URL also works)")}
+      <div style={{ display: "flex", gap: 8 }}>
+        <select value={v("method")} onChange={set("method")} style={commonStyles.input} aria-label="HTTP method">
+          <option value="GET">GET</option>
+          <option value="POST">POST</option>
+        </select>
+        <select value={v("auth_mode")} onChange={set("auth_mode")} style={commonStyles.input} aria-label="Auth mode">
+          <option value="none">No auth</option>
+          <option value="bearer">Bearer token</option>
+          <option value="basic">Basic (email + password)</option>
+          <option value="header">Custom header</option>
+        </select>
+      </div>
+      {v("auth_mode") === "bearer" && input("token", "Bearer token (stored in OS keychain)", "password")}
+      {v("auth_mode") === "basic" && (
+        <>
+          {input("email", "Email / username")}
+          {input("password", "Password (stored in OS keychain)", "password")}
+        </>
+      )}
+      {v("auth_mode") === "header" && (
+        <>
+          {input("header_name", "Header name, e.g. X-Api-Key")}
+          {input("api_key", "Header value (stored in OS keychain)", "password")}
+        </>
+      )}
+      <div style={{ fontSize: 12, fontWeight: 700, color: theme.textDim, marginTop: 4 }}>Items & field map (JSON pointers: /fields/summary or fields.summary)</div>
+      {input("items_path", "Items pointer, e.g. /data (empty = auto-detect)")}
+      {input("map_id", "ID pointer (default /id)")}
+      {input("map_title", "Title pointer (default /title)")}
+      {input("map_text", "Text pointers, comma-separated (default /body)")}
+      {input("map_author", "Author pointer (default /author)")}
+      {input("map_updated", "Updated pointer, RFC3339 or epoch (default /updated_at)")}
+      <div style={{ fontSize: 12, fontWeight: 700, color: theme.textDim, marginTop: 4 }}>Pagination & incremental</div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <select value={v("page_mode")} onChange={set("page_mode")} style={commonStyles.input} aria-label="Pagination mode">
+          <option value="none">No pagination</option>
+          <option value="token">Next-page token</option>
+          <option value="page">Page number</option>
+          <option value="offset">Offset / limit</option>
+        </select>
+        {input("page_size", "Page size (default 50)")}
+        {input("max_pages", "Max pages (default 20)")}
+      </div>
+      {v("page_mode") === "token" && (
+        <>
+          {input("page_param", "Token request param (default pageToken)")}
+          {input("next_token_path", "Next-token pointer (default /nextPageToken)")}
+        </>
+      )}
+      {v("page_mode") === "page" && (
+        <>
+          {input("page_param", "Page param (default page)")}
+          {input("page_size_param", "Size param (default per_page)")}
+          {input("page_start", "First page (default 1)")}
+        </>
+      )}
+      {v("page_mode") === "offset" && (
+        <>
+          {input("offset_param", "Offset param (default offset)")}
+          {input("limit_param", "Limit param (default limit)")}
+        </>
+      )}
+      {input("since_param", "Incremental param, e.g. updated_since (optional)")}
+      {v("method") === "POST" && input("body_json", 'Extra POST body JSON, e.g. {"filter":"open"}')}
+      {input("ref_prefix", "Citation prefix (default rest)")}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+        <button onClick={runPreview} disabled={loading || !v("base_url") || !v("list_path")} style={commonStyles.button} type="button">
+          {loading ? "Previewing…" : "Preview mapping"}
+        </button>
+        <span style={{ fontSize: 12, color: theme.textDim }}>
+          {preview ? `${preview.count} docs${preview.truncated ? " (first 5 shown)" : ""}` : "fetches one page, saves nothing"}
+        </span>
+      </div>
+      {err && <div style={{ fontSize: 12, color: theme.red }}>{err}</div>}
+      {preview && (
+        <div style={{ display: "grid", gap: 4, borderTop: `1px solid ${theme.border}`, paddingTop: 6 }}>
+          {preview.docs.map((d) => (
+            <div key={d.source_ref} style={{ fontSize: 12, border: `1px solid ${theme.border}`, borderRadius: 6, padding: 6, background: theme.bgCard }}>
+              <div style={{ fontWeight: 600 }}>{d.title || "(no title)"}</div>
+              <div style={{ color: theme.textDim }}>{d.source_ref}{d.author ? ` · ${d.author}` : ""}</div>
+              <div style={{ color: theme.textMuted }}>{d.text_preview.slice(0, 160)}{d.text_preview.length > 160 ? "…" : ""}</div>
+            </div>
+          ))}
+          {preview.docs.length === 0 && <div style={{ fontSize: 12, color: theme.textDim }}>No docs — check items pointer and field map.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** B37: the "add source" form (folder, Jira, Linear, Drive or generic REST), extracted from SourcesTab. */
 export function SourceForm({ onAdded }: { onAdded: () => void }) {
   const [connector, setConnector] = useState("folder");
   const [name, setName] = useState("");
@@ -111,6 +270,7 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
   const [jira, setJira] = useState({ base_url: "", email: "", token: "", project: "" });
   const [gdrive, setGdrive] = useState({ folder_id: "", token: "" });
   const [linear, setLinear] = useState({ api_key: "", team: "" });
+  const [rest, setRest] = useState<Record<string, string>>({ ...REST_DEFAULTS });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -125,13 +285,16 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
             ? { folder_id: gdrive.folder_id, token: gdrive.token }
             : connector === "linear"
               ? { api_key: linear.api_key, team: linear.team }
-              : { base_url: jira.base_url, email: jira.email, token: jira.token, project: jira.project };
+              : connector === "rest"
+                ? { ...rest }
+                : { base_url: jira.base_url, email: jira.email, token: jira.token, project: jira.project };
       await api.createSource({ connector, name, config, label });
       setName("");
       setPath("");
       setJira({ base_url: "", email: "", token: "", project: "" });
       setGdrive({ folder_id: "", token: "" });
       setLinear({ api_key: "", team: "" });
+      setRest({ ...REST_DEFAULTS });
       setLabel("internal");
       onAdded();
     } catch (e) {
@@ -149,6 +312,7 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
           <option value="jira">Jira</option>
           <option value="linear">Linear</option>
           <option value="gdrive">Google Drive</option>
+          <option value="rest">Generic REST API</option>
         </select>
         <input style={commonStyles.input} placeholder="Source name" value={name} onChange={(e) => setName(e.target.value)} />
         {connector === "folder" ? (
@@ -165,6 +329,8 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
             <input style={commonStyles.input} placeholder="Team key, e.g. ENG or ENG,PM" value={linear.team} onChange={(e) => setLinear({ ...linear, team: e.target.value })} />
             <div style={{ fontSize: 12, color: theme.textDim }}>Find API key at linear.app/settings/api · Team key is the 2–3 letter prefix (e.g. ENG). Token stored in OS keychain.</div>
           </>
+        ) : connector === "rest" ? (
+          <RestFields value={rest} onChange={setRest} />
         ) : (
           <>
             <input style={commonStyles.input} placeholder="Jira base URL, e.g. https://x.atlassian.net" value={jira.base_url} onChange={(e) => setJira({ ...jira, base_url: e.target.value })} />
@@ -214,6 +380,7 @@ export function SourceEditForm({
     api_key: config.api_key ?? config.token ?? "",
     team: config.team ?? config.project ?? "",
   });
+  const [editRest, setEditRest] = useState<Record<string, string>>({ ...REST_DEFAULTS, ...config });
   const [error, setError] = useState<string | null>(null);
 
   async function saveEdit() {
@@ -230,6 +397,8 @@ export function SourceEditForm({
         payload.config = stripPlaceholders({ folder_id: editGdrive.folder_id, token: editGdrive.token }) as Record<string, string>;
       } else if (source.connector === "linear") {
         payload.config = stripPlaceholders({ api_key: editLinear.api_key, team: editLinear.team }) as Record<string, string>;
+      } else if (source.connector === "rest") {
+        payload.config = stripPlaceholders({ ...editRest }) as Record<string, string>;
       } else {
         // strip the "***set***" token placeholder so it never overwrites the
         // stored secret (B36: shared helper with SettingsTab)
@@ -269,6 +438,8 @@ export function SourceEditForm({
           />
           <input style={commonStyles.input} placeholder="Team key, e.g. ENG or ENG,PM" value={editLinear.team} onChange={(e) => setEditLinear({ ...editLinear, team: e.target.value })} />
         </>
+      ) : source.connector === "rest" ? (
+        <RestFields value={editRest} onChange={setEditRest} />
       ) : (
         <>
           <input style={commonStyles.input} placeholder="Jira base URL" value={editJira.base_url} onChange={(e) => setEditJira({ ...editJira, base_url: e.target.value })} />

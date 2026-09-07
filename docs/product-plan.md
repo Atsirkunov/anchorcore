@@ -656,6 +656,28 @@ rollback-safe — OR a documented decision to stay on Python.
 
 **Done:** `scripts/build_business_corpus.py` `tech/finance/AI` `800→5k` (`data/business-scale` gitignored) `813 docs` `964 entities` live `job 7` + `reclassify 11`; Rust fixes `sources.rs:165` `last_sync_cursor`, `jobs.rs:88` `total`, `pipeline.rs:233,368,371,400,462` `stale/owner/created_at`, `retrieval.rs:768` `cargo build 1.0.11` `vec0` + `chunks` now `73→` growing.
 
+### B44. Generic REST API connector with user field mapping (P1) — DONE
+**Problem:** every new tool (ticket tracker, CRM, custom internal API) needed a bespoke connector (`jira.rs`/`linear.rs`/`gdrive.rs`). Users couldn't self-serve.
+
+**Done:** `rest` connector (`rust/crates/anchorcore/src/connectors/rest.rs:1`) — user supplies `base_url` + `list_path` and maps API fields to `IngestionDoc` via JSON pointers (`map_id/map_title/map_text/map_author/map_updated`, `/a/b` or `a.b` shorthand; `map_text` accepts comma-separated pointers; `map_updated` takes RFC3339 or epoch). Auth: none/bearer/basic/custom-header (secrets keychain-backed via existing `SECRET_SOURCE_FIELDS`); pagination: none/token/page/offset + `max_pages` bound; `since_param` for incremental; POST merges `body_json`. Empty ids get a stable content-hash fallback so re-syncs upsert instead of duplicating (`external_id` is the upsert key). `POST /sources/rest/preview` returns 5 mapped samples without persisting; `RestFields` form (add + edit) with Preview button; row label + `api.previewRest`. Inherits PII/label gates downstream.
+
+**DoD:** point at any JSON list API, preview the mapping, sync → entities with `rest:<id>` refs. — met (9 unit tests: validation, mapping, pagination, stable-id).
+
+### B45. Slack — export import locally, live app as Teams/hosted differentiator (P1/P2)
+**Decision (2026-09-07):** a Slack App in fully local mode is NOT worth it — per-user app creation + admin approval + N-laptop polling fails onboarding (B29 <3min bar) and wastes rate limits. The friction boundary is the pricing boundary: local gets dumb offline import (free), Teams/hosted gets the live workspace app (paid).
+
+**B45.1 Local: Slack export ZIP import (P2, free tier):**
+- Parser turns a Slack export (channels/DMs JSON) into burst/thread units (same rules as below) fed through the folder connector — zero credentials, zero polling, fully offline
+- Scope: channel picker over the export, `slack-export:<channel>/<ts>` refs + permalinks where resolvable, DMs default `sensitive`
+- **DoD:** drop an export ZIP into a folder source → threaded decisions answerable with citations, no network calls
+
+**B45.2 Teams/hosted: native live Slack connector (P1, Teams tier flagship):**
+- One install per workspace by an admin (bot token `xoxb-`, hosted OAuth relay); central sync so every seat gets "the AI already knows #deploys"
+- Crawl: `conversations.list` (channel picker like Jira projects) → `conversations.history` per channel (`oldest` = cursor) → `conversations.replies` for threads → cached `users.info` for names; Tier 2/3 backoff; job progress (B2) for multi-hour backfills
+- Behavior: ingestion unit = author burst (~5min collapse) or thread (parent = question, replies = resolution) → B18 distillation to `Q:/A:` units; channel name/topic as metadata + `source_ref` `slack:#chan/<ts>` with permalink citations; drop `channel_join/leave`, empty bots, emoji-only noise via `_signal` gate; humans weighted over bots for `who_knows`; edited → re-ingest, deleted → `stale`; DMs/private channels default `sensitive` (local-only, never shared)
+- Self-hosted team: same connector against the company instance (Socket Mode if no public endpoint for real-time)
+- **DoD:** sync 3 channels; a 5-message burst yields 1 distilled unit; a threaded decision answers "why X?" with a permalink citation; DMs stay local-only with a gate event
+
 ---
 
 ## Current execution priorities (agreed 2026-08-07 — updated after Aug review, amended for no-UX constraint)

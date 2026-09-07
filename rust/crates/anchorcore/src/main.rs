@@ -169,6 +169,7 @@ fn build_router(state: health::AppState) -> Router {
         // sources (R4.5 + pipeline sync)
         .route("/sources", get(sources::list_handler).post(sources::create_handler))
         .route("/sources/jira/projects", post(stubs::not_implemented))
+        .route("/sources/rest/preview", post(sources::rest_preview_handler))
         .route("/sources/jobs", get(jobs::list_handler))
         .route("/sources/jobs/running", get(jobs::running_handler))
         .route("/sources/jobs/:id", get(jobs::get_handler))

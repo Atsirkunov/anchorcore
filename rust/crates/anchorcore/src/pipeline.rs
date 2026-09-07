@@ -6,7 +6,7 @@ use std::sync::Arc;
 use rusqlite::Connection;
 
 use crate::classifier::Classifier;
-use crate::connectors::{folder::FolderConnector, gdrive::GDriveConnector, jira::JiraConnector, linear::LinearConnector, IngestionDoc};
+use crate::connectors::{folder::FolderConnector, gdrive::GDriveConnector, jira::JiraConnector, linear::LinearConnector, rest::RestConnector, IngestionDoc};
 use crate::embedder::Embedder;
 use crate::secrets::SecretStore;
 use crate::settings::SettingsService;
@@ -115,6 +115,14 @@ async fn fetch_docs(connector_type: &str, config: &serde_json::Value, source_id:
         "linear" => {
             let lc = LinearConnector::new(config).map_err(|e| e.to_string())?;
             let (docs, _cursor) = lc.fetch("").await.map_err(|e| e.to_string())?;
+            docs
+        }
+        "rest" => {
+            let rc = RestConnector::new(config).map_err(|e| e.to_string())?;
+            let (docs, _cursor) = rc.fetch("").await.map_err(|e| e.to_string())?;
+            if docs.is_empty() {
+                tracing::warn!("REST fetch returned 0 docs for source {}", source_id);
+            }
             docs
         }
         _ => return Err(format!("unknown connector '{}'", connector_type)),

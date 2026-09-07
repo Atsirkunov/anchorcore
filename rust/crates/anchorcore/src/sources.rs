@@ -266,6 +266,34 @@ pub async fn config_handler(State(state): State<AppState>, Path(source_id): Path
     result
 }
 
+/// POST /sources/rest/preview — fetch one page with a candidate generic-REST
+/// config and return the mapped docs (truncated) without persisting anything.
+/// The raw secrets come from the form body and are used once, never stored.
+pub async fn rest_preview_handler(Json(payload): Json<Value>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let config = payload.get("config").cloned().unwrap_or(payload);
+    let conn = crate::connectors::rest::RestConnector::new(&config)
+        .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": e.to_string()}))))?;
+    let (docs, _) = conn
+        .fetch("")
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, Json(json!({"detail": e.to_string()}))))?;
+    let previews: Vec<Value> = docs
+        .iter()
+        .take(5)
+        .map(|d| {
+            json!({
+                "external_id": d.external_id,
+                "title": d.title,
+                "text_preview": d.text.chars().take(300).collect::<String>(),
+                "author": d.author,
+                "updated_at": d.updated_at.map(|t| t.to_rfc3339()).unwrap_or_default(),
+                "source_ref": d.source_ref,
+            })
+        })
+        .collect();
+    Ok(Json(json!({"count": docs.len(), "truncated": docs.len() > previews.len(), "docs": previews})))
+}
+
 pub async fn sync_handler(State(state): State<AppState>, Path(source_id): Path<i64>) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
     sync_inner(state, source_id, false).await
 }
