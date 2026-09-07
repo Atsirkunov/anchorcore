@@ -1,7 +1,13 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, RequestAbortedError } from "../api";
 import { theme } from "../theme";
 import type { AskTurn } from "../types";
+
+const SAMPLE_QUESTIONS = [
+  "What was decided about security transfers, and why?",
+  "Who owns billing migration?",
+  "Show the movements for it",
+];
 
 function Breadcrumb({ path }: { path?: string }) {
   if (!path) return null;
@@ -29,13 +35,29 @@ function TagChips({ tags }: { tags?: string[] }) {
   );
 }
 
-export function AskTab({ projectId }: { projectId?: number }) {
+export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSources?: () => void }) {
   const [turns, setTurns] = useState<AskTurn[]>([]);
   const [question, setQuestion] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [publicOnly, setPublicOnly] = useState(false);
+  const [sourceCount, setSourceCount] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listSources()
+      .then((sources) => {
+        if (!cancelled) setSourceCount(sources.length);
+      })
+      .catch(() => {
+        if (!cancelled) setSourceCount(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function submit() {
     if (!question.trim() || busy) return;
@@ -97,7 +119,7 @@ export function AskTab({ projectId }: { projectId?: number }) {
           placeholder={turns.length ? "Follow-up… e.g. show the movements for it" : "What was decided about X, and why?"}
           style={{ flex: 1, padding: "0.6rem 0.8rem", borderRadius: 8, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text }}
         />
-        <button onClick={submit} disabled={busy} style={{ padding: "0.6rem 1.2rem", borderRadius: 8, border: "none", background: theme.accent, color: "#fff", cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.6 : 1 }}>
+        <button onClick={submit} disabled={busy} style={{ padding: "0.6rem 1.2rem", borderRadius: 8, border: "none", background: theme.accent, color: theme.onAccent, cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.6 : 1 }}>
           {busy ? "Thinking…" : "Ask"}
         </button>
         {busy && (
@@ -157,9 +179,28 @@ export function AskTab({ projectId }: { projectId?: number }) {
         </div>
       )}
       {turns.length === 0 && !busy && (
-        <p style={{ color: theme.textDim, marginTop: 16 }}>
-          Ask a question, then follow up naturally — e.g. "merger details" → "show the movements for it".
-        </p>
+        <div style={styles.starter}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>Try one:</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {SAMPLE_QUESTIONS.map((q) => (
+              <button key={q} onClick={() => setQuestion(q)} style={styles.chip}>
+                {q}
+              </button>
+            ))}
+          </div>
+          <p style={{ color: theme.textDim, margin: "12px 0 0", fontSize: 13 }}>
+            Ask a question, then follow up naturally — e.g. "merger details" → "show the movements for it".
+          </p>
+          {sourceCount === 0 && (
+            <p style={{ margin: "8px 0 0", fontSize: 13, color: theme.textDim }}>
+              No sources connected yet —{" "}
+              <button onClick={onGoSources} style={styles.linkButton}>
+                connect a folder in Sources
+              </button>{" "}
+              (try <code>sample/</code>), then ask.
+            </p>
+          )}
+        </div>
       )}
     </div>
   );
@@ -189,5 +230,30 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "0.25rem 0.6rem",
     cursor: "pointer",
     fontSize: 12,
+  },
+  starter: {
+    marginTop: 16,
+    background: theme.bgCard,
+    border: `1px solid ${theme.border}`,
+    borderRadius: 10,
+    padding: "0.85rem 1rem",
+  },
+  chip: {
+    background: theme.bgHover,
+    border: `1px solid ${theme.border}`,
+    color: theme.text,
+    borderRadius: 999,
+    padding: "0.35rem 0.8rem",
+    cursor: "pointer",
+    fontSize: 13,
+  },
+  linkButton: {
+    background: "none",
+    border: "none",
+    padding: 0,
+    color: theme.accentAlt,
+    textDecoration: "underline",
+    cursor: "pointer",
+    fontSize: 13,
   },
 };

@@ -116,30 +116,65 @@ async fn record_gate_event(data_dir: &str, blocked: &[String]) {
     .await;
 }
 
+fn take_chars(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
+fn display_source_ref(h: &crate::retrieval::Hit) -> String {
+    if h.source_ref.is_empty() { format!("chunk:{}", h.chunk_id) } else { h.source_ref.clone() }
+}
+
+fn hit_kind(h: &crate::retrieval::Hit) -> String {
+    if h.entity_id.is_some() { "entity".to_string() } else { "document".to_string() }
+}
+
+fn rounded_score(score: f64) -> f64 {
+    (score * 1000.0).round() / 1000.0
+}
+
 fn tags_for_chunk(conn: &Connection, chunk_id: i64) -> Vec<String> {
-    let mut stmt = match conn.prepare("SELECT t.name FROM tags t JOIN chunk_tags ct ON ct.tag_id=t.id WHERE ct.chunk_id=?1 ORDER BY t.name") {
+    tags_for_chunks(conn, &[chunk_id]).remove(&chunk_id).unwrap_or_default()
+}
+
+/// Single batched tags lookup — replaces per-hit `tags_for_chunk` N+1.
+fn tags_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> std::collections::HashMap<i64, Vec<String>> {
+    let mut out: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+    if chunk_ids.is_empty() {
+        return out;
+    }
+    let sql = format!(
+        "SELECT ct.chunk_id, t.name FROM tags t JOIN chunk_tags ct ON ct.tag_id=t.id WHERE ct.chunk_id IN ({}) ORDER BY t.name",
+        crate::common::placeholders(chunk_ids.len())
+    );
+    let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
-        Err(_) => return vec![],
+        Err(_) => return out,
     };
-    stmt.query_map([chunk_id], |r| r.get::<_, String>(0))
-        .map(|m| m.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default()
+    if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(chunk_ids.iter()), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    }) {
+        for row in rows.flatten() {
+            out.entry(row.0).or_default().push(row.1);
+        }
+    }
+    out
 }
 
 fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str) -> Vec<Citation> {
     let db_path = crate::db::resolve_db_path(data_dir);
     let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+    let ids: Vec<i64> = hits.iter().take(5).map(|h| h.chunk_id).collect();
+    let tag_map = tags_for_chunks(&conn, &ids);
     hits.iter().take(5).map(|h| {
-        let tags = tags_for_chunk(&conn, h.chunk_id);
         Citation {
             entity_id: h.entity_id,
-            kind: if h.entity_id.is_some() { "entity".to_string() } else { "document".to_string() },
-            summary: h.content.chars().take(200).collect(),
-            source_ref: if h.source_ref.is_empty() { format!("chunk:{}", h.chunk_id) } else { h.source_ref.clone() },
+            kind: hit_kind(h),
+            summary: take_chars(&h.content, 200),
+            source_ref: display_source_ref(h),
             path: h.path.clone(),
-            tags,
-            score: (h.score * 1000.0).round() / 1000.0,
-            snippet: h.content.chars().take(300).collect(),
+            tags: tag_map.get(&h.chunk_id).cloned().unwrap_or_default(),
+            score: rounded_score(h.score),
+            snippet: take_chars(&h.content, 300),
         }
     }).collect()
 }
@@ -191,7 +226,7 @@ pub async fn ask(
             record_gate_event(&data_dir_string, &blocked).await;
             if filtered.is_empty() {
                 return AskResponse {
-                    answer: "Relevant knowledge was found but it is sensitive/PII and the answer provider is an unconfirmed cloud service. Enable a local provider or set ANCHOR_CLOUD_TRUST=1 to answer.".to_string(),
+                    answer: "Relevant knowledge was found but it is sensitive/PII and the answer provider is not approved for it. Enable a local provider, list it in ANCHOR_TRUSTED_PROVIDERS, or set ANCHOR_CLOUD_TRUST=1 to answer.".to_string(),
                     citations: vec![],
                 };
             }
@@ -216,6 +251,117 @@ fn settings_snapshot(settings: &SettingsService) -> std::collections::HashMap<St
     m
 }
 
+// --- R15.2: single retrieval orchestration shared by ask + search ---
+
+struct RetrievalConfig {
+    top_k: usize,
+    keyword_weight: f64,
+    halflife: f64,
+    max_per_source: usize,
+    qa_exclude_disputed: bool,
+}
+
+impl RetrievalConfig {
+    fn from_env_with_top_k(top_k: usize) -> Self {
+        let qa_exclude_disputed: bool = std::env::var("ANCHOR_QA_EXCLUDE_DISPUTED")
+            .map(|v| v != "0" && v.to_lowercase() != "false")
+            .unwrap_or(true);
+        let keyword_weight: f64 = std::env::var("ANCHOR_RETRIEVAL_KEYWORD_WEIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+        let halflife: f64 = std::env::var("ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(365.0);
+        let max_per_source: usize = std::env::var("ANCHOR_RETRIEVAL_MAX_PER_SOURCE").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        Self { top_k, keyword_weight, halflife, max_per_source, qa_exclude_disputed }
+    }
+
+    fn from_env() -> Self {
+        let top_k: usize = std::env::var("ANCHOR_TOP_K").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+        Self::from_env_with_top_k(top_k)
+    }
+}
+
+fn project_scope(conn: &Connection, project_id: Option<i64>, public_only: bool) -> Option<HashSet<i64>> {
+    let mut scope = project_source_ids(conn, project_id);
+    if public_only {
+        let public_ids = public_source_ids(conn);
+        scope = match scope {
+            None => Some(public_ids),
+            Some(s) => Some(s.intersection(&public_ids).cloned().collect()),
+        };
+    }
+    scope
+}
+
+fn apply_graph(
+    conn: &Connection,
+    hits: Vec<crate::retrieval::Hit>,
+    scope: Option<&HashSet<i64>>,
+    cfg: &RetrievalConfig,
+) -> Vec<crate::retrieval::Hit> {
+    let mut hits = hits;
+    let graph_hits = retrieval::graph_expand(conn, &hits, scope, 2, 3, cfg.qa_exclude_disputed);
+    if !graph_hits.is_empty() {
+        let lists = vec![hits, graph_hits];
+        hits = retrieval::fuse_evidence(lists, vec![1.0, 0.5]);
+        hits.truncate(cfg.top_k);
+    }
+    hits
+}
+
+/// TOC coarse-to-fine first, hybrid vector+keyword fallback otherwise, then graph.
+fn orchestrate(
+    conn: &Connection,
+    query: &str,
+    query_embedding: Option<Vec<f32>>,
+    scope: Option<HashSet<i64>>,
+    cfg: &RetrievalConfig,
+) -> Vec<crate::retrieval::Hit> {
+    // R14.5: TOC coarse-to-fine — try toc_search first (prunes to ~200 candidates)
+    let toc_opt = {
+        let emb_opt = query_embedding.as_deref();
+        let toc = retrieval::toc_search(conn, query, emb_opt, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed);
+        if toc.is_empty() { None } else { Some(toc) }
+    };
+    if let Some(toc) = toc_opt {
+        let hits = retrieval::fuse_and_rank(
+            conn,
+            Some(toc),
+            None,
+            cfg.keyword_weight,
+            cfg.halflife,
+            cfg.max_per_source,
+            cfg.top_k,
+            cfg.qa_exclude_disputed,
+        );
+        return apply_graph(conn, hits, scope.as_ref(), cfg);
+    }
+    // R8.1: hybrid search — vector + keyword
+    let vector_hits = query_embedding.as_ref().and_then(|emb| {
+        let hits = retrieval::vector_search(conn, emb, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed);
+        if hits.is_empty() { None } else { Some(hits) }
+    });
+    let keyword_hits = retrieval::keyword_search(conn, query, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed);
+    let evidence = if keyword_hits.is_empty() {
+        if vector_hits.is_none() {
+            retrieval::keyword_fallback(conn, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed)
+        } else {
+            vec![]
+        }
+    } else {
+        keyword_hits
+    };
+    let keyword_opt = if evidence.is_empty() { None } else { Some(evidence) };
+    let hits = retrieval::fuse_and_rank(
+        conn,
+        vector_hits,
+        keyword_opt,
+        cfg.keyword_weight,
+        cfg.halflife,
+        cfg.max_per_source,
+        cfg.top_k,
+        cfg.qa_exclude_disputed,
+    );
+    apply_graph(conn, hits, scope.as_ref(), cfg)
+}
+
 fn retrieve_sync(
     conn: &Connection,
     question: &str,
@@ -224,77 +370,10 @@ fn retrieve_sync(
     _settings_map: &std::collections::HashMap<String, String>,
     query_embedding: Option<Vec<f32>>,
 ) -> Vec<crate::retrieval::Hit> {
-    let project_ids = project_source_ids(conn, project_id);
-    let mut source_ids = project_ids;
-    if public_only {
-        let public_ids = public_source_ids(conn);
-        source_ids = match source_ids {
-            None => Some(public_ids),
-            Some(s) => Some(s.intersection(&public_ids).cloned().collect()),
-        };
-    }
-    let query = question.to_string();
-    let qa_exclude_disputed: bool = std::env::var("ANCHOR_QA_EXCLUDE_DISPUTED")
-        .map(|v| v != "0" && v.to_lowercase() != "false")
-        .unwrap_or(true);
-    let top_k: usize = std::env::var("ANCHOR_TOP_K").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
-    let keyword_weight: f64 = std::env::var("ANCHOR_RETRIEVAL_KEYWORD_WEIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
-    let halflife: f64 = std::env::var("ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(365.0);
-    let max_per_source: usize = std::env::var("ANCHOR_RETRIEVAL_MAX_PER_SOURCE").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
-
-    // R14.5: TOC coarse-to-fine — try toc_search first (prunes to ~200 candidates)
-    let toc_hits_opt = {
-        let emb_opt = query_embedding.as_ref().map(|v| v.as_slice());
-        let toc = retrieval::toc_search(conn, &query, emb_opt, source_ids.as_ref(), top_k, qa_exclude_disputed);
-        if toc.is_empty() { None } else { Some(toc) }
-    };
-    let mut hits = if let Some(toc) = toc_hits_opt {
-        retrieval::fuse_and_rank(
-            conn,
-            Some(toc),
-            None,
-            keyword_weight,
-            halflife,
-            max_per_source,
-            top_k,
-            qa_exclude_disputed,
-        )
-    } else {
-        // R8.1: hybrid search — vector + keyword
-        let vector_hits = query_embedding.as_ref().and_then(|emb| {
-            let hits = retrieval::vector_search(conn, emb, source_ids.as_ref(), top_k, qa_exclude_disputed);
-            if hits.is_empty() { None } else { Some(hits) }
-        });
-        let keyword_hits = retrieval::keyword_search(conn, &query, source_ids.as_ref(), top_k, qa_exclude_disputed);
-        let evidence = if keyword_hits.is_empty() {
-            if vector_hits.is_none() {
-                retrieval::keyword_fallback(conn, source_ids.as_ref(), top_k, qa_exclude_disputed)
-            } else {
-                vec![]
-            }
-        } else {
-            keyword_hits
-        };
-        let keyword_opt = if evidence.is_empty() { None } else { Some(evidence) };
-        retrieval::fuse_and_rank(
-            conn,
-            vector_hits,
-            keyword_opt,
-            keyword_weight,
-            halflife,
-            max_per_source,
-            top_k,
-            qa_exclude_disputed,
-        )
-    };
-    let graph_hits = retrieval::graph_expand(conn, &hits, source_ids.as_ref(), 2, 3, qa_exclude_disputed);
-    if !graph_hits.is_empty() {
-        let lists = vec![hits, graph_hits];
-        hits = retrieval::fuse_evidence(lists, vec![1.0, 0.5]);
-        hits.truncate(top_k);
-    }
+    let scope = project_scope(conn, project_id, public_only);
+    let cfg = RetrievalConfig::from_env();
     // B30 gate moved to ask() for recording + trusted-source hack (R6.4)
-    hits
+    orchestrate(conn, question, query_embedding, scope, &cfg)
 }
 
 fn project_source_ids(conn: &Connection, project_id: Option<i64>) -> Option<HashSet<i64>> {
@@ -313,8 +392,7 @@ fn gate_answer_hits(conn: &Connection, hits: &[retrieval::Hit]) -> (Vec<retrieva
     let sids: HashSet<i64> = hits.iter().filter_map(|h| h.source_id).collect();
     let mut labels: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
     if !sids.is_empty() {
-        let placeholders = sids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT id, label FROM sources WHERE id IN ({})", placeholders);
+        let sql = format!("SELECT id, label FROM sources WHERE id IN ({})", crate::common::placeholders(sids.len()));
         if let Ok(mut stmt) = conn.prepare(&sql) {
             for row in stmt.query_map(rusqlite::params_from_iter(sids.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).unwrap().flatten() {
                 labels.insert(row.0, row.1);
@@ -337,8 +415,7 @@ fn gate_answer_hits(conn: &Connection, hits: &[retrieval::Hit]) -> (Vec<retrieva
 
 fn is_answer_trusted(settings: &SettingsService) -> bool {
     let base = settings.get("answer_base_url", None).unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-    if base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1") { return true; }
-    std::env::var("ANCHOR_CLOUD_TRUST").as_deref() == Ok("1")
+    crate::common::provider_trusted(&base)
 }
 
 pub async fn search(
@@ -365,102 +442,31 @@ pub async fn search(
     .unwrap_or_default();
     let db_path = crate::db::resolve_db_path(&data_dir_string);
     let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+    let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+    let tag_map = tags_for_chunks(&conn, &ids);
     let hits = hits.into_iter().map(|h| {
-        let tags = tags_for_chunk(&conn, h.chunk_id);
         SearchHit {
             chunk_id: Some(h.chunk_id),
             entity_id: h.entity_id,
-            kind: if h.entity_id.is_some() { "entity".to_string() } else { "document".to_string() },
-            summary: h.content.chars().take(200).collect(),
-            content: h.content.chars().take(4000).collect(),
-            source_ref: if h.source_ref.is_empty() { format!("chunk:{}", h.chunk_id) } else { h.source_ref.clone() },
+            kind: hit_kind(&h),
+            summary: take_chars(&h.content, 200),
+            content: take_chars(&h.content, 4000),
+            source_ref: display_source_ref(&h),
             path: h.path.clone(),
-            tags,
+            tags: tag_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             source_id: h.source_id,
             item_id: h.item_id,
             item_title: String::new(),
-            score: (h.score * 1000.0).round() / 1000.0,
+            score: rounded_score(h.score),
         }
     }).collect();
     SearchResponse { hits }
 }
 
-fn search_sync(conn: &Connection, query: &str, k: usize, project_id: Option<i64>, query_embedding: Option<Vec<f32>>) -> Vec<crate::retrieval::Hit> {
-    search_sync_inner(conn, query, k, project_id, false, query_embedding)
-}
-
 fn search_sync_inner(conn: &Connection, query: &str, k: usize, project_id: Option<i64>, public_only: bool, query_embedding: Option<Vec<f32>>) -> Vec<crate::retrieval::Hit> {
-    let mut project_ids = project_source_ids(conn, project_id);
-    if public_only {
-        let public_ids = public_source_ids(conn);
-        project_ids = match project_ids {
-            None => Some(public_ids),
-            Some(s) => Some(s.intersection(&public_ids).cloned().collect()),
-        };
-    }
-    let qa_exclude_disputed: bool = std::env::var("ANCHOR_QA_EXCLUDE_DISPUTED")
-        .map(|v| v != "0" && v.to_lowercase() != "false")
-        .unwrap_or(true);
-    let top_k = k;
-    let keyword_weight: f64 = std::env::var("ANCHOR_RETRIEVAL_KEYWORD_WEIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
-    let halflife: f64 = std::env::var("ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(365.0);
-    let max_per_source: usize = std::env::var("ANCHOR_RETRIEVAL_MAX_PER_SOURCE").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
-    let toc_opt = {
-        let emb_opt = query_embedding.as_ref().map(|v| v.as_slice());
-        let toc = retrieval::toc_search(conn, query, emb_opt, project_ids.as_ref(), top_k, qa_exclude_disputed);
-        if toc.is_empty() { None } else { Some(toc) }
-    };
-    if let Some(toc) = toc_opt {
-        let mut hits = retrieval::fuse_and_rank(
-            conn,
-            Some(toc),
-            None,
-            keyword_weight,
-            halflife,
-            max_per_source,
-            top_k,
-            qa_exclude_disputed,
-        );
-        let graph_hits = retrieval::graph_expand(conn, &hits, project_ids.as_ref(), 2, 3, qa_exclude_disputed);
-        if !graph_hits.is_empty() {
-            let lists = vec![hits, graph_hits];
-            hits = retrieval::fuse_evidence(lists, vec![1.0, 0.5]);
-            hits.truncate(top_k);
-        }
-        return hits;
-    }
-    let vector_hits = query_embedding.as_ref().and_then(|emb| {
-        let hits = retrieval::vector_search(conn, emb, project_ids.as_ref(), top_k, qa_exclude_disputed);
-        if hits.is_empty() { None } else { Some(hits) }
-    });
-    let keyword_hits = retrieval::keyword_search(conn, query, project_ids.as_ref(), top_k, qa_exclude_disputed);
-    let evidence = if keyword_hits.is_empty() {
-        if vector_hits.is_none() {
-            retrieval::keyword_fallback(conn, project_ids.as_ref(), top_k, qa_exclude_disputed)
-        } else {
-            vec![]
-        }
-    } else {
-        keyword_hits
-    };
-    let keyword_opt = if evidence.is_empty() { None } else { Some(evidence) };
-    let mut hits = retrieval::fuse_and_rank(
-        conn,
-        vector_hits,
-        keyword_opt,
-        keyword_weight,
-        halflife,
-        max_per_source,
-        top_k,
-        qa_exclude_disputed,
-    );
-    let graph_hits = retrieval::graph_expand(conn, &hits, project_ids.as_ref(), 2, 3, qa_exclude_disputed);
-    if !graph_hits.is_empty() {
-        let lists = vec![hits, graph_hits];
-        hits = retrieval::fuse_evidence(lists, vec![1.0, 0.5]);
-        hits.truncate(top_k);
-    }
-    hits
+    let scope = project_scope(conn, project_id, public_only);
+    let cfg = RetrievalConfig::from_env_with_top_k(k);
+    orchestrate(conn, query, query_embedding, scope, &cfg)
 }
 
 fn turn_text(turn: &AskTurn) -> String {

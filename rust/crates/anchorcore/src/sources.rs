@@ -118,8 +118,7 @@ fn job_json(row: &rusqlite::Row) -> rusqlite::Result<Value> {
 pub async fn list_handler(State(state): State<AppState>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_data_db(&data_dir);
         let mut stmt = conn.prepare("SELECT id, name, connector, config, enabled, label, last_synced_at, last_error, error_count, created_at FROM sources ORDER BY created_at").unwrap();
         let rows = stmt.query_map([], |r| source_json(r)).unwrap();
         let out: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
@@ -131,8 +130,7 @@ pub async fn list_handler(State(state): State<AppState>) -> Json<Value> {
 pub async fn get_handler(State(state): State<AppState>, Path(source_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_data_db(&data_dir);
         let mut stmt = conn.prepare("SELECT id, name, connector, config, enabled, label, last_synced_at, last_error, error_count, created_at FROM sources WHERE id = ?1").unwrap();
         match stmt.query_row([source_id], |r| source_json(r)) {
             Ok(v) => Ok(Json(v)),
@@ -153,8 +151,7 @@ pub async fn create_handler(State(state): State<AppState>, Json(payload): Json<V
     let label = payload.get("label").and_then(|v| v.as_str()).unwrap_or("internal").to_string();
     let mut config_val = payload.get("config").cloned().unwrap_or(Value::Object(Default::default()));
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_data_db(&data_dir);
         let valid_labels = ["internal","public","sensitive","pii"];
         if !valid_labels.contains(&label.as_str()) {
             return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"detail": format!("label must be one of {:?}", valid_labels)}))));
@@ -190,12 +187,8 @@ pub struct UpdatePayload {
 pub async fn update_handler(State(state): State<AppState>, Path(source_id): Path<i64>, Json(payload): Json<UpdatePayload>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        let exists: bool = conn.query_row("SELECT 1 FROM sources WHERE id=?1", [source_id], |_| Ok(())).is_ok();
-        if !exists {
-            return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Source not found"}))));
-        }
+        let conn = crate::common::open_data_db(&data_dir);
+        crate::common::require_row(&conn, "sources", source_id, "Source not found")?;
         if let Some(name) = payload.name {
             if name.trim().is_empty() {
                 return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"detail":"source name cannot be empty"}))));
@@ -244,12 +237,8 @@ pub async fn update_handler(State(state): State<AppState>, Path(source_id): Path
 pub async fn delete_handler(State(state): State<AppState>, Path(source_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        let exists: bool = conn.query_row("SELECT 1 FROM sources WHERE id=?1", [source_id], |_| Ok(())).is_ok();
-        if !exists {
-            return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Source not found"}))));
-        }
+        let conn = crate::common::open_data_db(&data_dir);
+        crate::common::require_row(&conn, "sources", source_id, "Source not found")?;
         // FK cascade will delete items/entities/chunks/jobs via ON DELETE CASCADE, but we also need to clean project_sources
         let _ = conn.execute("DELETE FROM project_sources WHERE source_id=?1", [source_id]);
         let _ = conn.execute("DELETE FROM sources WHERE id=?1", [source_id]);
@@ -265,8 +254,7 @@ pub async fn config_handler(State(state): State<AppState>, Path(source_id): Path
     let data_dir = state.data_dir.clone();
     let data_dir_clone = data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_data_db(&data_dir);
         let config_str: String = match conn.query_row("SELECT config FROM sources WHERE id=?1", [source_id], |r| r.get(0)) {
             Ok(s) => s,
             Err(_) => return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Source not found"})))),
@@ -294,12 +282,8 @@ async fn sync_inner(state: AppState, source_id: i64, force: bool) -> Result<(Sta
         let data_dir = data_dir.clone();
         let jobs = jobs.clone();
         move || {
-            let db_path = crate::db::resolve_db_path(&data_dir);
-            let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-            let exists: bool = conn.query_row("SELECT 1 FROM sources WHERE id=?1", [source_id], |_| Ok(())).is_ok();
-            if !exists {
-                return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Source not found"}))));
-            }
+            let conn = crate::common::open_data_db(&data_dir);
+            crate::common::require_row(&conn, "sources", source_id, "Source not found")?;
             let kind = if force { "reclassify" } else { "sync" };
             let id = jobs.create_job(&conn, source_id, kind).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": e.to_string()}))))?;
             // fetch job json to return
@@ -320,8 +304,7 @@ async fn sync_inner(state: AppState, source_id: i64, force: bool) -> Result<(Sta
     }));
     // fetch job to return 202
     let job_val = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_data_db(&data_dir);
         let mut stmt = conn.prepare("SELECT id, source_id, kind, status, total, processed, result, error, created_at, started_at, finished_at FROM jobs WHERE id=?1").unwrap();
         stmt.query_row([job_id], |r| job_json(r)).unwrap()
     }).await.unwrap();

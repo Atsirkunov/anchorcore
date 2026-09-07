@@ -61,10 +61,7 @@ impl Embedder {
 
     /// Whether a remote embedder is trusted (B39/B30). Local is always trusted.
     fn cloud_trusted(&self) -> bool {
-        if self.provider_is_local() {
-            return true;
-        }
-        std::env::var("ANCHOR_CLOUD_TRUST").as_deref() == Ok("1")
+        crate::common::provider_trusted(&self.base_url())
     }
 
     pub async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {

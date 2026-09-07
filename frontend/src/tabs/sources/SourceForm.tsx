@@ -291,7 +291,7 @@ export function SourceEditForm({
       </label>
       {error && <p style={{ color: theme.red }}>{error}</p>}
       <div style={{ display: "flex", gap: 8 }}>
-        <button onClick={saveEdit} style={{ ...commonStyles.button, background: theme.accent, color: "#fff" }}>
+        <button onClick={saveEdit} style={{ ...commonStyles.button, background: theme.accent, color: theme.onAccent }}>
           Save
         </button>
         <button onClick={onCancel} style={commonStyles.button}>

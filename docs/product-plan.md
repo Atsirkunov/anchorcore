@@ -53,7 +53,7 @@ No sales team, no procurement cycle in v1. Website has one page with `Personal |
 | Data model | Uniform entity graph (entities + typed relationships + provenance); contradictions as external layer |
 | Answers | Single-pass RAG, section-level citations, cheap default BYO model |
 | Identity | Hash dedup in-source; cross-source duplicate proposals for manual merge |
-| Billing | Free during validation; flat license at pilot; billing machinery deferred to hosted v2+ |
+| Billing | Personal local free forever; Team self-hosted = one-time platform license (perpetual + 1yr maintenance), offline ed25519 key (`backend/app/license.py`, issue via `scripts/make_license.py`); hosted pricing TBD from pilots |
 | Security | OS keychain for credentials; secrets never in DB/config/logs |
 
 ## 6. How Data Becomes Knowledge
@@ -105,9 +105,10 @@ Do not compete with Claude, ChatGPT, or Gemini on intelligence. AnchorCore owns:
 
 | Phase | Price |
 |---|---|
-| Validation (v1, now) | Free — gather feedback |
-| Pilot | Flat license, e.g. €25–30/mo or one-time €150–200 |
-| v2–3 (hosted) | Individual €15–50/mo; Teams €20–50/user/mo; Enterprise €20k–100k+/yr |
+| Validation (v1, now) | Personal local free — gather feedback |
+| Team self-hosted (now) | One-time platform license, perpetual incl. 1yr support/updates; no per-seat, no numbers on site |
+| Hosted (v2+) | Pricing TBD from pilot conversations |
+| Enterprise | Support contract / on-prem, scoped per deal |
 
 ## 11. V2 Features Worthy of Charging For
 
@@ -694,7 +695,7 @@ Explicit order — retrieval/answer + hardening + doc-review are DONE (v1.0.10�
 | 2 | B22 Jira/Linear validation | **P1** | sandbox fixtures + `Linear` connector |
 | 3 | B9 Document type coverage | **P1** | `.docx`/`.pptx`/`.odt` extraction |
 | 4 | B16 who_knows (full) | **P1** | expertise ranking + evidence (minimal `who_knows` tool shipped in B17) |
-| 5 | B29 v2/v3 scoping + website | **P1** | `v2v3-scope.md` — landing `Personal|Team` toggle `paper #F2F0EB`, `Free while in validation` |
+| 5 | B29 v2/v3 scoping + website | **P1** | `v2v3-scope.md` — landing `Personal|Team` toggle `paper #F2F0EB`, free personal local + licensed team self-host |
 | 6 | B28 Drive OAuth polish | **P2** | OAuth browser flow + `data/drive/<name>/` mirror |
 
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md), [design-system.md](./design-system.md)*

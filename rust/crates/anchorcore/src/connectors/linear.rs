@@ -1,5 +1,4 @@
 use super::{ConnectorError, IngestionDoc};
-use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde_json::Value;
 
@@ -15,16 +14,6 @@ pub struct LinearConnector {
     base_url: String,
 }
 
-fn graphql_error(data: &Value) -> Result<(), ConnectorError> {
-    if let Some(errors) = data.get("errors").and_then(|v| v.as_array()) {
-        if !errors.is_empty() {
-            let msg = errors[0].get("message").and_then(|v| v.as_str()).unwrap_or("graphql error");
-            return Err(ConnectorError(format!("Linear GraphQL: {}", msg)));
-        }
-    }
-    Ok(())
-}
-
 fn parse_issue(node: &Value, docs: &mut Vec<IngestionDoc>, next_cursor: &mut String) {
     let id = node.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let identifier = node.get("identifier").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -34,7 +23,7 @@ fn parse_issue(node: &Value, docs: &mut Vec<IngestionDoc>, next_cursor: &mut Str
     let assignee = node.get("assignee").and_then(|v| v.get("name")).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let creator = node.get("creator").and_then(|v| v.get("name")).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let updated_raw = node.get("updatedAt").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let updated = DateTime::parse_from_rfc3339(&updated_raw).ok().map(|d| d.with_timezone(&Utc));
+    let updated = super::parse_dt(&updated_raw);
     let mut parts = vec![title.clone(), format!("State: {}", state), format!("Assignee: {}", assignee), desc.clone()];
     if let Some(comments) = node.get("comments").and_then(|v| v.get("nodes")).and_then(|v| v.as_array()) {
         for c in comments {
@@ -43,20 +32,9 @@ fn parse_issue(node: &Value, docs: &mut Vec<IngestionDoc>, next_cursor: &mut Str
             }
         }
     }
-    let text = parts.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
-    if let Some(dt) = updated {
-        let iso = dt.to_rfc3339();
-        if next_cursor.is_empty() || iso > *next_cursor { *next_cursor = iso; }
-    }
+    let external_id = if identifier.is_empty() { id } else { identifier };
     let author = if !creator.is_empty() { creator } else { assignee.clone() };
-    docs.push(IngestionDoc {
-        external_id: if identifier.is_empty() { id.clone() } else { identifier.clone() },
-        title: if title.is_empty() { identifier.clone() } else { title },
-        text,
-        author,
-        updated_at: updated,
-        source_ref: format!("Linear:{}", if identifier.is_empty() { id } else { identifier }),
-    });
+    super::push_doc(docs, next_cursor, &external_id, &title, parts, author, updated, "Linear");
 }
 
 impl LinearConnector {
@@ -101,10 +79,7 @@ impl LinearConnector {
     }
 
     pub async fn fetch(&self, since_cursor: &str) -> Result<(Vec<IngestionDoc>, String), ConnectorError> {
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
-            .build()
-            .map_err(|e| ConnectorError(e.to_string()))?;
+        let client = super::http_client(60)?;
 
         let teams = self.teams();
         let mut all_docs = Vec::new();
@@ -178,7 +153,7 @@ impl LinearConnector {
             }
             let data: Value = resp.json().await.map_err(|e| ConnectorError(e.to_string()))?;
             // GraphQL errors
-            graphql_error(&data)?;
+            super::check_graphql_errors(&data, "Linear")?;
 
             let nodes = data
                 .pointer("/data/issues/nodes")
@@ -209,7 +184,7 @@ impl LinearConnector {
 
     pub async fn list_teams(base_url: &str, api_key: &str) -> Result<Vec<(String, String)>, ConnectorError> {
         let url = if base_url.is_empty() { "https://api.linear.app/graphql".to_string() } else { base_url.trim_end_matches('/').to_string() };
-        let client = Client::builder().timeout(std::time::Duration::from_secs(30)).build().map_err(|e| ConnectorError(e.to_string()))?;
+        let client = super::http_client(30)?;
         let query = r#"query { teams { nodes { id key name } } }"#;
         let resp = client
             .post(&url)
@@ -222,12 +197,7 @@ impl LinearConnector {
             return Err(ConnectorError(format!("Linear {}: {}", resp.status(), resp.text().await.unwrap_or_default())));
         }
         let data: Value = resp.json().await.map_err(|e| ConnectorError(e.to_string()))?;
-        if let Some(errors) = data.get("errors").and_then(|v| v.as_array()) {
-            if !errors.is_empty() {
-                let msg = errors[0].get("message").and_then(|v| v.as_str()).unwrap_or("graphql error");
-                return Err(ConnectorError(format!("Linear GraphQL: {}", msg)));
-            }
-        }
+        super::check_graphql_errors(&data, "Linear")?;
         let mut out = Vec::new();
         if let Some(nodes) = data.pointer("/data/teams/nodes").and_then(|v| v.as_array()) {
             for n in nodes {

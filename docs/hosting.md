@@ -31,7 +31,7 @@ anchorcore.dev
 | DB | PostgreSQL 16 (official image) | env-driven swap; SQLite stays local |
 | Vector store | pgvector / Qdrant (defer) | VectorStore swap point; sqlite-vec fine at pilot |
 | Object storage | Cloudflare R2 | bucket per workspace; $0 egress → share-link serving |
-| Billing | Stripe Checkout + webhooks | hosted pages; webhook → license/feature unlock |
+| Billing | Team self-hosted: offline license files (`hosting/README.md`); hosted (later): Stripe Checkout + webhooks | no license server — sign with `scripts/make_license.py`, verify offline |
 | Monitoring | UptimeRobot HTTP ping on `/health` | 5-min cadence; alert email |
 | Logs | existing `system_events` + file logs | `GET /system/logs` download; rotate on VPS disk |
 | Backups | nightly `pg_dump` → R2 (versioned) | RPO 24h; restore doc below |
