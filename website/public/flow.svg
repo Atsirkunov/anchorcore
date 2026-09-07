@@ -1,0 +1,47 @@
+<!-- AnchorCore "what it does" visual (R16.5/R16.6): fragments → vault → cited
+     answer. Matte Stone & Sage only. Static asset, no JS. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 260" font-family="ui-monospace, Menlo, monospace">
+  <!-- stage labels -->
+  <text x="8" y="22" font-size="13" letter-spacing="2" fill="#6b7280">CONNECT</text>
+  <text x="460" y="22" font-size="13" letter-spacing="2" fill="#6b7280">FILE · ON YOUR MACHINE</text>
+  <text x="760" y="22" font-size="13" letter-spacing="2" fill="#6b7280">ASK · CITED</text>
+  <!-- source cards -->
+  <g>
+    <rect x="8" y="38" width="210" height="52" rx="10" fill="#ffffff" stroke="#e2ddd6" stroke-width="2"/>
+    <rect x="8" y="38" width="5" height="52" fill="#4A5A52"/>
+    <text x="28" y="70" font-size="16" fill="#1a1d1a">local folders</text>
+    <rect x="8" y="102" width="210" height="52" rx="10" fill="#ffffff" stroke="#e2ddd6" stroke-width="2"/>
+    <rect x="8" y="102" width="5" height="52" fill="#4A5A52"/>
+    <text x="28" y="134" font-size="16" fill="#1a1d1a">knowledge base</text>
+    <rect x="8" y="166" width="210" height="52" rx="10" fill="#ffffff" stroke="#e2ddd6" stroke-width="2"/>
+    <rect x="8" y="166" width="5" height="52" fill="#4A5A52"/>
+    <text x="28" y="198" font-size="16" fill="#1a1d1a">tickets &amp; docs</text>
+  </g>
+  <!-- converging threads -->
+  <path d="M218 64 C 320 64, 360 120, 456 126" fill="none" stroke="#9A8B7A" stroke-width="2"/>
+  <path d="M218 128 L 456 130" fill="none" stroke="#4A5A52" stroke-width="2.5"/>
+  <path d="M218 192 C 320 192, 360 140, 456 134" fill="none" stroke="#9A8B7A" stroke-width="2"/>
+  <!-- vault -->
+  <g>
+    <rect x="460" y="42" width="220" height="178" rx="14" fill="#4A5A52"/>
+    <rect x="478" y="60" width="184" height="108" rx="8" fill="#F2F0EB"/>
+    <rect x="492" y="76" width="8" height="28" rx="3" fill="#4A5A52"/>
+    <text x="508" y="97" font-size="15" fill="#1a1d1a">434 · Scope</text>
+    <rect x="492" y="110" width="8" height="28" rx="3" fill="#4A5A52"/>
+    <text x="508" y="131" font-size="15" fill="#1a1d1a">437 · Dates</text>
+    <text x="492" y="158" font-size="14" fill="#9A8B7A">4.2.1 Sub · 964 entities</text>
+    <text x="478" y="198" font-size="14" fill="#F2F0EB">filed · cited · yours</text>
+  </g>
+  <!-- thread to answer -->
+  <path d="M680 131 L 756 131" fill="none" stroke="#4A5A52" stroke-width="2.5"/>
+  <!-- cited answer card -->
+  <g>
+    <rect x="760" y="42" width="312" height="178" rx="14" fill="#ffffff" stroke="#e2ddd6" stroke-width="2"/>
+    <rect x="784" y="66" width="7" height="128" rx="3.5" fill="#4A5A52"/>
+    <rect x="804" y="66" width="170" height="17" rx="6" fill="#1a1d1a"/>
+    <rect x="804" y="93" width="244" height="13" rx="6" fill="#9aa0a8"/>
+    <rect x="804" y="114" width="210" height="13" rx="6" fill="#9aa0a8"/>
+    <rect x="804" y="135" width="244" height="13" rx="6" fill="#EDE8E0"/>
+    <text x="804" y="180" font-size="16" fill="#4A5A52">PRD v3 4.25 · 82%</text>
+  </g>
+</svg>

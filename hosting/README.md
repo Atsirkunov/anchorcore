@@ -36,7 +36,17 @@ Migrations run via `backend/alembic/env.py` against `ANCHOR_DATABASE_URL`. Local
 
 ## Personal vs Team
 
-Skeleton serves both tracks with same image. Personal stays local free; Team is "coming soon" behind a `coming soon` toggle on the landing page (`docs/design-system.md:5.1`). No separate deployment per track.
+Personal stays local free (no license check — `ANCHOR_EDITION` unset). This
+image is the Team edition (`ANCHOR_EDITION=team` baked into the Dockerfile)
+and requires a one-time platform license, verified offline at startup
+(`backend/app/license.py` — ed25519, no phone-home):
+
+- Mount the license file: `-v /path/to/license.json:/data/license.json -e ANCHOR_LICENSE_FILE=/data/license.json`,
+  or paste it inline via `-e ANCHOR_LICENSE='<json>'`.
+- Missing/forged license → container refuses to boot. Expired maintenance →
+  boots with a warning (perpetual license: support lapses, the app keeps running).
+- Issue licenses with `python scripts/make_license.py issue --org "Acme"`.
+  The signing private key lives with the seller only — never commit it.
 
 ## Next steps
 

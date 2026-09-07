@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
@@ -18,6 +19,7 @@ from .config import __version__, settings, validate_env_file
 from .db import engine, get_db
 from .embedder import Embedder
 from .jobs import JobManager
+from .license import enforce_team_license
 from .models import Chunk, Source
 from .pipeline import IngestionPipeline
 from .redact import RedactingFormatter
@@ -88,6 +90,8 @@ def _run_migrations() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    if os.environ.get("ANCHOR_EDITION", "").lower() == "team":
+        enforce_team_license()  # raises on missing/forged; warns on lapsed
     _run_migrations()
     jobs._mark_orphans()  # now that the table exists, sweep stale 'running' jobs
     scheduler.start()

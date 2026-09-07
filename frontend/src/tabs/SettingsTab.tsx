@@ -238,8 +238,8 @@ export function SettingsTab() {
             style={{
               padding: "0.5rem 0.75rem",
               borderRadius: 6,
-              background: testResult.ok ? "#1e3a2a" : theme.redBg,
-              color: testResult.ok ? "#86efac" : theme.redText,
+              background: testResult.ok ? theme.greenBg : theme.redBg,
+              color: testResult.ok ? theme.greenText : theme.redText,
               fontSize: 13,
             }}
           >
@@ -249,7 +249,7 @@ export function SettingsTab() {
 
         {error && <p style={{ color: theme.red, margin: 0 }}>{error}</p>}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <button style={{ ...styles.button, background: theme.accent, color: "#fff" }} disabled={busy} onClick={save}>
+          <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} disabled={busy} onClick={save}>
             {busy ? "Saving…" : "Save"}
           </button>
           {saved && <span style={{ color: theme.green, fontSize: 13 }}>Saved — applied without restart</span>}

@@ -70,6 +70,7 @@ export const tokens = {
 3. Text: `text` for content, `textDim` for labels, `textFaint` for empty states. Never `#fff` on `bg`.
 4. `dangerBg`/`dangerBorder` only for banner `App.tsx:203`. Never for buttons.
 5. Kind colors only on left border + badge `EntitiesTab.tsx:55` — not whole card.
+6. Palette single source of truth: `frontend/src/theme.ts` (dark app) + `website/src/style.css` `:root` (light site) carry the same sage/stone values under different names (`accent`/`--sage`, `amber`/`--stone`, `bg`/`--paper`). When changing a hue, change both files in the same commit.
 
 ### 2.2 Contrast (WCAG AA) — Stone & Sage
 * `text #E8E6E1` on `bg #121416` = 13.9:1 ✓
@@ -90,7 +91,7 @@ export const tokens = {
 
 ## 4. App UX — keep layout, fix consistency
 
-Current 6 tabs `App.tsx:14` are correct. No navigation redesign needed.
+Current 7 tabs `App.tsx:18` (Ask, Sources, Entities, Review, PII, Settings, System) are correct. No navigation redesign needed.
 
 **Apply tokens without redesign:**
 ```ts
@@ -101,7 +102,7 @@ Current 6 tabs `App.tsx:14` are correct. No navigation redesign needed.
 This alone fixes the "inline styles everywhere" debt `B37` without any visual decision.
 
 **Micro-fixes (no design skill):**
-* Button primary = `accent` `#6366f1` (already `AskTab.tsx:60`), secondary = `surfaceRaised` + `borderSubtle`.
+* Button primary = `accent` `#4A5A52` (already `AskTab.tsx:60`), secondary = `surfaceRaised` + `borderSubtle`.
 * Empty states keep `textFaint #6b7280` + one-line hint (already `AskTab.tsx:101` — good).
 * Citations: keep `14171d` card `AskTab.tsx:88` + `kind` left accent — this *is* the brand.
 
@@ -124,9 +125,9 @@ This alone fixes the "inline styles everywhere" debt `B37` without any visual de
 | **Personal** | Solo PM, founder, researcher, local enthusiast | **Your knowledge, finally together.** | Your notes, PDFs, Jira tickets and decisions in one searchable memory. Ask like you remember it — get the source. | “300-page PDF? Page 250 still cited. Your second brain, not another chatbot.” |
 | **Company** | 3–30 person team, PM-led | **Your company's memory — finally searchable.** | Decisions, owners, dependencies — so any AI answers like an employee of 3 years. | “Why was this delayed? Who owns billing migration? Answered with section + author, not a guess.” |
 
-Body copy swaps per tab but **design stays identical** — accent `#6366f1`, same screenshot (Ask tab with citations). Don't make two brands.
+Body copy swaps per tab but **design stays identical** — accent `#4A5A52`, same screenshot (Ask tab with citations). Don't make two brands.
 
-**Website hero implementation:** one page, toggle `Personal | Team` pills under headline (or two anchor sections `#personal` / `#teams`). Default to **Personal for v1** (validates faster, no procurement), Team as “coming soon” teaser. CTA identical: `Download for macOS / Windows — Free while in validation` + secondary `See 60-second demo` (`sample/`). Email capture tags the track (`personal_interest` vs `team_interest`) for later pricing.
+**Website hero implementation:** one page, toggle `Personal | Team` pills under headline (or two anchor sections `#personal` / `#teams`). Default to **Personal for v1** (validates faster, no procurement); Team is the licensed tier, not a teaser. CTA per track: Personal `Download — Free for personal use`, Team `Deploy via Docker — Self-hosted` (+ one-time-license note) + secondary `See 60-second demo` (`sample/`). Email capture tags the track (`personal_interest` vs `team_interest`). No prices on site — price discovery happens in pilot conversations.
 
 **B/C remain as alternates** if A fatigues:
 * B: *AI is smart. It just doesn't remember working at your company.*
@@ -150,7 +151,7 @@ Body copy swaps per tab but **design stays identical** — accent `#6366f1`, sam
 4. **Trust strip** — "Private by default • OS keychain • No data leaves your machine unless you add a cloud key • Every answer shows source." Icons: lock, key, citation.
 5. **Live demo** — connect `sample/` corpus, 3 questions answered (use `docs/sample-dataset.md:1` scripts).
 6. **Roadmap teaser** — `Team memory, Slack, Drive — coming soon` — email capture.
-7. **Footer** — `v1 local. Free during validation. Flat license at pilot €25/mo.`
+7. **Footer** — `v1 local · free for personal use · Team self-hosted licensed · Hosted soon.`
 
 **Voice:** short, factual, no superlatives. Same as app: `No relevant knowledge found yet.` not "Oops!"
 
@@ -166,7 +167,7 @@ Body copy swaps per tab but **design stays identical** — accent `#6366f1`, sam
 
 1. **Create `frontend/src/theme.ts`** — paste tokens `§2.1`. 10 min.
 2. **Find-replace** `grep -r "#171a21" frontend/src` → `t.dark.surfaceRaised`. No visual change, just consistency. Validates `B37` DoD.
-3. **Website:** use same `tokens.light` + `accent #6366f1` for CTA. Vite + `shadcn/ui` landing template — do not design from scratch. Hero A + 7 sections above = complete site.
+3. **Website:** use same `tokens.light` + `accent #4A5A52` for CTA. Hand-rolled single page (`website/index.html` + `src/main.ts` + `src/style.css`) — keep it, do not rebuild from a template. Hero A + 7 sections above = complete site.
 4. **App icon / packaging:** keep generic PyInstaller icon `packaging.md:73` until site is live — icon without site looks unfinished.
 
 ---

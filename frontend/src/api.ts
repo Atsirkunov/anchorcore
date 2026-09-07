@@ -116,7 +116,6 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
-
   listProjects: () => request<Project[]>("/projects"),
   createProject: (payload: { name: string; source_ids?: number[] }) =>
     request<Project>("/projects", {
