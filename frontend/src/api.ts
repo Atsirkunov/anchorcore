@@ -116,6 +116,16 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
+  previewRest: (config: Record<string, string>) =>
+    request<{ count: number; truncated: boolean; docs: { external_id: string; title: string; text_preview: string; author: string; updated_at: string; source_ref: string }[] }>(
+      "/sources/rest/preview",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config }),
+      },
+    ),
+
   listProjects: () => request<Project[]>("/projects"),
   createProject: (payload: { name: string; source_ids?: number[] }) =>
     request<Project>("/projects", {
