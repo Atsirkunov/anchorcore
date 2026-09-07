@@ -11,16 +11,14 @@ fn env_usize(key: &str, fallback: usize) -> usize {
     std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(fallback)
 }
 
-/// Fixed-size chunks with overlap — mirrors `backend/app/chunking.py:14` `chunk_text`.
-/// Operates on chars (Python str len) to match Python semantics and avoid UTF-8 panics.
-pub fn chunk_text(text: &str) -> Vec<String> {
-    let size = env_usize("ANCHOR_CHUNK_SIZE", CHUNK_SIZE);
-    let overlap = env_usize("ANCHOR_CHUNK_OVERLAP", CHUNK_OVERLAP);
+/// Shared sliding window over chars (Python str-len semantics, UTF-8 safe).
+/// Powers `chunk_text` and `classify_windows` — same loop, one place.
+fn slide_windows(text: &str, size: usize, step: usize) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     if chars.len() <= size {
         return vec![text.to_string()];
     }
-    let step = size.saturating_sub(overlap).max(1);
+    let step = step.max(1);
     let max_start = chars.len().saturating_sub(size);
     let mut out = Vec::new();
     let mut i = 0;
@@ -41,12 +39,25 @@ pub fn chunk_text(text: &str) -> Vec<String> {
     out
 }
 
-fn is_heading(line: &str) -> bool {
+/// Fixed-size chunks with overlap — mirrors `backend/app/chunking.py:14` `chunk_text`.
+/// Operates on chars (Python str len) to match Python semantics and avoid UTF-8 panics.
+pub fn chunk_text(text: &str) -> Vec<String> {
+    let size = env_usize("ANCHOR_CHUNK_SIZE", CHUNK_SIZE);
+    let overlap = env_usize("ANCHOR_CHUNK_OVERLAP", CHUNK_OVERLAP);
+    slide_windows(text, size, size.saturating_sub(overlap).max(1))
+}
+
+/// Single heading classifier — was `is_heading` + `heading_level` (+ 3 level
+/// helpers), which evaluated the same regexes twice. Returns the section level
+/// (`Some`) or `None` for body text. Level rules are unchanged: §-forms carry
+/// dots (`§434`→1, `4.2.1`-style→1+dots), article/annex/section words and
+/// ALL-CAPS lines are level 1.
+fn classify_heading(line: &str) -> Option<i32> {
     static RE_NUM: OnceLock<Regex> = OnceLock::new();
     static RE_CAPS: OnceLock<Regex> = OnceLock::new();
     let s = line.trim();
     if s.is_empty() || s.len() > 80 {
-        return false;
+        return None;
     }
     // numbered markers §434, 4.2.1, Article 12
     let re = RE_NUM.get_or_init(|| {
@@ -55,14 +66,44 @@ fn is_heading(line: &str) -> bool {
         )
         .unwrap()
     });
-    if re.is_match(s) {
-        return true;
-    }
+    let numbered = re.is_match(s);
     let caps = RE_CAPS.get_or_init(|| Regex::new(r"^[A-Z][A-Z0-9 &()/\-]{3,80}$").unwrap());
-    if caps.is_match(s) && !s.chars().all(|c| c.is_ascii_digit()) {
-        return true;
+    if !numbered && !(caps.is_match(s) && !s.chars().all(|c| c.is_ascii_digit())) {
+        return None;
     }
-    false
+    Some(numbered_heading_level(s))
+}
+
+/// Level for a line already known to be a heading (see `classify_heading`).
+fn numbered_heading_level(s: &str) -> i32 {
+    if s.starts_with('§') {
+        let after = s.trim_start_matches('§').trim_start();
+        let prefix: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        return 1 + prefix.matches('.').count() as i32;
+    }
+    let lower = s.to_lowercase();
+    if lower.starts_with("article ")
+        || lower.starts_with("annex ")
+        || lower.starts_with("section ")
+        || lower.starts_with("schedule ")
+        || lower.starts_with("rule ")
+        || lower.starts_with("appendix ")
+    {
+        return 1;
+    }
+    if let Some(c) = s.chars().next() {
+        if c.is_ascii_digit() {
+            let token = s.split(&[' ', ':', ')', '-', '\t'][..]).next().unwrap_or("");
+            let token = token.trim_matches(|c| c == '.' || c == ')' || c == ':');
+            if token.contains('.') {
+                return 1 + token.matches('.').count() as i32;
+            }
+        }
+    }
+    1
 }
 
 pub fn chunk_document(text: &str) -> Vec<String> {
@@ -86,58 +127,6 @@ pub struct ChunkMeta {
     pub path: String,
 }
 
-fn is_article_heading(s: &str) -> bool {
-    let lower = s.to_lowercase();
-    lower.starts_with("article ")
-        || lower.starts_with("annex ")
-        || lower.starts_with("section ")
-        || lower.starts_with("schedule ")
-        || lower.starts_with("rule ")
-        || lower.starts_with("appendix ")
-}
-
-fn level_for_section_symbol(s: &str) -> Option<i32> {
-    if !s.starts_with('§') {
-        return None;
-    }
-    let after = s.trim_start_matches('§').trim_start();
-    let prefix: String = after
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '.')
-        .collect();
-    let dots = prefix.matches('.').count() as i32;
-    Some(1 + dots)
-}
-
-fn level_for_dotted(s: &str) -> Option<i32> {
-    if !s.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    let token = s.split(&[' ', ':', ')', '-', '\t'][..]).next().unwrap_or("");
-    let token = token.trim_matches(|c| c == '.' || c == ')' || c == ':');
-    if token.contains('.') {
-        return Some(1 + token.matches('.').count() as i32);
-    }
-    Some(1)
-}
-
-fn heading_level(line: &str) -> i32 {
-    let s = line.trim();
-    if s.is_empty() {
-        return 0;
-    }
-    if let Some(l) = level_for_section_symbol(s) {
-        return l;
-    }
-    if is_article_heading(s) {
-        return 1;
-    }
-    if let Some(l) = level_for_dotted(s) {
-        return l;
-    }
-    1
-}
-
 pub fn chunk_document_with_sections(text: &str) -> (Vec<SectionMeta>, Vec<ChunkMeta>) {
     let max_chars = env_usize("ANCHOR_CHUNK_MAX_CHARS", CHUNK_MAX_CHARS);
     let lines: Vec<&str> = text.split('\n').collect();
@@ -153,8 +142,7 @@ pub fn chunk_document_with_sections(text: &str) -> (Vec<SectionMeta>, Vec<ChunkM
     let mut stack: Vec<usize> = Vec::new();
 
     for line in lines {
-        if is_heading(line) {
-            let level = heading_level(line);
+        if let Some(level) = classify_heading(line) {
             let title = line.trim().to_string();
             // pop stack to find parent
             while let Some(&top) = stack.last() {
@@ -285,23 +273,7 @@ fn split_section(section: &str, max_chars: usize) -> Vec<String> {
 
 pub fn classify_windows(text: &str) -> Vec<String> {
     let window = env_usize("ANCHOR_CLASSIFY_WINDOW_CHARS", CLASSIFY_WINDOW);
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= window {
-        return vec![text.to_string()];
-    }
-    let step = (window / 2).max(1);
-    let max_start = chars.len().saturating_sub(window);
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i <= max_start {
-        let end = (i + window).min(chars.len());
-        out.push(chars[i..end].iter().collect());
-        if end == chars.len() {
-            break;
-        }
-        i += step;
-    }
-    out
+    slide_windows(text, window, (window / 2).max(1))
 }
 
 #[cfg(test)]

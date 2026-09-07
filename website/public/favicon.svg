@@ -1,0 +1,11 @@
+<!-- AnchorCore brand mark (R16.5): the citation bar. Paper tile, sage bar,
+     stone section ticks. Source: website/public/favicon.svg — copies of this
+     file (frontend/public/) must stay identical. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/>
+  <rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/>
+  <rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/>
+  <rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/>
+  <rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/>
+</svg>

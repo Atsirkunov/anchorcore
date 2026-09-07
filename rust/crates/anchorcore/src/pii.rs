@@ -439,8 +439,7 @@ pub struct DecideRequest {
 pub async fn get_config_handler(State(state): State<AppState>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_data_db(&data_dir);
         let (disabled, custom) = load_config(&conn);
         let cats = categories_payload(&disabled);
         let custom_sorted: Vec<String> = {
@@ -458,8 +457,7 @@ pub async fn get_config_handler(State(state): State<AppState>) -> Json<Value> {
 pub async fn put_config_handler(State(state): State<AppState>, Json(payload): Json<PiiConfigUpdate>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_data_db(&data_dir);
         let _ = save_config(&conn, payload.disabled_categories.as_deref(), payload.custom_words.as_deref());
         let (disabled, custom) = load_config(&conn);
         let cats = categories_payload(&disabled);
@@ -533,8 +531,7 @@ pub async fn review_handler(State(state): State<AppState>, Query(q): Query<Revie
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let offset = q.offset.unwrap_or(0).max(0);
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_data_db(&data_dir);
         let (disabled, custom) = load_config(&conn);
         // mirrors backend/app/routers/pii.py:58 review
         let mut stmt = match conn.prepare(
@@ -565,12 +562,8 @@ pub async fn decide_handler(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        let exists: bool = conn.query_row("SELECT 1 FROM chunks WHERE id=?1", [chunk_id], |_| Ok(())).is_ok();
-        if !exists {
-            return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Chunk not found"}))));
-        }
+        let conn = crate::common::open_data_db(&data_dir);
+        crate::common::require_row(&conn, "chunks", chunk_id, "Chunk not found")?;
         if payload.is_pii {
             let (disabled, custom) = load_config(&conn);
             // fetch content for matches
@@ -640,8 +633,7 @@ fn dedupe_match_values(matches: Vec<Value>) -> Vec<Value> {
 pub async fn item_pii_handler(State(state): State<AppState>, Path(item_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_data_db(&data_dir);
         let exists: bool = conn.query_row("SELECT 1 FROM ingested_items WHERE id=?1", [item_id], |_| Ok(())).is_ok();
         if !exists {
             return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Item not found"}))));
@@ -684,12 +676,8 @@ fn scan_and_update(conn: &Connection, chunks: &[(i64, String)], disabled: &HashS
 pub async fn scan_handler(State(state): State<AppState>, Path(source_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        let exists: bool = conn.query_row("SELECT 1 FROM sources WHERE id=?1", [source_id], |_| Ok(())).is_ok();
-        if !exists {
-            return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Source not found"}))));
-        }
+        let conn = crate::common::open_data_db(&data_dir);
+        crate::common::require_row(&conn, "sources", source_id, "Source not found")?;
         let (disabled, custom) = load_config(&conn);
         // get item ids
         let mut stmt = conn.prepare("SELECT id FROM ingested_items WHERE source_id=?1").unwrap();
@@ -697,13 +685,12 @@ pub async fn scan_handler(State(state): State<AppState>, Path(source_id): Path<i
         if item_ids.is_empty() {
             return Ok(serde_json::json!({"source_id": source_id, "chunks": 0, "flagged": 0}));
         }
-        let placeholders = item_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT id, content FROM chunks WHERE item_id IN ({})", placeholders);
+        let sql = format!("SELECT id, content FROM chunks WHERE item_id IN ({})", crate::common::placeholders(item_ids.len()));
         let mut stmt2 = conn.prepare(&sql).unwrap();
         let chunks: Vec<(i64, String)> = stmt2.query_map(rusqlite::params_from_iter(item_ids.iter()), |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(|r| r.ok()).collect();
         let mut flagged = scan_and_update(&conn, &chunks, &disabled, &custom);
         // also scan chunks via entities (reuse placeholders)
-        let sql2 = format!("SELECT c.id, c.content FROM chunks c JOIN entities e ON e.id=c.entity_id WHERE e.item_id IN ({})", placeholders);
+        let sql2 = format!("SELECT c.id, c.content FROM chunks c JOIN entities e ON e.id=c.entity_id WHERE e.item_id IN ({})", crate::common::placeholders(item_ids.len()));
         if let Ok(mut stmt3) = conn.prepare(&sql2) {
             let chunks2: Vec<(i64, String)> = stmt3.query_map(rusqlite::params_from_iter(item_ids.iter()), |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(|r| r.ok()).collect();
             flagged += scan_and_update(&conn, &chunks2, &disabled, &custom);

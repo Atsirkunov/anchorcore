@@ -1,5 +1,4 @@
 use super::{ConnectorError, IngestionDoc};
-use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde_json::Value;
 
@@ -33,23 +32,19 @@ impl GDriveConnector {
         let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let mime = f.get("mimeType").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let modified = f.get("modifiedTime").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let updated = DateTime::parse_from_rfc3339(&modified).ok().map(|d| d.with_timezone(&Utc));
-        if let Some(dt) = updated {
-            let iso = dt.to_rfc3339();
-            if next_cursor.is_empty() || iso > *next_cursor {
-                *next_cursor = iso;
-            }
-        }
+        let updated = super::parse_dt(&modified);
         // download content (text export)
         let text = self.download_file(client, &id, &mime, &name).await.unwrap_or_default();
         if text.trim().is_empty() {
             return;
         }
+        // empty text already filtered above, so push directly (keeps gdrive: prefix shape)
+        super::bump_cursor(next_cursor, updated);
         docs.push(IngestionDoc { external_id: id.clone(), title: name.clone(), text, author: String::new(), updated_at: updated, source_ref: format!("gdrive:{}", id) });
     }
 
     pub async fn fetch(&self, since_cursor: &str) -> Result<(Vec<IngestionDoc>, String), ConnectorError> {
-        let client = Client::builder().timeout(std::time::Duration::from_secs(60)).build().map_err(|e| ConnectorError(e.to_string()))?;
+        let client = super::http_client(60)?;
         let mut docs = Vec::new();
         let mut next_cursor = since_cursor.to_string();
         let mut page_token: Option<String> = None;

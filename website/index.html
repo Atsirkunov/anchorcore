@@ -3,19 +3,40 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AnchorCore — Your memory, finally searchable.</title>
-  <meta name="description" content="Connect folders, Jira, Linear. Ask what was decided about X, and why — get a cited answer. Private by default, on your machine." />
+  <title>AnchorCore — Private AI Knowledge Base with Cited Answers</title>
+  <meta name="description" content="Turn folders, Jira & Linear into a private AI knowledge base. Ask what was decided — get cited answers. Local-first, runs on your machine." />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <meta property="og:title" content="AnchorCore — Private AI Knowledge Base with Cited Answers" />
+  <meta property="og:description" content="Turn folders, Jira & Linear into a private AI knowledge base. Ask what was decided — get cited answers. Local-first, runs on your machine." />
+  <script type="application/ld+json">
+  {"@context":"https://schema.org","@type":"SoftwareApplication","name":"AnchorCore","applicationCategory":"BusinessApplication","operatingSystem":["macOS","Windows"],"description":"Private AI knowledge base: search folders, Jira and Linear, ask what was decided, get cited answers. Local-first, self-hosted.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"featureList":"private AI knowledge base, cited answers, local-first document search, Jira integration, Linear integration, PII gate, model allowlist, MCP server"}
+  </script>
+  <script type="application/ld+json">
+  {"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
+    {"@type":"Question","name":"Is my data private?","acceptedAnswer":{"@type":"Answer","text":"Yes. AnchorCore binds 127.0.0.1, stores data in local SQLite, keeps secrets in the OS keychain. Sensitive and PII sources never go to unlisted providers."}},
+    {"@type":"Question","name":"How is this different from NotebookLM or ChatGPT file search?","acceptedAnswer":{"@type":"Answer","text":"Those are cloud-only uploads. AnchorCore is local-first and self-hostable, connects to Jira, Linear and folders directly, and gates sensitive sources per your model policy."}},
+    {"@type":"Question","name":"Do I need Ollama?","acceptedAnswer":{"@type":"Answer","text":"No. Rule-based classification and keyword retrieval work without it. Add Ollama for full hybrid search with citations."}},
+    {"@type":"Question","name":"Is it free?","acceptedAnswer":{"@type":"Answer","text":"Yes, the personal local app is free. Team self-hosted is a one-time platform license, perpetual including a year of support and updates. Hosted is coming soon."}}
+  ]}
+  </script>
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://anchorcore.dev/" />
+  <meta property="og:image" content="https://anchorcore.dev/og-card.svg" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://anchorcore.dev/og-card.svg" />
+  <link rel="canonical" href="https://anchorcore.dev/" />
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
   <!-- tweakable copy lives in src/main.ts + this HTML — no build system magic -->
   <header class="site-header">
     <div class="wrap">
-      <div class="brand">AnchorCore</div>
+      <div class="brand"><svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg>AnchorCore</div>
       <nav class="nav">
         <a href="#how">How it works</a>
         <a href="#guides">Guides</a>
         <a href="#faq">FAQ</a>
+        <a href="#pricing">Pricing</a>
         <a href="#demo">Demo</a>
         <a href="#roadmap">Roadmap</a>
         <a class="nav-cta" href="#download">Download</a>
@@ -30,26 +51,22 @@
         <div>
           <div class="eyebrow">LOCAL • PRIVATE • CITED</div>
           <h1 id="hero-title">Your memory — finally searchable.</h1>
-          <p id="hero-sub" class="sub">Connect folders, Jira, Linear. Ask “what was decided about X, and why?” — get a cited answer that shows exactly where it came from. Private by default, on your machine.</p>
+          <p id="hero-sub" class="sub">Turn folders, Jira, Linear into a private AI knowledge base. Ask “what was decided about X, and why?” — get a cited answer that shows exactly where it came from. Private by default, on your machine.</p>
 
           <div class="track-toggle" role="tablist" aria-label="Personal, Team or Hosted">
             <button data-track="personal" class="toggle active" role="tab" aria-selected="true">Personal</button>
             <button data-track="team" class="toggle" role="tab" aria-selected="false">Team · Self-hosted</button>
-            <button data-track="hosted" class="toggle" role="tab" aria-selected="false">Hosted <span style="font-size:10px;opacity:0.7">soon</span></button>
+            <button data-track="hosted" class="toggle" role="tab" aria-selected="false">Hosted <span class="soon">soon</span></button>
           </div>
           <p id="track-proof" class="proof">300-page PDF? Page 250 still cited. Your second brain, not another chatbot.</p>
 
           <div class="cta" id="download">
-            <a id="cta-primary" class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download — Free while in validation</a>
+            <a id="cta-primary" class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download — Free for personal use</a>
             <a class="btn secondary" href="#demo">See 60-second demo</a>
           </div>
           <div id="cta-note" class="cta-note">macOS & Windows • one file, no Docker • data stays in <code>~/.anchorcore</code></div>
 
-          <form class="capture" onsubmit="return false">
-            <input id="email" type="email" placeholder="Work email for early access" aria-label="Work email" />
-            <button class="btn small" onclick="capture()">Notify me</button>
-          </form>
-          <div id="capture-msg" class="capture-msg"></div>
+          <div class="cta-note">Ask in the browser — or from your agent over <a href="#demo">MCP</a> (Claude Code, Codex, Cursor). Same memory, same citations.</div>
         </div>
 
         <div class="shot">
@@ -58,16 +75,16 @@
             <div class="q">What was decided about DVCA movements and why?</div>
             <div class="a">DVCA movements are restricted to settlement-only. Decision excluded incoming transfers due to reconciliation complexity. Cited from PRD v3 §4.25 and planning notes.</div>
             <div class="cites">
-              <div class="cite"><span class="bar" style="background:#4A5A52"></span><div><b>PRD v3 §4.25 — DVCA</b> <small>decision · 82%</small><p>“Security Transfers MVP excludes incoming transfers — reconciliation complexity.”</p><small>prd-v3.pdf · chunk 12</small></div></div>
-              <div class="cite"><span class="bar" style="background:#9A8B7A"></span><div><b>Planning notes 11-02</b> <small>note · owner: Sarah</small><p>“Sarah owns billing migration — supersedes DVCA flow.”</p><small>meetings/planning.md · graph 1 hop</small></div></div>
+              <div class="cite"><span class="bar sage"></span><div><b>PRD v3 §4.25 — DVCA</b> <small>decision · 82%</small><p>“Security Transfers MVP excludes incoming transfers — reconciliation complexity.”</p><small>prd-v3.pdf · chunk 12</small></div></div>
+              <div class="cite"><span class="bar stone"></span><div><b>Planning notes 11-02</b> <small>note · owner: Sarah</small><p>“Sarah owns billing migration — supersedes DVCA flow.”</p><small>meetings/planning.md · graph 1 hop</small></div></div>
             </div>
           </div>
-          <div class="shot-foot">Stone & Sage — paper #F2F0EB · sage #4A5A52 · citations are the brand</div>
+          <div class="shot-foot">2 citations · top 82% · answered locally</div>
         </div>
-        <div style="margin-top:16px;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface)">
-          <img src="/hero-toc.svg" alt="Hierarchical TOC — sections tree Phase 14" style="display:block;width:100%;height:auto" loading="lazy" />
-        </div>
-        <div id="graph-mini" style="margin-top:16px"></div>
+      </div>
+      <div class="flow">
+        <img src="/flow.svg" alt="Fragments from local folders, knowledge base, tickets and docs file into local memory; answers come back cited" loading="lazy" />
+        <p class="cap">Fragments in, cited answer out — local folders, your knowledge base, tickets and docs file into memory on your machine; every answer carries its source.</p>
       </div>
     </section>
 
@@ -88,23 +105,46 @@
       <div class="wrap">
         <h2>How it works</h2>
         <div class="steps">
-          <div class="step"><span>1</span><h4>Connect</h4><p>Folder, Jira, Linear. Watcher + incremental cursor, hash dedup.</p><code>Sources → extract → hash</code></div>
-          <div class="step"><span>2</span><h4>Classify</h4><p>Doc-aware: <code>standards→note</code> only, no spurious decisions. Window context kept for review.</p><code>16k windows → entities</code></div>
-          <div class="step"><span>3</span><h4>Ask, cited</h4><p>Hybrid <code>vec0+F T S RRF</code> + graph 1–2 hops → LLM with citations. <code>who owns X?</code> via <code>who_knows</code>.</p><code>Ask → cited answer</code></div>
+          <div class="step"><span>1</span><h4>Everything in one memory</h4><p>Point it at a folder, Jira, Linear — decisions file into a single private memory. Nothing to migrate, incremental sync keeps it fresh.</p><code>Sources → extract → hash</code></div>
+          <div class="step"><span>2</span><h4>Decisions, not just documents</h4><p>Doc-aware extraction keeps who decided what and why — owners, supersedes, sections — instead of stuffing whole files into context.</p><code>16k windows → entities</code></div>
+          <div class="step"><span>3</span><h4>Answers that show their work</h4><p>Ask like you remember it — in the browser or from your agent over MCP. Every answer cites source + section, never a guess.</p><code>Ask → cited answer</code></div>
         </div>
         <div class="code">Sources → extract → classify (doc_type) → embed (vec0 768d, FTS5) → RRF k=60 + age decay + graph → cited answer</div>
+        <div class="duo">
+          <div class="fig">
+            <img src="/hero-toc.svg" alt="Hierarchical TOC — headings become a sections tree" loading="lazy" />
+            <p class="cap">Headings become a sections tree — answers cite §434, not “somewhere in the PDF”.</p>
+          </div>
+          <div class="fig">
+            <div id="graph-mini"></div>
+            <p class="cap">Relationships become a graph — owners and supersedes, 1–2 hops from every hit.</p>
+          </div>
+        </div>
       </div>
     </section>
 
     <!-- Trust strip -->
     <section class="trust">
       <div class="wrap trust-grid">
-        <div>🔒 Private by default</div>
-        <div>🔑 OS keychain</div>
-        <div>📎 Every answer cited</div>
-        <div>🏠 On your machine</div>
+        <div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4A5A52" stroke-width="2" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Private by default</div>
+        <div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4A5A52" stroke-width="2" aria-hidden="true"><circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v4M21 12v3"/></svg>OS keychain</div>
+        <div><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="4" height="18" rx="2" fill="#4A5A52"/><rect x="11" y="6" width="9" height="3" rx="1.5" fill="#9A8B7A"/><rect x="11" y="11" width="9" height="3" rx="1.5" fill="#9A8B7A"/><rect x="11" y="16" width="6" height="3" rx="1.5" fill="#9A8B7A"/></svg>Every answer cited</div>
+        <div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4A5A52" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M9 20h6M12 16v4"/></svg>On your machine</div>
       </div>
-      <p class="wrap small">No data leaves your machine unless you add a cloud key. <code>sensitive/pii</code> sources stay local (<code>ANCHOR_CLOUD_TRUST=1</code> to confirm). <code>/qa/public</code> + <code>MCP</code> never share <code>non-public</code>.</p>
+      <div class="fig safewrap">
+        <img src="/safe.svg" alt="Memory as a safe — section drawers filed locally, the OS keychain holds the key" loading="lazy" />
+        <p class="cap">Your memory, filed — sections in drawers, the OS keychain holds the key, nothing leaves your machine.</p>
+      </div>
+      <div class="matrixwrap">
+        <p class="matrixhead">PII follows your model policy, not ours.</p>
+        <table class="matrix">
+          <tr><th scope="col"></th><th scope="col">local model</th><th scope="col">listed provider</th><th scope="col">anyone else</th></tr>
+          <tr><th scope="row">ordinary sources</th><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
+          <tr><th scope="row">sensitive / PII</th><td class="y">✓</td><td class="y">✓</td><td class="n">✗ refused, audited</td></tr>
+        </table>
+        <p class="cap">Listed via <code>ANCHOR_TRUSTED_PROVIDERS</code>. Unlisted providers receive neither embeddings nor answers over sensitive content. What counts as sensitive: the <code>sensitive</code>/<code>pii</code> source label or a PII flag — set per source, reviewed in the PII tab.</p>
+      </div>
+      <p class="wrap small"><code>/qa/public</code> + <code>MCP</code> never share <code>non-public</code> sources.</p>
     </section>
 
     <!-- Live demo -->
@@ -117,51 +157,100 @@
           <li>Follow-up: <code>show the movements for it</code> → <code>security-transfers-spec.md</code> steps 1–6.</li>
           <li>Ask: <code>Who owns billing migration?</code> → <code>Sarah</code> + graph supersedes.</li>
         </ol>
-        <p class="small">Run: <code>cargo run -p anchorcore -- --port 8000</code> then <code>http://127.0.0.1:8000</code> → Sources → Local folder → <code>sample</code> → Sync → Ask. Or headless: <code>ANCHOR_BACKEND_URL=http://127.0.0.1:8000 cargo run -p anchorcore --bin anchorcore-mcp</code> → <code>search/ask</code> without browser.</p>
+        <div class="cols two">
+          <div class="col"><h3>In the browser — for humans</h3><p>Run one command, open <code>http://127.0.0.1:8000</code> → Sources → Local folder → <code>sample/</code> → Sync → Ask. Cited answers with clickable breadcrumbs.</p><code>cargo run -p anchorcore -- --port 8000</code></div>
+          <div class="col"><h3>From your agent — via MCP</h3><p>Claude Code, Codex, opencode, Cursor. Same memory over MCP — <code>ask</code> and <code>search</code> tools return the same cited shape, no browser needed. Respects the same PII gates, audited as <code>component=mcp</code>.</p><code>ANCHOR_BACKEND_URL=http://127.0.0.1:8000 cargo run -p anchorcore --bin anchorcore-mcp</code></div>
+        </div>
+        <div class="fig termwrap">
+          <div class="term-bar"><span>agent → anchorcore-mcp · stdio JSON-RPC</span><button id="term-replay" class="btn small secondary" type="button">Replay</button></div>
+          <div class="term-body" id="term-body" aria-live="polite"></div>
+          <p class="cap">Abbreviated session — the wire carries full JSON-RPC <code>tools/call</code> returning the same cited shape as the browser UI.</p>
+        </div>
+        <p class="small">Personal use needs no Docker and no service — data stays in <code>~/.anchorcore</code>. Full protocol reference: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">MCP headless docs</a>.</p>
+        <div class="fig">
+          <div id="graph-mini-2"></div>
+          <p class="cap">One question, two hops — <code>Who owns billing migration?</code> walks decision → note → owner. Pruned branches never reach the answer.</p>
+        </div>
       </div>
     </section>
 
     <!-- Guides -->
     <section id="guides" class="alt">
       <div class="wrap">
-        <div class="eyebrow">Guides — 60s each · paper mono</div>
         <h2>Guides</h2>
-        <div class="cols" style="max-width:640px">
-          <div class="col"><h3>Quick start — folder</h3><p><code>cargo run -p anchorcore -- --port 8000</code> → <code>http://127.0.0.1:8000</code> → Sources → Local folder → <code>sample/</code> → Sync → Ask. Data in <code>~/.anchorcore</code>. No Docker.</p><small>10 files → 47 entities · <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/sample-dataset.md">sample guide</a></small></div>
-          <div class="col"><h3>Hierarchical TOC — Phase 14</h3><p>Headings <code>§434</code> / <code>4.2.1</code> / <code>Article 12</code> become a <code>sections</code> tree (<code>level/path</code>) + <code>section_summary</code> + <code>tags</code> (<code>cosine&gt;0.82</code> reuse). Retrieval: tag prune → summary 5k → leaf 200 <code>WHERE c.section_id IN (:top5)</code>. See <code>/hero-toc.svg</code> above + <code>GET /sections?item_id=</code> <code>GET /tags</code>.</p><small><a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/guides/hierarchical-toc.md">guide</a> · <code>rust/crates/anchorcore/src/retrieval.rs:836</code></small></div>
+        <div class="cols">
+          <div class="col"><h3>Quick start — folder</h3><p><code>cargo run -p anchorcore -- --port 8000</code> → <code>http://127.0.0.1:8000</code> → Sources → Local folder → <code>sample/</code> → Sync → Ask. Data in <code>~/.anchorcore</code>. No Docker.</p><small>10 files → 47 entities · <a href="#guide-quickstart">sample guide</a></small></div>
           <div class="col"><h3>Projects — scoped search</h3><p>Group sources into <code>projects</code> (B15). Pick one in header to scope every question. <code>public_only</code> toggle for share-safe <code>/qa/public</code>.</p><small><code>POST /projects</code> <code>project_id</code> in Ask</small></div>
-          <div class="col"><h3>Jira / Linear</h3><p>Connect <code>base_url</code> + <code>email</code> + <code>token</code> → <code>GET /sources/jira/projects</code> → Sync. Incremental cursor, 15m poll. Folder stays local.</p><small><code>rust/crates/anchorcore/src/connectors/jira.rs:1</code></small></div>
-          <div class="col"><h3>PII gate</h3><p>Source label <code>public|internal|sensitive|pii</code> + <code>ANCHOR_CLOUD_TRUST=1</code>. <code>sensitive/pii</code> + <code>is_pii</code> chunks skip cloud, stay keyword-only, audited <code>system_events</code>. Review in <code>PII</code> tab.</p><small><code>/pii/config</code> <code>/pii/review</code></small></div>
-          <div class="col"><h3>MCP — without UI</h3><p>Headless: <code>ANCHOR_BACKEND_URL=http://127.0.0.1:8000 cargo run -p anchorcore --bin anchorcore-mcp</code> → stdio <code>ask/search</code> (share-safe <code>public_only</code>, audited <code>component=mcp</code>) against <code>business-scale</code> without browser.</p><small><a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">mcp.md</a> · <code>rust/crates/anchorcore/src/bin/mcp.rs:1</code></small></div>
+          <div class="col"><h3>PII gate</h3><p>Label sources <code>public|internal|sensitive|pii</code>. Sensitive chunks skip unlisted providers — local matching only, audited <code>system_events</code>. Review in <code>PII</code> tab.</p><small><code>ANCHOR_TRUSTED_PROVIDERS</code> · <code>/pii/review</code></small></div>
+          <div class="col"><h3>Any JSON API</h3><p>Tickets, issues, CMS, your own backend — map fields with JSON pointers, preview 5 samples, sync. Bearer, basic, or custom-header auth, keychain-backed.</p><small><a href="#guide-rest">REST API guide</a></small></div>
         </div>
+        <div class="spotlight"><h3>Already have an Obsidian vault? Keep it.</h3><p>Point AnchorCore at the folder → <code>Sync</code> → <code>Ask</code>. Same notes — answers cite a handful of chunks instead of stuffing whole files into the model's window. Less context, lower cost, every claim sourced. Nothing to migrate, nothing to leave.</p><small><a href="#guide-obsidian">vault guide</a></small></div>
+        <p class="docs-strip">Internals &amp; integrations: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/guides/hierarchical-toc.md">Hierarchical TOC</a> · <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/architecture.md">Retrieval, ranking &amp; sources</a> · <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">MCP headless</a></p>
+      </div>
+    </section>
+
+    <!-- On-site guides — content rendered from ../docs/*.md at build (main.ts) -->
+    <section id="guide-obsidian">
+      <div class="wrap">
+        <h2>Use your Obsidian vault</h2>
+        <div class="guide-body" id="guide-obsidian-body"></div>
+      </div>
+    </section>
+
+    <section id="guide-quickstart" class="alt">
+      <div class="wrap">
+        <h2>Try the sample company</h2>
+        <div class="guide-body" id="guide-quickstart-body"></div>
+      </div>
+    </section>
+
+    <section id="guide-rest">
+      <div class="wrap">
+        <h2>Connect any JSON API</h2>
+        <div class="guide-body" id="guide-rest-body"></div>
       </div>
     </section>
 
     <!-- FAQ -->
     <section id="faq">
       <div class="wrap">
-        <div class="eyebrow">FAQ — memo, not chatbot</div>
         <h2>FAQ</h2>
-        <div class="steps" style="max-width:640px">
-          <div class="step"><h4>Is my data private?</h4><p>Yes. Binds <code>127.0.0.1</code>, data in <code>~/.anchorcore</code> SQLite, secrets in OS keychain. No data leaves unless you add a cloud key. <code>sensitive/pii</code> never sent to cloud without <code>ANCHOR_CLOUD_TRUST=1</code>.</p></div>
-          <div class="step"><h4>Why Sage #4A5A52 not indigo?</h4><p>Sage is desaturated (chroma &lt;12), editorial — vault/archive, not SaaS chatbot. Paper <code>#F2F0EB</code> + mono eyebrow + serif hero is the tell. See <code>docs/design-system.md:65</code>.</p></div>
-          <div class="step"><h4>How are chunks built?</h4><p>Clean → heading-aware <code>§434</code>/<code>4.2.1</code> hard split → <code>1600</code> pack, fallback <code>800/100</code> <code>chunking.rs:68</code>. Summaries <code>section_summary/doc_summary</code> + tags <code>cosine&gt;0.82</code> per section.</p></div>
-          <div class="step"><h4>How does retrieval work at scale?</h4><p>Coarse-to-fine: tag prune → summary 5k → leaf 200 <code>WHERE c.section_id IN</code> → RRF <code>k=60</code> + age decay + graph 1–2 hops. Flat <code>150k</code> fallbacks avoided. <code>p50 &lt;50ms</code> on <code>5k docs</code>.</p></div>
-          <div class="step"><h4>Free while in validation?</h4><p>Yes. Download from <code>releases</code> — free now, flat <code>€25/mo</code> at pilot. Team self-hosted = one Docker container, your VPC. Hosted soon — join waitlist.</p></div>
-          <div class="step"><h4>Do I need Ollama?</h4><p>No. Rule fallback for classify + keyword retrieval work degraded. Add <code>ollama pull llama3.2:3b</code> + <code>nomic-embed-text</code> for full hybrid + graph.</p></div>
-          <div class="step"><h4>Citations you can click?</h4><p>Every answer ships <code>source_ref + path</code> <code>Art 12 › 12.3</code> + <code>tags</code> + <code>score</code>. UI breadcrumb is clickable; MCP returns same shape.</p></div>
+        <div class="faq">
+          <div class="qa"><h4>Is my data private?</h4><p>Yes. Binds <code>127.0.0.1</code>, data in <code>~/.anchorcore</code> SQLite, secrets in OS keychain. <code>sensitive/pii</code> never goes to unlisted providers — allowlist them in <code>ANCHOR_TRUSTED_PROVIDERS</code> or set <code>ANCHOR_CLOUD_TRUST=1</code>.</p></div>
+          <div class="qa"><h4>How are chunks built?</h4><p>Clean → heading-aware <code>§434</code>/<code>4.2.1</code> hard split → <code>1600</code> pack, fallback <code>800/100</code>. Summaries <code>section_summary/doc_summary</code> + tags <code>cosine&gt;0.82</code> per section.</p></div>
+          <div class="qa"><h4>How does retrieval work at scale?</h4><p>Coarse-to-fine: tag prune → summary 5k → leaf 200 <code>WHERE c.section_id IN</code> → RRF <code>k=60</code> + age decay + graph 1–2 hops. Flat <code>150k</code> fallbacks avoided. <code>p50 &lt;50ms</code> on <code>5k docs</code>.</p></div>
+          <div class="qa"><h4>Is it free?</h4><p>Personal local app — free. Team self-hosted (one Docker container, your VPC) is a one-time platform license, perpetual including a year of support and updates. Hosted is coming soon — join the waitlist.</p></div>
+          <div class="qa"><h4>Do I need Ollama?</h4><p>No. Rule fallback for classify + keyword retrieval work degraded. Add <code>ollama pull llama3.2:3b</code> + <code>nomic-embed-text</code> for full hybrid + graph.</p></div>
+          <div class="qa"><h4>Citations you can click?</h4><p>Every answer ships <code>source_ref + path</code> <code>Art 12 › 12.3</code> + <code>tags</code> + <code>score</code>. UI breadcrumb is clickable; MCP returns same shape.</p></div>
+          <div class="qa"><h4>How is this different from NotebookLM or ChatGPT file search?</h4><p>Those are cloud-only uploads. AnchorCore is local-first and self-hostable, connects to Jira, Linear and folders — not just uploads — and gates sensitive sources per your model policy (<code>ANCHOR_TRUSTED_PROVIDERS</code>).</p></div>
         </div>
+      </div>
+    </section>
+
+    <!-- Pricing -->
+    <section id="pricing" class="alt">
+      <div class="wrap">
+        <h2>Pricing</h2>
+        <div class="cols">
+          <div class="col"><h3>Personal</h3><div class="price">Free</div><p>Local app on your machine. Folders, Jira, Linear, cited answers. macOS &amp; Windows, one file, no Docker.</p><small><a href="#download">Download — free for personal use</a></small></div>
+          <div class="col"><h3>Team · Self-hosted</h3><div class="price">One-time license</div><p>One Docker container in your VPC. Same cited answers for the whole team — perpetual, including a year of support and updates.</p><small>Deploy via Docker — self-hosted</small></div>
+          <div class="col"><h3>Hosted</h3><div class="price">Soon</div><p>We host it, no setup. Join the waitlist for the free-tier demo, Drive OAuth and Slack decisions.</p><small><a href="#roadmap">Join the waitlist</a></small></div>
+        </div>
+        <div class="spotlight"><h3>Wall of love — opening soon</h3><p>First user quotes ship with v1.1. Using AnchorCore? Tell us what it remembered — your quote goes here.</p></div>
       </div>
     </section>
 
     <!-- Roadmap -->
     <section id="roadmap">
       <div class="wrap">
-        <h2>Roadmap — Team memory, Slack, Drive — coming soon</h2>
-        <p>Join the <code id="roadmap-track">personal</code> list for `hosted` free tier (no-install demo) + `Drive` OAuth + `Slack` decisions.</p>
-        <form class="capture" onsubmit="return false">
+        <h2>Get AnchorCore</h2>
+        <p>Free for personal use — download the app and ask your first cited question in a minute. Team self-hosted is a one-time platform license. Join the <code id="roadmap-track">personal</code> list for the hosted free tier (no-install demo) + Drive OAuth + Slack decisions.</p>
+        <div class="cta">
+          <a class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download — Free for personal use</a>
+        </div>
+        <form class="capture" id="capture-form-2">
           <input id="email2" type="email" placeholder="Work email" aria-label="Work email" />
-          <button class="btn small" onclick="capture2()">Join waitlist</button>
+          <button class="btn small" type="submit">Join waitlist</button>
         </form>
         <div id="capture2-msg" class="capture-msg"></div>
       </div>
@@ -170,8 +259,8 @@
 
   <footer>
     <div class="wrap foot">
-      <div><b>AnchorCore</b> v1 local. Free during validation. Flat license at pilot €25/mo. <a href="https://github.com/Atsirkunov/anchorcore">GitHub</a></div>
-      <div class="mono">Stone & Sage — paper #F2F0EB · sage #4A5A52 · system-ui, -apple-system, Inter</div>
+      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg><b>AnchorCore</b> v1 local · free for personal use · Team self-hosted licensed · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">GitHub</a></div>
+      <div class="mono">Private by default · cited by design</div>
     </div>
   </footer>
 

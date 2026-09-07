@@ -23,6 +23,11 @@ npm run build  # dist/ -> deploy to GitHub Pages / Cloudflare / Vercel
 
 Any static host. `Download` links currently go to `https://github.com/Atsirkunov/anchorcore/releases` — replace with direct asset URLs after `v1.0.11` tag.
 
+## Social / brand assets (R16.5)
+
+* `public/favicon.svg` is the source of truth for the citation-bar mark (tab icon, header, footer, `frontend/public/` copy). SVG favicons work natively — no PNG needed.
+* `public/og-card.svg` backs the `og:image` / `twitter:image` tags. Strict crawlers (X, iMessage) want PNG: export once per deploy with `rsvg-convert -w 1200 public/og-card.svg -o public/og-card.png` and point the tags at the absolute deploy URL (`og:image` must be absolute — fill in the domain when it lands).
+
 ## Capture
 
 Forms store `localStorage["anchorcore.capture:personal|team"]` — hook to `POST /api/capture` or email service when ready.

@@ -8,6 +8,7 @@ mod answer;
 mod auth;
 mod chunking;
 mod classifier;
+mod common;
 mod connectors;
 mod db;
 mod distill;

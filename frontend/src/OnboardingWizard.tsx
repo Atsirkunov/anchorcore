@@ -193,7 +193,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
                 Skip for now
               </button>
               <button style={styles.button} onClick={recheck}>Re-check</button>
-              <button style={{ ...styles.button, background: theme.accent, color: "#fff" }} onClick={() => setStep(1)}>
+              <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} onClick={() => setStep(1)}>
                 Continue →
               </button>
             </div>
@@ -219,7 +219,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
             <div style={styles.actions}>
               <button style={styles.button} onClick={() => setStep(0)}>← Back</button>
               <button style={{ ...styles.button, background: "transparent", border: `1px solid ${theme.border}`, color: theme.textMuted }} onClick={() => setStep(2)}>Skip</button>
-              <button style={{ ...styles.button, background: theme.accent, color: "#fff" }} disabled={savingConfig} onClick={saveConfig}>{savingConfig ? "Saving…" : "Save & continue →"}</button>
+              <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} disabled={savingConfig} onClick={saveConfig}>{savingConfig ? "Saving…" : "Save & continue →"}</button>
             </div>
             <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
               Ollama: <a href="https://ollama.com/download" target="_blank" rel="noreferrer" style={{ color: theme.accentAlt }}>Download</a> then `ollama pull llama3.2:3b && ollama pull nomic-embed-text` — or set a cloud key above.
@@ -245,7 +245,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
                 onChange={(e) => setFolderPath(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && connectFolder()}
               />
-              <button style={{ ...styles.button, background: theme.accent, color: "#fff" }} disabled={busy} onClick={connectFolder}>
+              <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} disabled={busy} onClick={connectFolder}>
                 Connect
               </button>
             </div>
@@ -273,7 +273,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
                 onChange={(e) => setQuestion(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && askSample()}
               />
-              <button style={{ ...styles.button, background: theme.accent, color: "#fff" }} disabled={busy} onClick={askSample}>
+              <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} disabled={busy} onClick={askSample}>
                 {busy ? "Asking…" : "Ask"}
               </button>
             </div>
@@ -337,7 +337,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 8,
     padding: "0.6rem 0.8rem",
     fontSize: 13,
-    color: "#d1d5db",
+    color: theme.text,
     lineHeight: 1.5,
   },
   code: {

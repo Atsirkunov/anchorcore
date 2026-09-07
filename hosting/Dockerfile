@@ -21,6 +21,9 @@ RUN chmod +x ./entrypoint.sh
 
 ENV ANCHOR_DATA_DIR=/data
 ENV PYTHONPATH=/app/backend
+# This image is the Team (self-hosted) edition — requires a platform license
+# (backend/app/license.py). Personal local runs never set ANCHOR_EDITION.
+ENV ANCHOR_EDITION=team
 
 EXPOSE 8000
 CMD ["./entrypoint.sh"]

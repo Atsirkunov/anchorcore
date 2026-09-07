@@ -2,6 +2,15 @@
 
 Connect your knowledge to any AI model. Your memory — finally searchable. — personal or team, same local app (see [Design system](./docs/design-system.md#51-website-hero--a-chosen--personal--company-split) for the two-track language).
 
+## Editions
+
+- **Personal (local)** — free forever. Single-file app, data in `~/.anchorcore`.
+- **Team (self-hosted)** — one-time platform license, perpetual incl. 1yr
+  support/updates. Docker image (`hosting/`), offline license key via
+  `ANCHOR_LICENSE_FILE` — see [hosting/README.md](./hosting/README.md);
+  issue keys with `python scripts/make_license.py issue --org "Acme"`.
+- **Hosted** — coming soon, pricing TBD from pilots (no prices on site).
+
 ## Docs
 
 - [Product Plan](./docs/product-plan.md) — what we're building, for whom, and why (+ full backlog)

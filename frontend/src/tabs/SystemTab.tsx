@@ -105,7 +105,7 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
                     }
                   }}
                   disabled={startingOllama}
-                  style={{ ...styles.button, background: theme.accent, color: "#fff", fontSize: 12, padding: "0.35rem 0.7rem", opacity: startingOllama ? 0.6 : 1 }}
+                  style={{ ...styles.button, background: theme.accent, color: theme.onAccent, fontSize: 12, padding: "0.35rem 0.7rem", opacity: startingOllama ? 0.6 : 1 }}
                 >
                   {startingOllama ? "Starting…" : "Start local LLM"}
                 </button>
@@ -211,6 +211,19 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
           </div>
         </div>
       )}
+
+      <div style={{ ...styles.card, marginBottom: 16 }}>
+        <div style={styles.cardTitle}>Agent access (MCP)</div>
+        <div style={{ fontSize: 13, marginBottom: 6 }}>
+          Claude Code, Codex, opencode, Cursor — same memory, same citations, no browser.
+        </div>
+        <code style={{ display: "block", fontSize: 12, background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: 6, padding: "0.5rem 0.75rem", marginBottom: 6, wordBreak: "break-all" }}>
+          ANCHOR_BACKEND_URL=http://127.0.0.1:8000 cargo run -p anchorcore --bin anchorcore-mcp
+        </code>
+        <div style={{ fontSize: 12, color: theme.textMuted }}>
+          Tools: ask + search (read-only) · respects PII gates · audited as component=mcp
+        </div>
+      </div>
 
       <h3 style={{ marginBottom: 8 }}>Errors & warnings</h3>
       {events.length === 0 ? (

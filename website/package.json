@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "devDependencies": {
+    "marked": "^18.0.11",
     "vite": "^6.4.3"
   }
 }

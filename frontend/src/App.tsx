@@ -72,8 +72,8 @@ export default function App() {
     : [];
   const issues = health
     ? [
-        ...(health.components.ollama === "offline" ? ["Classification model not configured — classification falls back to rules, answers are limited (check Settings → Test Ollama)"] : []),
-        ...(health.components.answer_key === "missing" ? ["No answer model configured — answers show matching context only (set ANCHOR_ANSWER_API_KEY or point ANCHOR_ANSWER_BASE_URL at Ollama)"] : []),
+        ...(health.components.ollama === "offline" ? ["Ollama offline — classification falls back to rules. Settings → Test connection."] : []),
+        ...(health.components.answer_key === "missing" ? ["No answer model — answers show context only. Set ANCHOR_ANSWER_API_KEY or point ANCHOR_ANSWER_BASE_URL at Ollama."] : []),
         ...failingForBanner.map((s) => `Sync failing: ${s.name} (${s.count}×) — ${s.error ?? "unknown error"}`),
       ]
     : [];
@@ -154,7 +154,7 @@ export default function App() {
       )}
       <main style={styles.main}>
         <ErrorBoundary label="Ask">
-          {tab === "ask" && <AskTab projectId={effectiveProject ?? undefined} />}
+          {tab === "ask" && <AskTab projectId={effectiveProject ?? undefined} onGoSources={() => setTab("sources")} />}
         </ErrorBoundary>
         <ErrorBoundary label="Sources">
           {tab === "sources" && <SourcesTab />}

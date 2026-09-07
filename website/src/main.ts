@@ -1,16 +1,20 @@
 import { renderGraphMini } from "./components/GraphMini";
+import { marked } from "marked";
+import obsidianMd from "../../docs/guides/obsidian-vault.md?raw";
+import quickstartMd from "../../docs/sample-dataset.md?raw";
+import restMd from "../../docs/guides/rest-api.md?raw";
 
 // tweakable copy — single source, no CMS
 const copy = {
   personal: {
-    title: "Your knowledge, finally together.",
-    sub: "Your notes, PDFs, Jira tickets and decisions in one searchable memory. Ask like you remember it — get the source.",
+    title: "Your memory — finally searchable.",
+    sub: "Your notes, PDFs, Jira tickets and decisions in one searchable private AI knowledge base. Ask like you remember it — get the source.",
     proof: "300-page PDF? Page 250 still cited. Your second brain, not another chatbot.",
     roadmap: "personal"
   },
   team: {
     title: "Run on your infrastructure — one container.",
-    sub: "Self-hosted in one command. Your data stays with you, same cited answers for the whole team. Deploy via Docker, no cloud required.",
+    sub: "Self-hosted private AI knowledge base in one command. Your data stays with you, same cited answers for the whole team. One-time platform license, yours to run — no cloud required.",
     proof: "One Docker container — your team's memory, on your infra. Who owns billing? Cited, not guessed.",
     roadmap: "team"
   },
@@ -44,12 +48,12 @@ function setTrack(t: Track) {
       cta.textContent = "Join waitlist — Hosted (soon)";
       cta.href = "#roadmap";
     } else {
-      cta.textContent = "Download — Free while in validation";
+      cta.textContent = "Download — Free for personal use";
       cta.href = "https://github.com/Atsirkunov/anchorcore/releases";
     }
   }
   if (note) {
-    if (t === "team") note.innerHTML = "Docker • one container • your infra • data stays in your VPC";
+    if (t === "team") note.innerHTML = "Docker • one container • your VPC • one-time license, incl. a year of support";
     else if (t === "hosted") note.innerHTML = "Coming soon — we host it, no setup · <code>hosted</code> tab";
     else note.innerHTML = "macOS & Windows • one file, no Docker • data stays in <code>~/.anchorcore</code>";
   }
@@ -79,24 +83,55 @@ function initTrack() {
   });
 }
 
-// tiny capture — no backend yet, just local + mailto hint
-function captureEmail(inputId: string, msgId: string) {
+// email capture via Formspree (Vanilla JS Ajax — plain fetch, no SDK needed:
+// this page has no runtime deps and the two forms carry track metadata).
+const FORMSPREE_ID = "mdeozqge";
+
+async function captureEmail(inputId: string, msgId: string, source: string) {
   const el = document.getElementById(inputId) as HTMLInputElement | null;
   const msg = document.getElementById(msgId);
   const email = el?.value.trim() ?? "";
-  if (!email || !email.includes("@")) {
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     if (msg) msg.textContent = "Enter a valid work email.";
     return;
   }
   const track = (() => { try { return localStorage.getItem("anchorcore.track") ?? "personal"; } catch { return "personal"; } })();
+  if (msg) msg.textContent = "Sending…";
   try {
-    const key = `anchorcore.capture:${track}`;
-    const prev = JSON.parse(localStorage.getItem(key) || "[]");
-    prev.push({ email, at: new Date().toISOString(), track });
-    localStorage.setItem(key, JSON.stringify(prev));
-  } catch {}
-  if (msg) msg.textContent = `Thanks — ${track} waitlist saved locally. Hook this to your email service.`;
-  if (el) el.value = "";
+    const res = await fetch(`https://formspree.io/f/${FORMSPREE_ID}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ email, track, source }),
+    });
+    const data = await res.json().catch(() => ({} as { errors?: { message: string }[] }));
+    if (res.ok) {
+      if (msg) msg.textContent = `Thanks — you're on the ${track} list.`;
+      if (el) el.value = "";
+    } else {
+      const detail = data.errors?.map((e) => e.message).join(" ");
+      if (msg) msg.textContent = detail || "Something went wrong — try again.";
+    }
+  } catch {
+    if (msg) msg.textContent = "Couldn't reach the signup service — check your connection and retry.";
+  }
+}
+
+// On-site guides — repo markdown is the source of truth (../docs), rendered
+// here at build time so conversion pages live on-domain, not on GitHub.
+function stripH1(md: string): string {
+  return md.replace(/^# .*\n/, "");
+}
+
+async function initGuides(): Promise<void> {
+  const pairs: [string, string][] = [
+    ["guide-obsidian-body", obsidianMd],
+    ["guide-quickstart-body", quickstartMd],
+    ["guide-rest-body", restMd],
+  ];
+  for (const [id, md] of pairs) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = await marked.parse(stripH1(md));
+  }
 }
 
 // Guides / FAQ hash routing — keep paper mono/serif, no new hex (C3)
@@ -117,16 +152,104 @@ function initHashNav() {
 
 // GraphMini — 3 nodes, Stone & Sage, no new hex (uses CSS vars)
 
-// expose for inline onclick
-declare global { interface Window { capture: () => void; capture2: () => void; } }
-window.capture = () => captureEmail("email", "capture-msg");
-window.capture2 = () => captureEmail("email2", "capture2-msg");
+// submit handler (real submit — Enter key works, no inline onclick)
+document.getElementById("capture-form-2")?.addEventListener("submit", (e) => {
+  e.preventDefault();
+  void captureEmail("email2", "capture2-msg", "roadmap");
+});
+
+// Terminal animation — abbreviated MCP stdio session (demo section).
+// Shapes mirror rust/crates/anchorcore/src/bin/mcp.rs (tools/call with
+// name + arguments.question); the on-page caption notes it is abbreviated.
+const TERM_LINES: { cls: string; text: string; type?: boolean; pause?: number }[] = [
+  { cls: "t-dim", text: "$ ANCHOR_BACKEND_URL=http://127.0.0.1:8000 anchorcore-mcp", type: true },
+  { cls: "t-dim", text: "# stdio sidecar — spawned by your harness, no browser", pause: 350 },
+  { cls: "t-out", text: '→ tools/call {"name": "ask", "arguments": {"question": "Who owns billing migration?"}}', type: true },
+  { cls: "t-dim", text: "··· hybrid retrieval: vec0 + FTS + graph 1 hop", pause: 650 },
+  { cls: "t-in", text: "← Sarah owns billing migration — supersedes DVCA flow.", pause: 300 },
+  { cls: "t-in", text: "← [decision] planning notes 11-02 · owner: Sarah · score 0.82" },
+  { cls: "t-in", text: "← [note] PRD v3 §4.25 · score 0.71" },
+  { cls: "t-dim", text: "← done: 1 answer · 2 citations · audited (component=mcp)" },
+];
+
+function termLine(el: HTMLElement, cls: string, text: string): void {
+  const div = document.createElement("div");
+  div.className = cls;
+  div.textContent = text;
+  el.appendChild(div);
+}
+
+function initTerminal(): void {
+  const body = document.getElementById("term-body");
+  const replay = document.getElementById("term-replay");
+  if (!body) return;
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let started = false;
+  let run = 0;
+
+  function renderAll(): void {
+    body!.innerHTML = "";
+    for (const line of TERM_LINES) termLine(body!, line.cls, line.text);
+  }
+
+  async function play(): Promise<void> {
+    const my = ++run;
+    body!.innerHTML = "";
+    const caret = document.createElement("span");
+    caret.className = "caret";
+    for (const line of TERM_LINES) {
+      if (line.pause) await new Promise((r) => setTimeout(r, line.pause));
+      if (my !== run) return;
+      if (line.type && !reduced) {
+        const div = document.createElement("div");
+        div.className = line.cls;
+        body!.appendChild(div);
+        div.appendChild(caret);
+        for (let i = 1; i <= line.text.length; i++) {
+          div.insertBefore(document.createTextNode(line.text[i - 1]), caret);
+          await new Promise((r) => setTimeout(r, 14));
+          if (my !== run) return;
+        }
+        caret.remove();
+      } else {
+        termLine(body!, line.cls, line.text);
+      }
+    }
+  }
+
+  function start(): void {
+    if (started) return;
+    started = true;
+    if (reduced) renderAll();
+    else void play();
+  }
+
+  replay?.addEventListener("click", () => {
+    if (reduced) renderAll();
+    else void play();
+  });
+
+  if ("IntersectionObserver" in window) {
+    const obs = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) {
+        start();
+        obs.disconnect();
+      }
+    }, { threshold: 0.3 });
+    obs.observe(body);
+  } else {
+    start();
+  }
+}
 
 initTrack();
 initHashNav();
+void initGuides();
+initTerminal();
 // render after DOM ready (hero-toc.svg is static public asset, GraphMini is JS)
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", () => renderGraphMini("graph-mini"));
 } else {
   renderGraphMini("graph-mini");
+renderGraphMini("graph-mini-2");
 }

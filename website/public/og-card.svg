@@ -1,0 +1,39 @@
+<!-- AnchorCore social card (R16.5). Source of truth for og:image; crawlers
+     that require PNG: export with `rsvg-convert -w 1200 og-card.svg -o og-card.png`
+     and point og:image at the PNG (see website README). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" font-family="Georgia, 'Times New Roman', serif">
+  <rect width="1200" height="630" fill="#F2F0EB"/>
+  <!-- brand mark, large -->
+  <g transform="translate(96,150)">
+    <rect x="0" y="0" width="120" height="120" rx="28" fill="#F2F0EB" stroke="#9A8B7A" stroke-width="6"/>
+    <rect x="30" y="22" width="20" height="76" rx="6" fill="#4A5A52"/>
+    <rect x="60" y="32" width="32" height="11" rx="5.5" fill="#9A8B7A"/>
+    <rect x="60" y="55" width="24" height="11" rx="5.5" fill="#9A8B7A"/>
+    <rect x="60" y="78" width="32" height="11" rx="5.5" fill="#9A8B7A"/>
+  </g>
+  <text x="96" y="330" font-size="30" letter-spacing="3" fill="#6b7280" font-family="ui-monospace, Menlo, monospace">LOCAL &#8226; PRIVATE &#8226; CITED</text>
+  <text x="92" y="410" font-size="72" fill="#1a1d1a" letter-spacing="-1">Your memory &#8212;</text>
+  <text x="92" y="492" font-size="72" fill="#1a1d1a" letter-spacing="-1">finally searchable.</text>
+  <text x="96" y="560" font-size="26" fill="#6b7280" font-family="ui-monospace, Menlo, monospace">AnchorCore &#8212; answers with sources, on your machine</text>
+  <!-- cited-answer card -->
+  <g transform="translate(740,115)">
+    <rect x="0" y="0" width="364" height="400" rx="16" fill="#ffffff" stroke="#e2ddd6" stroke-width="2"/>
+    <rect x="28" y="28" width="308" height="26" rx="6" fill="#4A5A52"/>
+    <rect x="28" y="70" width="308" height="18" rx="6" fill="#EDE8E0"/>
+    <rect x="28" y="96" width="240" height="18" rx="6" fill="#EDE8E0"/>
+    <g transform="translate(28,132)">
+      <rect x="0" y="0" width="6" height="104" rx="3" fill="#4A5A52"/>
+      <rect x="20" y="0" width="180" height="16" rx="6" fill="#1a1d1a"/>
+      <rect x="20" y="26" width="288" height="14" rx="6" fill="#9aa0a8"/>
+      <rect x="20" y="48" width="260" height="14" rx="6" fill="#9aa0a8"/>
+      <text x="20" y="92" font-size="20" fill="#4A5A52" font-family="ui-monospace, Menlo, monospace">PRD v3 &#167;4.25 &#183; 82%</text>
+    </g>
+    <g transform="translate(28,264)">
+      <rect x="0" y="0" width="6" height="104" rx="3" fill="#9A8B7A"/>
+      <rect x="20" y="0" width="150" height="16" rx="6" fill="#1a1d1a"/>
+      <rect x="20" y="26" width="288" height="14" rx="6" fill="#9aa0a8"/>
+      <rect x="20" y="48" width="220" height="14" rx="6" fill="#9aa0a8"/>
+      <text x="20" y="92" font-size="20" fill="#9A8B7A" font-family="ui-monospace, Menlo, monospace">planning.md &#183; graph 1 hop</text>
+    </g>
+  </g>
+</svg>

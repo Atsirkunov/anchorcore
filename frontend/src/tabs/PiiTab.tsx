@@ -149,7 +149,7 @@ export function PiiTab() {
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
-        <button onClick={saveConfig} disabled={busy === "config"} style={{ ...commonStyles.button, background: theme.accent, color: "#fff" }}>
+        <button onClick={saveConfig} disabled={busy === "config"} style={{ ...commonStyles.button, background: theme.accent, color: theme.onAccent }}>
           {busy === "config" ? "Saving…" : "Save PII config"}
         </button>
         {saved && <span style={{ color: theme.green, alignSelf: "center", fontSize: 13 }}>Saved</span>}
@@ -166,7 +166,7 @@ export function PiiTab() {
                 <span
                   style={{
                     fontSize: 11,
-                    background: r.is_pii ? theme.redBg : "#1e2430",
+                    background: r.is_pii ? theme.redBg : theme.bgCard,
                     color: r.is_pii ? theme.redText : theme.textMuted,
                     padding: "0.1rem 0.5rem",
                     borderRadius: 999,
@@ -188,7 +188,7 @@ export function PiiTab() {
                       key={m.category}
                       style={{
                         fontSize: 11,
-                        background: m.strong ? theme.redBg : "#1e2430",
+                        background: m.strong ? theme.redBg : theme.bgCard,
                         color: m.strong ? theme.redText : theme.textMuted,
                         padding: "0.1rem 0.5rem",
                         borderRadius: 999,

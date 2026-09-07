@@ -261,7 +261,7 @@ export function EntitiesTab() {
             const isRevealed = revealedDocs.has(itemId);
             const isDocVerified = verifiedDocs.has(itemId) || list.every((e) => e.status === "verified");
             return (
-              <section key={itemId} style={{ ...styles.docCard, borderLeft: `4px solid ${isDocVerified ? "#14532d" : theme.accent}` }}>
+              <section key={itemId} style={{ ...styles.docCard, borderLeft: `4px solid ${isDocVerified ? theme.greenBg : theme.accent}` }}>
                 <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 220 }}>
                     <div style={{ fontWeight: 700, fontSize: 13, color: theme.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{docTitle}</div>
@@ -294,7 +294,7 @@ export function EntitiesTab() {
                       PII ● {pii?.flagged ?? pii?.categories.length}
                     </span>
                   )}
-                  {isDocVerified && <span style={{ fontSize: 10, background: "#14532d", color: "#a7f3d0", padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 700 }}>✓ Verified</span>}
+                  {isDocVerified && <span style={{ fontSize: 10, background: theme.greenBg, color: theme.greenText, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 700 }}>✓ Verified</span>}
                   <button onClick={() => toggleDoc(itemId, first.id)} style={styles.docToggle}>
                     {isOpen ? "Hide doc ▲" : isDocVerified ? "Open doc ▶" : "Show doc ▼"}
                   </button>
@@ -337,10 +337,10 @@ export function EntitiesTab() {
                   </div>
                 )}
                 {isDocVerified ? (
-                  <div style={{ marginTop: 8, padding: "0.5rem 0.75rem", background: "#14532d", border: `1px solid #14532d`, borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>✓ Verified</span>
-                    <span style={{ fontSize: 12, color: "#a7f3d0" }}>{list.length} entities verified — doc collapsed, navigate via whole doc above</span>
-                    <button onClick={() => toggleDoc(itemId, first.id)} style={{ marginLeft: "auto", ...styles.docToggle, borderColor: "#a7f3d0", color: "#a7f3d0" }}>{isOpen ? "Hide" : "Open doc"}</button>
+                  <div style={{ marginTop: 8, padding: "0.5rem 0.75rem", background: theme.greenBg, border: `1px solid ${theme.greenBg}`, borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 12, color: theme.onAccent, fontWeight: 700 }}>✓ Verified</span>
+                    <span style={{ fontSize: 12, color: theme.greenText }}>{list.length} entities verified — doc collapsed, navigate via whole doc above</span>
+                    <button onClick={() => toggleDoc(itemId, first.id)} style={{ marginLeft: "auto", ...styles.docToggle, borderColor: theme.greenText, color: theme.greenText }}>{isOpen ? "Hide" : "Open doc"}</button>
                     <button
                       onClick={() => {
                         setVerifiedDocs((s) => {
@@ -356,7 +356,7 @@ export function EntitiesTab() {
                   </div>
                 ) : (
                   <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-                    <button onClick={() => bulkUpdate(itemId, { status: "verified" })} style={{ ...styles.button, background: theme.accent, color: "#fff" }}>
+                    <button onClick={() => bulkUpdate(itemId, { status: "verified" })} style={{ ...styles.button, background: theme.accent, color: theme.onAccent }}>
                       Verify all & collapse
                     </button>
                     <button onClick={() => bulkUpdate(itemId, { status: "disputed" })} style={styles.button}>
@@ -370,7 +370,7 @@ export function EntitiesTab() {
                       <article key={e.id} style={{ ...styles.cardSmall, borderLeft: `3px solid ${KIND_COLORS[e.kind] ?? theme.textDim}` }}>
                         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                           <span style={{ ...styles.badge, background: KIND_COLORS[e.kind] ?? theme.textDim, fontSize: 10 }}>{e.kind}</span>
-                          <span style={{ ...styles.badge, background: e.status === "verified" ? "#14532d" : e.status === "stale" ? "#3f3f46" : "#451a03", fontSize: 10 }}>{e.status}</span>
+                          <span style={{ ...styles.badge, background: e.status === "verified" ? theme.greenBg : e.status === "stale" ? theme.mutedBg : theme.amberBg, fontSize: 10 }}>{e.status}</span>
                         <span style={{ fontSize: 11, color: theme.textMuted }}>conf {(e.confidence * 100).toFixed(0)}%</span>
                         <span style={{ marginLeft: "auto", fontSize: 11, color: theme.textDim, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.source_ref}</span>
                       </div>
@@ -387,7 +387,7 @@ export function EntitiesTab() {
                               {ctx[e.id]?.expanded_before.map((t, i) => (
                                 <pre key={i} style={{ whiteSpace: "pre-wrap", margin: "4px 0", fontSize: 11, color: theme.textDim, opacity: 0.85 }}>{t}</pre>
                               ))}
-                              <pre style={{ whiteSpace: "pre-wrap", margin: "4px 0", fontSize: 11, background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: 6, padding: "0.4rem 0.5rem", color: "#d1d5db" }}>{ctx[e.id]?.window_text || e.window_text}</pre>
+                              <pre style={{ whiteSpace: "pre-wrap", margin: "4px 0", fontSize: 11, background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: 6, padding: "0.4rem 0.5rem", color: theme.text }}>{ctx[e.id]?.window_text || e.window_text}</pre>
                               {ctx[e.id]?.expanded_after.map((t, i) => (
                                 <pre key={i} style={{ whiteSpace: "pre-wrap", margin: "4px 0", fontSize: 11, color: theme.textDim, opacity: 0.85 }}>{t}</pre>
                               ))}
@@ -414,7 +414,7 @@ export function EntitiesTab() {
             <article key={e.id} style={{ ...styles.card, borderLeft: `4px solid ${KIND_COLORS[e.kind] ?? theme.textDim}` }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <span style={{ ...styles.badge, background: KIND_COLORS[e.kind] ?? theme.textDim }}>{e.kind}</span>
-                <span style={{ ...styles.badge, background: e.status === "verified" ? "#14532d" : e.status === "stale" ? "#3f3f46" : "#451a03" }}>{e.status}</span>
+                <span style={{ ...styles.badge, background: e.status === "verified" ? theme.greenBg : e.status === "stale" ? theme.mutedBg : theme.amberBg }}>{e.status}</span>
                 <span style={{ fontSize: 12, color: theme.textMuted }}>conf {(e.confidence * 100).toFixed(0)}%</span>
                 <span style={{ marginLeft: "auto", fontSize: 12, color: theme.textDim }}>{e.source_ref}</span>
               </div>
@@ -442,7 +442,7 @@ export function EntitiesTab() {
                       {ctx[e.id]?.expanded_before.map((t, i) => (
                         <pre key={i} style={{ whiteSpace: "pre-wrap", margin: "6px 0", fontSize: 12, color: theme.textDim, opacity: 0.85 }}>{t}</pre>
                       ))}
-                      <pre style={{ whiteSpace: "pre-wrap", margin: "6px 0", fontSize: 12, background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: 6, padding: "0.5rem 0.6rem", color: "#d1d5db" }}>{ctx[e.id]?.window_text || e.window_text}</pre>
+                      <pre style={{ whiteSpace: "pre-wrap", margin: "6px 0", fontSize: 12, background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: 6, padding: "0.5rem 0.6rem", color: theme.text }}>{ctx[e.id]?.window_text || e.window_text}</pre>
                       {ctx[e.id]?.expanded_after.map((t, i) => (
                         <pre key={i} style={{ whiteSpace: "pre-wrap", margin: "6px 0", fontSize: 12, color: theme.textDim, opacity: 0.85 }}>{t}</pre>
                       ))}
@@ -474,13 +474,13 @@ const styles: Record<string, React.CSSProperties> = {
   cardSmall: { background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: 7, padding: "0.6rem 0.8rem" },
   docCard: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: 8, padding: "0.7rem 0.9rem" },
   docCount: { fontSize: 11, background: theme.bgHover, color: theme.textMuted, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 600 },
-  needBadge: { fontSize: 10, background: "#451a03", color: theme.amber, border: `1px solid ${theme.amber}`, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 700 },
+  needBadge: { fontSize: 10, background: theme.amberBg, color: theme.amber, border: `1px solid ${theme.amber}`, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 700 },
   docToggle: { background: "none", border: `1px solid ${theme.border}`, color: theme.accentAlt, borderRadius: 6, padding: "0.2rem 0.5rem", cursor: "pointer", fontSize: 11 },
-  piiBadge: { fontSize: 10, background: "#3a2a1a", color: theme.amber, border: `1px solid ${theme.amber}`, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 700 },
+  piiBadge: { fontSize: 10, background: theme.amberBg, color: theme.amber, border: `1px solid ${theme.amber}`, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 700 },
   badge: { fontSize: 11, color: theme.bg, padding: "0.1rem 0.5rem", borderRadius: 999, fontWeight: 700, textTransform: "uppercase" },
   button: { padding: "0.3rem 0.7rem", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bgHover, color: theme.text, cursor: "pointer", fontSize: 12 },
   disabled: { opacity: 0.5, cursor: "not-allowed" },
   input: { padding: "0.3rem 0.5rem", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, fontSize: 12 },
   toggle: { background: "none", border: "none", color: theme.textDim, padding: "0.2rem 0.6rem", borderRadius: 999, cursor: "pointer", fontSize: 12, fontWeight: 600 },
-  toggleActive: { background: theme.accent, color: "#fff" },
+  toggleActive: { background: theme.accent, color: theme.onAccent },
 };
