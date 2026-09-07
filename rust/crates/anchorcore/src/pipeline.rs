@@ -49,8 +49,7 @@ fn cloud_trusted(settings: &SettingsService, kind: &str) -> bool {
         "embed" => settings.get("embed_base_url", None).or_else(|| settings.get("ollama_base_url", None)).unwrap_or_else(|| "http://localhost:11434".to_string()),
         _ => settings.get("ollama_base_url", None).unwrap_or_else(|| "http://localhost:11434".to_string()),
     };
-    let is_local = base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1");
-    if is_local { true } else { std::env::var("ANCHOR_CLOUD_TRUST").as_deref() == Ok("1") }
+    crate::common::provider_trusted(&base)
 }
 fn sensitive_label(label: &str) -> bool {
     label == "sensitive" || label == "pii"
@@ -142,76 +141,87 @@ impl Pipeline {
 
     pub async fn sync_source(&self, source_id: i64, job_id: i64, force_reclassify: bool) {
         let data_dir = self.data_dir.clone();
-        // R10.4: respect bounded concurrency — do NOT flip pending→running here
-        // JobManager::maybe_promote is the sole owner of pending→running.
-        // If this job is pending, wait for a slot (poll DB until promoted or cancelled).
-        {
-            let db_path = crate::db::resolve_db_path(&data_dir);
-            let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
-            let status: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "pending".to_string());
-            if status == "cancelled" {
-                self.jobs.maybe_promote(&conn);
-                return;
-            }
-            if status == "pending" {
-                drop(conn);
-                // wait for promotion (MAX_CONCURRENT gate)
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    let db_path2 = crate::db::resolve_db_path(&data_dir);
-                    let conn2 = crate::db::init_db(&db_path2).unwrap_or_else(|_| Connection::open(&db_path2).unwrap());
-                    let cur: String = conn2.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "pending".to_string());
-                    if cur == "cancelled" {
-                        crate::jobs::JobManager::new().maybe_promote(&conn2);
-                        return;
-                    }
-                    if cur == "running" {
-                        break;
-                    }
-                    if cur != "pending" {
-                        // failed/done — should not happen for pending waiter, just exit
-                        return;
-                    }
-                }
-            } else if status != "running" {
-                // unexpected state (failed/done) — nothing to do
-                return;
-            }
-            // job is now running (promoted by JobManager); proceed without extra UPDATE
+        if !self.wait_for_slot(&data_dir, job_id).await {
+            return;
         }
         let res = Box::pin(self.run_sync_inner(source_id, job_id, force_reclassify, &data_dir)).await;
-        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::common::open_data_db(&data_dir);
+        self.finish_job(&conn, source_id, job_id, res);
+    }
+
+    /// R10.4: respect bounded concurrency — do NOT flip pending→running here.
+    /// JobManager::maybe_promote is the sole owner of pending→running.
+    /// Returns true once the job is running and owned; false when there is
+    /// nothing to do (cancelled/failed/done — promotion already handled).
+    async fn wait_for_slot(&self, data_dir: &str, job_id: i64) -> bool {
+        let db_path = crate::db::resolve_db_path(data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        let status: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "pending".to_string());
+        if status == "cancelled" {
+            self.jobs.maybe_promote(&conn);
+            return false;
+        }
+        if status == "pending" {
+            drop(conn);
+            // wait for promotion (MAX_CONCURRENT gate)
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let db_path2 = crate::db::resolve_db_path(data_dir);
+                let conn2 = crate::db::init_db(&db_path2).unwrap_or_else(|_| Connection::open(&db_path2).unwrap());
+                let cur: String = conn2.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "pending".to_string());
+                if cur == "cancelled" {
+                    crate::jobs::JobManager::new().maybe_promote(&conn2);
+                    return false;
+                }
+                if cur == "running" {
+                    break;
+                }
+                if cur != "pending" {
+                    // failed/done — should not happen for pending waiter, just exit
+                    return false;
+                }
+            }
+        } else if status != "running" {
+            // unexpected state (failed/done) — nothing to do
+            return false;
+        }
+        // job is now running (promoted by JobManager); proceed without extra UPDATE
+        true
+    }
+
+    /// Record the sync outcome without clobbering a concurrent cancel (R9.1),
+    /// then promote the next pending job.
+    fn finish_job(&self, conn: &Connection, source_id: i64, job_id: i64, res: Result<(i64, i64), String>) {
         match res {
             Ok((items, entities)) => {
                 // R9.1: do not clobber concurrent cancel
                 let cur: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "done".to_string());
                 if cur == "cancelled" {
-                    self.jobs.maybe_promote(&conn);
+                    self.jobs.maybe_promote(conn);
                 } else {
                     let result = serde_json::json!({"items": items, "entities": entities}).to_string();
                     let _ = conn.execute("UPDATE jobs SET status='done', finished_at=datetime('now'), result=?1, error=NULL WHERE id=?2", rusqlite::params![result, job_id]);
-                    record_sync_success(&conn, source_id);
+                    record_sync_success(conn, source_id);
                     // update job total/processed
                     let _ = conn.execute("UPDATE jobs SET total=?1, processed=?1 WHERE id=?2", rusqlite::params![items, job_id]);
                     // promote next pending
-                    self.jobs.maybe_promote(&conn);
+                    self.jobs.maybe_promote(conn);
                 }
             }
             Err(e) if e == "job cancelled" => {
                 // R9.1: cancelled must stay cancelled, no error_count bump, promote next
                 let _ = conn.execute("UPDATE jobs SET status='cancelled', finished_at=datetime('now'), error='job cancelled' WHERE id=?1", [job_id]);
-                self.jobs.maybe_promote(&conn);
+                self.jobs.maybe_promote(conn);
             }
             Err(e) => {
                 // do not clobber a concurrent cancel that already set cancelled
                 let cur: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "failed".to_string());
                 if cur == "cancelled" {
-                    self.jobs.maybe_promote(&conn);
+                    self.jobs.maybe_promote(conn);
                 } else {
                     let _ = conn.execute("UPDATE jobs SET status='failed', finished_at=datetime('now'), error=?1 WHERE id=?2", rusqlite::params![e, job_id]);
-                    record_sync_error(&conn, source_id, &e);
-                    self.jobs.maybe_promote(&conn);
+                    record_sync_error(conn, source_id, &e);
+                    self.jobs.maybe_promote(conn);
                 }
             }
         }
@@ -416,14 +426,18 @@ impl ClassifyCtx {
     }
 }
 
+fn truncate_trimmed(s: &str, n: usize) -> String {
+    s.chars().take(n).collect::<String>().trim().to_string()
+}
+
 fn extractive_section_summary(text: &str) -> String {
     let paras: Vec<&str> = text.split("\n\n").collect();
     let first_two = paras.iter().take(2).cloned().collect::<Vec<_>>().join("\n\n");
     let trimmed = first_two.trim();
     if trimmed.is_empty() {
-        return text.chars().take(800).collect::<String>().trim().to_string();
+        return truncate_trimmed(text, 800);
     }
-    trimmed.chars().take(1200).collect::<String>().trim().to_string()
+    truncate_trimmed(trimmed, 1200)
 }
 
 fn extractive_doc_summary(text: &str) -> String {
@@ -431,7 +445,7 @@ fn extractive_doc_summary(text: &str) -> String {
     if cleaned.is_empty() {
         return String::new();
     }
-    cleaned.chars().take(1200).collect::<String>().trim().to_string()
+    truncate_trimmed(cleaned, 1200)
 }
 
 async fn create_summaries(ctx: &ClassifyCtx) -> Result<(), String> {
@@ -443,6 +457,34 @@ async fn create_summaries(ctx: &ClassifyCtx) -> Result<(), String> {
         create_summaries_inner(conn, item_id, &full_text, &base_ref, force)
     })
     .await
+}
+
+/// R15.4: one batched read of `(chunk_id, content)` per section (replaces the
+/// per-section and per-tag chunk queries in summaries/tags).
+fn load_section_chunks(
+    conn: &Connection,
+    sec_ids: &[i64],
+) -> Result<std::collections::HashMap<i64, Vec<(i64, String)>>, String> {
+    let mut out: std::collections::HashMap<i64, Vec<(i64, String)>> = std::collections::HashMap::new();
+    if sec_ids.is_empty() {
+        return Ok(out);
+    }
+    let sql = format!(
+        "SELECT section_id, id, content FROM chunks WHERE section_id IN ({}) ORDER BY id",
+        crate::common::placeholders(sec_ids.len())
+    );
+    let mut cstmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = cstmt
+        .query_map(rusqlite::params_from_iter(sec_ids.iter()), |r| {
+            Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
+        })
+        .map_err(|e| e.to_string())?;
+    for row in rows.filter_map(|r| r.ok()) {
+        if let (Some(sid), cid, content) = row {
+            out.entry(sid).or_default().push((cid, content));
+        }
+    }
+    Ok(out)
 }
 
 fn create_summaries_inner(
@@ -469,17 +511,18 @@ fn create_summaries_inner(
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
+    // R15.4: one batched read for all section texts (was one query per section).
+    let sec_ids: Vec<i64> = secs.iter().map(|(id, _, _, _, _, _)| *id).collect();
+    let mut section_chunks = load_section_chunks(conn, &sec_ids)?;
     for (sec_id, title, path, level, stored_hash, stored_summary) in secs {
         if title.is_empty() && path.is_empty() && level == 0 {
             continue;
         }
-        let mut cstmt = conn
-            .prepare("SELECT content FROM chunks WHERE section_id=?1 ORDER BY id")
-            .map_err(|e| e.to_string())?;
-        let sec_text: String = cstmt
-            .query_map([sec_id], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
+        let sec_text: String = section_chunks
+            .remove(&sec_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, c)| c)
             .collect::<Vec<_>>()
             .join("\n\n");
         if sec_text.trim().is_empty() {
@@ -565,33 +608,24 @@ fn create_tags_inner(conn: &Connection, item_id: i64, full_text: &str) -> Result
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
+    // R15.4: one batched read for all section chunks (was per-section content
+    // + per-tag id queries).
+    let sec_ids: Vec<i64> = secs.iter().map(|(id, _, _)| *id).collect();
+    let mut section_chunks = load_section_chunks(conn, &sec_ids)?;
     for (sec_id, title, _path) in secs {
         if title.is_empty() {
             continue;
         }
-        let mut cstmt = conn
-            .prepare("SELECT content FROM chunks WHERE section_id=?1 ORDER BY id")
-            .map_err(|e| e.to_string())?;
-        let mut sec_text: String = cstmt
-            .query_map([sec_id], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let chunks = section_chunks.remove(&sec_id).unwrap_or_default();
+        let mut sec_text: String = chunks.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>().join("\n\n");
         if sec_text.trim().is_empty() {
             sec_text = title.clone();
         }
+        let chunk_ids: Vec<i64> = chunks.into_iter().map(|(cid, _)| cid).collect();
         let proposed = crate::tags::propose_tags(&sec_text, &title);
         for tag_name in proposed {
             let tag_id = crate::tags::ensure_tag(conn, &tag_name)?;
-            let chunk_ids: Vec<i64> = conn
-                .prepare("SELECT id FROM chunks WHERE section_id=?1")
-                .map_err(|e| e.to_string())?
-                .query_map([sec_id], |r| r.get::<_, i64>(0))
-                .map_err(|e| e.to_string())?
-                .filter_map(|r| r.ok())
-                .collect();
-            for cid in chunk_ids {
+            for cid in &chunk_ids {
                 let _ = conn.execute(
                     "INSERT OR IGNORE INTO chunk_tags (chunk_id, tag_id) VALUES (?1,?2)",
                     rusqlite::params![cid, tag_id],
@@ -601,8 +635,8 @@ fn create_tags_inner(conn: &Connection, item_id: i64, full_text: &str) -> Result
     }
     // also tag doc-level chunks (doc_summary) with top tags from full_text
     let doc_tags = crate::tags::propose_tags(full_text, "");
-    for tag_name in doc_tags.iter().take(2) {
-        let tag_id = crate::tags::ensure_tag(conn, tag_name)?;
+    if !doc_tags.is_empty() {
+        // R15.4: hoisted out of the per-tag loop (was re-queried per tag).
         let doc_chunks: Vec<i64> = conn
             .prepare("SELECT id FROM chunks WHERE item_id=?1 AND kind='doc_summary'")
             .map_err(|e| e.to_string())?
@@ -610,11 +644,14 @@ fn create_tags_inner(conn: &Connection, item_id: i64, full_text: &str) -> Result
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect();
-        for cid in doc_chunks {
-            let _ = conn.execute(
-                "INSERT OR IGNORE INTO chunk_tags (chunk_id, tag_id) VALUES (?1,?2)",
-                rusqlite::params![cid, tag_id],
-            );
+        for tag_name in doc_tags.iter().take(2) {
+            let tag_id = crate::tags::ensure_tag(conn, tag_name)?;
+            for cid in &doc_chunks {
+                let _ = conn.execute(
+                    "INSERT OR IGNORE INTO chunk_tags (chunk_id, tag_id) VALUES (?1,?2)",
+                    rusqlite::params![cid, tag_id],
+                );
+            }
         }
     }
     Ok(())
@@ -739,14 +776,15 @@ async fn flag_pii(ctx: &ClassifyCtx) -> Result<(), String> {
     }).await
 }
 
-// hash skip check: if all windows hashes equal prev and not force, skip entirely
-fn distill_changed(force: bool, windows: &[String], prev: &std::collections::HashMap<String, String>) -> bool {
+// hash skip check: if all window hashes equal prev and not force, skip entirely.
+// R15.4: compares already-computed `ClassifyCtx.new_hashes` (was re-hashing
+// every window even though `classify_windows` had just hashed them).
+fn distill_changed_hashes(force: bool, new_hashes: &std::collections::HashMap<String, String>, prev: &std::collections::HashMap<String, String>) -> bool {
     if force {
         return true;
     }
-    for (idx, w) in windows.iter().enumerate() {
-        let h = crate::hashing::window_hash(w);
-        if prev.get(&(idx + 1).to_string()).map(|v| v != &h).unwrap_or(true) {
+    for (k, h) in new_hashes {
+        if prev.get(k).map(|v| v != h).unwrap_or(true) {
             return true;
         }
     }
@@ -775,11 +813,12 @@ async fn distill_item(ctx: &ClassifyCtx) -> Result<(), String> {
     let base_ref = ctx.base_ref.clone();
     let windows = ctx.windows.clone();
     let force = ctx.force;
+    // R15.4: reuse classify-phase hashes (no re-hash of every window).
+    let new_hashes = ctx.new_hashes.clone();
     run_db(&ctx.data_dir, move |conn| {
         let prev_str: String = conn.query_row("SELECT distill_hashes FROM ingested_items WHERE id=?1", [item_id], |r| r.get(0)).unwrap_or_else(|_| "{}".to_string());
         let prev: std::collections::HashMap<String, String> = serde_json::from_str(&prev_str).unwrap_or_default();
-        let mut new_hashes = prev.clone();
-        if !distill_changed(force, &windows, &prev) {
+        if !distill_changed_hashes(force, &new_hashes, &prev) {
             // update hashes even if skip? keep prev
             return Ok(());
         }
@@ -787,8 +826,6 @@ async fn distill_item(ctx: &ClassifyCtx) -> Result<(), String> {
         let _ = conn.execute("DELETE FROM chunks WHERE item_id=?1 AND kind='distilled'", [item_id]);
         let max_units: usize = std::env::var("ANCHOR_DISTILL_MAX_UNITS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
         for (idx, window) in windows.iter().enumerate() {
-            let h = crate::hashing::window_hash(window);
-            new_hashes.insert((idx + 1).to_string(), h);
             let units = crate::classifier::distill_rules(window);
             let refs = if windows.len() > 1 { format!("{} §{}", base_ref, idx + 1) } else { base_ref.clone() };
             for unit in units.into_iter().take(max_units) {
@@ -804,13 +841,10 @@ async fn distill_item(ctx: &ClassifyCtx) -> Result<(), String> {
 
 async fn update_distill_hashes(ctx: &ClassifyCtx) -> Result<(), String> {
     let item_id = ctx.item_id;
-    let windows = ctx.windows.clone();
+    // R15.4: classify phase already hashed every window into `new_hashes`.
+    let new_hashes = ctx.new_hashes.clone();
     run_db(&ctx.data_dir, move |conn| {
-        let mut map = std::collections::HashMap::new();
-        for (idx, w) in windows.iter().enumerate() {
-            map.insert((idx + 1).to_string(), crate::hashing::window_hash(w));
-        }
-        if let Ok(j) = serde_json::to_string(&map) {
+        if let Ok(j) = serde_json::to_string(&new_hashes) {
             let _ = conn.execute("UPDATE ingested_items SET distill_hashes=?1 WHERE id=?2", rusqlite::params![j, item_id]);
         }
         Ok(())
@@ -835,21 +869,24 @@ async fn embed_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
     let is_pii_flags: Vec<bool> = chunks.iter().map(|(_, _, p)| *p).collect();
     // call embedder (graceful fallback inside embed_gated on remote failure)
     let out = ctx.embedder.embed_gated(contents, is_pii_flags, gated, embed_min_signal).await.unwrap_or_else(|_| vec![None; pending_ids.len()]);
-    for (idx, blob_opt) in out.into_iter().enumerate() {
-        if let Some(blob) = blob_opt {
-            let cid = pending_ids[idx];
-            let blob_c = blob.clone();
-            let embedder_c = ctx.embedder.clone();
-            let data_dir_c = ctx.data_dir.clone();
-            // update DB + vec0 sync in blocking task
-            let _ = run_db(&data_dir_c, move |conn| {
-                let _ = conn.execute("UPDATE chunks SET embedding=?1 WHERE id=?2", rusqlite::params![blob_c, cid]);
-                let _ = embedder_c.sync_vec(conn, cid, &blob_c);
-                Ok(())
-            }).await;
-        }
+    let updates: Vec<(i64, Vec<u8>)> = out
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, blob_opt)| blob_opt.map(|blob| (pending_ids[idx], blob)))
+        .collect();
+    if updates.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    // R15.4: single blocking task for all writes (was one spawn_blocking per chunk).
+    let embedder = ctx.embedder.clone();
+    run_db(&ctx.data_dir, move |conn| {
+        for (cid, blob) in &updates {
+            let _ = conn.execute("UPDATE chunks SET embedding=?1 WHERE id=?2", rusqlite::params![blob, cid]);
+            let _ = embedder.sync_vec(conn, *cid, blob);
+        }
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(test)]

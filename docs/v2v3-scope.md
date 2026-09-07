@@ -12,8 +12,8 @@ Locked decisions from the publishing-strategy review; each maps to a backlog ite
 | # | Decision | Backlog |
 |---|---|---|
 | D1 | Domain: **`anchorcore.dev`** registered (~$12/yr, Cloudflare Registrar). `anchorcore.ai`/`.com`/`.app` are taken but parked — no squatter premium | B33 |
-| D2 | Website: static Astro/Vite on Cloudflare Pages (free); landing + docs + changelog; "free during validation" until hosted exists | B33 |
-| D3 | Pricing: **sub-only, one dial** — local free forever; sub includes everything (no separate fixed license). Individual €19/mo, Teams €25/user/mo | B35 |
+| D2 | Website: static Vite on Cloudflare Pages (free); landing + docs + changelog; personal free forever, team one-time license, no prices on site | B33 |
+| D3 | Pricing (decided): personal local free forever; Team self-hosted = one-time platform license (perpetual + 1yr maintenance, offline ed25519 key — shipped: `backend/app/license.py` + `scripts/make_license.py`); hosted pricing TBD from pilots — no per-seat | B35 |
 | D4 | Hosted = low-risk, quota-bounded features only (hosted sync, MCP endpoint, webhooks, share links, review); cheap-tier metered bundled models; per-workspace caps | B35 |
 | D5 | License: **BSL 1.1** + Ed25519-signed keys, verified offline (air-gapped capable); community carve-out for non-commercial + small orgs | B36 |
 | D6 | Enterprise: **sell the platform, don't host it** — Docker + SSO/RBAC/audit, flat annual per deployment + support; enterprise telemetry = SLA feature | B37 |
@@ -42,7 +42,7 @@ v1 today = the middle two boxes. This doc scopes the rest.
 | Home | hero + 60s demo (video or interactive), the "AI memory" positioning, 3-step how-it-works, download CTA | Message: *"Preserve company knowledge and make every AI model smarter."* |
 | Download | Windows exe + macOS app (both exist — B20/B24), checksums, changelog link | direct artifact links from GitHub Releases (B25) |
 | Docs | README + docs/ rendered | could be a static site built from the repo (VitePress/Docusaurus/Mintlify) |
-| Pricing | free tier + paid tiers (see §6) | only once hosted exists; until then "free during validation" |
+| Pricing | personal free + licensed team self-host (see §6) | decided; hosted pricing deferred to pilot conversations |
 | Changelog | release notes per version | see §5 |
 | Blog | founder-led thought leadership (GTM per product-plan §12) | later |
 
@@ -120,7 +120,7 @@ content never leaves the local machine (local models only). This makes
 will ask about first.
 
 **The hook:** sharing a workspace is the natural "try the paid tier" moment —
-local stays free, shared = hosted + paid.
+local stays free; team self-hosted = paid platform license; hosted = paid when it exists.
 
 ## 5. Release management & changelogs
 
@@ -140,26 +140,26 @@ Releases. Needed next:
 
 ## 6. Free tier & pricing (aligns with product-plan §10–11)
 
-**Principle: local = free forever (privacy moat); hosted = paid.** Free tier
-exists to get people past the download → demo → value gap, not to subsidize
-heavy hosted use.
+**Principle: personal local = free forever (privacy moat); team self-hosted =
+one-time platform license; hosted = paid when it exists.** No per-seat, no
+prices on site — price discovery happens in pilot conversations.
 
-| | Free (local) | Hosted Individual | Hosted Teams | Enterprise |
+| | Personal (local) | Team self-hosted | Hosted | Enterprise |
 |---|---|---|---|---|
-| Price | €0 | €15–50/mo | €20–50/user/mo | €20k–100k+/yr |
+| Price | €0 | one-time license, perpetual incl. 1yr support/updates | TBD from pilots | support contract, scoped per deal |
 | Core memory + Q&A | ✅ | ✅ | ✅ | ✅ |
-| Hosted sync ("AI already knows") | — | ✅ | ✅ | ✅ |
-| Bundled model access | — | ✅ (metered) | ✅ | ✅ |
-| Team workspace + sharing | — | 1 workspace | unlimited | unlimited |
+| License enforcement | — | offline ed25519 key (`backend/app/license.py`) | — | ✅ |
+| Hosted sync ("AI already knows") | — | — | ✅ | ✅ |
+| Bundled model access | — | — | ✅ (metered) | ✅ |
+| Team workspace + sharing | — | ✅ (your VPC) | ✅ | ✅ |
 | Contradictions/verification | — | — | ✅ | ✅ |
 | Agentic levels 2–3 | — | — | ✅ | ✅ |
 | SSO, audit logs, on-prem | — | — | — | ✅ |
 
-**Free tier decisions to make:**
+**Remaining decisions:**
 - Does hosted have a free tier at all (e.g. 1 workspace, 50 MB, 3 sources)?
   Recommendation: yes, small — it's the demo without running anything.
-- Local app: always free, no feature-gating (users self-host = word of mouth
-  + future enterprise on-prem).
+- Hosted price points — set only after pilot conversations, never on the site first.
 - Metering: storage (GB), sources, model tokens — decide when hosted is real.
 
 ## 7. Enterprise (v3 stretch)

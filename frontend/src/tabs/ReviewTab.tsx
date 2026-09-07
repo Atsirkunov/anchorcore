@@ -11,7 +11,7 @@ function highlight(text: string, needle: string) {
   return (
     <>
       {text.slice(0, i)}
-      <mark style={{ background: "#facc15", color: "#111", padding: "0 2px", borderRadius: 3 }}>{needle}</mark>
+      <mark style={{ background: theme.amber, color: theme.markText, padding: "0 2px", borderRadius: 3 }}>{needle}</mark>
       {text.slice(i + needle.length)}
     </>
   );
@@ -213,7 +213,7 @@ export function ReviewTab() {
             <div style={{ fontSize: 12, color: theme.textMuted }}>{d.reason}</div>
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
               <button
-                style={{ ...styles.button, background: "#1e3a2a", ...(busyProposal !== null ? styles.disabled : {}) }}
+                style={{ ...styles.button, background: theme.greenBg, ...(busyProposal !== null ? styles.disabled : {}) }}
                 disabled={busyProposal !== null}
                 onClick={() => decide(d.id, "merge")}
               >
@@ -278,7 +278,7 @@ const styles: Record<string, React.CSSProperties> = {
     margin: "6px 0",
     fontSize: 12,
     lineHeight: 1.5,
-    color: "#d1d5db",
+    color: theme.text,
     background: theme.bg,
     border: `1px solid ${theme.border}`,
     borderRadius: 6,

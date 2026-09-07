@@ -1,6 +1,4 @@
 use super::{ConnectorError, IngestionDoc};
-use chrono::{DateTime, Utc};
-use reqwest::Client;
 use serde_json::Value;
 
 pub struct JiraConnector {
@@ -45,42 +43,24 @@ impl JiraConnector {
     }
 
     pub async fn fetch(&self, since_cursor: &str) -> Result<(Vec<IngestionDoc>, String), ConnectorError> {
-        let client = Client::builder().timeout(std::time::Duration::from_secs(60)).build().map_err(|e| ConnectorError(e.to_string()))?;
+        // R15.5: pinned to `search/jql` (Atlassian removed the legacy `search`
+        // `startAt` API — the old dual-path `use_new` fork is gone).
+        let client = super::http_client(60)?;
         let jql = self.jql(since_cursor);
         let mut docs = Vec::new();
         let mut next_cursor = since_cursor.to_string();
         let mut next_page_token: Option<String> = None;
-        let mut use_new = true;
-        let mut start_at: i64 = 0;
         loop {
-            let resp = if use_new {
-                let mut params = vec![
-                    ("jql", jql.clone()),
-                    ("maxResults", "50".to_string()),
-                    ("fields", "summary,description,comment,updated,creator,assignee,status".to_string()),
-                ];
-                if let Some(t) = &next_page_token { params.push(("nextPageToken", t.clone())); }
-                let r = client.get(format!("{}/rest/api/3/search/jql", self.base_url))
-                    .header("Authorization", self.auth_header())
-                    .query(&params)
-                    .send().await.map_err(|e| ConnectorError(e.to_string()))?;
-                if r.status().as_u16() == 404 || r.status().as_u16() == 410 {
-                    use_new = false;
-                    continue;
-                }
-                r
-            } else {
-                let params = vec![
-                    ("jql", jql.clone()),
-                    ("startAt", start_at.to_string()),
-                    ("maxResults", "50".to_string()),
-                    ("fields", "summary,description,comment,updated,creator,assignee,status".to_string()),
-                ];
-                client.get(format!("{}/rest/api/3/search", self.base_url))
-                    .header("Authorization", self.auth_header())
-                    .query(&params)
-                    .send().await.map_err(|e| ConnectorError(e.to_string()))?
-            };
+            let mut params = vec![
+                ("jql", jql.clone()),
+                ("maxResults", "50".to_string()),
+                ("fields", "summary,description,comment,updated,creator,assignee,status".to_string()),
+            ];
+            if let Some(t) = &next_page_token { params.push(("nextPageToken", t.clone())); }
+            let resp = client.get(format!("{}/rest/api/3/search/jql", self.base_url))
+                .header("Authorization", self.auth_header())
+                .query(&params)
+                .send().await.map_err(|e| ConnectorError(e.to_string()))?;
             if !resp.status().is_success() {
                 return Err(ConnectorError(format!("Jira {}: {}", resp.status(), resp.text().await.unwrap_or_default())));
             }
@@ -88,7 +68,7 @@ impl JiraConnector {
             for issue in data.get("issues").and_then(|v| v.as_array()).unwrap_or(&vec![]) {
                 parse_issue(issue, &mut docs, &mut next_cursor);
             }
-            if advance_page(&data, use_new, &mut next_page_token, &mut start_at) {
+            if super::next_jql_token(&data, &mut next_page_token) {
                 break;
             }
         }
@@ -104,7 +84,7 @@ fn parse_issue(issue: &Value, docs: &mut Vec<IngestionDoc>, next_cursor: &mut St
     let assignee = fields.get("assignee").and_then(|v| v.get("displayName")).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let desc = fields.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let updated_raw = fields.get("updated").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let updated = DateTime::parse_from_rfc3339(&updated_raw).ok().map(|d| d.with_timezone(&Utc));
+    let updated = super::parse_dt(&updated_raw);
     let mut parts = vec![summary.clone(), format!("Status: {}", status), format!("Assignee: {}", assignee), desc];
     if let Some(comments) = fields.get("comment").and_then(|v| v.get("comments")).and_then(|v| v.as_array()) {
         for c in comments {
@@ -113,55 +93,15 @@ fn parse_issue(issue: &Value, docs: &mut Vec<IngestionDoc>, next_cursor: &mut St
             }
         }
     }
-    let text = parts.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
-    if let Some(dt) = updated {
-        let iso = dt.to_rfc3339();
-        if next_cursor.is_empty() || iso > *next_cursor {
-            *next_cursor = iso;
-        }
-    }
-    docs.push(IngestionDoc {
-        external_id: key.clone(),
-        title: if summary.is_empty() { key.clone() } else { summary },
-        text,
-        author: String::new(),
-        updated_at: updated,
-        source_ref: format!("Jira:{}", key),
-    });
-}
-
-fn advance_page(data: &Value, use_new: bool, next_page_token: &mut Option<String>, start_at: &mut i64) -> bool {
-    if use_new {
-        let is_last = data.get("isLast").and_then(|v| v.as_bool()).unwrap_or(true);
-        if is_last {
-            return true;
-        }
-        *next_page_token = data.get("nextPageToken").and_then(|v| v.as_str()).map(|s| s.to_string());
-        return next_page_token.is_none();
-    }
-    let total = data.get("total").and_then(|v| v.as_i64()).unwrap_or(0);
-    let count = data.get("issues").and_then(|v| v.as_array()).map(|a| a.len() as i64).unwrap_or(0);
-    if *start_at + count >= total {
-        return true;
-    }
-    *start_at += 50;
-    false
+    super::push_doc(docs, next_cursor, &key, &summary, parts, String::new(), updated, "Jira");
 }
 
 fn collect_projects(data: &Value, projects: &mut Vec<(String, String)>) {
-    for p in data.get("values").and_then(|v| v.as_array()).unwrap_or(&vec![]) {
+    // Handles both `project/search` (`values` array) and legacy `project` (bare array).
+    let arr = data.get("values").and_then(|v| v.as_array()).or_else(|| data.as_array());
+    for p in arr.unwrap_or(&vec![]) {
         if let (Some(k), Some(n)) = (p.get("key").and_then(|v| v.as_str()), p.get("name").and_then(|v| v.as_str())) {
             projects.push((k.to_string(), n.to_string()));
-        }
-    }
-}
-
-fn collect_legacy_projects(data: &Value, projects: &mut Vec<(String, String)>) {
-    if let Some(arr) = data.as_array() {
-        for p in arr {
-            if let (Some(k), Some(n)) = (p.get("key").and_then(|v| v.as_str()), p.get("name").and_then(|v| v.as_str())) {
-                projects.push((k.to_string(), n.to_string()));
-            }
         }
     }
 }
@@ -171,7 +111,7 @@ impl JiraConnector {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     let base = base_url.trim_end_matches('/');
     let auth = format!("Basic {}", STANDARD.encode(format!("{}:{}", email, token).as_bytes()));
-    let client = Client::builder().timeout(std::time::Duration::from_secs(30)).build().map_err(|e| ConnectorError(e.to_string()))?;
+    let client = super::http_client(30)?;
     let mut projects = Vec::new();
     let mut next: Option<String> = None;
     loop {
@@ -182,15 +122,13 @@ impl JiraConnector {
         if !resp.status().is_success() { return Err(ConnectorError(format!("{}: {}", resp.status(), resp.text().await.unwrap_or_default()))); }
         let data: Value = resp.json().await.map_err(|e| ConnectorError(e.to_string()))?;
         collect_projects(&data, &mut projects);
-        if data.get("isLast").and_then(|v| v.as_bool()).unwrap_or(true) { break; }
-        next = data.get("nextPageToken").and_then(|v| v.as_str()).map(|s| s.to_string());
-        if next.is_none() { break; }
+        if super::next_jql_token(&data, &mut next) { break; }
     }
     if projects.is_empty() {
         let resp = client.get(format!("{}/rest/api/3/project", base)).header("Authorization", auth).send().await.map_err(|e| ConnectorError(e.to_string()))?;
         if !resp.status().is_success() { return Err(ConnectorError(format!("{}: {}", resp.status(), resp.text().await.unwrap_or_default()))); }
         let data: Value = resp.json().await.map_err(|e| ConnectorError(e.to_string()))?;
-        collect_legacy_projects(&data, &mut projects);
+        collect_projects(&data, &mut projects);
     }
     Ok(projects)
 }
