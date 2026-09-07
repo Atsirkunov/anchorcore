@@ -33,6 +33,7 @@ export function SourceRow({
   function configSummary(): string {
     if (source.connector === "folder") return config.path ? `📁 ${config.path}` : "folder source";
     if (source.connector === "gdrive") return config.folder_id ? `📂 Drive:${config.folder_id.slice(0, 10)}…` : "Drive source";
+    if (source.connector === "rest") return config.base_url ? `🔌 ${(config.base_url + (config.list_path ?? "")).slice(0, 48)}` : "REST source";
     const parts = [config.base_url, config.project].filter(Boolean);
     return parts.length ? `🔗 ${parts.join(" · ")}` : "Jira source";
   }
