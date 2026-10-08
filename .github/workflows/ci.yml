@@ -18,7 +18,7 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r backend/requirements.txt
-      - run: python -m pytest backend/tests -q --ignore=backend/tests/test_mcp.py
+      - run: PYTHONPATH=backend python -m pytest backend/tests -q --ignore=backend/tests/test_mcp.py
 
   version-drift:
     name: Version single-source check
