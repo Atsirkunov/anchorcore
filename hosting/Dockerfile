@@ -12,7 +12,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsqlite3-0 curl \
   && rm -rf /var/lib/apt/lists/* \
-  && curl -sL "https://github.com/Atsirkunov/anchorcore/archive/refs/tags/${BACKEND_TAG}.tar.gz" -o /tmp/py.tar.gz \
+  && curl -sL --fail "https://github.com/Atsirkunov/anchorcore/archive/refs/tags/${BACKEND_TAG}.tar.gz" -o /tmp/py.tar.gz \
   && mkdir -p /tmp/py && tar -xzf /tmp/py.tar.gz -C /tmp/py --strip-components=1 \
   && cp /tmp/py/backend/requirements.txt ./requirements.txt \
   && pip install --no-cache-dir -r requirements.txt \
