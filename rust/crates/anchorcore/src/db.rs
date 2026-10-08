@@ -66,8 +66,7 @@ pub fn init_db(path: &Path) -> Result<Connection> {
     // Run migrations (see `migrations()` below). If the DB already exists from
     // Python/Alembic, this will apply only missing ones; otherwise it creates all.
     // All SQL uses IF NOT EXISTS so re-running on a Python-created DB is safe.
-    let migrations = migrations();
-    if let Err(e) = migrations.to_latest(&mut conn) {
+    if let Err(e) = run_migrations(&mut conn) {
         // Real syntax errors should surface; "already exists" is ok because
         // Python/Alembic already created tables before rusqlite_migration
         // tracking table existed. Log and continue for the latter.
@@ -215,6 +214,38 @@ fn ensure_vec(conn: &Connection) {
     let _ = conn.execute(&backfill, []);
 }
 
+fn vec_trigger_defs(conn: &Connection) -> Vec<(String, String)> {
+    conn.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND sql LIKE '%vec_chunks%'")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<Result<Vec<(String, String)>, _>>()
+        })
+        .unwrap_or_default()
+}
+
+fn run_migrations(conn: &mut Connection) -> Result<(), rusqlite_migration::Error> {
+    // This build has no vec0 module linked, but Python-managed DBs contain a
+    // real vec0 table plus vec_chunks_* triggers on chunks. ALTER TABLE ...
+    // RENAME re-validates every trigger body, which fails with "no such
+    // module: vec0". Drop those triggers for the migration run and restore
+    // them byte-identical afterwards (even on failure, so a rolled-back run
+    // leaves the schema untouched). Fresh DBs have no such triggers: no-op.
+    let saved = vec_trigger_defs(conn);
+    for (name, _) in &saved {
+        let _ = conn.execute(
+            &format!("DROP TRIGGER IF EXISTS \"{}\"", name.replace('"', "\"\"")),
+            [],
+        );
+    }
+    let result = migrations().to_latest(conn);
+    for (_, sql) in &saved {
+        if let Err(e) = conn.execute(sql, []) {
+            tracing::warn!("failed to restore vec trigger after migrate: {}", e);
+        }
+    }
+    result
+}
+
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
         // 23bca0413318_initial_schema — sources, ingested_items, entities, chunks, merge_actions, relationships
@@ -264,5 +295,52 @@ mod tests {
         // pragmas
         let fk: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
         assert_eq!(fk, 1);
+    }
+
+    fn vec_trigger_sql(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn
+            .prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND sql LIKE '%vec_chunks%' ORDER BY name")
+            .unwrap();
+        stmt.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+    }
+
+    #[test]
+    fn migrate_pending_with_vec_triggers_and_no_vec0() {
+        // Live-DB repro: schema at v10 + vec0 triggers (created by a vec0-capable
+        // build), migrating with a binary that has no vec0 module linked.
+        // ALTER TABLE ... RENAME re-validates every trigger, so the pending
+        // migration must not die with "no such module: vec0" — and the
+        // triggers must survive byte-identical.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("live.db");
+        init_db(&path).unwrap();
+        // Recreate the live-DB shape: a vec0 VIRTUAL TABLE (Python-created)
+        // with vec triggers on chunks. This build has no vec0 module, so fake
+        // the schema entry directly — exactly what RENAME chokes on.
+        {
+            let conn = open_db(&path).unwrap();
+            conn.execute("DROP TABLE vec_chunks", []).unwrap();
+            conn.pragma_update(None, "writable_schema", "ON").unwrap();
+            conn.execute(
+                "INSERT INTO sqlite_master(type, name, tbl_name, rootpage, sql) VALUES \
+                 ('table', 'vec_chunks', 'vec_chunks', 0, \
+                 'CREATE VIRTUAL TABLE vec_chunks USING vec0(embedding float[768] distance_metric=cosine)')",
+                [],
+            )
+            .unwrap();
+            conn.pragma_update(None, "writable_schema", "OFF").unwrap();
+            conn.pragma_update(None, "user_version", 10).unwrap();
+        }
+        let before = vec_trigger_sql(&open_db(&path).unwrap());
+        assert!(!before.is_empty(), "test setup must have vec triggers");
+        let mut conn = open_db(&path).unwrap();
+        run_migrations(&mut conn).unwrap();
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 13);
+        assert_eq!(vec_trigger_sql(&conn), before);
+        let sys_sql: String = conn
+            .query_row("SELECT sql FROM sqlite_master WHERE name = 'system_events'", [], |r| r.get(0))
+            .unwrap();
+        assert!(sys_sql.contains("DEFAULT CURRENT_TIMESTAMP"), "migration 13 must apply: {sys_sql}");
     }
 }
