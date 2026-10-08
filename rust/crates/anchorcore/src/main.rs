@@ -14,6 +14,7 @@ mod db;
 mod distill;
 mod embedder;
 mod entities;
+mod fernet;
 mod frontend;
 mod hashing;
 mod health;

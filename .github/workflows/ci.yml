@@ -63,6 +63,12 @@ jobs:
         run: |
           cargo check -p anchorcore
           cargo test -p anchorcore -- --nocapture
+      - name: No OpenSSL dependency (Windows runner has none)
+        working-directory: rust
+        run: |
+          if cargo tree -p anchorcore --prefix none -e normal 2>/dev/null | grep -qiE "openssl-sys|native-tls"; then
+            echo "forbidden: openssl/native-tls in dependency tree (breaks Windows release build)"; exit 1
+          fi
       - name: Clippy (unwrap_used)
         working-directory: rust
         run: cargo clippy -p anchorcore -- -D clippy::unwrap_used --allow clippy::needless_return --allow clippy::manual_range_contains || echo "clippy warnings allowed for now (R11.3) — fix gradually"
