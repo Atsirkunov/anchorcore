@@ -680,7 +680,7 @@ rollback-safe — OR a documented decision to stay on Python.
 
 ---
 
-### B46. Review archived-Python consumers: Docker image, license check, CI (P1)
+### B46. Review archived-Python consumers: Docker image, license check, CI — DONE
 
 **Problem:** `backend/` left the tree (frozen on tag `archive/python-final`).
 Three live systems now consume that frozen snapshot instead of in-tree code,
@@ -702,6 +702,10 @@ pre-archive HEAD for unknown reasons (logs need repo access to read).
 conformance; license roundtrip verified; pinning decision recorded in
 `docs/archived-python.md`.
 
+**Done:** CI green (incl. conformance + archived backend suite after a
+`PYTHONPATH=backend` fix); license gate reviewed sound; pinning recorded.
+Fresh-clone `docker build` moved to B48 (no Docker on this machine).
+
 ### B47. Deploy the website (P1)
 
 **Problem:** the site builds but lives only in `website/dist/` — nothing is
@@ -721,7 +725,7 @@ waitlist verified in production.
 experience is untested.
 
 **Scope:** on clean Windows + macOS (no dev tools): download → unzip → run →
-sync `sample/` → ask → cited answers; MCP smoke via one harness; Team image:
+sync `sample/` → ask → cited answers; MCP smoke via one harness; fresh-clone `docker build` (from B46) + Team image:
 boots with a valid license, refuses without one. Record every papercut.
 
 **DoD:** both platforms pass the script; issues filed as backlog items.
@@ -777,7 +781,6 @@ Explicit order — v1 core, hardening, scale and the website are DONE (v1.0.10�
 | 5 | B29 remainder: CHANGELOG + hosted prep | **P1** | website shipped; changelog discipline + pilot prep open |
 | 6 | B28 Drive OAuth polish | **P2** | OAuth browser flow + `data/drive/<name>/` mirror |
 | 7 | B45 Slack | **P2** | export-ZIP import local (free); live connector = Teams/hosted feature |
-| 8 | B46 archive-consumer review | **P1** | Dockerfile + license + CI after the backend archive |
 | 9 | B47 deploy website | **P1** | host + DNS + production link check |
 | 10 | B48 end-to-end test | **P1** | clean Win/Mac script incl. Team license negative |
 | 11 | B49 hosted design | **P2** | owner design session → decisions in hosting.md/v2v3 |
