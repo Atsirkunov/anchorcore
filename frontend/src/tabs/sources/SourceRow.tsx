@@ -29,6 +29,7 @@ export function SourceRow({
   onChanged: () => void;
 }) {
   const [editing, setEditing] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   function configSummary(): string {
     if (source.connector === "folder") return config.path ? `📁 ${config.path}` : "folder source";
@@ -40,11 +41,23 @@ export function SourceRow({
 
   async function startJob(id: number, kind: "sync" | "reclassify") {
     try {
+      setActionError(null);
       if (kind === "sync") await api.syncSource(id);
       else await api.reclassifySource(id);
       onChanged();
     } catch (e) {
-      console.error(e);
+      setActionError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function deleteSource(id: number, name: string) {
+    if (!window.confirm(`Delete source "${name}"? Its synced items, entities and jobs are removed for good. This cannot be undone.`)) return;
+    try {
+      setActionError(null);
+      await api.deleteSource(id);
+      onChanged();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -119,6 +132,11 @@ export function SourceRow({
               {source.last_error.slice(0, 120)}
             </div>
           )}
+          {actionError && (
+            <div style={{ fontSize: 12, color: theme.red, marginTop: 4 }} title={actionError}>
+              Action failed: {actionError.slice(0, 200)}
+            </div>
+          )}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <button onClick={() => setEditing((v) => !v)} style={commonStyles.button}>
@@ -140,8 +158,9 @@ export function SourceRow({
             </button>
           )}
           <button
-            onClick={() => api.deleteSource(source.id).then(onChanged)}
+            onClick={() => deleteSource(source.id, source.name)}
             disabled={!!job}
+            title={job ? "Stop the running job first" : "Delete this source and its synced data"}
             style={{ ...commonStyles.button, background: theme.redBg }}
           >
             Delete
