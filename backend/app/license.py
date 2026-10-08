@@ -121,6 +121,6 @@ def enforce_team_license() -> LicenseResult:
         raise RuntimeError(
             f"Team edition requires a license ({result.message}). "
             "Mount it at ANCHOR_LICENSE_FILE or set ANCHOR_LICENSE. "
-            "Contact sales for a platform license."
+            "Contact sales at alex@anchorcore.dev for a platform license."
         )
     return result

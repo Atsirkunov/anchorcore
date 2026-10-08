@@ -62,11 +62,10 @@ codesign --force --deep --sign - "$ROOT/dist/AnchorCore.app"
 codesign --verify --verbose=2 "$ROOT/dist/AnchorCore.app" 2>&1 | head -n 5 || true
 
 # 5. Zip for distribution (Finder shows .app as one file; recipients unzip once)
+# Same name as the CI asset (release.yml build-rust-macos).
 echo "==> Zipping dist/AnchorCore.app..."
-rm -f "$ROOT/dist/AnchorCore-macos.zip" "$ROOT/dist/AnchorCore-rust-macos.zip"
+rm -f "$ROOT/dist/AnchorCore-macos.zip"
 (cd "$ROOT/dist" && zip -rq AnchorCore-macos.zip AnchorCore.app)
-# Keep legacy Rust zip name for release.yml compatibility
-(cd "$ROOT/dist" && cp AnchorCore-macos.zip AnchorCore-rust-macos.zip)
 
 # 6. Legacy Python PyInstaller (optional, kept for hosted comparison — skips if no venv)
 if [ -x "$ROOT/backend/.venv/bin/python" ] && "$ROOT/backend/.venv/bin/python" -c "import PyInstaller" 2>/dev/null; then

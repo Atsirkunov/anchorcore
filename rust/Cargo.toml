@@ -6,7 +6,8 @@ resolver = "2"
 version = "1.0.12"
 edition = "2021"
 authors = ["AnchorCore"]
-license = "MIT"
+# Custom source-available license — see /LICENSE.md (Personal free, Team paid).
+license = "LicenseRef-AnchorCore"
 
 [profile.release]
 lto = true

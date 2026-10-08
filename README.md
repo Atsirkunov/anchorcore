@@ -1,15 +1,46 @@
 # AnchorCore
 
-Connect your knowledge to any AI model. Your memory — finally searchable. — personal or team, same local app (see [Design system](./docs/design-system.md#51-website-hero--a-chosen--personal--company-split) for the two-track language).
+Your memory — finally searchable.
+
+AnchorCore turns your folders, Jira, and Linear into a private AI knowledge base
+on your own machine. Ask "what was decided about X, and why?" — get a cited answer
+that shows exactly where it came from.
+
+## Download
+
+Free for personal use. No account, no Docker, no setup:
+
+- [Download for Windows](https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-windows.zip)
+- [Download for macOS](https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-macos.zip)
+
+Unzip, run, and the app opens in your browser. Your data stays in `~/.anchorcore`
+on your machine — nothing leaves it unless you configure a cloud model.
+
+> First launch: on macOS right-click → Open (the app isn't Apple-notarized yet);
+> on Windows click "More info → Run anyway" on the SmartScreen prompt.
+
+## 60-second start
+
+1. Download and run the app (above).
+2. Sources → Local folder → point at the bundled `sample/` demo corpus (or your
+   own folder) → Sync.
+3. Ask: "What was decided about security transfers, and why?" → cited answer.
+
+Tip: install [Ollama](https://ollama.com) and pull `llama3.2:3b` +
+`nomic-embed-text` for full hybrid search — without it, keyword search still works.
 
 ## Editions
 
-- **Personal (local)** — free forever. Single-file app, data in `~/.anchorcore`.
-- **Team (self-hosted)** — one-time platform license, perpetual incl. 1yr
-  support/updates. Docker image (`hosting/`), offline license key via
-  `ANCHOR_LICENSE_FILE` — see [hosting/README.md](./hosting/README.md);
-  issue keys with `python scripts/make_license.py issue --org "Acme"`.
-- **Hosted** — coming soon, pricing TBD from pilots (no prices on site).
+- **Personal** — this app. Free forever for personal use (see [License](#license)).
+- **Team (self-hosted)** — one Docker container in your VPC, one-time platform
+  license (perpetual, incl. 1 year of support/updates). See
+  [hosting/README.md](./hosting/README.md).
+- **Hosted** — coming soon.
+
+## License
+
+Free for personal use under [LICENSE.md](./LICENSE.md) (source-available).
+Team and commercial use requires a paid license.
 
 ## Docs
 
@@ -38,11 +69,11 @@ docs/       Product plan, architecture, packaging, releasing
 
 ## Run it
 
-**Easiest (testers):** build once, ship one file — `.\build.ps1` (Windows)
-produces `dist/AnchorCore.exe`, or `./build.sh` (macOS) produces
-`dist/AnchorCore` (ad-hoc signed). Each bundles the UI, auto-starts Ollama,
-data in `~/.anchorcore`. Pushing a `v*` tag builds Windows + macOS
-executables automatically (see `docs/releasing.md`).
+**Easiest:** download the app ([Windows / macOS links above](#download), or the
+[latest Release](https://github.com/Atsirkunov/anchorcore/releases/latest)) — unzip,
+run, done. Each build bundles the UI, auto-starts Ollama, data in `~/.anchorcore`.
+To build it yourself: `.\build.ps1` (Windows) or `./build.sh` (macOS) from the repo
+root; pushing a `v*` tag builds all platform zips automatically (see `docs/releasing.md`).
 
 **Developers (Rust — shipped):** `cargo run -p anchorcore -- --port 8000 --data-dir ~/.anchorcore` — applies migrations, starts Ollama, boots at http://localhost:8000. Add `cargo run -p anchorcore -- --port 8123` for conformance vs Python. Frontend dev: `cd frontend && npm run dev` at :5173 (proxies to :8000).
 
@@ -57,7 +88,7 @@ ollama pull llama3.2:3b       # classifier
 ollama pull nomic-embed-text  # embeddings
 ```
 
-**Tests — Rust is source:** `cargo test -p anchorcore` (47, `cargo check` 0) + `cargo build --release` embeds `frontend/dist` (`9.8M`). Conformance vs Python: `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=backend/tests/test_mcp.py` (`110/17` honest). Legacy Python unit: `python -m pytest backend/tests -q` (`backend/tests/README.md`).
+**Tests — Rust is source:** `cargo test -p anchorcore` (all green, `cargo check` clean) + `cargo build --release` embeds `frontend/dist` (`9.8M`). Conformance vs Python: `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=backend/tests/test_mcp.py` (honest accounting). Legacy Python unit: `python -m pytest backend/tests -q` (`backend/tests/README.md`).
 
 ## Model configuration (Settings tab — no restart)
 
@@ -151,7 +182,7 @@ resets the thread.
 - `GET /review/low-confidence`, `GET /review/duplicates` (paginated `limit`/`offset`/`kind` B38), `POST /review/merge` — review queue (entities carry `window_text` for review context)
 - `POST /qa` — ask (optionally with `history` turns, `project_id` scope, `public_only` B30), get answer with section-level citations; `POST /qa/public` — share-safe, public sources only (B30)
 - `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`, `GET /projects/default` — project bundles for scoped search
-- `GET /pii/config`, `PUT /pii/config`, `GET /pii/review`, `POST /pii/review/{id}`, `POST /pii/scan/{source}` — PII config + review (B30, Direct= pii / Indirect= sensitive, source-level for v1)
+- `GET /pii/config`, `PUT /pii/config`, `GET /pii/review`, `POST /pii/review/{id}`, `POST /pii/scan/{source}`, `GET /pii/item/{id}` — PII config + review (B30, Direct= pii / Indirect= sensitive, source-level for v1)
  - `GET /auth/status`, `POST /auth/signup`, `POST /auth/login`, `GET /auth/me` — hosted auth (B40, `ANCHOR_AUTH_SECRET` enables JWT; local stays no-auth)
  - `GET /settings`, `PUT /settings` — runtime model config (`tag_reuse_threshold` 0.82, `PUT` persists to `app_settings`, `tags.rs:50` reads env `ANCHOR_TAG_REUSE_THRESHOLD` → DB fallback)
  - `POST /settings/test-connection` — verify ollama/classifier/embedder/answer providers
