@@ -18,22 +18,22 @@
     <text x="28" y="198" font-size="16" fill="#1a1d1a">tickets &amp; docs</text>
   </g>
   <!-- converging threads -->
-  <path d="M218 64 C 320 64, 360 120, 456 126" fill="none" stroke="#9A8B7A" stroke-width="2"/>
-  <path d="M218 128 L 456 130" fill="none" stroke="#4A5A52" stroke-width="2.5"/>
-  <path d="M218 192 C 320 192, 360 140, 456 134" fill="none" stroke="#9A8B7A" stroke-width="2"/>
+  <path d="M218 64 C 320 64, 360 120, 452 126" fill="none" stroke="#9A8B7A" stroke-width="2"/>
+  <path d="M218 128 L 452 130" fill="none" stroke="#4A5A52" stroke-width="2.5"/>
+  <path d="M218 192 C 320 192, 360 140, 452 134" fill="none" stroke="#9A8B7A" stroke-width="2"/>
   <!-- vault -->
   <g>
-    <rect x="460" y="42" width="220" height="178" rx="14" fill="#4A5A52"/>
-    <rect x="478" y="60" width="184" height="108" rx="8" fill="#F2F0EB"/>
-    <rect x="492" y="76" width="8" height="28" rx="3" fill="#4A5A52"/>
-    <text x="508" y="97" font-size="15" fill="#1a1d1a">434 · Scope</text>
-    <rect x="492" y="110" width="8" height="28" rx="3" fill="#4A5A52"/>
-    <text x="508" y="131" font-size="15" fill="#1a1d1a">437 · Dates</text>
-    <text x="492" y="158" font-size="14" fill="#9A8B7A">4.2.1 Sub · 964 entities</text>
-    <text x="478" y="198" font-size="14" fill="#F2F0EB">filed · cited · yours</text>
+    <rect x="452" y="42" width="236" height="178" rx="14" fill="#4A5A52"/>
+    <rect x="470" y="60" width="200" height="108" rx="8" fill="#F2F0EB"/>
+    <rect x="484" y="76" width="8" height="28" rx="3" fill="#4A5A52"/>
+    <text x="500" y="97" font-size="15" fill="#1a1d1a">434 · Scope</text>
+    <rect x="484" y="110" width="8" height="28" rx="3" fill="#4A5A52"/>
+    <text x="500" y="131" font-size="15" fill="#1a1d1a">437 · Dates</text>
+    <text x="484" y="158" font-size="13" fill="#9A8B7A" textLength="172" lengthAdjust="spacingAndGlyphs">4.2.1 · 964 entities</text>
+    <text x="470" y="198" font-size="14" fill="#F2F0EB">filed · cited · yours</text>
   </g>
   <!-- thread to answer -->
-  <path d="M680 131 L 756 131" fill="none" stroke="#4A5A52" stroke-width="2.5"/>
+  <path d="M688 131 L 756 131" fill="none" stroke="#4A5A52" stroke-width="2.5"/>
   <!-- cited answer card -->
   <g>
     <rect x="760" y="42" width="312" height="178" rx="14" fill="#ffffff" stroke="#e2ddd6" stroke-width="2"/>
