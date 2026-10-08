@@ -14,19 +14,19 @@
 2. Builds Rust `AnchorCore-rust-*` (`cargo build --release`, `frontend/dist` embedded via `include_dir!`, `codesign` on macOS)
 3. Attaches to the GitHub Release for that tag (Python `dist/AnchorCore.*` legacy kept for `hosting` reference only)
 
-## Release checklist (Rust — shipped 1.0.11)
+## Release checklist (Rust — shipped 1.0.12)
 
 1. **Verify locally:**
-   - [ ] `cargo test -p anchorcore` (47) + `cargo check 0` — Rust green
-   - [ ] `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q` — conformance `110/17`
+   - [ ] `cargo test -p anchorcore` (77) + `cargo check 0` — Rust green
+   - [ ] `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q` — conformance `116/17`
    - [ ] `npm run build` + `npm run lint` + `npm run test` in `frontend/` — TypeScript + Vite clean
    - [ ] Sanity: `cargo run -p anchorcore -- --port 8000` → ask a question, check Settings
 2. **Bump the version** — edit `rust/Cargo.toml:6` `workspace.package.version` → `python scripts/sync_version.py` (writes `backend/app/config.py:11` for `hosting`)
 3. **Update docs** — backlog items marked `DONE`; handover `docs/handover-*.md`
 4. **Tag and push:**
    ```
-   git tag v1.0.11
-   git push origin v1.0.11
+   git tag v1.0.12
+   git push origin v1.0.12
    ```
 5. **Verify the Release** (github.com → Releases): `AnchorCore-rust-*` present; smoke `curl /health` on clean machine
 6. **Hand off** — testers get the GitHub Release URL, not a repo checkout
