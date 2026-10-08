@@ -1,6 +1,6 @@
 # AnchorCore Rust — agent guide (shipped `v1.0.9`)
 
-This mirrors `/AGENTS.md` but for the `rust/` workspace. **Rust is now shipped** (`v1.0.9` `7131cfe`, `cargo test 47` + `cargo check 0` + honest `110/17` vs Rust via CI `rust-conformance`). `backend/` is legacy conformance only; new work is in `rust/` unless it's `hosting/` Postgres. Read this + `rust/BACKLOG.md` + `docs/rust-port.md` + `docs/handover-2026-08-21-retire.md:1`.
+This mirrors `/AGENTS.md` but for the `rust/` workspace. **Rust is now shipped** (`v1.0.9` `7131cfe`, `cargo test` + `cargo check` green + honest conformance vs Rust via CI `rust-conformance`). `backend/` is legacy conformance only; new work is in `rust/` unless it's `hosting/` Postgres. Read this + `rust/BACKLOG.md` + `docs/rust-port.md` + `docs/handover-2026-08-21-retire.md:1`.
 
 ## Contract-first (still, but Rust is source)
 
@@ -11,7 +11,7 @@ This mirrors `/AGENTS.md` but for the `rust/` workspace. **Rust is now shipped**
 ## How to work here (now tech-debt, not greenfield)
 
 * Pick one task from `rust/BACKLOG.md` **Phase 7–10** (`R7.1`–`R10.9`, release-blocking security/retrieval/conformance first) or the `P*` remainder in `docs/port-review-2026-08-21-lead.md:44` (expand_context, logs pagination, deadpool, etc.) — tasks still sized for parallel agents (no shared files). Full review driving these: `docs/review-2026-08-21-full.md:1`.
-* For each task: schema/migration (if any) → router/handler → wire in `main.rs` → test (new `cargo test` 47 + existing Python `backend/tests` via HTTP on `:8123`) → docs. Note: R9.2 makes conformance honest (`127` collect → `110/17` vs Rust via CI `rust-conformance`); old "124/3" & "115/8/3" were inflated/stale (see `docs/review-2026-08-21-full.md:1`).
+* For each task: schema/migration (if any) → router/handler → wire in `main.rs` → test (new `cargo test` green + existing Python `backend/tests` via HTTP on `:8123`) → docs. Note: R9.2 makes conformance honest (`127` collect → `110/17` vs Rust via CI `rust-conformance`); old "124/3" & "115/8/3" were inflated/stale (see `docs/review-2026-08-21-full.md:1`).
 * Keep `rust/Cargo.toml:6` single source (`1.0.9` via `scripts/sync_version.py`); crates live under `rust/crates/*`.
 * Log decisions in `rust/docs/decisions.md`; update `docs/handover-*.md` on retire.
 

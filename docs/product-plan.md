@@ -30,12 +30,12 @@ A system that becomes an organization's memory — understanding decisions, owne
 
 **Tracks — same local app, different language:**
 
-| Track | Buyer | Job to be done | Why they pay €15–50/mo |
+| Track | Buyer | Job to be done | Why it wins |
 |---|---|---|---|
 | **Personal** | Solo PM, founder, researcher, local enthusiast | “Remember everything *I* read/decided/built” — PDFs, notes, side-project Jira | Second brain that cites page 250 of a 300-page PDF |
 | **Company (team)** | 3–30 person team, PM-led | “Answer like you’ve worked here 3 years” — decisions, owners, dependencies across people | Onboarding, handovers, “who owns billing migration?” without Slack archaeology |
 
-No sales team, no procurement cycle in v1. Website has one page with `Personal | Team` toggle (`design-system.md:5.1`) — default **Personal** for faster validation, Team as “coming soon” teaser. Download tags `?track=` for `localStorage` hint in `AskTab.tsx:39`.
+No sales team, no procurement cycle in v1. Website has one page with a Personal/Team/Hosted toggle — default **Personal** for faster validation; Team self-hosted is a shipped, licensed tier. The toggle persists `?track=` + site-localStorage (no app handoff yet).
 
 **Moment of wow (60-second demo):** connect sources → ask *"what was decided about X, and why?"* → get a cited answer showing exactly where the knowledge came from. Personal example: security-transfers note; Team example: “who owns billing migration and what supersedes it?” (`sample/` covers both).
 
@@ -43,15 +43,15 @@ No sales team, no procurement cycle in v1. Website has one page with `Personal |
 
 | Area | Decision |
 |---|---|
-| Runtime | Local-first desktop app (Plex-style local server + browser UI), macOS first |
-| Connectors | Local folder watch + Jira (v1); Linear fast-follow; Slack v2 |
+| Runtime | Local-first app (local server + browser UI), Windows + macOS downloads |
+| Connectors | Local folder, Drive, Jira, Linear, REST (v1); Slack planned |
 | Model tiering | Ollama (local, 3B) for classification; BYO big models via API for Q&A/planning |
 | Model access | Bring-your-own-key (v1); bundled access v2–3 |
 | Trust layer | Sources + confidence + review UI (v1); contradictions & verification workflows (v2) |
 | Retrieval | SQLite + sqlite-vec, local embeddings (`nomic-embed-text`), swappable VectorStore |
-| Sync | 15-min Jira incremental polls; folder watcher + hourly scan fallback; hash dedup; stale-not-delete |
+| Sync | Incremental connector polls/cursors; folder watcher + hourly scan fallback; hash dedup; delete cascades |
 | Data model | Uniform entity graph (entities + typed relationships + provenance); contradictions as external layer |
-| Answers | Single-pass RAG, section-level citations, cheap default BYO model |
+| Answers | Planner → executor → fusion → graph walk, section-level citations, cheap default BYO model |
 | Identity | Hash dedup in-source; cross-source duplicate proposals for manual merge |
 | Billing | Personal local free forever; Team self-hosted = one-time platform license (perpetual + 1yr maintenance), offline ed25519 key (`backend/app/license.py`, issue via `scripts/make_license.py`); hosted pricing TBD from pilots |
 | Security | OS keychain for credentials; secrets never in DB/config/logs |
@@ -59,7 +59,7 @@ No sales team, no procurement cycle in v1. Website has one page with `Personal |
 ## 6. How Data Becomes Knowledge
 
 ```
-Sources (folder, Jira, Linear, Slack later)
+Sources (folder, Drive, Jira, Linear, REST; Slack planned)
     -> Extract text + metadata (incremental, deduped by hash)
     -> Classify into entity kinds (decision | document | action | note)
     -> Attach entities (person, system, feature, customer) + relationships
@@ -86,7 +86,7 @@ Sources (folder, Jira, Linear, Slack later)
 - Review UI: user confirms/reclassifies low-confidence items (recorded with user as author).
 - Duplicate proposals: user merges (never auto-merge).
 
-**v2 (deferred):** contradiction detection (claim graph + pairwise conflict scanning), human verification workflows (verified/disputed states).
+**v2 (deferred):** contradiction detection (claim graph + pairwise conflict scanning). Verified/disputed states shipped in v1 (B3).
 
 ## 8. Agentic Progression (after memory)
 
@@ -138,11 +138,11 @@ Candidates, in rough order of revenue pull (all build on the v1 memory core):
 | 3 — Jira connector | Poll Jira → entities + relationships | Answer "why was this delayed?" |
 | 4 — Q&A | RAG answers with section citations | 60-second wow demo end-to-end |
 | 5 — Validation | 20 conversations, 5 testers | Feedback + first paid pilot |
-| 6 — Packaging | macOS executable, Ollama-first | Distributable .dmg |
+| 6 — Packaging | Windows + macOS apps, Ollama-first | Downloadable zips via release.yml |
 
 ---
 
-## 13. Backlog
+## 14. Backlog
 
 Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = later.
 
@@ -356,11 +356,11 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 **DoD:** connecting `sample/` exercises every Review tab state, produces multiple entity kinds with owners, and supports a 3+ turn follow-up demo. — met (live demo flows).
 
 ### B22. Live integration validation: Jira / Linear (P1)
-**Problem:** the Jira connector has never hit a real instance; Linear doesn't exist. "Connects to your tools" is claimed but unproven.
+**Problem:** the Jira and Linear connectors exist but have never hit real instances. "Connects to your tools" is claimed but unproven.
 
 **Scope:**
 - Jira: validate against a real sandbox instance (Atlassian free tier + API token) — incremental cursor, comments→doc text, author/assignee mapping, error surfaces; fix whatever breaks
-- Linear: new connector (Linear API key auth, issues/cycles → IngestionDoc), incremental by updatedAt, same source config pattern (base_url/api_key/project→team)
+- Linear: validate the shipped connector (API key auth, issues/cycles, incremental by updatedAt) against a real workspace
 - Recorded JSON fixtures + mocked-fetch tests so CI validates connector logic without credentials (per B21 sample data)
 - Troubleshooting pass in README: how to create a Jira API token / Linear API key, expected permission scope
 
@@ -408,7 +408,7 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 - Tests `tests/test_gdrive.py` (mocked `RetryClient`): missing-config 422, list+export+media, 401 auth, end-to-end pipeline via `POST /sources` (gdrive) → sync → entities → `***set***` masking.
 - **Not yet:** local mirror dir (`data/drive/<name>/`), OAuth browser flow (needs Google Cloud project + client id), shared-drive `drive_id` filter, Drive-native PDF export, deletion→stale. These are the next polish after skeleton validation.
 
-**DoD:** a user authorizes a Drive folder, AnchorCore syncs its docs (including Google-native formats), and Q&A answers cite Drive sources with working file links. — skeleton met (mocked), live OAuth + mirror remain.
+**DoD:** a user authorizes a Drive folder, AnchorCore syncs its docs (including Google-native formats), and Q&A answers cite Drive sources with working file links. — skeleton met (mocked), live OAuth + mirror remain. *(Update: Rust parity shipped — `gdrive.rs` + UI option, token-based; OAuth flow + local mirror still open.)*
 
 **How to try (mocked or live):**
 - Mocked: `pytest backend/tests/test_gdrive.py` passes without creds.
@@ -418,7 +418,7 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 **Problem:** v1 is local-first and free; there's no website, hosted path, pricing, or changelog discipline — nothing for people to find/try/pay for.
 
 **Scope (per [v2v3-scope.md](./v2v3-scope.md)):**
-- Website: landing (60s demo), download, docs site, pricing, changelog page
+- Website: ✅ landing (60s demo), download, pricing shipped; docs = GitHub repo (no separate site); changelog page still open
 - Hosting: same code, env-driven — Postgres + object storage + server-side connectors; single-region VPS first
 - File sharing: read-only share links (project tokens) → collaborators → permissions (the Teams tier trigger)
 - Release mgmt: mandatory CHANGELOG.md + SemVer; update-checker later
@@ -427,12 +427,12 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** a stranger lands on the website, downloads the app (or starts the hosted free tier), and asks a cited question in under 3 minutes; a changelog accompanies every release.
 
-### B14. Agent connectivity via MCP (P1 — see [mcp.md](./mcp.md))
+### B14. Agent connectivity via MCP (P1 — see [mcp.md](./mcp.md)) — B14.1 + R12.5 DONE, B14.2–B14.4 open
 **Problem:** users want their own harnesses (Claude Code, Codex, opencode) to use AnchorCore's memory, but today only the browser UI can reach it.
 
 **Scope (per [mcp.md](./mcp.md)):**
 - B14.1 Local stdio MCP server, read-only: `ask`, `search`, `get_entity`, `get_source`, `list_sources`, `memory_status` — thin adapters over existing services; results respect status/dispute filtering
-- B14.2 Streamable HTTP transport mounted on the FastAPI app (`/mcp`), bearer-token auth (opt-in, disabled on localhost), calls audited in `system_events` — the "centralized dataset for agents" story
+- B14.2 Streamable HTTP transport mounted on the Axum app (`/mcp`), bearer-token auth (opt-in, disabled on localhost), calls audited in `system_events` — the "centralized dataset for agents" story
 - B14.3 Write-back `ingest` tool (items stored `unverified`, author `mcp:<token>`, routed to the review UI)
 - B14.4 Registry publishing for one-command harness installs
 
@@ -476,7 +476,7 @@ Direct vs Indirect PII taxonomy, source-level for v1, local vs API gate now / pe
 - **Share/MCP-safe ask:** `/qa/public` (and `public_only` on `/qa`) answers ONLY from `public` sources — non-public content is never retrieved; AskTab has a Public-only toggle; the frontend label chip shows what each label allows
 - **Chunk-level cloud embed gate:** PII-flagged chunks are not sent to an unconfirmed cloud embedder even in internal sources
 - Tests `tests/test_pii.py` + `tests/test_b30_gates.py` (public scope, sensitive/pii cloud block, chunk-level block, trust-flag allow, audit event)
-- **Deferred (P2, not B30):** MCP server itself (B14) — will consume `/qa/public`; NER-based auto-detection; LLM-assisted review
+- **Deferred (P2, not B30):** NER-based auto-detection; LLM-assisted review. (MCP shipped since — R12.5 consumes `/qa/public`.)
 
 ### B24. macOS build + ad-hoc signing (P2 — free path, no $99) — DONE
 **Problem:** Windows has a distributable exe (B20); macOS has none. The paid Apple Developer account ($99/yr) is only needed for *notarization* (silent Gatekeeper approval); for personal use and testers who accept one-time approval, a free path exists.
@@ -503,9 +503,9 @@ Direct vs Indirect PII taxonomy, source-level for v1, local vs API gate now / pe
 - `.github/workflows/release.yml` — on every `v*` tag push: builds Windows exe (Windows runner) + macOS app (macOS runner, ad-hoc signed, zipped), attaches both to the GitHub Release
 - `docs/releasing.md` — release checklist (tests → version bump → tag → verify artifacts → hand off) and the "why rebuild is mandatory" note
 
-**DoD:** tagging `v0.x.0` produces downloadable Windows + macOS artifacts automatically, verified by a smoke test on a clean machine.
+**DoD:** tagging `v0.x.0` produces downloadable Windows + macOS artifacts automatically, verified by a smoke test on a clean machine. *(Superseded: `release.yml` now builds Rust `AnchorCore-{windows,macos,linux}.zip` — see `releasing.md`.)*
 
-### B31. Backend port to Rust (P2 — deferred; see [rust-port.md](./rust-port.md))
+### B31. Backend port to Rust — DONE (v1.0.9+, Rust is the shipped backend; see [rust-port.md](./rust-port.md))
 **Problem:** Python fully packaged is rough for non-technical testers — PyInstaller/venv
 fragility (we've shipped two packaging bugs: `.dylib` glob, toolcache-Python lacking
 loadable sqlite extensions), no cross-compile, cold start. The question keeps coming up:
@@ -682,7 +682,7 @@ rollback-safe — OR a documented decision to stay on Python.
 
 ## Current execution priorities (agreed 2026-08-07 — updated after Aug review, amended for no-UX constraint)
 
-Explicit order — retrieval/answer + hardening + doc-review are DONE (v1.0.10–v1.0.11). **B30 full, B27, B28 skeleton, Rust port shipped**; queue below is pre-website.
+Explicit order — v1 core, hardening, scale and the website are DONE (v1.0.10–1.0.12). Queue below is post-website launch prep.
 
 > **Hardening & scale (P0/P1) before new connectors. No UX expertise needed for P0 — P0 is pure engineering. Visual polish via Stone & Sage tokens — taste-free.**
 
@@ -713,11 +713,12 @@ Explicit order — retrieval/answer + hardening + doc-review are DONE (v1.0.10�
 | — | B41 Doc-grouped Entities + PII shield | ✅ DONE (v1.0.11) | `EntitiesTab` `Map<item_id>` `Grouped/Flat` default `>200`, `Whole doc` `GET /entities/{id}/context` + `GET /pii/item/:id` `PII ●` `Reveal`, `Verify all & collapse` → navigable doc |
 | — | B42 A dozen review + banner persist | ✅ DONE (v1.0.11) | `classifier 0.5→0.78/0.72` selective, `pipeline verified≥0.70`, `1577→12 unverified`, `App.tsx` `localStorage["banner-dismissed"]` + suppress while `running`, `Entities` `Needs review` `⚠` flag + `limit 2000` |
 | — | B43 Business-scale corpus | ✅ DONE (v1.0.11) | `scripts/build_business_corpus.py` `tech/finance/AI` `800→5k docs` (`data/business-scale` gitignored) + Rust `NOT NULL` fixes `sources/jobs/ingested_items/entities/chunks` |
-| 1 | **B14 MCP agent connectivity** | **P1** | **never tested local without UI** `mcp.md:1` — stdio + HTTP `ask/search` against `business-scale`, audited `system_events`, `public_only` gate |
-| 2 | B22 Jira/Linear validation | **P1** | sandbox fixtures + `Linear` connector |
+| 1 | **B14.2 MCP HTTP transport** | **P1** | stdio shipped + tested local without UI (R12.5); HTTP + tokens unblock share links |
+| 2 | B22 Jira/Linear live validation | **P1** | sandbox fixtures; both connectors exist, need real-instance proof |
 | 3 | B9 Document type coverage | **P1** | `.docx`/`.pptx`/`.odt` extraction |
 | 4 | B16 who_knows (full) | **P1** | expertise ranking + evidence (minimal `who_knows` tool shipped in B17) |
-| 5 | B29 v2/v3 scoping + website | **P1** | `v2v3-scope.md` — landing `Personal|Team` toggle `paper #F2F0EB`, free personal local + licensed team self-host |
+| 5 | B29 remainder: CHANGELOG + hosted prep | **P1** | website shipped; changelog discipline + pilot prep open |
 | 6 | B28 Drive OAuth polish | **P2** | OAuth browser flow + `data/drive/<name>/` mirror |
+| 7 | B45 Slack | **P2** | export-ZIP import local (free); live connector = Teams/hosted feature |
 
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md), [design-system.md](./design-system.md)*

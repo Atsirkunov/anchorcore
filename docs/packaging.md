@@ -22,10 +22,10 @@ One command from the repo root:
 ```bash
 npm run build && cargo build --release -p anchorcore
 # artifact: rust/target/release/anchorcore (9.8M) + frontend/dist embedded
-# release zip: dist/AnchorCore-rust-macos.zip / windows.zip via release.yml
+# release zip: dist/AnchorCore-macos.zip / AnchorCore-windows.zip via release.yml
 ```
 
-`release.yml` builds `AnchorCore-rust-*` on every `v*` tag (`frontend` → `cargo build --release` → `codesign`).
+`release.yml` builds `AnchorCore-{windows,macos,linux}.zip` on every `v*` tag (`frontend` → `cargo build --release` → `codesign`).
 
 ## 3. Building (Python — deprecated, keep for hosting)
 
@@ -48,7 +48,7 @@ Security → Open Anyway) approves it once.
 
 ## 4. Tester experience (first run)
 
-1. Unzip → double-click `AnchorCore.exe` / `AnchorCore.app` (no terminal window)
+1. Unzip → double-click `anchorcore.exe` / `AnchorCore.app` (no Terminal window on either; panics append to `anchorcore.log`)
 2. Ollama starts (if installed), browser opens `http://127.0.0.1:8000`
 3. Sources tab → connect a folder (e.g. the bundled `sample/`)
 4. Sync; ask questions with citations
@@ -64,6 +64,7 @@ and logs land in `~/.anchorcore/anchorcore.log`.)
 | Ollama installer check | exe assumes Ollama present; add guided install/first-run (B8 overlap) | 0.5 day |
 | macOS notarization | silent Gatekeeper approval; needs Apple Developer account ($99/yr) | 1–2 days |
 | Windows installer (Inno Setup/NSIS) | nicer than a raw exe | 0.5 day |
+| ✅ Windows windowed exe (no console) | subsystem flag + panic-to-log hook in `main.rs` | done, needs CI build check |
 | App icon | currently ships the generic PyInstaller icon | 0.5 day |
 | Auto-update | Sparkle/tauri-updater | later |
 | Bundled inference (llama.cpp) | fully offline, no Ollama prerequisite | +2–3 days |

@@ -1,6 +1,6 @@
 # Gated access spec — deterministic reads (BYOM) + team consumer gating
 
-Status: Part A (Phase 1) shipped on `rust/R14.X`; Part B is backlog. Goal: users
+Status: Part A (Phase 1) shipped on main; Part B is backlog. Goal: users
 work with their favorite model (Claude, ChatGPT, local) over MCP with
 zero-copy-paste friction, while two orthogonal policies hold:
 (1) sensitive data never goes to unapproved *providers*, (2) data never goes to
@@ -165,7 +165,7 @@ against wrong-human *viewing*. Both run; membership first.
   integration and similar team surfaces. Rationale: team access is one coherent
   release (identity + membership + enforcement + audit); shipping half of it
   creates the illusion of security without the substance.
-- **Deferred/rejected**: per-chunk ACLs (rejected — project/source granularity
+- **Deferred**: per-chunk ACLs (rejected — project/source granularity
   is the ceiling), per-user encryption (API boundary suffices), public share
   links.
 

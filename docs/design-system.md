@@ -1,4 +1,4 @@
-# AnchorCore — Design System & Messaging (v1)
+# AnchorCore — Design System & Messaging
 
 > For a non-UX owner: copy-paste tokens + rules. No taste required — pick the preset, don't invent.
 > App (browser UI) is **dark, calm, trust-first**. Website is **light, same accent** — one brand, two surfaces.
@@ -16,160 +16,134 @@
 
 ## 2. Color — one palette, two themes
 
-Stone & Sage (C3) — vault/archive, matte, non-AI. Dark app = concrete/stone `#121416` + sage `#4A5A52`; light site = paper `#F2F0EB` same sage. Replaces indigo `#6366f1` / cyan `#38bdf8` to signal *memory / filing system* not chatbot.
+Stone & Sage (C3) — vault/archive, matte, non-AI. Dark app = warm black
+`#121416` + sage `#4A5A52`; light site = paper `#F2F0EB` + same sage.
+Replaces indigo/cyan to signal *memory / filing system*, not chatbot.
 
-### 2.1 Tokens (copy into `frontend/src/theme.ts`)
+### 2.1 Tokens (single sources of truth)
 
-```ts
-export const tokens = {
-  // --- dark: the app (localhost:8000) — Stone & Sage ---
-  dark: {
-    bg: "#121416",            // page — warm black
-    surface: "#1A1E20",       // header / source rows
-    surfaceRaised: "#23282B", // cards, inputs, citations
-    surfaceHover: "#2c3235",  // active tab, user bubble
-    border: "#2a2f33",        // header line
-    borderSubtle: "#343a3e",  // inputs, bubbles
-    text: "#E8E6E1",          // primary — warm white
-    textDim: "#9aa0a8",       // labels, meta
-    textFaint: "#7a828c",     // placeholders, empty states
-    accent: "#4A5A52",        // Ask button, links — sage, matte (not indigo)
-    accentHover: "#3f4d46",
-    accentSoft: "#1c2420",    // accent bg wash (badge bg)
-    accentText: "#b9c4be",    // on accentSoft
-    success: "#7a9a8a", textSuccess: "#1c2420",
-    warning: "#9A8B7A", textWarning: "#3d352a",
-    danger: "#c98a7a", textDanger: "#4a1d12", dangerBg: "#2B1E1D", dangerBorder: "#3d2a28",
-    // entity kinds — muted, stone palette (no traffic lights)
-    kind: { decision: "#6E7D75", document: "#7E9AB0", action: "#9A8B7A", note: "#7a828c" },
-  },
-  // --- light: the website (anchorcore.com) — paper, same sage ---
-  light: {
-    bg: "#F2F0EB",            // paper, not snow
-    surface: "#ffffff",
-    surfaceRaised: "#EDE8E0",
-    border: "#e2ddd6",
-    borderSubtle: "#d4cfc6",
-    text: "#1a1d1a",
-    textDim: "#6b7280",
-    textFaint: "#9aa0a8",
-    accent: "#4A5A52",
-    accentHover: "#3f4d46",
-    accentSoft: "#E2E8E3",
-    accentText: "#2f3d36",
-    success: "#4A5A52", warning: "#9A8B7A", danger: "#a85a4a",
-  },
-} as const;
-```
+App tokens live in `frontend/src/theme.ts` (`theme.*`); site tokens in
+`website/src/style.css` (`:root`). Same hues, different key names:
 
-**Why sage `#4A5A52` not indigo `#6366f1`:** indigo tested as trustworthy but reads as chatbot/SaaS (Linear/Notion AI). Sage is desaturated (chroma <12), editorial — signals *archive / foundry / vault* = memory + reliability + privacy + scale. Progress/spinner uses sage tint `#8FA99E`, not cyan `#7dd3fc`. One matte accent = one mental model. Paper site `#F2F0EB` + mono eyebrow + serif hero is the only non-AI tell needed.
+| Hue | App (`theme.ts`) | Site (`style.css`) |
+|---|---|---|
+| page bg | `bg #121416` | `--paper #F2F0EB` |
+| surface / card | `bgElevated #1A1E20`, `bgCard #23282B` | `--surface #ffffff` |
+| borders | `border #343a3e`, `borderSoft #2a2f33` | `--border #e2ddd6`, `--border2 #d4cfc6` |
+| text | `text #E8E6E1`, `textMuted #9aa0a8`, `textDim #7a828c` | `--ink #1a1d1a`, `--dim #6b7280`, `--faint #9aa0a8` |
+| accent (sage) | `accent #4A5A52`, `accentAlt #8FA99E` | `--sage #4A5A52`, `--sageH #3f4d46`, `--sageSoft #E2E8E3` |
+| stone | `amber #9A8B7A` | `--stone #9A8B7A` |
+| kinds | `purple #6E7D75`, `blue #7E9AB0`, `amber`, `green #7a9a8a` | (n/a — app only) |
+| danger | `red #c98a7a`, `redBg #2B1E1D`, `redBorder #3d2a28` | `#a85a4a` |
+
+**Why sage `#4A5A52` not indigo `#6366f1`:** indigo tested as trustworthy but reads as chatbot/SaaS (Linear/Notion AI). Sage is desaturated, editorial — signals *archive / foundry / vault* = memory + reliability + privacy. Progress/spinner uses the sage tint, not cyan. One matte accent = one mental model.
 
 **Rules for non-designers:**
-1. Never invent a hex. Only use `tokens.dark.*`.
-2. Backgrounds: `bg` → `surface` → `surfaceRaised` (page → section → card). Don't skip layers.
-3. Text: `text` for content, `textDim` for labels, `textFaint` for empty states. Never `#fff` on `bg`.
-4. `dangerBg`/`dangerBorder` only for banner `App.tsx:203`. Never for buttons.
-5. Kind colors only on left border + badge `EntitiesTab.tsx:55` — not whole card.
-6. Palette single source of truth: `frontend/src/theme.ts` (dark app) + `website/src/style.css` `:root` (light site) carry the same sage/stone values under different names (`accent`/`--sage`, `amber`/`--stone`, `bg`/`--paper`). When changing a hue, change both files in the same commit.
+1. Never invent a hex. App: only `theme.*`. Site: only `:root` vars.
+2. Backgrounds layer page → section → card. Don't skip layers.
+3. Text: content → labels → empty states, brightest to faintest. Never pure white on dark bg.
+4. Danger bg/border only for banners, never for buttons.
+5. Kind colors only on left border + badge — not whole cards.
+6. When changing a shared hue, change `theme.ts` and `style.css` in the same commit.
 
 ### 2.2 Contrast (WCAG AA) — Stone & Sage
 * `text #E8E6E1` on `bg #121416` = 13.9:1 ✓
 * `accent #4A5A52` on paper `#F2F0EB` = 6.8:1 ✓ (light site CTA, matte)
 * `accent #4A5A52` on white = 7.2:1 ✓
-* `textDim #9aa0a8` on `surface #1A1E20` = 4.9:1 ✓ — do not lighten further.
+* `textMuted #9aa0a8` on dark surface = 4.9:1 ✓ — do not lighten further.
 
 ---
 
 ## 3. Typography & spacing
 
-* **Font:** `system-ui, -apple-system, Segoe UI, Inter, sans-serif` (already `App.tsx:182`). No webfont — faster, native feel. If you add one, Inter only.
-* **Scale:** `12` meta / `13` input labels / `14` body / `16` card title / `18` page title (`App.tsx:191`). `line-height 1.6` for answer bubbles `AskTab.tsx:83`.
-* **Radius:** `6` inputs/badges, `7-8` cards, `8` bubbles, `999` pills (jobs badge). Sharpened from 10 to 8 for vault feel; keep matte, no glow.
+* **Font:** `system-ui, -apple-system, Segoe UI, Inter, sans-serif`. No webfont — faster, native feel. If you add one, Inter only. (Site hero uses a Georgia serif for the non-AI editorial tell.)
+* **Scale:** `12` meta / `13` input labels / `14` body / `16` card title / `18` page title. `line-height 1.6` for answer bubbles.
+* **Radius:** `6` inputs/badges, `7-8` cards, `8` bubbles, `999` pills. Matte, no glow.
 * **Spacing:** `8` tight (input gap), `12` card gap, `16` section, `24` header gap. Don't add `4px` tweaks.
 
 ---
 
 ## 4. App UX — keep layout, fix consistency
 
-Current 7 tabs `App.tsx:18` (Ask, Sources, Entities, Review, PII, Settings, System) are correct. No navigation redesign needed.
+Current 7 tabs (Ask, Sources, Entities, Review, PII, Settings, System) are correct. No navigation redesign needed.
 
-**Apply tokens without redesign:**
-```ts
-// frontend/src/theme.ts = tokens above
-// in each tab: import { tokens as t } from "../theme"
-// replace literal "#171a21" → t.dark.surfaceRaised etc.
-```
-This alone fixes the "inline styles everywhere" debt `B37` without any visual decision.
+**Token adoption: done.** `frontend/src/theme.ts` is the single source and no
+literal hex remains outside it. New UI must import `theme` / `commonStyles`
+instead of inlining colors.
 
-**Micro-fixes (no design skill):**
-* Button primary = `accent` `#4A5A52` (already `AskTab.tsx:60`), secondary = `surfaceRaised` + `borderSubtle`.
-* Empty states keep `textFaint #6b7280` + one-line hint (already `AskTab.tsx:101` — good).
-* Citations: keep `14171d` card `AskTab.tsx:88` + `kind` left accent — this *is* the brand.
+**Standing micro-rules:**
+* Button primary = sage accent, secondary = card bg + subtle border.
+* Empty states keep faint text + one-line hint.
+* Citations: dark card + kind-colored left accent — this *is* the brand.
 
 ---
 
 ## 5. Messaging — website + app copy (one voice)
 
-**Positioning** (`product-plan.md:5`): *Connect your knowledge to any AI model.* / *Your company's memory, not another chatbot.*
+**Positioning:** *Your memory — finally searchable.* / *Connect your knowledge to any AI model.*
 
-### 5.1 Website hero — A (chosen) + personal / company split
+### 5.1 Website hero — Personal / Team / Hosted tracks
 
-**Master headline (A):**
+**Master headline:**
 > **Your memory — finally searchable.**
-> Connect folders and Jira. Ask “what was decided about X, and why?” — get a cited answer that shows exactly where it came from. Private by default, on your machine.
+> Turn folders, Drive, Jira and Linear into a private AI knowledge base. Ask “what was decided about X, and why?” — get a cited answer that shows exactly where it came from. Private by default, on your machine.
 
-**Split language — same product, two doors (one brand, no color split):**
+**Track copy (same product, three doors — one brand, no color split):**
 
 | Track | Who | Headline variant | Subhead | Proof point |
 |---|---|---|---|---|
-| **Personal** | Solo PM, founder, researcher, local enthusiast | **Your knowledge, finally together.** | Your notes, PDFs, Jira tickets and decisions in one searchable memory. Ask like you remember it — get the source. | “300-page PDF? Page 250 still cited. Your second brain, not another chatbot.” |
-| **Company** | 3–30 person team, PM-led | **Your company's memory — finally searchable.** | Decisions, owners, dependencies — so any AI answers like an employee of 3 years. | “Why was this delayed? Who owns billing migration? Answered with section + author, not a guess.” |
+| **Personal** | Solo PM, founder, researcher | **Your memory — finally searchable.** | Your notes, PDFs, Jira, Linear and Drive in one searchable private memory. Ask like you remember it — get the source. | “300-page PDF? Page 250 still cited. Your second brain, not another chatbot.” |
+| **Team** | 3–30 person team, PM-led | **Run on your infrastructure — one container.** | Self-hosted knowledge base in one command. Your data stays with you, same cited answers for the whole team. One-time platform license, yours to run — no cloud required. | “One Docker container — your team's memory, on your infra. Who owns billing? Cited, not guessed.” |
+| **Hosted** | Waiting list | **Hosted — coming soon.** | We host it for you, same private memory, no setup. Join waitlist for early access. | “No Docker, no infra — just connect and ask. Your memory, hosted.” |
 
-Body copy swaps per tab but **design stays identical** — accent `#4A5A52`, same screenshot (Ask tab with citations). Don't make two brands.
+Body copy swaps per tab but **design stays identical** — same accent, same
+cited-answer mock. Don't make two brands.
 
-**Website hero implementation:** one page, toggle `Personal | Team` pills under headline (or two anchor sections `#personal` / `#teams`). Default to **Personal for v1** (validates faster, no procurement); Team is the licensed tier, not a teaser. CTA per track: Personal `Download — Free for personal use`, Team `Deploy via Docker — Self-hosted` (+ one-time-license note) + secondary `See 60-second demo` (`sample/`). Email capture tags the track (`personal_interest` vs `team_interest`). No prices on site — price discovery happens in pilot conversations.
+**Implementation (shipped):** one page, `Personal | Team · Self-hosted |
+Hosted` toggle under the headline; track persisted to site `localStorage` +
+`?track=` param. Default **Personal**. CTA per track: Personal = OS-aware
+download button, Team = Docker/hosting docs link, Hosted = waitlist anchor.
+Email capture tags the track. No prices on site.
 
-**B/C remain as alternates** if A fatigues:
+**Alternates** if the master headline fatigues:
 * B: *AI is smart. It just doesn't remember working at your company.*
 * C: *Context infrastructure for agents.*
 
-### 5.1b App copy — mirror the split without forking the app
+### 5.1b App copy — mirror the split (planned, not implemented)
 
-* **Ask tab title** `AskTab.tsx:39` stays `Ask your memory` for both — neutral, works for personal and company.
-* **Empty state** `AskTab.tsx:101` → track-aware hint:
-  * Personal: *“Ask your documents — e.g. ‘what did I decide about security transfers, and why?’”*
-  * Company: *“Ask your team memory — e.g. ‘who owns billing migration and what supersedes it?’”*
-  Switch via simple `localStorage['anchorcore.track']` set from website download link (`?track=personal` / `?track=team`) — no auth, just copy.
-* **OnboardingWizard** `OnboardingWizard.tsx:298` step 2: *“Connect your knowledge”* then `Personal: your docs folder` vs `Team: shared folder or Jira` — same flow, different example path.
-* **Future:** Project picker `App.tsx:139` already scopes Teams naturally; Personal uses `All sources`.
+Track-aware app copy (Ask empty-state hint, onboarding examples switching on
+Personal/Team) is designed but **not built** — nothing in the app reads the
+site's track today. Note the constraint: site `localStorage` can't reach the
+app (different origins), so the handoff must be a `?track=` URL param on the
+app URL, not shared storage.
 
 ### 5.2 Website structure (light theme, same accent)
 
-1. **Hero** — headline A + product screenshot (Ask tab with citations) + download buttons.
-2. **Problem → Solution** — 3 columns: *Fragmented knowledge* (Slack/Jira/Drive) → *Lost reasoning* → *AnchorCore: entities + provenance + citations*.
-3. **How it works** — 3 steps with icons: `Connect folder/Jira` → `Classify into decisions/actions/notes (review queue)` → `Ask, cited`. Small code: `Sources → extract → classify → embed (sqlite-vec+FTS5) → RRF → cited answer` (`README.md:67`).
-4. **Trust strip** — "Private by default • OS keychain • No data leaves your machine unless you add a cloud key • Every answer shows source." Icons: lock, key, citation.
-5. **Live demo** — connect `sample/` corpus, 3 questions answered (use `docs/sample-dataset.md:1` scripts).
-6. **Roadmap teaser** — `Team memory, Slack, Drive — coming soon` — email capture.
-7. **Footer** — `v1 local · free for personal use · Team self-hosted licensed · Hosted soon.`
+1. **Hero** — headline + cited-answer mock + download buttons.
+2. **Problem → Solution** — 3 columns: *Fragmented knowledge* → *Lost reasoning* → *AnchorCore: every answer shows its source*.
+3. **How it works** — 3 steps with icons + plain pipeline line (`connect → read → file → ask → cited answer`), sections visual, relationship visual, sealed-by-design privacy strip.
+4. **Live demo** — connect `sample/`, 4 questions answered (scripts in `docs/sample-dataset.md`); browser + MCP columns; abbreviated agent-session replay.
+5. **Guides + Guidebook** — folder/projects/PII/REST cards, Obsidian spotlight, one-at-a-time guide panels rendered from repo markdown.
+6. **FAQ, Pricing, Roadmap** — 7 FAQs, 3 tiers without prices, download + waitlist capture.
+7. **Privacy notice + Footer** — GDPR notice section; `v1 local · free for personal use · Team self-hosted licensed · Hosted soon.`
 
 **Voice:** short, factual, no superlatives. Same as app: `No relevant knowledge found yet.` not "Oops!"
 
 ### 5.3 App microcopy (already good — keep)
 
-* `Ask your memory` `AskTab.tsx:39` — perfect, keep.
-* Follow-up hint `AskTab.tsx:47` "2 questions in context — follow-ups like 'and what about its movements?' work" — excellent, keep.
-* Banner `App.tsx:97` — shorten to `Ollama offline — answers show context only. Settings → Test connection.`
+* `Ask your memory` — perfect, keep.
+* Follow-up hint ("N questions in context — follow-ups work") — excellent, keep.
+* Offline banner: `Ollama offline — classification falls back to rules. Settings → Test connection.` — current text, keep.
 
 ---
 
-## 6. Implementation path (no UX skill needed)
+## 6. Implementation record
 
-1. **Create `frontend/src/theme.ts`** — paste tokens `§2.1`. 10 min.
-2. **Find-replace** `grep -r "#171a21" frontend/src` → `t.dark.surfaceRaised`. No visual change, just consistency. Validates `B37` DoD.
-3. **Website:** use same `tokens.light` + `accent #4A5A52` for CTA. Hand-rolled single page (`website/index.html` + `src/main.ts` + `src/style.css`) — keep it, do not rebuild from a template. Hero A + 7 sections above = complete site.
-4. **App icon / packaging:** keep generic PyInstaller icon `packaging.md:73` until site is live — icon without site looks unfinished.
+1. ✅ **`frontend/src/theme.ts`** created — all app color through tokens, zero literal hex elsewhere.
+2. ✅ **Website** uses the same palette via `website/src/style.css` `:root`.
+3. ✅ **Hero + 7 sections** shipped as the complete site (see §5.2).
+4. 🔲 **App icon** — still ships without a custom icon (mac `.app` declares one but bundles none; Windows exe likewise). Design once, ship on both.
 
 ---
 
-*Companion: `product-plan.md:5` (positioning), `architecture.md:8` (runtime), `packaging.md:1` (distribution). Tokens enforce `B37` without requiring taste.*
+*Companion: `product-plan.md` (positioning), `architecture.md` (runtime), `packaging.md` (distribution).*

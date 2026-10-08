@@ -1,11 +1,15 @@
 name: Release
 
-# Builds distributable executables on every tag push (e.g. v0.1.0).
-# Windows exe is built on a Windows runner; macOS needs a mac runner
-# (macos-latest works; see B24 for the free ad-hoc signing alternative).
-# Uploads artifacts to the GitHub Release for the tag.
-# Rust port: same tag also builds statically-linked Rust binaries (R5.2)
-# with embedded frontend/dist via include_dir! — no Python runtime.
+# Builds distributable apps on every tag push (e.g. v1.0.12) and attaches
+# them to the GitHub Release for the tag.
+# Assets (Rust — frontend/dist embedded via include_dir!, no Python runtime):
+#   AnchorCore-windows.zip  — anchorcore.exe + anchorcore-mcp.exe
+#   AnchorCore-macos.zip    — AnchorCore.app bundle (ad-hoc signed)
+#   AnchorCore-linux.zip    — anchorcore + anchorcore-mcp
+# The website Download buttons link straight at the latest windows/macos
+# assets (website/src/main.ts); keep these file names stable.
+# (Legacy Python PyInstaller jobs were removed — backend/ is deprecated,
+# kept for hosting/ + conformance only.)
 
 on:
   push:
@@ -13,95 +17,6 @@ on:
       - "v*"
 
 jobs:
-  build-windows:
-    name: Windows exe (Python)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Frontend build
-        working-directory: frontend
-        run: npm ci && npm run build
-
-      - name: Install backend deps + pyinstaller
-        working-directory: backend
-        run: |
-          pip install -r requirements.txt
-          pip install pyinstaller
-
-      - name: PyInstaller build
-        run: python -m PyInstaller --noconfirm packaging.spec
-
-      - name: Zip exe (onedir output)
-        run: |
-          cd dist
-          Compress-Archive -Path AnchorCore -DestinationPath AnchorCore-windows.zip -Force
-
-      - name: Upload exe
-        uses: actions/upload-artifact@v4
-        with:
-          name: AnchorCore-windows
-          path: dist/AnchorCore-windows.zip
-
-  build-macos:
-    name: macOS app (Python)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      # Homebrew's CPython builds the sqlite3 module with loadable-extension
-      # support (PY_SQLITE_ENABLE_LOAD_EXTENSION). The GitHub hosted-toolcache
-      # and python.org builds do NOT, so a binary built with them can't load
-      # sqlite_vec and crashes at startup.
-      - name: Install Homebrew Python 3.12
-        run: |
-          brew install python@3.12
-          echo "/opt/homebrew/opt/python@3.12/libexec/bin" >> "$GITHUB_PATH"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Frontend build
-        working-directory: frontend
-        run: npm ci && npm run build
-
-      - name: Install backend deps + pyinstaller
-        working-directory: backend
-        run: |
-          python3.12 -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/python -m pip install -r requirements.txt
-          .venv/bin/python -m pip install pyinstaller
-
-      - name: PyInstaller build
-        run: backend/.venv/bin/python -m PyInstaller --noconfirm packaging.spec
-
-      - name: Ad-hoc sign (free, no Apple account; approval needed on first launch)
-        run: codesign --force --deep --sign - dist/AnchorCore.app
-
-      - name: Zip app
-        run: |
-          cd dist
-          rm -f AnchorCore-macos.zip
-          zip -r AnchorCore-macos.zip AnchorCore.app
-
-      - name: Upload app
-        uses: actions/upload-artifact@v4
-        with:
-          name: AnchorCore-macos
-          path: dist/AnchorCore-macos.zip
-
-  # --- Rust port (R5.2) — statically-linked binaries with embedded UI ---
   build-rust-linux:
     name: Rust Linux (x86_64)
     runs-on: ubuntu-latest
@@ -124,17 +39,17 @@ jobs:
       - name: Zip binaries
         run: |
           mkdir -p dist
-          cp rust/target/release/anchorcore dist/AnchorCore-rust
-          cp rust/target/release/anchorcore-mcp dist/anchorcore-mcp 2>/dev/null || true
-          cd dist && zip -r AnchorCore-rust-linux.zip AnchorCore-rust anchorcore-mcp
+          cp rust/target/release/anchorcore dist/anchorcore
+          cp rust/target/release/anchorcore-mcp dist/anchorcore-mcp
+          cd dist && zip -r AnchorCore-linux.zip anchorcore anchorcore-mcp
       - name: Upload Rust Linux
         uses: actions/upload-artifact@v4
         with:
-          name: AnchorCore-rust-linux
-          path: dist/AnchorCore-rust-linux.zip
+          name: AnchorCore-linux
+          path: dist/AnchorCore-linux.zip
 
   build-rust-macos:
-    name: Rust macOS (universal via native)
+    name: Rust macOS (native)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -152,19 +67,52 @@ jobs:
       - name: Cargo build --release
         working-directory: rust
         run: cargo build --release --manifest-path Cargo.toml
-      - name: Ad-hoc sign Rust binary
-        run: codesign --force --deep --sign - rust/target/release/anchorcore
-      - name: Zip binaries
+      # Same bundle layout as build.sh so local and CI zips are identical:
+      # AnchorCore.app wrapping the Rust binary (+ MCP sidecar).
+      - name: Bundle AnchorCore.app
         run: |
-          mkdir -p dist
-          cp rust/target/release/anchorcore dist/AnchorCore-rust
-          cp rust/target/release/anchorcore-mcp dist/anchorcore-mcp 2>/dev/null || true
-          cd dist && zip -r AnchorCore-rust-macos.zip AnchorCore-rust anchorcore-mcp
-      - name: Upload Rust macOS
+          VERSION="$(grep -E '^version = ' rust/Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
+          rm -rf "dist/AnchorCore.app"
+          mkdir -p "dist/AnchorCore.app/Contents/MacOS"
+          mkdir -p "dist/AnchorCore.app/Contents/Resources"
+          cp rust/target/release/anchorcore "dist/AnchorCore.app/Contents/MacOS/AnchorCore"
+          chmod +x "dist/AnchorCore.app/Contents/MacOS/AnchorCore"
+          if [ -f rust/target/release/anchorcore-mcp ]; then
+            cp rust/target/release/anchorcore-mcp "dist/AnchorCore.app/Contents/MacOS/anchorcore-mcp"
+          fi
+          cat > "dist/AnchorCore.app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>AnchorCore</string>
+            <key>CFBundleIdentifier</key><string>com.anchorcore.app</string>
+            <key>CFBundleName</key><string>AnchorCore</string>
+            <key>CFBundleDisplayName</key><string>AnchorCore</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleVersion</key><string>$VERSION</string>
+            <key>CFBundleShortVersionString</key><string>$VERSION</string>
+            <key>CFBundleIconFile</key><string>AppIcon</string>
+            <key>LSMinimumSystemVersion</key><string>10.13</string>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>LSUIElement</key><false/>
+          </dict>
+          </plist>
+          PLIST
+      - name: Ad-hoc sign app bundle
+        run: |
+          codesign --force --deep --sign - dist/AnchorCore.app
+          codesign --verify --verbose=2 dist/AnchorCore.app 2>&1 | head -n 5 || true
+      - name: Zip app
+        run: |
+          cd dist
+          rm -f AnchorCore-macos.zip
+          zip -rq AnchorCore-macos.zip AnchorCore.app
+      - name: Upload macOS app
         uses: actions/upload-artifact@v4
         with:
-          name: AnchorCore-rust-macos
-          path: dist/AnchorCore-rust-macos.zip
+          name: AnchorCore-macos
+          path: dist/AnchorCore-macos.zip
 
   build-rust-windows:
     name: Rust Windows (x86_64)
@@ -188,16 +136,16 @@ jobs:
       - name: Zip binaries
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item rust/target/release/anchorcore.exe dist/AnchorCore-rust.exe
+          Copy-Item rust/target/release/anchorcore.exe dist/anchorcore.exe
           Copy-Item rust/target/release/anchorcore-mcp.exe dist/anchorcore-mcp.exe
           Push-Location dist
-          Compress-Archive -Path AnchorCore-rust.exe,anchorcore-mcp.exe -DestinationPath AnchorCore-rust-windows.zip -Force
+          Compress-Archive -Path anchorcore.exe,anchorcore-mcp.exe -DestinationPath AnchorCore-windows.zip -Force
           Pop-Location
       - name: Upload Rust Windows
         uses: actions/upload-artifact@v4
         with:
-          name: AnchorCore-rust-windows
-          path: dist/AnchorCore-rust-windows.zip
+          name: AnchorCore-windows
+          path: dist/AnchorCore-windows.zip
 
   # Optional cross-compile from Linux using `cross` (R5.2 stretch):
   # Uncomment to build all targets from one runner:
@@ -217,7 +165,7 @@ jobs:
 
   release:
     name: Attach artifacts to release
-    needs: [build-windows, build-macos, build-rust-linux, build-rust-macos, build-rust-windows]
+    needs: [build-rust-linux, build-rust-macos, build-rust-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write

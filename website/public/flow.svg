@@ -12,7 +12,7 @@
     <text x="28" y="70" font-size="16" fill="#1a1d1a">local folders</text>
     <rect x="8" y="102" width="210" height="52" rx="10" fill="#ffffff" stroke="#e2ddd6" stroke-width="2"/>
     <rect x="8" y="102" width="5" height="52" fill="#4A5A52"/>
-    <text x="28" y="134" font-size="16" fill="#1a1d1a">knowledge base</text>
+    <text x="28" y="134" font-size="16" fill="#1a1d1a">drive documents</text>
     <rect x="8" y="166" width="210" height="52" rx="10" fill="#ffffff" stroke="#e2ddd6" stroke-width="2"/>
     <rect x="8" y="166" width="5" height="52" fill="#4A5A52"/>
     <text x="28" y="198" font-size="16" fill="#1a1d1a">tickets &amp; docs</text>
@@ -29,7 +29,7 @@
     <text x="500" y="97" font-size="15" fill="#1a1d1a">434 · Scope</text>
     <rect x="484" y="110" width="8" height="28" rx="3" fill="#4A5A52"/>
     <text x="500" y="131" font-size="15" fill="#1a1d1a">437 · Dates</text>
-    <text x="484" y="158" font-size="13" fill="#9A8B7A" textLength="172" lengthAdjust="spacingAndGlyphs">4.2.1 · 964 entities</text>
+    <text x="484" y="158" font-size="13" fill="#9A8B7A" textLength="172" lengthAdjust="spacingAndGlyphs">4.2.1 · ~1k entities</text>
     <text x="470" y="198" font-size="14" fill="#F2F0EB">filed · cited · yours</text>
   </g>
   <!-- thread to answer -->
@@ -42,6 +42,6 @@
     <rect x="804" y="93" width="244" height="13" rx="6" fill="#9aa0a8"/>
     <rect x="804" y="114" width="210" height="13" rx="6" fill="#9aa0a8"/>
     <rect x="804" y="135" width="244" height="13" rx="6" fill="#EDE8E0"/>
-    <text x="804" y="180" font-size="16" fill="#4A5A52">PRD v3 4.25 · 82%</text>
+    <text x="804" y="180" font-size="16" fill="#4A5A52">PRD v3 §4.2 · 82%</text>
   </g>
 </svg>

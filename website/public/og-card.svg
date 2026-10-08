@@ -26,14 +26,14 @@
       <rect x="20" y="0" width="180" height="16" rx="6" fill="#1a1d1a"/>
       <rect x="20" y="26" width="288" height="14" rx="6" fill="#9aa0a8"/>
       <rect x="20" y="48" width="260" height="14" rx="6" fill="#9aa0a8"/>
-      <text x="20" y="92" font-size="20" fill="#4A5A52" font-family="ui-monospace, Menlo, monospace">PRD v3 &#167;4.25 &#183; 82%</text>
+      <text x="20" y="92" font-size="20" fill="#4A5A52" font-family="ui-monospace, Menlo, monospace">PRD v3 &#167;4.2 &#183; 82%</text>
     </g>
     <g transform="translate(28,264)">
       <rect x="0" y="0" width="6" height="104" rx="3" fill="#9A8B7A"/>
       <rect x="20" y="0" width="150" height="16" rx="6" fill="#1a1d1a"/>
       <rect x="20" y="26" width="288" height="14" rx="6" fill="#9aa0a8"/>
       <rect x="20" y="48" width="220" height="14" rx="6" fill="#9aa0a8"/>
-      <text x="20" y="92" font-size="20" fill="#9A8B7A" font-family="ui-monospace, Menlo, monospace">planning.md &#183; graph 1 hop</text>
+      <text x="20" y="92" font-size="20" fill="#9A8B7A" font-family="ui-monospace, Menlo, monospace">planning.md &#183; 71%</text>
     </g>
   </g>
 </svg>

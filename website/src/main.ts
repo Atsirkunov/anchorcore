@@ -8,7 +8,7 @@ import restMd from "../../docs/guides/rest-api.md?raw";
 const copy = {
   personal: {
     title: "Your memory — finally searchable.",
-    sub: "Your notes, PDFs, Jira tickets and decisions in one searchable private AI knowledge base. Ask like you remember it — get the source.",
+    sub: "Your notes, PDFs, Jira, Linear and Drive in one searchable private memory. Ask like you remember it — get the source.",
     proof: "300-page PDF? Page 250 still cited. Your second brain, not another chatbot.",
     roadmap: "personal"
   },
@@ -28,6 +28,30 @@ const copy = {
 
 type Track = keyof typeof copy;
 
+// Direct download assets (release.yml — keep these file names in sync).
+const WIN_ZIP = "https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-windows.zip";
+const MAC_ZIP = "https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-macos.zip";
+
+function isMacOs(): boolean {
+  const platform = navigator.userAgentData?.platform ?? navigator.platform ?? "";
+  return /mac/i.test(platform);
+}
+
+function personalDownload(): { url: string; label: string; altUrl: string; altLabel: string } {
+  return isMacOs()
+    ? { url: MAC_ZIP, label: "Download for macOS — Free", altUrl: WIN_ZIP, altLabel: "Windows" }
+    : { url: WIN_ZIP, label: "Download for Windows — Free", altUrl: MAC_ZIP, altLabel: "macOS" };
+}
+
+function initDownloadLinks(): void {
+  const roadmap = document.getElementById("cta-roadmap") as HTMLAnchorElement | null;
+  if (roadmap) {
+    const dl = personalDownload();
+    roadmap.textContent = dl.label;
+    roadmap.href = dl.url;
+  }
+}
+
 function setTrack(t: Track) {
   const c = copy[t];
   const title = document.getElementById("hero-title");
@@ -43,19 +67,20 @@ function setTrack(t: Track) {
   if (cta) {
     if (t === "team") {
       cta.textContent = "Deploy via Docker — Self-hosted";
-      cta.href = "https://github.com/Atsirkunov/anchorcore#hosting";
+      cta.href = "https://github.com/Atsirkunov/anchorcore/blob/main/hosting/README.md";
     } else if (t === "hosted") {
       cta.textContent = "Join waitlist — Hosted (soon)";
       cta.href = "#roadmap";
     } else {
-      cta.textContent = "Download — Free for personal use";
-      cta.href = "https://github.com/Atsirkunov/anchorcore/releases";
+      const dl = personalDownload();
+      cta.textContent = dl.label;
+      cta.href = dl.url;
     }
   }
   if (note) {
     if (t === "team") note.innerHTML = "Docker • one container • your VPC • one-time license, incl. a year of support";
     else if (t === "hosted") note.innerHTML = "Coming soon — we host it, no setup · <code>hosted</code> tab";
-    else note.innerHTML = "macOS & Windows • one file, no Docker • data stays in <code>~/.anchorcore</code>";
+    else { const dl = personalDownload(); note.innerHTML = `macOS & Windows • one download, no Docker • data stays on your machine · <a href="${dl.altUrl}">Download for ${dl.altLabel}</a>`; }
   }
 
   document.querySelectorAll<HTMLButtonElement>(".track-toggle .toggle").forEach(b => {
@@ -165,11 +190,11 @@ const TERM_LINES: { cls: string; text: string; type?: boolean; pause?: number }[
   { cls: "t-dim", text: "$ ANCHOR_BACKEND_URL=http://127.0.0.1:8000 anchorcore-mcp", type: true },
   { cls: "t-dim", text: "# stdio sidecar — spawned by your harness, no browser", pause: 350 },
   { cls: "t-out", text: '→ tools/call {"name": "ask", "arguments": {"question": "Who owns billing migration?"}}', type: true },
-  { cls: "t-dim", text: "··· hybrid retrieval: vec0 + FTS + graph 1 hop", pause: 650 },
+  { cls: "t-dim", text: "··· searching memory: meaning + keywords + links", pause: 650 },
   { cls: "t-in", text: "← Sarah owns billing migration — supersedes DVCA flow.", pause: 300 },
-  { cls: "t-in", text: "← [decision] planning notes 11-02 · owner: Sarah · score 0.82" },
-  { cls: "t-in", text: "← [note] PRD v3 §4.25 · score 0.71" },
-  { cls: "t-dim", text: "← done: 1 answer · 2 citations · audited (component=mcp)" },
+  { cls: "t-in", text: "← [decision] m2-q3-planning · owner: Sarah · 82%" },
+  { cls: "t-in", text: "← [note] PRD v3 §4.2 · 71%" },
+  { cls: "t-dim", text: "← done: 1 answer · 2 citations · logged" },
 ];
 
 function termLine(el: HTMLElement, cls: string, text: string): void {
@@ -303,6 +328,7 @@ function initReveal(): void {
 }
 
 initTrack();
+initDownloadLinks();
 initHashNav();
 void initGuides();
 initGuidebook();
