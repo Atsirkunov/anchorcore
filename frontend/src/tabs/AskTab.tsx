@@ -111,13 +111,13 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
         )}
       </div>
 
-      <div style={{ display: "flex", gap: 8 }}>
+      <div style={{ display: "flex", gap: 12 }}>
         <input
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && submit()}
           placeholder={turns.length ? "Follow-up… e.g. show the movements for it" : "What was decided about X, and why?"}
-          style={{ flex: 1, padding: "0.6rem 0.8rem", borderRadius: 8, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text }}
+          style={{ flex: 1, padding: "0.8rem 1rem", borderRadius: 10, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, fontSize: 14 }}
         />
         <button onClick={submit} disabled={busy} style={{ padding: "0.6rem 1.2rem", borderRadius: 8, border: "none", background: theme.accent, color: theme.onAccent, cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.6 : 1 }}>
           {busy ? "Thinking…" : "Ask"}
@@ -136,31 +136,62 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
         Public-only — answer from public sources only (share/MCP-safe)
       </label>
       {busy && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, color: theme.textMuted, fontSize: 13 }}>
-          <span style={styles.spinner} />
-          Retrieving context and composing an answer…
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 16, color: theme.textMuted, fontSize: 13 }}>
+          <span style={{ display: "inline-flex", gap: 5 }}>
+            {[0, 1, 2].map((d) => (
+              <span
+                key={d}
+                className="animated"
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  background: theme.accentAlt,
+                  display: "inline-block",
+                  animation: "dotBounce 1.1s ease-in-out infinite",
+                  animationDelay: `${d * 0.15}s`,
+                }}
+              />
+            ))}
+          </span>
+          Gathering citations and composing an answer…
         </div>
       )}
       {error && <p style={{ color: theme.red }}>{error}</p>}
 
       {turns.length > 0 && (
-        <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
+        <div style={{ display: "grid", gap: 22, marginTop: 28 }}>
           {[...turns].reverse().map((t, i) => {
             const key = `${t.role}-${i}-${t.content.slice(0, 32)}`;
+            const stagger = `${Math.min(i * 0.07, 0.35)}s`;
             return t.role === "user" ? (
-              <div key={key} style={{ ...styles.bubble, background: theme.bgHover, marginLeft: 48 }}>
-                <div style={{ fontSize: 11, color: theme.accentAlt, textTransform: "uppercase", marginBottom: 4 }}>You</div>
+              <div
+                key={key}
+                className="animated"
+                style={{ ...styles.bubble, background: theme.bgHover, marginLeft: 64, animation: `rise 0.45s ease both`, animationDelay: stagger }}
+              >
+                <div style={{ fontSize: 11, color: theme.accentAlt, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>You</div>
                 <div style={{ whiteSpace: "pre-wrap" }}>{t.content}</div>
               </div>
             ) : (
-              <div key={key} style={{ ...styles.bubble, background: theme.bgCard }}>
-                <div style={{ fontSize: 11, color: theme.purple, textTransform: "uppercase", marginBottom: 4 }}>AnchorCore</div>
-                <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{t.content}</div>
+              <div
+                key={key}
+                className="animated"
+                style={{ ...styles.bubble, background: theme.bgCard, animation: `popIn 0.45s ease both`, animationDelay: stagger }}
+              >
+                <div style={{ fontSize: 11, color: theme.purple, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>AnchorCore</div>
+                <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.7 }}>{t.content}</div>
                 {t.citations && t.citations.length > 0 && (
-                  <div style={{ marginTop: 10 }}>
-                    <div style={{ fontSize: 12, color: theme.textMuted, textTransform: "uppercase" }}>Sources</div>
+                  <div style={{ marginTop: 14 }}>
+                    <div style={{ fontSize: 12, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                      Sources · {t.citations.length}
+                    </div>
                     {t.citations.map((c, j) => (
-                      <div key={`${c.source_ref}-${j}`} style={{ marginTop: 6, padding: "0.5rem 0.75rem", background: theme.bgElevated, borderRadius: 6, fontSize: 13 }}>
+                      <div
+                        key={`${c.source_ref}-${j}`}
+                        className="animated"
+                        style={{ ...styles.cite, animation: `rise 0.4s ease both`, animationDelay: `${Math.min(j * 0.08, 0.4)}s` }}
+                      >
                         <span style={{ color: theme.purple }}>[{c.kind}]</span> {c.summary}
                         <div style={{ color: theme.textDim, fontSize: 12 }}>{c.source_ref} · score {c.score}</div>
                         {c.path && (
@@ -218,9 +249,17 @@ const styles: Record<string, React.CSSProperties> = {
   },
   bubble: {
     border: `1px solid ${theme.border}`,
-    borderRadius: 10,
-    padding: "0.85rem 1rem",
+    borderRadius: 14,
+    padding: "1.25rem 1.4rem",
     fontSize: 14,
+  },
+  cite: {
+    marginTop: 8,
+    padding: "0.7rem 0.9rem",
+    background: theme.bgElevated,
+    borderRadius: 10,
+    fontSize: 13,
+    lineHeight: 1.6,
   },
   clearButton: {
     background: "none",
@@ -232,11 +271,11 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
   },
   starter: {
-    marginTop: 16,
+    marginTop: 24,
     background: theme.bgCard,
     border: `1px solid ${theme.border}`,
-    borderRadius: 10,
-    padding: "0.85rem 1rem",
+    borderRadius: 14,
+    padding: "1.5rem 1.6rem",
   },
   chip: {
     background: theme.bgHover,
