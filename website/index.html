@@ -120,31 +120,34 @@
             <p class="cap">Relationships become a graph — owners and supersedes, 1–2 hops from every hit.</p>
           </div>
         </div>
+        <!-- Sealed by design — privacy as step 0 of how it works, not its own chapter -->
+        <div class="seal">
+          <div class="seal-anim" aria-hidden="true">
+            <span class="seal-drawer"></span>
+            <span class="seal-drawer"></span>
+            <span class="seal-drawer"></span>
+            <span class="seal-dot"></span>
+          </div>
+          <div class="seal-copy">
+            <p class="seal-head">Sealed by design — nothing leaves your machine.</p>
+            <div class="seal-chips">
+              <span class="seal-chip">Private by default</span>
+              <span class="seal-chip">OS keychain</span>
+              <span class="seal-chip">Every answer cited</span>
+              <span class="seal-chip">On your machine</span>
+            </div>
+            <details class="seal-more">
+              <summary>How PII is gated</summary>
+              <table class="matrix">
+                <tr><th scope="col"></th><th scope="col">local model</th><th scope="col">listed provider</th><th scope="col">anyone else</th></tr>
+                <tr><th scope="row">ordinary sources</th><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
+                <tr><th scope="row">sensitive / PII</th><td class="y">✓</td><td class="y">✓</td><td class="n">✗ refused, audited</td></tr>
+              </table>
+              <p class="cap">Listed via <code>ANCHOR_TRUSTED_PROVIDERS</code>. <code>/qa/public</code> + <code>MCP</code> never share <code>non-public</code> sources.</p>
+            </details>
+          </div>
+        </div>
       </div>
-    </section>
-
-    <!-- Trust strip -->
-    <section class="trust">
-      <div class="wrap trust-grid">
-        <div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4A5A52" stroke-width="2" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Private by default</div>
-        <div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4A5A52" stroke-width="2" aria-hidden="true"><circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v4M21 12v3"/></svg>OS keychain</div>
-        <div><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="4" height="18" rx="2" fill="#4A5A52"/><rect x="11" y="6" width="9" height="3" rx="1.5" fill="#9A8B7A"/><rect x="11" y="11" width="9" height="3" rx="1.5" fill="#9A8B7A"/><rect x="11" y="16" width="6" height="3" rx="1.5" fill="#9A8B7A"/></svg>Every answer cited</div>
-        <div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4A5A52" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M9 20h6M12 16v4"/></svg>On your machine</div>
-      </div>
-      <div class="fig safewrap">
-        <img src="/safe.svg" alt="Memory as a safe — section drawers filed locally, the OS keychain holds the key" loading="lazy" />
-        <p class="cap">Your memory, filed — sections in drawers, the OS keychain holds the key, nothing leaves your machine.</p>
-      </div>
-      <div class="matrixwrap">
-        <p class="matrixhead">PII follows your model policy, not ours.</p>
-        <table class="matrix">
-          <tr><th scope="col"></th><th scope="col">local model</th><th scope="col">listed provider</th><th scope="col">anyone else</th></tr>
-          <tr><th scope="row">ordinary sources</th><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
-          <tr><th scope="row">sensitive / PII</th><td class="y">✓</td><td class="y">✓</td><td class="n">✗ refused, audited</td></tr>
-        </table>
-        <p class="cap">Listed via <code>ANCHOR_TRUSTED_PROVIDERS</code>. Unlisted providers receive neither embeddings nor answers over sensitive content. What counts as sensitive: the <code>sensitive</code>/<code>pii</code> source label or a PII flag — set per source, reviewed in the PII tab.</p>
-      </div>
-      <p class="wrap small"><code>/qa/public</code> + <code>MCP</code> never share <code>non-public</code> sources.</p>
     </section>
 
     <!-- Live demo -->
@@ -189,25 +192,34 @@
       </div>
     </section>
 
-    <!-- On-site guides — content rendered from ../docs/*.md at build (main.ts) -->
-    <section id="guide-obsidian">
-      <div class="wrap">
-        <h2>Use your Obsidian vault</h2>
-        <div class="guide-body" id="guide-obsidian-body"></div>
-      </div>
-    </section>
-
-    <section id="guide-quickstart" class="alt">
-      <div class="wrap">
-        <h2>Try the sample company</h2>
-        <div class="guide-body" id="guide-quickstart-body"></div>
-      </div>
-    </section>
-
-    <section id="guide-rest">
-      <div class="wrap">
-        <h2>Connect any JSON API</h2>
-        <div class="guide-body" id="guide-rest-body"></div>
+    <!-- Guidebook — one guide at a time, not three stacked walls of text -->
+    <section id="guidebook">
+      <div class="wrap narrow">
+        <h2>Guidebook</h2>
+        <p class="sub">Pick one path — each guide opens on its own, so the page stays airy.</p>
+        <div class="guide-tabs" role="tablist" aria-label="Guides">
+          <button class="guide-tab active" data-guide="guide-obsidian-body" role="tab" aria-selected="true">Obsidian vault</button>
+          <button class="guide-tab" data-guide="guide-quickstart-body" role="tab" aria-selected="false">Sample company</button>
+          <button class="guide-tab" data-guide="guide-rest-body" role="tab" aria-selected="false">JSON API</button>
+        </div>
+        <div class="guide-panels">
+          <article class="guide-panel active" id="panel-obsidian" role="tabpanel">
+            <h3>Use your Obsidian vault</h3>
+            <div class="guide-body" id="guide-obsidian-body"></div>
+          </article>
+          <article class="guide-panel" id="panel-quickstart" role="tabpanel" hidden>
+            <h3>Try the sample company</h3>
+            <div class="guide-body" id="guide-quickstart-body"></div>
+          </article>
+          <article class="guide-panel" id="panel-rest" role="tabpanel" hidden>
+            <h3>Connect any JSON API</h3>
+            <div class="guide-body" id="guide-rest-body"></div>
+          </article>
+        </div>
+        <!-- legacy anchors keep old links working -->
+        <span id="guide-obsidian" class="anchor"></span>
+        <span id="guide-quickstart" class="anchor"></span>
+        <span id="guide-rest" class="anchor"></span>
       </div>
     </section>
 

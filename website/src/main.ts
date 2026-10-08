@@ -242,9 +242,71 @@ function initTerminal(): void {
   }
 }
 
+function initGuidebook(): void {
+  const tabs = [...document.querySelectorAll<HTMLButtonElement>(".guide-tab")];
+  const panels = [
+    document.getElementById("panel-obsidian"),
+    document.getElementById("panel-quickstart"),
+    document.getElementById("panel-rest"),
+  ];
+  const bodies = ["guide-obsidian-body", "guide-quickstart-body", "guide-rest-body"];
+  if (tabs.length === 0) return;
+  function show(index: number): void {
+    tabs.forEach((t, i) => {
+      const on = i === index;
+      t.classList.toggle("active", on);
+      t.setAttribute("aria-selected", String(on));
+    });
+    panels.forEach((p, i) => {
+      if (!p) return;
+      const on = i === index;
+      p.classList.toggle("active", on);
+      if (on) p.removeAttribute("hidden");
+      else p.setAttribute("hidden", "");
+    });
+  }
+  tabs.forEach((t, i) => t.addEventListener("click", () => show(i)));
+  // deep links (#guide-obsidian etc.) open the right panel first
+  const hash = location.hash;
+  const legacy = bodies.indexOf(hash.slice(1) + "-body");
+  if (legacy >= 0) show(legacy);
+  window.addEventListener("hashchange", () => {
+    const i = bodies.indexOf(location.hash.slice(1) + "-body");
+    if (i >= 0) {
+      show(i);
+      document.getElementById("guidebook")?.scrollIntoView({ behavior: "smooth" });
+    }
+  });
+}
+
+// Airy scroll reveal — one observer, no deps
+function initReveal(): void {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const targets = document.querySelectorAll("section .wrap, .col, .step, .qa, .fig, .flow");
+  targets.forEach((el) => el.classList.add("reveal"));
+  if (!("IntersectionObserver" in window)) {
+    targets.forEach((el) => el.classList.add("in"));
+    return;
+  }
+  const obs = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) {
+        if (e.isIntersecting) {
+          e.target.classList.add("in");
+          obs.unobserve(e.target);
+        }
+      }
+    },
+    { threshold: 0.12 },
+  );
+  targets.forEach((el) => obs.observe(el));
+}
+
 initTrack();
 initHashNav();
 void initGuides();
+initGuidebook();
+initReveal();
 initTerminal();
 // render after DOM ready (hero-toc.svg is static public asset, GraphMini is JS)
 if (document.readyState === "loading") {

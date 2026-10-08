@@ -15,12 +15,15 @@ import { SystemTab } from "./tabs/SystemTab";
 
 type Tab = "ask" | "sources" | "entities" | "review" | "settings" | "system" | "pii";
 
-const TABS: { id: Tab; label: string }[] = [
+// Primary = everyday flow; secondary = configure & inspect (airy grouped nav)
+const PRIMARY_TABS: { id: Tab; label: string }[] = [
   { id: "ask", label: "Ask" },
   { id: "sources", label: "Sources" },
   { id: "entities", label: "Entities" },
   { id: "review", label: "Review" },
   { id: "pii", label: "PII" },
+];
+const SECONDARY_TABS: { id: Tab; label: string }[] = [
   { id: "settings", label: "Settings" },
   { id: "system", label: "System" },
 ];
@@ -93,12 +96,27 @@ export default function App() {
       <header style={styles.header}>
         <h1 style={styles.title}>AnchorCore</h1>
         <nav style={styles.nav}>
-          {TABS.map((t) => (
+          {PRIMARY_TABS.map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
               style={{
                 ...styles.tab,
+                ...(tab === t.id ? styles.tabActive : {}),
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
+          <span style={styles.navDivider} aria-hidden="true" />
+          {SECONDARY_TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              title="Configure & inspect"
+              style={{
+                ...styles.tab,
+                ...styles.tabSecondary,
                 ...(tab === t.id ? styles.tabActive : {}),
               }}
             >
@@ -184,19 +202,23 @@ const styles: Record<string, React.CSSProperties> = {
   header: {
     display: "flex",
     alignItems: "center",
-    gap: 24,
-    padding: "0.75rem 1.5rem",
+    gap: 20,
+    rowGap: 12,
+    flexWrap: "wrap",
+    padding: "1rem 2rem",
     borderBottom: `1px solid ${theme.borderSoft}`,
     background: theme.bgElevated,
   },
-  title: { fontSize: 18, margin: 0 },
-  nav: { display: "flex", gap: 4 },
+  title: { fontSize: 18, margin: 0, marginRight: 8 },
+  nav: { display: "flex", gap: 2, alignItems: "center", flexWrap: "wrap" },
+  navDivider: { width: 1, height: 20, background: theme.border, margin: "0 8px" },
+  tabSecondary: { color: theme.textDim, fontSize: 13 },
   tab: {
     background: "none",
     border: "none",
     color: theme.textMuted,
-    padding: "0.4rem 0.8rem",
-    borderRadius: 6,
+    padding: "0.5rem 0.9rem",
+    borderRadius: 8,
     cursor: "pointer",
     fontSize: 14,
   },
@@ -212,7 +234,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderBottom: `1px solid ${theme.redBorder}`,
   },
   dismiss: { background: "none", border: `1px solid ${theme.redBorder}`, color: theme.redText, borderRadius: 6, padding: "0.2rem 0.6rem", cursor: "pointer" },
-  main: { padding: "1.5rem", maxWidth: 1000, margin: "0 auto" },
+  main: { padding: "2.5rem 2rem 4rem", maxWidth: 880, margin: "0 auto" },
   jobsBadge: {
     display: "flex",
     alignItems: "center",
