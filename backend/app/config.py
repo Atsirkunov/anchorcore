@@ -1,10 +1,40 @@
 import logging
+import os
 import sys
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
+
+# Test-only Ollama URL: the suite (tests/conftest.py) and CI conformance point
+# Ollama at a dead port so degradation paths are exercised. A real launch must
+# never honor it — if it leaks in via env/.env/DB (stray export in the launching
+# shell, `open` env inheritance), fall back to the real default and warn.
+# Tests opt in with ANCHOR_ALLOW_TEST_URLS=1.
+TEST_SENTINEL_HOSTS = ("http://localhost:1", "http://127.0.0.1:1")
+OLLAMA_DEFAULT_URL = "http://localhost:11434"
+ALLOW_TEST_URLS_ENV = "ANCHOR_ALLOW_TEST_URLS"
+
+
+def test_urls_allowed() -> bool:
+    return os.environ.get(ALLOW_TEST_URLS_ENV) == "1"
+
+
+def guard_test_ollama_url(value: str | None) -> str | None:
+    """Map the test-sentinel Ollama URL to the real default outside tests."""
+    if not isinstance(value, str):
+        return value
+    if value.rstrip("/") in TEST_SENTINEL_HOSTS and not test_urls_allowed():
+        logger.warning(
+            "ignoring test-only ollama_base_url %r (set %s=1 to allow); using %s",
+            value,
+            ALLOW_TEST_URLS_ENV,
+            OLLAMA_DEFAULT_URL,
+        )
+        return OLLAMA_DEFAULT_URL
+    return value
 
 # Single source of truth for the app version (B34): main.py's FastAPI
 # `version=` and /system/status both import this. Release bumps only touch it.
@@ -55,6 +85,12 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
 
     ollama_base_url: str = "http://localhost:11434"
+
+    @field_validator("ollama_base_url", mode="before")
+    @classmethod
+    def _reject_test_sentinel(cls, v):
+        return guard_test_ollama_url(v)
+
     classifier_model: str = "llama3.2:3b"
     classifier_base_url: str = ""  # empty → ollama_base_url (local)
     classifier_api_key: str = ""

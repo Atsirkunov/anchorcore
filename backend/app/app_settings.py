@@ -14,7 +14,7 @@ import time
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .config import Settings
+from .config import Settings, guard_test_ollama_url
 from .db import SessionLocal
 from .models import AppSetting
 from .secrets import SecretStore
@@ -60,9 +60,11 @@ class SettingsService:
             return self._env_value(key)
         if db is not None:
             value = self._db_value(db, key)
-            if value is not None:
-                return value
-            return self._env_value(key)
+            if value is None:
+                value = self._env_value(key)
+            if key == "ollama_base_url":
+                value = guard_test_ollama_url(value)
+            return value
         return self._cached_get(key)
 
     def get_float(self, key: str, default: float = 0.0) -> float:
@@ -141,6 +143,8 @@ class SettingsService:
         with SessionLocal() as db:
             value = self._db_value(db, key)
         resolved = value if value is not None else self._env_value(key)
+        if key == "ollama_base_url":
+            resolved = guard_test_ollama_url(resolved)
         with self._lock:
             self._cache[key] = (resolved or "", now + CACHE_TTL_SECONDS)
         return resolved

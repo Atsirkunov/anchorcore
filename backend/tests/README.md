@@ -9,6 +9,12 @@ from `backend/`. CI runs this plus the frontend build on every push
 - Keep tests fast-failing and hermetic: the fixture points Ollama at
   `http://localhost:1` (unreachable), so tests exercise degradation paths
   locally. Tests that need real models are run manually as probes (see §10).
+  `conftest.py` also sets `ANCHOR_ALLOW_TEST_URLS=1`: real launches ignore
+  the `:1` sentinel (fall back to `http://localhost:11434` + warn) unless
+  that marker is set, so a stray test export can never break the app.
+- The folder watcher runs on the polling backend under tests
+  (`ANCHOR_WATCHER=polling`): macOS FSEvents segfaults on the per-test
+  observer churn (rapid schedule→stop). Polling still delivers events.
 - `client` fixture = FastAPI TestClient with app lifespan (migrations run,
   scheduler starts).
 - **Shared-DB contract (B38):** `tests/conftest.py` sets ONE SQLite file at
