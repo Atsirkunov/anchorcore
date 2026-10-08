@@ -27,7 +27,11 @@ git checkout archive/python-final -- backend
 ```
 
 To change frozen code (license-gate fixes only — never features): commit on a
-branch, move the tag, rebuild + re-verify the Team image, record it here.
+branch, move the tag, rebuild + re-verify the Team image, record it below.
+
+Pinning decision (B46): the Dockerfile tracks the tag by name, not a commit
+SHA. Rationale: this repo is solo-controlled — anyone who can move the tag
+can push main. Revisit SHA pinning if outside contributors join.
 
 ## Refresh log
 
