@@ -67,11 +67,6 @@ echo "==> Zipping dist/AnchorCore.app..."
 rm -f "$ROOT/dist/AnchorCore-macos.zip"
 (cd "$ROOT/dist" && zip -rq AnchorCore-macos.zip AnchorCore.app)
 
-# 6. Legacy Python PyInstaller (optional, kept for hosted comparison — skips if no venv)
-if [ -x "$ROOT/backend/.venv/bin/python" ] && "$ROOT/backend/.venv/bin/python" -c "import PyInstaller" 2>/dev/null; then
-  echo "==> (Legacy) Python PyInstaller build skipped — Rust is shipped. Run packaging.spec manually if needed."
-fi
-
 echo ""
 echo "Done: $ROOT/dist/AnchorCore-macos.zip (Rust $VERSION, double-click, opens http://127.0.0.1:8123)"
 echo "Unzip it, then double-click AnchorCore.app. First run creates"

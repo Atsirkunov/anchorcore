@@ -76,7 +76,7 @@ is logged to `system_events` (`component='mcp'`, visible under
 `GET /system/errors?component=mcp`).
 
 Legacy: the B14.1 Python sidecar (`backend/anchorcore_mcp.py` +
-`backend/app/mcp/`, same 6 tools) is kept for hosting/conformance. New work
+`backend/app/mcp/`, same 6 tools) is archived on tag `archive/python-final` (hosting/conformance fetch it frozen). New work
 is Rust (`rust/crates/anchorcore/src/bin/mcp.rs`).
 
 ### 4.2 Centralized — streamable HTTP (planned, B14.2)
@@ -118,8 +118,7 @@ producers, not just consumers. Risks to manage:
 
 - `rust/crates/anchorcore/src/bin/mcp.rs` — the shipped sidecar: stdio
   server, the 6 tool definitions, HTTP calls into the app, audit logging.
-- `backend/app/mcp/` + `backend/anchorcore_mcp.py` — legacy Python sidecar
-  (hosting/conformance only).
+- `backend/app/mcp/` + `backend/anchorcore_mcp.py` — legacy Python sidecar on the archive tag.
 - Config: `ANCHOR_BACKEND_URL` (default `http://127.0.0.1:8000`),
   `ANCHOR_MCP_TOKEN` (HTTP transport, planned).
 - Planned: mount `/mcp` on the Axum app when the HTTP transport ships.
