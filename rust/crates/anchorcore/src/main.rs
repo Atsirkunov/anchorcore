@@ -104,6 +104,7 @@ fn build_state(data_dir: &std::path::Path) -> health::AppState {
     // R1.4 + R1.5: secret store + settings service (mirrors Python wiring in main.py:55)
     let secret_store = secrets::SecretStore::new(data_dir.join("secrets.enc"));
     let settings_svc = std::sync::Arc::new(settings::SettingsService::new(secret_store));
+    settings_svc.set_data_dir(data_dir);
     let jobs_svc = jobs::JobManager::new();
     let csrf_token = security::generate_csrf_token();
     let embedder = std::sync::Arc::new(embedder::Embedder::new(settings_svc.clone()));
