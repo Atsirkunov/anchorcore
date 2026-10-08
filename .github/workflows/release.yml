@@ -187,11 +187,12 @@ jobs:
         run: cargo build --release --manifest-path Cargo.toml
       - name: Zip binaries
         run: |
-          mkdir -p dist
-          cp rust/target/release/anchorcore.exe dist/AnchorCore-rust.exe 2>/dev/null || cp rust/target/release/anchorcore dist/AnchorCore-rust.exe
-          cp rust/target/release/anchorcore-mcp.exe dist/anchorcore-mcp.exe 2>/dev/null || cp rust/target/release/anchorcore-mcp dist/anchorcore-mcp.exe 2>/dev/null || true
-          cd dist
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item rust/target/release/anchorcore.exe dist/AnchorCore-rust.exe
+          Copy-Item rust/target/release/anchorcore-mcp.exe dist/anchorcore-mcp.exe
+          Push-Location dist
           Compress-Archive -Path AnchorCore-rust.exe,anchorcore-mcp.exe -DestinationPath AnchorCore-rust-windows.zip -Force
+          Pop-Location
       - name: Upload Rust Windows
         uses: actions/upload-artifact@v4
         with:
