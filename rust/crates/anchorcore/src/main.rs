@@ -1,5 +1,9 @@
 #![allow(dead_code)]
 #![allow(clippy::unwrap_used)]
+// Windows release builds are windowed (no console popup on double-click).
+// Debug builds keep the console. The MCP sidecar intentionally stays console
+// (it speaks stdio). Panics are appended to anchorcore.log (see below).
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! AnchorCore Rust binary — R1.2: SQLite + migrations + /health.
 //! See `rust/BACKLOG.md:1` and `docs/rust-port.md:1`.
 //! Mirrors `backend/app/main.py:130` health shape + `backend/app/db.py:44` PRAGMAs.
@@ -81,6 +85,69 @@ fn resolve_data_dir(cli: &str) -> PathBuf {
         }
     }
     PathBuf::from("data")
+}
+
+fn format_panic_message(
+    payload: &(dyn std::any::Any + Send),
+    location: Option<&std::panic::Location>,
+) -> String {
+    // Kept separate from install_panic_hook so unit tests can cover the
+    // formatting without touching the process-global panic hook.
+    let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic payload".to_string()
+    };
+    let loc = location
+        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+        .unwrap_or_else(|| "?".to_string());
+    format!("PANIC at {}: {}", loc, msg)
+}
+
+fn install_panic_hook(data_dir: &std::path::Path) {
+    // Windowed release builds have no console — a startup panic would
+    // otherwise vanish. Append panics to anchorcore.log instead.
+    let log_path = data_dir.join("anchorcore.log");
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default_hook(info);
+        let line = format_panic_message(info.payload(), info.location());
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+            use std::io::Write;
+            let _ = f.write_all(format!("{}\n", line).as_bytes());
+        }
+    }));
+}
+
+#[cfg(test)]
+mod panic_hook_tests {
+    use super::format_panic_message;
+
+    #[test]
+    fn formats_str_payload_with_location() {
+        let payload: &str = "boom";
+        let line = format_panic_message(&payload, Some(std::panic::Location::caller()));
+        assert!(line.contains("boom"));
+        assert!(line.contains("main.rs"));
+        assert!(line.starts_with("PANIC at "));
+    }
+
+    #[test]
+    fn formats_string_payload_without_location() {
+        let payload = "owned boom".to_string();
+        let line = format_panic_message(&payload, None);
+        assert!(line.contains("owned boom"));
+        assert!(line.contains("PANIC at ?: "));
+    }
+
+    #[test]
+    fn unknown_payload_type() {
+        let payload = 42i32;
+        let line = format_panic_message(&payload, None);
+        assert!(line.contains("unknown panic payload"));
+    }
 }
 
 fn ensure_log_file(data_dir: &std::path::Path) {
@@ -276,6 +343,7 @@ async fn main() {
     let args = Args::parse();
     let data_dir = resolve_data_dir(&args.data_dir);
     std::fs::create_dir_all(&data_dir).ok();
+    install_panic_hook(&data_dir);
     let db_path = db::resolve_db_path(&data_dir.to_string_lossy());
     // init DB for side-effect (migrations, pragmas) - health/qa open per-request
     let _ = db::init_db(&db_path).expect("failed to init DB");

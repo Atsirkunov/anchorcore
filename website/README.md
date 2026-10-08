@@ -21,7 +21,7 @@ npm run build  # dist/ -> deploy to GitHub Pages / Cloudflare / Vercel
 
 ## Deploy
 
-Any static host. `Download` links currently go to `https://github.com/Atsirkunov/anchorcore/releases` — replace with direct asset URLs after `v1.0.11` tag.
+Any static host. `Download` buttons link straight at the latest release assets (`.../releases/latest/download/AnchorCore-{windows,macos}.zip`, OS-aware via `src/main.ts`); they resolve once a tag with those asset names is published. Keep the `release.yml` asset names stable.
 
 ## Social / brand assets (R16.5)
 
@@ -30,4 +30,14 @@ Any static host. `Download` links currently go to `https://github.com/Atsirkunov
 
 ## Capture
 
-Forms store `localStorage["anchorcore.capture:personal|team"]` — hook to `POST /api/capture` or email service when ready.
+Forms POST to Formspree (`FORMSPREE_ID` in `src/main.ts`) with the email + current track + source.
+
+## Privacy & GDPR
+
+No cookies, no analytics, no third-party requests on page load — so no cookie
+banner needed. The `#privacy` section in `index.html` is the Art. 13 notice;
+keep it in sync with `src/main.ts`. Only data flow: waitlist form → Formspree
+(owner must conclude the Art. 28 DPA in their Formspree account). Only storage:
+`localStorage["anchorcore.track"]` hero-tab preference (exempt, disclosed in the
+notice). Do not add analytics/trackers without revisiting the notice + consent.
+Impressum still pending a publishable postal address (see pre-launch notes).

@@ -1,12 +1,20 @@
-# AnchorCore — Architecture Overview (v1.0)
+# AnchorCore — Architecture Overview
 
-> Stack: **Rust (Axum) · React (Vite) · SQLite (local, sqlite-vec vec0 + FTS5) / Postgres (hosted `hosting/` via Python, `pgvector/pg16`) + Ollama · BYO cloud LLM APIs** — env-driven via `ANCHOR_DATABASE_URL`. **Rust is shipped (1.0.11, `rust/Cargo.toml:6` single source); Python `backend/` is deprecated except `hosting/`** per `R10.7`.
+> Stack: **Rust (Axum) · React (Vite) · SQLite locally (sqlite-vec vec0 +
+> FTS5) / Postgres for hosted (`hosting/`, Python, `pgvector/pg16`) · Ollama
+> or BYO cloud LLM APIs** — env-driven. **Rust is the shipped backend;
+> Python `backend/` is deprecated except `hosting/`** (decision R10.7).
 
 ---
 
-## 1. Runtime Model: Local-First (Plex-Style), Hosted Env-Driven
+## 1. Runtime Model: Local-First, Hosted Env-Driven
 
-One local process = the entire product. No Docker, no sidecar services, no setup. **Local:** Rust binary `anchorcore` (`rust/target/release/anchorcore`, `frontend/dist` embedded, SQLite `vec0` + FTS5). **Hosted (`hosting/` Docker + Postgres `pgvector/pg16`) stays Python FastAPI image, env-driven** via `ANCHOR_DATABASE_URL` — SQLite FTS5/vec0 triggers skip on Postgres (fallback to scan). See `hosting/README.md` + `docs/v2v3-scope.md:3`. `backend/` is deprecated except for `hosting` and conformance.
+One local process = the entire product. No Docker, no sidecar services, no
+setup. **Local:** Rust binary `anchorcore` (`frontend/dist` embedded,
+SQLite `vec0` + FTS5). **Hosted:** `hosting/` Docker + Postgres stays a
+Python FastAPI image, env-driven via `ANCHOR_DATABASE_URL` — the SQLite
+FTS5/vec0 triggers skip on Postgres (falls back to scan). See
+`hosting/README.md` + `docs/v2v3-scope.md`.
 
 ## 2. System Diagram
 
@@ -15,12 +23,12 @@ flowchart TB
     subgraph laptop["User's Laptop (Windows/macOS)"]
         direction TB
         browser["Browser UI<br/>(React SPA, localhost)"]
-        api["AnchorCore App<br/>FastAPI (single process)"]
-        api --- connectors["Connectors<br/>Folder watch · Jira poll"]
+        api["AnchorCore App<br/>Rust Axum (single process)"]
+        api --- connectors["Connectors<br/>Folder · Drive · Jira · Linear · REST"]
         api --- pipeline["Ingestion Pipeline<br/>type detect → classify → distill → entities"]
         api --- rag["Answer Engine<br/>planner → executor → RRF → graph → cited answer"]
         api --- review["Review API<br/>low-confidence · duplicates"]
-        api --- projects["Projects API<br/>scoped search (B15)"]
+        api --- projects["Projects API<br/>scoped search"]
         api --- jobs["Job Manager<br/>background jobs · cancel"]
         db[("Entity Graph<br/>SQLite + sqlite-vec + FTS5")]
         settings[("app_settings<br/>runtime overrides")]
@@ -33,12 +41,14 @@ flowchart TB
         api --- ollama
     end
 
-    jira["Jira Cloud API"]
+    tickets["Jira · Linear · REST APIs"]
+    drive["Google Drive"]
     folder["Local folder<br/>(watched)"]
     cloud["BYO LLM API<br/>(OpenAI-compatible)"]
 
     connectors --- folder
-    connectors --- jira
+    connectors --- drive
+    connectors --- tickets
     pipeline --- cloud
     rag --- cloud
 ```
@@ -48,7 +58,7 @@ flowchart TB
 ```mermaid
 flowchart LR
     watcher["Folder watcher<br/>fs events + hourly scan"] --> extract["Extract text"]
-    jira["Jira poll<br/>15 min, incremental"] --> extract
+    apis["Drive · Jira · Linear · REST<br/>poll, incremental cursors"] --> extract
     extract --> hash["Hash dedup"]
     hash --> type["Document-type pre-pass<br/>(1 cheap call, cached)"]
     type --> classify["Classify windows<br/>(local Ollama or cloud, parallel)"]
@@ -59,24 +69,37 @@ flowchart LR
     entities --> review["Review UI<br/>context panel · confirm / merge / reclassify"]
 ```
 
-**Deletion policy:** sources removed → marked `stale`; knowledge is never auto-deleted.
+**Deletion policy:** deleting a source cascade-deletes everything under it
+(items, entities, chunks, jobs) via FK cascade. Re-syncing a changed document
+replaces its entities/chunks. Retrieval always excludes `stale` entities —
+and `disputed` ones unless opted back in.
 
-**Chunking & cleaning (B5/B12/B35):**
+**Chunking & cleaning:**
 
 | Layer | Function | Config | Purpose |
 |---|---|---|---|
-| Cleaning | `cleaning.py:17` / `clean_text` + `repeated_lines`/`strip_repeated` | — | Strip control chars, page numbers (`Page 3 of 12`, `- 42 -`), repeated headers/footers, normalize whitespace *before* chunking so boundaries/embeddings/FTS tokens are clean |
-| Entity summary | `chunking.py:14` `chunk_text` / `chunking.rs:16` | `ANCHOR_CHUNK_SIZE=800`, `ANCHOR_CHUNK_OVERLAP=100` (char-based, UTF-8 safe) | Fixed-size 800/100 slices of each `entity.summary` → `chunks kind=entity` |
-| Full-document | `chunking.py:49` `chunk_document` / `chunking.rs:68` | `ANCHOR_CHUNK_MAX_CHARS=1600` | Section-aware: hard split at heading lines (`_is_heading`: `§434`, `4.2.1`, `Article 12`, ALL-CAPS), paragraph-packing within section up to 1600 chars, `chunk_text` fallback only for oversized paragraphs. Heading stays attached to section's first chunk. |
-| Classifier windows | `chunking.py:99` `classify_windows` / `chunking.rs:133` | `ANCHOR_CLASSIFY_WINDOW_CHARS=16000`, 50% overlap | Overlapping windows for `Classifier` — not stored as chunks, but governs `window_hash` dedup and cost |
+| Cleaning | `clean_text` + repeated-line stripping | — | Strip control chars, page numbers, repeated headers/footers and normalize whitespace *before* chunking, so boundaries, embeddings and FTS tokens are clean |
+| Entity summary | `chunk_text` (`chunking.py` / `chunking.rs`) | `ANCHOR_CHUNK_SIZE=800`, `ANCHOR_CHUNK_OVERLAP=100` (chars, UTF-8 safe) | Fixed 800/100 slices of each entity summary → `chunks kind=entity` |
+| Full-document | `chunk_document` | `ANCHOR_CHUNK_MAX_CHARS=1600` | Section-aware: hard split at headings (`§434`, `4.2.1`, `Article 12`, ALL-CAPS), paragraphs packed per section up to 1600 chars, fixed-slice fallback only for oversized paragraphs |
+| Classifier windows | `classify_windows` | `ANCHOR_CLASSIFY_WINDOW_CHARS=16000`, 50% overlap | Overlapping windows for the classifier — not stored as chunks, but governs hash dedup and cost |
 
-`Pipeline` `pipeline.py:283` / `pipeline.rs:485` does: `clean_text` → `strip_repeated` → `chunk_document` → `Chunk(kind=document, source_ref="title §N")` (old doc chunks deleted on re-sync). Entity chunks are created inline per summary `pipeline.py:256`. Rust currently skips `clean_text` (`pipeline.rs:491` `cleaned = full_text.clone()` parity gap).
+The pipeline runs clean → strip → chunk → store (`Chunk(kind=document)`,
+old doc chunks deleted on re-sync). Known gap: Rust still only trims instead
+of full `clean_text` (parity follow-up).
 
-**Distillation (B18):** chat-like windows (meeting/decision_log/general) are
-normalized into searchable Q&A units (`Q: … A: …` + terms/systems) stored as
-`kind='distilled'` chunks. An IDF gate (`embed_min_signal=0.15` `distill.py:signal`/`distill.rs:signal`) skips low-signal content from vector embedding — it stays keyword-findable in FTS5. Distill is hash-skipped via `distill_hashes`.
+**Distillation:** chat-like windows (meetings, decision logs, general notes)
+are normalized into searchable Q&A units stored as `kind='distilled'` chunks.
+An IDF gate (`embed_min_signal=0.15`) skips low-signal filler from vector
+embedding — it stays keyword-findable in FTS5. Distillation is hash-skipped
+per window.
 
-**Scale — hierarchical TOC (Phase 14, shipped 1.0.12):** Before, every `Chunk` was flat (`chunk_document` derived `sections: list[str]` `chunking.py:55` then discarded). Hybrid retrieval fused flat ranked lists (`vec_chunks` vec0 `k=top_k*4` + FTS5 `LIMIT top_k*4` + RRF `60+rank` `retrieval.rs:634`) with age decay, per-item diversity cap, `±1` neighbor `expand_context` — indexed but no hierarchical prune, `5k docs / ~150k chunks` (`scripts/build_business_corpus.py:12`) still ranked flat. Now `sections` (`parent/level/path/summary + summary_embedding` `migrations/11_sections.sql:1` `db.rs:107`) + `tags`/`chunk_tags` (`cosine>0.82` reuse `tags.rs:50` `migrations/12_tags.sql:1`) are persisted; `chunk_document_with_sections` `chunking.rs:68` returns tree (headings `§434`/`4.2.1`/`Article 12`/ALL-CAPS). Fetch is coarse-to-fine (`retrieval.rs:836` `toc_search`): (1) tag/SQL prune (`matching_tag_sections` `chunk_tags` + `sections.path`), (2) summary-node vector search `c.kind IN (section_summary,doc_summary)` `~5k not 150k`, (3) leaf vec0 `WHERE c.section_id IN (:top5)` + FTS `AND c.section_id IN`. See `rust/BACKLOG.md:Phase 14` + `docs/guides/hierarchical-toc.md`.
+**Scale — hierarchical TOC (shipped 1.0.12):** documents keep their structure
+now. Headings become a saved `sections` tree (parent/level/path/summary),
+passages point at their section, and a `tags` taxonomy is built as documents
+arrive (similar topics merged at 0.82 similarity). Retrieval goes
+coarse-to-fine — tag prune, summary search over ~5k section summaries, then
+leaf search inside the winning sections — instead of ranking all ~150k
+chunks flat. Full detail: `docs/guides/hierarchical-toc.md`.
 
 ## 4. Data Flow — Q&A
 
@@ -91,31 +114,43 @@ sequenceDiagram
 
     U->>A: "What was decided about X, and why?" (+ chat history, project scope)
     A->>A: rewrite follow-up into standalone query (if history)
-    A->>A: resolve project scope (B15) → source ids
-    A->>A: planner (B17) — pick retrieval tools (hybrid, who_knows)
+    A->>A: resolve project scope → source ids
+    A->>A: planner — pick retrieval tools (hybrid, who_knows)
     A->>O: embed query
     O-->>A: query vector
     A->>V: top-k similarity (scoped to project sources)
     A->>F: FTS5 keyword (bm25, scoped)
-    A->>A: who_knows tool (B17) — owner/expertise entities
+    A->>A: who_knows tool — owner/expertise entities
     A->>A: RRF fusion + age decay + diversity cap + context expansion
-    A->>A: graph walk (B32) — connected entities join context + citations
+    A->>A: graph walk — connected entities join context + citations
     A->>M: answer prompt w/ sections (+ conversation)
     M-->>A: answer + citations
     A-->>U: answer + clickable source chips
 ```
 
-### 4a. Access pattern — current vs hierarchical (Phase 14)
+### 4a. Access pattern — flat vs hierarchical
 
-*Current (flat):* `AnswerEngine.ask` `answer_engine.py:199` / `answer.rs` resolves `project source_ids` → planner `_plan_tools` (`hybrid` always, `who_knows` on ownership cues) → executor `_execute_tools` (one shared embed call; `hybrid = vector vec0 + FTS5` `answer_engine.py:538`) → `_fuse_and_rank` (RRF `score=Σ w/(60+rank)`, age decay `0.5^(age/halflife)`, per-item diversity cap `retrieval_max_per_source`, `expand_context ±1` `answer_engine.py:377`, near-duplicate dedupe `_content_signature`) → `_graph_expand` 1–2 hops `answer_engine.py:408` → `_gate_answer_hits` (B30 PII/sensitive filter when `ANCHOR_CLOUD_TRUST` missing) → cited generation. All `retrieval.*` methods take `source_ids: set[int]|None` (B15 scoping). Evidence hit shape `{"chunk","entity","item","source_id","score"}` `AGENTS.md`.
+*Flat:* `ask` resolves project source ids → the planner picks tools (`hybrid`
+always, `who_knows` on ownership cues) → the executor runs them with one
+shared embedding call (`hybrid` = vec0 vector + FTS5 keyword) → fusion (RRF
+`score=Σ w/(60+rank)`, age decay, per-item diversity cap, context expansion,
+near-duplicate dedupe) → 1–2 hop graph walk → PII/sensitive gate for
+unapproved providers → cited generation. Every retrieval path takes an
+optional source-id scope; every hit carries chunk, entity, item, source and
+score.
 
-*Hierarchical (Phase 14, shipped 1.0.12):* same pipeline with TOC pre-stage (`answer.rs:244` `retrieve_sync` tries `toc_search` before `hybrid`). Persisted `sections` + `tags` (`src/sections.rs:1`, `src/tags.rs:1`) let retrieval prune *before* vector search: (a) tag/SQL filter (`matching_tag_sections` `chunk_tags`/`sections.path` + `project source_ids`), (b) summary-node vector search `summary_vector_search_filtered` `c.kind IN (section_summary,doc_summary)` `~5k`, (c) leaf vec0 `leaf_vector_search_filtered` `WHERE c.section_id IN (:top5)` + keyword `AND c.section_id IN` — `retrieval.rs:192` `IN` pattern reused. Fallback `vector_search_scan` `retrieval.rs:276` avoided at scale; `expand_context` now `expand_by_section` (`WHERE section_id = ?`) vs `±1` for flat. Endpoints `GET /sections` + `GET /tags` (`main.rs:172`).
+*Hierarchical (shipped 1.0.12):* the same pipeline with a TOC pre-stage
+(`toc_search` before flat hybrid). Persisted sections + tags let retrieval
+prune *before* vector search: tag/SQL filter, summary-node vector search over
+~5k summaries, then leaf vec0 restricted to the top sections. Falls back to
+flat hybrid when the TOC pass is empty. Context expansion reads same-section
+siblings. Endpoints: `GET /sections`, `GET /tags`.
 
 ## 4b. Retrieval Design (informed by Cerebras' knowledge base)
 
 Cerebras published how their internal KB serves 15k queries/day (2026-07).
-Their design validated our hybrid approach and added four concrete techniques
-we adopted (B12.1):
+Their design validated our hybrid approach and added concrete techniques we
+adopted:
 
 1. **Multi-scorer fusion, no single trusted scorer** — they run full-text,
    embeddings, and IDF-scored retrievers in parallel and fuse the ranked
@@ -125,8 +160,8 @@ we adopted (B12.1):
 2. **Per-file diversity cap** — a document that matches broadly must not
    monopolize the top-k. After fusion, cap results per file (default 3);
    relaxed for single-file corpora so a big document's sections can surface.
-3. **Age decay** — "Slack answers expire"; when relevance is otherwise equal,
-   the newer hit wins. A recency multiplier is applied in fusion.
+3. **Age decay** — when relevance is otherwise equal, the newer hit wins. A
+   recency multiplier is applied in fusion.
 4. **Context expansion** — once winners are picked, pull the neighboring
    sections (heading, preconditions, caveats) that chunking split apart, so
    the LLM sees a complete section instead of a lonely paragraph.
@@ -137,14 +172,14 @@ Follow-up questions reuse retrieval with a **query-rewrite pass**: history is
 sent with the question, a cheap LLM call rewrites it standalone, and the
 conversation is included in generation.
 
-**Planner → Executor → Synthesis (B17):** a lightweight planner picks the
+**Planner → Executor → Synthesis:** a lightweight planner picks the
 retrieval tools for each query (`hybrid` vector+FTS always; `who_knows` for
 ownership/expertise questions). The executor runs them (one shared embedding
 call), each tool returns a ranked hit list in a normalized evidence shape, and
 synthesis RRF-fuses them into the final context. An LLM planner can replace the
 heuristic rules later without changing the executor contract.
 
-**Graph-based retrieval (B32):** after RRF picks the winning entities, the
+**Graph-based retrieval:** after RRF picks the winning entities, the
 pipeline walks `relationships` 1–2 hops (`supersedes` > `depends_on` > `owns` >
 `blocks` > `related`, hop decay, fan-out cap) and pulls connected entities'
 summaries/chunks into the answer context as `[related]` sections + citations.
@@ -152,9 +187,8 @@ This answers "what supersedes this?" / "what depends on this decision?" that
 lexical+vector fusion alone misses, because the connected knowledge doesn't
 need to co-occur in the question's words. Pure SQL — no model calls.
 
-Remaining learnings parked in the backlog: a full *who_knows* ranking (B16;
-B17 ships a minimal owner/author tool already), and data labeling / PII
-gating (B30). Scoped search via *projects* shipped in B15.
+Remaining backlog: a fuller *who_knows* ranking and per-user ACLs for hosted.
+Scoped search via *projects* and PII gating both shipped.
 
 ## 5. Data Model — Uniform Entity Graph
 
@@ -171,7 +205,7 @@ erDiagram
         string content_hash
         string doc_type "standards|runbook|meeting|decision_log|prd|general"
         text window_hashes "JSON {index: sha256} — cheap reclassify"
-        text distill_hashes "JSON {index: sha256} — B18 distillation"
+        text distill_hashes "JSON {index: sha256} — distillation"
         bool stale
         datetime created_at
     }
@@ -202,46 +236,46 @@ erDiagram
     }
     SOURCES {
         int id PK
-        string connector "folder|jira|linear|upload"
+        string connector "folder|gdrive|jira|linear|rest"
         string config
         string last_sync_cursor
         datetime last_synced_at
         string last_error
         int error_count
         bool enabled
-        string label "internal|public|sensitive|pii (B39)"
+        string label "internal|public|sensitive|pii"
     }
     CHUNKS {
         int id PK
         int item_id FK "full-document chunk"
         int entity_id FK "entity-summary chunk"
-        int section_id FK "→ sections.id (Phase 14)"
-        string kind "document|entity|distilled|section_summary|doc_summary (Phase 14)"
+        int section_id FK "→ sections.id"
+        string kind "document|entity|distilled|section_summary|doc_summary"
         string source_ref "section"
         string content
         bytes embedding "float32 blob"
-        bool is_pii "auto-flagged B30"
+        bool is_pii "auto-flagged"
         string pii_categories "JSON"
-        int level "heading level (Phase 14)"
-        string path "section path e.g. Art12 > 12.3 (Phase 14)"
+        int level "heading level"
+        string path "section path e.g. Art12 > 12.3"
         datetime created_at
     }
     SECTIONS {
         int id PK
         int item_id FK
         int parent_id FK "self, null=root"
-        int level "0=root, 1=§, 2=4.2.1"
+        int level "nesting depth"
         string title "heading text"
         string path "full path"
         string chunk_range "first/last chunk id"
-        text summary "LLM or extractive (Phase 14)"
+        text summary "extractive summary"
         bytes summary_embedding "float32 blob"
         datetime created_at
     }
     TAGS {
         int id PK
         string name "unique, lowercased"
-        string description "LLM-generated"
+        string description "optional"
         bytes embedding "float32 blob"
         int count "usage count"
     }
@@ -257,7 +291,7 @@ erDiagram
         int id PK
         int source_id FK
         string kind "sync|reclassify"
-        string status "running|done|failed|cancelled"
+        string status "pending|running|done|failed|cancelled"
         int total
         int processed
         text result
@@ -300,7 +334,7 @@ erDiagram
         datetime created_at
     }
     VEC_CHUNKS {
-        int rowid "virtual vec0 768d cosine (B33, SQLite-only)"
+        int rowid "virtual vec0 768d cosine (SQLite-only)"
         bytes embedding
     }
     PROJECT_SOURCES {
@@ -310,7 +344,7 @@ erDiagram
     SOURCES ||--o{ INGESTED_ITEMS : "contains"
     INGESTED_ITEMS ||--o{ ENTITIES : "classified into"
     INGESTED_ITEMS ||--o{ CHUNKS : "chunked"
-    INGESTED_ITEMS ||--o{ SECTIONS : "section tree (Phase 14)"
+    INGESTED_ITEMS ||--o{ SECTIONS : "section tree"
     SECTIONS ||--o{ SECTIONS : "parent/children"
     SECTIONS ||--o{ CHUNKS : "contains"
     ENTITIES ||--o{ RELATIONSHIPS : "participates"
@@ -324,7 +358,7 @@ erDiagram
     SOURCES ||--o{ PROJECT_SOURCES : "belongs to"
 
     CONTRADICTIONS {
-        int id PK
+        int id PK "planned, v2 — not in schema yet"
         int claim_a_id FK
         int claim_b_id FK
         string kind
@@ -337,48 +371,56 @@ erDiagram
 
 | Container | Responsibility | Tech |
 |---|---|---|
-| Web UI | Connect sources, project scoping, review queue (B27 expanded context), PII review, Q&A chat, model settings | React SPA (Vite, TS, 7 tabs incl PII) |
+| Web UI | Connect sources, project scoping, review queue, PII review, Q&A chat, model settings | React SPA (Vite, TS, 7 tabs) |
 | API | All endpoints, orchestration, config | **Rust Axum (shipped)** — FastAPI `backend/` deprecated except `hosting` |
-| Entity Store | Entities, provenance, window context, sync state | SQLite local (Rust `rusqlite`) / Postgres hosted + SQLAlchemy (Python legacy) |
-| Vector Store | Chunk embeddings + similarity search | sqlite-vec vec0 (`vec_chunks`, B33) same file (Rust static); pgvector image for hosted (Python-scan fallback on Postgres) |
-| Keyword Store | FTS5 bm25 for hybrid retrieval | SQLite FTS5 (`chunks_fts`, trigger-synced; skipped on Postgres) |
-| Classifier | Doc-type detection + entity extraction | Ollama or cloud OpenAI-compatible + rule fallback (Rust `classifier.rs` / Python `classifier.py` deprecated) |
+| Entity Store | Entities, provenance, window context, sync state | SQLite local (Rust `rusqlite`) / Postgres hosted (Python legacy) |
+| Vector Store | Chunk embeddings + similarity search | sqlite-vec vec0, same file (Rust static); pgvector image for hosted (Python-scan fallback on Postgres) |
+| Keyword Store | FTS5 bm25 for hybrid retrieval | SQLite FTS5 (trigger-synced; skipped on Postgres) |
+| Classifier | Doc-type detection + entity extraction | Ollama or cloud OpenAI-compatible + rule fallback (Rust `classifier.rs`) |
 | Embedder | Chunk embeddings | Ollama or cloud OpenAI-compatible (Rust `embedder.rs`) |
-| Answer Engine | Planner (tool selection) → Executor (hybrid + who_knows) → RRF fusion → graph walk → cited answer | BYO cloud model or Ollama (Rust `answer.rs`/`retrieval.rs`) |
-| Retrieval (retrievers) | Vector cosine + FTS5 bm25, who_knows owner/author ranking, `relationships` graph walk (B32) | sqlite-vec + FTS5 + SQL (Rust) |
-| Job Manager | Background sync/reclassify + cancel | `jobs` table, `MAX_CONCURRENT=2` (Rust `jobs.rs` / Python `jobs.py` deprecated) |
+| Answer Engine | Planner → Executor → RRF fusion → graph walk → cited answer | BYO cloud model or Ollama (Rust `answer.rs`/`retrieval.rs`) |
+| Retrieval | Vector cosine + FTS5 bm25, who_knows owner/author ranking, `relationships` graph walk | sqlite-vec + FTS5 + SQL (Rust) |
+| Job Manager | Background sync/reclassify + cancel | `jobs` table, `MAX_CONCURRENT=2` (Rust `jobs.rs`) |
 | Settings Service | Runtime-mutable model config | `app_settings` table + SecretStore (Rust `settings.rs`) |
 | Secret Store | Credentials (Jira token, model keys) | OS Keychain via `keyring` + encrypted-file fallback (Rust `secrets.rs`) |
 
 ## 7. Security
 
 - Credentials: **OS Keychain** (`keyring`), encrypted-file fallback; never in DB/config/logs.
-- Local-only server binds 127.0.0.1 (hosted binds `0.0.0.0` behind `CORS` allowlist).
+- Local server binds 127.0.0.1 (hosted binds `0.0.0.0` behind a CORS allowlist).
 - Secret values masked in logs, error responses, and API payloads (`***set***`).
-- `SecretStore` interface maps to cloud secret managers in hosted v2; single source `SECRET_SOURCE_FIELDS` (B34).
 - Tests never touch the real keychain (`ANCHOR_SECRETS_NO_KEYRING`).
-- **Data labels (B30 DONE, B39 thin gate):** `sources.label` (`public|internal|sensitive|pii`, default `internal`); Direct→`pii` / Indirect+payroll→`sensitive` (ratified 2026-08-18: source-level for v1). Local model = everything, API model = user-controlled via `ANCHOR_CLOUD_TRUST=1`; `chunks.is_pii` auto-flagged (`pii.py` categories + `pipeline._flag_pii`). Pipeline gate: `sensitive`/`pii` + `is_pii` chunks skip cloud classify/embed/answer, fall back to rules, record `system_event` (`gate`, `answer_engine`). Share/MCP surface `GET /qa/public` + `public_only` (B30) — non-public excluded. Per-user ACL deferred to hosted `users` (B40, `hosting/`). Wizard is skippable (`OnboardingWizard` Skip + `System → Show welcome wizard`); Review shows expanded context B27 (`GET /entities/{id}/context`).
-- Every allow/block decision is audited in `system_events`; hosted auth (`/auth`, B40) issues HS256 JWT when `ANCHOR_AUTH_SECRET` set, otherwise disabled (local stays single-user).
+- **Data labels:** `sources.label` (`public|internal|sensitive|pii`, default
+  `internal`); `chunks.is_pii` auto-flagged. Sensitive/PII content skips
+  cloud classify/embed/answer, falls back to local rules, and records a
+  `system_event`. Share/MCP surface (`GET /qa/public`, `public_only`) only
+  sees public sources. Per-user ACL deferred to hosted.
+- Every allow/block decision is audited in `system_events`; hosted auth
+  issues HS256 JWT when `ANCHOR_AUTH_SECRET` is set, otherwise disabled
+  (local stays single-user).
 
 ## 8. Key Interfaces (Swap Points)
 
-| Interface | v1 | v2+ swap |
+| Interface | v1 (shipped) | v2+ swap |
 |---|---|---|
 | `VectorStore` | sqlite-vec | Qdrant / pgvector (hosted) |
 | `ModelClient` | Ollama + BYO OpenAI-compatible | Any provider |
 | `SecretStore` | Keychain | Cloud secret manager |
-| `Connector` | Folder, Jira | Linear, Slack, Notion, Google Drive (B28) |
-| `AgentAdapter` | MCP server (stdio + HTTP) — see [mcp.md](./mcp.md) | MCP registry / deeper tool set |
+| `Connector` | Folder, Drive, Jira, Linear, REST | Slack, Notion, Confluence |
+| `AgentAdapter` | MCP sidecar (stdio, read-only) — see [mcp.md](./mcp.md) | MCP HTTP transport / registry / write-back |
 | `SettingsService` | DB-backed overrides + keychain secrets | Cloud config service |
-| `DB` | SQLite | PostgreSQL (hosted migration) |
+| `DB` | SQLite local · Postgres hosted (Python) | Postgres for Rust if hosted is ported |
 
 ## 9. Evolution Path
 
 ```
-v1: local-first, folder + Jira, document-aware classification + review (B27 expanded) + cited Q&A
-    (done: hybrid RRF + vec0 (B33) + planner/executor + graph walk + distillation + projects + PII gate (B30) + hosted skeleton + auth (B40) + Windows/macOS apps)
-  -> v1.5: Linear/Drive connectors (B28 next), MCP access (B14), wizard skippable (B8)
-  -> v2: team sharing (project tokens), hosted pilot (hosting/ + per-user ACL), Slack, contradictions, bundled models
+v1 (shipped, 1.0.12): local-first app — folder/Drive/Jira/Linear/REST connectors,
+    document-aware classification + review queue, cited Q&A (hybrid RRF + vec0 +
+    planner/executor + graph walk + distillation + projects + PII gate),
+    hierarchical sections, MCP sidecar, Team self-hosted (Docker + offline license),
+    Windows/macOS apps
+  -> next: website + launch, Drive OAuth, Slack connector, hosted pilot
+           (per-user ACL, contradictions, workspace export/delete)
   -> v3: agentic levels (draft, prepare-action-with-approval), enterprise compliance
 ```
 

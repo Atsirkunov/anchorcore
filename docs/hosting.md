@@ -51,7 +51,7 @@ anchorcore.dev
 
 ## Deploy (every `v*` tag)
 
-GitHub Actions (extend `release.yml` pattern): build Docker image → push GHCR →
+GitHub Actions — planned, no workflow yet (extend `release.yml` pattern): build Docker image → push GHCR →
 SSH to VPS: `docker compose pull && docker compose up -d`.
 Rollback: `docker compose up -d <previous-tag>`.
 
