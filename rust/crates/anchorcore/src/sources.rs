@@ -239,9 +239,17 @@ pub async fn delete_handler(State(state): State<AppState>, Path(source_id): Path
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
         crate::common::require_row(&conn, "sources", source_id, "Source not found")?;
+        // Snapshot for the audit trail before the cascade removes everything
+        let name: String = conn.query_row("SELECT name FROM sources WHERE id=?1", [source_id], |r| r.get(0)).unwrap_or_else(|_| format!("source {}", source_id));
+        let items: i64 = conn.query_row("SELECT COUNT(*) FROM ingested_items WHERE source_id=?1", [source_id], |r| r.get(0)).unwrap_or(0);
+        let jobs: i64 = conn.query_row("SELECT COUNT(*) FROM jobs WHERE source_id=?1", [source_id], |r| r.get(0)).unwrap_or(0);
         // FK cascade will delete items/entities/chunks/jobs via ON DELETE CASCADE, but we also need to clean project_sources
         let _ = conn.execute("DELETE FROM project_sources WHERE source_id=?1", [source_id]);
         let _ = conn.execute("DELETE FROM sources WHERE id=?1", [source_id]);
+        // Flag the removal: hard-delete the data (privacy product — delete means
+        // delete), but keep an audit row with what was removed and when.
+        let detail = format!("deleted source '{}' (id {}); cascaded {} items (+entities/chunks) and {} jobs", name, source_id, items, jobs);
+        let _ = conn.execute("INSERT INTO system_events (component, level, source_id, message, detail) VALUES ('sources','info',NULL,?1,?2)", rusqlite::params!["source deleted", detail]);
         if let Some(sched) = scheduler::global() {
             sched.reload_sources(&conn);
         }
