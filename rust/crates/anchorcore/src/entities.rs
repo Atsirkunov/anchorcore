@@ -30,6 +30,45 @@ pub struct DisputePayload {
     pub user: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct GateQuery {
+    pub gate: Option<String>,
+}
+
+/// Phase-1 deterministic gating for the extraction plane.
+///
+/// Callers whose reads flow toward an agent/model pass `?gate=provider`; the
+/// server then withholds sensitive/PII content from untrusted providers and
+/// audits the decision. The local UI never passes it: owner management views
+/// (lists, review queues) stay complete, because UI-fetched bytes never leave
+/// for a provider API — gating them would lock the owner out of their own data.
+fn provider_gate_fail(
+    conn: &rusqlite::Connection,
+    settings: &std::sync::Arc<crate::settings::SettingsService>,
+    gate: &GateQuery,
+    entity_id: i64,
+) -> Option<(StatusCode, Json<Value>)> {
+    if gate.gate.as_deref() != Some("provider") {
+        return None;
+    }
+    if crate::answer::is_answer_trusted(settings) {
+        return None;
+    }
+    match crate::answer::gate_entity_content(conn, entity_id) {
+        Some(reason) => {
+            let _ = conn.execute(
+                "INSERT INTO system_events (component, level, message, detail) VALUES ('entities','warning',?1,?2)",
+                rusqlite::params![format!("entity read gated (provider)"), reason],
+            );
+            Some((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"code":"gated_provider","detail":reason})),
+            ))
+        }
+        None => None,
+    }
+}
+
 fn entity_json_from_row(row: &rusqlite::Row) -> rusqlite::Result<Value> {
     let id: i64 = row.get(0)?;
     let item_id: i64 = row.get(1)?;
@@ -101,10 +140,18 @@ pub async fn list_handler(State(state): State<AppState>, Query(q): Query<ListQue
     Json(result)
 }
 
-pub async fn get_handler(State(state): State<AppState>, Path(entity_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+pub async fn get_handler(
+    State(state): State<AppState>,
+    Path(entity_id): Path<i64>,
+    Query(gate): Query<GateQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
+    let settings = state.settings.clone();
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
+        if let Some(err) = provider_gate_fail(&conn, &settings, &gate, entity_id) {
+            return Err(err);
+        }
         let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities WHERE id = ?1").unwrap();
         let v = stmt.query_row([entity_id], |r| entity_json_from_row(r));
         match v {
@@ -151,8 +198,13 @@ pub async fn patch_handler(
     }
 }
 
-pub async fn related_handler(State(state): State<AppState>, Path(entity_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+pub async fn related_handler(
+    State(state): State<AppState>,
+    Path(entity_id): Path<i64>,
+    Query(gate): Query<GateQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
+    let settings = state.settings.clone();
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
         crate::common::require_row(&conn, "entities", entity_id, "Entity not found")?;
@@ -164,6 +216,28 @@ pub async fn related_handler(State(state): State<AppState>, Path(entity_id): Pat
         all.extend(in_ids);
         if all.is_empty() {
             return Ok(Value::Array(vec![]));
+        }
+        // Phase-1: extraction-plane gate filters related entities (partial sets
+        // stay useful; fully-blocked sets refuse deterministically).
+        if gate.gate.as_deref() == Some("provider") && !crate::answer::is_answer_trusted(&settings) {
+            let before = all.len();
+            all.retain(|id| crate::answer::gate_entity_content(&conn, *id).is_none());
+            let blocked = before - all.len();
+            if blocked > 0 {
+                let _ = conn.execute(
+                    "INSERT INTO system_events (component, level, message, detail) VALUES ('entities','warning',?1,?2)",
+                    rusqlite::params![
+                        format!("related read gated (provider)"),
+                        format!("entity {}: {} of {} related withheld", entity_id, blocked, before)
+                    ],
+                );
+                if all.is_empty() {
+                    return Err((
+                        StatusCode::FORBIDDEN,
+                        Json(serde_json::json!({"code":"gated_provider","detail":format!("all {} related entities withheld: sensitive/PII, untrusted answer provider", before)})),
+                    ));
+                }
+            }
         }
         let sql = format!("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities WHERE id IN ({})", crate::common::placeholders(all.len()));
         let mut stmt3 = conn.prepare(&sql).unwrap();
@@ -267,10 +341,18 @@ fn expand_context(full_text: &str, window_text: &str, window_index: Option<i64>)
     (before, after)
 }
 
-pub async fn context_handler(State(state): State<AppState>, Path(entity_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+pub async fn context_handler(
+    State(state): State<AppState>,
+    Path(entity_id): Path<i64>,
+    Query(gate): Query<GateQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
+    let settings = state.settings.clone();
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
+        if let Some(err) = provider_gate_fail(&conn, &settings, &gate, entity_id) {
+            return Err(err);
+        }
         let mut stmt = conn.prepare("SELECT id, item_id, source_ref, window_text, window_index, summary FROM entities WHERE id = ?1").unwrap();
         let row: Result<(i64,i64,String,String,Option<i64>,String), _> = stmt.query_row([entity_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)));
         let (eid, item_id, source_ref, window_text, window_index, summary) = match row {
@@ -312,5 +394,75 @@ pub async fn context_handler(State(state): State<AppState>, Path(entity_id): Pat
     match result {
         Ok(v) => Ok(Json(v)),
         Err(e) => Err(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+
+    fn gate_state(dir: &tempfile::TempDir, untrusted: bool) -> AppState {
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let settings = Arc::new(crate::settings::SettingsService::new(store));
+        settings.set_data_dir(dir.path());
+        let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let base = if untrusted { "https://untrusted.example.invalid/v1" } else { "http://127.0.0.1:11434/v1" };
+        settings.set("answer_base_url", base, &conn).unwrap();
+        // One sensitive source with one entity carrying window text.
+        conn.execute("INSERT INTO sources (connector, name, label) VALUES ('folder','sen','sensitive')", []).unwrap();
+        let sid: i64 = conn.query_row("SELECT id FROM sources WHERE name='sen'", [], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO ingested_items (source_id, content_hash, title, text) VALUES (?1,'h','t','moonvault sealed')", [sid]).unwrap();
+        let item: i64 = conn.query_row("SELECT id FROM ingested_items WHERE source_id=?1", [sid], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO entities (item_id, kind, summary, window_text) VALUES (?1,'decision','moonvault','moonvault sealed text')", [item]).unwrap();
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        AppState {
+            data_dir: dir.path().to_string_lossy().to_string(),
+            settings,
+            jobs: crate::jobs::JobManager::new(),
+            csrf_token: String::new(),
+            embedder,
+        }
+    }
+
+    fn sensitive_eid(state: &AppState) -> i64 {
+        let db_path = crate::db::resolve_db_path(&state.data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.query_row("SELECT id FROM entities WHERE summary='moonvault'", [], |r| r.get(0)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_gated_provider_returns_403_code() {
+        let dir = tempdir().unwrap();
+        let state = gate_state(&dir, true);
+        let eid = sensitive_eid(&state);
+        let gate = Query(GateQuery { gate: Some("provider".to_string()) });
+        match get_handler(State(state), Path(eid), gate).await {
+            Err((status, Json(v))) => {
+                assert_eq!(status, StatusCode::FORBIDDEN);
+                assert_eq!(v.get("code").and_then(|c| c.as_str()), Some("gated_provider"));
+            }
+            Ok(_) => panic!("sensitive entity must be gated for untrusted provider"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_without_gate_and_trusted_stay_open() {
+        // No gate flag: owner management plane untouched even when untrusted.
+        let dir = tempdir().unwrap();
+        let state = gate_state(&dir, true);
+        let eid = sensitive_eid(&state);
+        let open = Query(GateQuery { gate: None });
+        let Json(v) = get_handler(State(state), Path(eid), open).await.expect("UI read must stay open");
+        assert_eq!(v.get("id").and_then(|i| i.as_i64()), Some(eid));
+        // Trusted provider + gate flag: allowed through.
+        let dir2 = tempdir().unwrap();
+        let state2 = gate_state(&dir2, false);
+        let eid2 = sensitive_eid(&state2);
+        let gate = Query(GateQuery { gate: Some("provider".to_string()) });
+        let Json(v2) = get_handler(State(state2), Path(eid2), gate).await.expect("trusted read must pass");
+        assert_eq!(v2.get("id").and_then(|i| i.as_i64()), Some(eid2));
     }
 }

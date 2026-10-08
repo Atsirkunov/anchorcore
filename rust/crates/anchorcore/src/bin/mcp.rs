@@ -122,6 +122,7 @@ async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool) ->
     let result = http_call("POST", path, Some(payload)).await?;
     audit_mcp("ask", &format!("q={} public_only={} hits={}", question.chars().take(80).collect::<String>(), public_only, result.get("citations").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0)));
     let answer = result.get("answer").and_then(|v| v.as_str()).unwrap_or("").chars().take(4000).collect::<String>();
+    let refusal = result.get("refusal").and_then(|v| v.as_str()).map(|s| s.to_string());
     let citations: Vec<Value> = result.get("citations").and_then(|v| v.as_array()).cloned().unwrap_or_default().into_iter().map(|c| json!({
         "entity_id": c.get("entity_id"),
         "kind": c.get("kind").and_then(|v| v.as_str()).unwrap_or("document"),
@@ -130,7 +131,7 @@ async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool) ->
         "score": c.get("score"),
         "snippet": c.get("snippet").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>()
     })).collect();
-    Ok(json!({"answer": answer, "citations": citations}))
+    Ok(json!({"answer": answer, "citations": citations, "refusal": refusal}))
 }
 
 async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only: bool) -> Result<Value, String> {
@@ -140,7 +141,9 @@ async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only
     if k < 1 || k > 50 {
         return Err("k must be between 1 and 50".to_string());
     }
-    let mut payload = json!({"query": query.trim(), "k": k});
+    // The agent composes from these bytes, so opt back into full content
+    // (server default is compact citable hits; verbatim drill-down is get_entity).
+    let mut payload = json!({"query": query.trim(), "k": k, "fields": "all"});
     if let Some(pid) = project_id {
         payload["project_id"] = json!(pid);
     }
@@ -161,11 +164,16 @@ async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only
         "item_title": h.get("item_title").and_then(|v| v.as_str()).unwrap_or(""),
         "score": h.get("score")
     })).collect();
-    Ok(json!({"query": query, "hits": hits}))
+    let refusal = result.get("refusal").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let blocked = result.get("blocked").and_then(|v| v.as_u64()).unwrap_or(0);
+    Ok(json!({"query": query, "hits": hits, "blocked": blocked, "refusal": refusal}))
 }
 
 async fn tool_get_entity(entity_id: i64) -> Result<Value, String> {
-    let v = http_call("GET", &format!("/entities/{}", entity_id), None).await.map_err(|e| if e=="not found" { format!("entity {entity_id} not found") } else { e })?;
+    // gate=provider: this read flows toward the agent's model, so the server
+    // withholds sensitive/PII content from untrusted providers (deterministic
+    // refusal with code "gated_provider" instead of silent bytes).
+    let v = http_call("GET", &format!("/entities/{}?gate=provider", entity_id), None).await.map_err(|e| if e=="not found" { format!("entity {entity_id} not found") } else { e })?;
     Ok(json!({
         "id": v.get("id"),
         "kind": v.get("kind").and_then(|x| x.as_str()).unwrap_or(""),
@@ -229,7 +237,7 @@ fn tool_defs() -> Value {
     json!([
         {
             "name": "ask",
-            "description": "Answer a question using AnchorCore memory, with citations into sources.",
+            "description": "Policy-gated composed answer from AnchorCore memory, with citations. Use when the material may be sensitive/PII or you want the server to enforce PII/provider policy before you see bytes. Otherwise prefer search so your own model composes from verbatim cited chunks.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -242,7 +250,7 @@ fn tool_defs() -> Value {
         },
         {
             "name": "search",
-            "description": "Ranked raw retrieval (chunks/entities + provenance + scores) for a query.",
+            "description": "Default extraction: gated, verbatim, cited chunks (with provenance + scores) for a query. Prefer this — your model composes the answer from the returned bytes. A \"refusal\" field carries \"gated_provider\" when sensitive content was withheld; \"blocked\" counts withheld hits.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -256,7 +264,7 @@ fn tool_defs() -> Value {
         },
         {
             "name": "get_entity",
-            "description": "Fetch one entity with provenance (summary, confidence, status, window_text, source_ref).",
+            "description": "Fetch one entity with provenance (summary, confidence, status, window_text, source_ref). Sensitive/PII content is withheld from untrusted providers with a coded \"gated_provider\" refusal.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
