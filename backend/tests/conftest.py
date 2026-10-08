@@ -13,6 +13,8 @@ else:
     _db_path = Path(os.environ["ANCHOR_DATABASE_URL"].removeprefix("sqlite:///"))
 
 os.environ["ANCHOR_OLLAMA_BASE_URL"] = "http://localhost:1"
+# Opt in to the test-sentinel URL: real launches ignore it (guard_test_ollama_url)
+os.environ["ANCHOR_ALLOW_TEST_URLS"] = "1"
 os.environ["ANCHOR_CLASSIFIER_TIMEOUT"] = "1.0"
 os.environ["ANCHOR_HTTP_RETRIES"] = "0"
 # Windows never RSTs closed localhost ports: each dead-port connect waits the
@@ -25,6 +27,9 @@ if "ANCHOR_DATA_DIR" not in os.environ:
 # never touch the real OS keychain from tests — secrets go to the encrypted
 # fallback file under the temp data dir instead
 os.environ["ANCHOR_SECRETS_NO_KEYRING"] = "1"
+# folder watcher: polling backend. macOS FSEvents segfaults under the per-test
+# observer churn (rapid schedule→stop); polling still delivers events.
+os.environ["ANCHOR_WATCHER"] = "polling"
 
 
 @pytest.fixture()

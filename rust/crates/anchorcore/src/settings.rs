@@ -37,6 +37,33 @@ pub const ALL_KEYS: &[&str] = &[
 pub const SECRET_PREFIX: &str = "app:";
 const CACHE_TTL: Duration = Duration::from_secs(3);
 
+// Test-only Ollama URL: the suite and CI conformance point Ollama at a dead
+// port so degradation paths are exercised. A real launch must never honor it —
+// if it leaks in via env/.env/DB (stray export, `open` env inheritance), fall
+// back to the real default and warn. Tests opt in with ANCHOR_ALLOW_TEST_URLS=1
+// (mirrors Python config.guard_test_ollama_url).
+fn is_test_sentinel_url(value: &str) -> bool {
+    let v = value.trim_end_matches('/');
+    v == "http://localhost:1" || v == "http://127.0.0.1:1"
+}
+
+fn test_urls_allowed() -> bool {
+    std::env::var("ANCHOR_ALLOW_TEST_URLS").as_deref() == Ok("1")
+}
+
+fn guard_test_ollama_url(value: Option<String>) -> Option<String> {
+    match value {
+        Some(v) if is_test_sentinel_url(&v) && !test_urls_allowed() => {
+            tracing::warn!(
+                "ignoring test-only ollama_base_url '{}' (set ANCHOR_ALLOW_TEST_URLS=1 to allow); using http://localhost:11434",
+                v
+            );
+            Some("http://localhost:11434".to_string())
+        }
+        other => other,
+    }
+}
+
 #[allow(dead_code)]
 static ENV_CACHE: OnceLock<HashMap<String, String>> = OnceLock::new();
 
@@ -108,10 +135,12 @@ impl SettingsService {
         }
         // non-secret: check DB first if conn provided, else cache
         if let Some(c) = conn {
-            if let Some(v) = db_value(c, key) {
-                return Some(v);
-            }
-            return env_value(key);
+            let resolved = db_value(c, key).or_else(|| env_value(key));
+            return if key == "ollama_base_url" {
+                guard_test_ollama_url(resolved)
+            } else {
+                resolved
+            };
         }
         self.cached_get(key)
     }
@@ -209,6 +238,11 @@ impl SettingsService {
         let conn = crate::db::open_db(&db_path).ok();
         let db_val = conn.as_ref().and_then(|c| db_value(c, key));
         let resolved = db_val.or_else(|| env_value(key));
+        let resolved = if key == "ollama_base_url" {
+            guard_test_ollama_url(resolved)
+        } else {
+            resolved
+        };
         let mut cache = self.cache.write().unwrap();
         cache.insert(
             key.to_string(),
@@ -509,5 +543,37 @@ mod tests {
         let svc = SettingsService::new(store);
         // default
         assert_eq!(svc.get("ollama_base_url", None), Some("http://localhost:11434".to_string()));
+    }
+
+    #[test]
+    fn test_sentinel_shape() {
+        assert!(is_test_sentinel_url("http://localhost:1"));
+        assert!(is_test_sentinel_url("http://localhost:1/"));
+        assert!(is_test_sentinel_url("http://127.0.0.1:1"));
+        assert!(!is_test_sentinel_url("http://localhost:11434"));
+        assert!(!is_test_sentinel_url(""));
+    }
+
+    #[test]
+    fn test_sentinel_db_value_falls_back_to_default() {
+        // A stray test-sentinel row in app_settings must not break a real
+        // launch: without ANCHOR_ALLOW_TEST_URLS=1 the effective value falls
+        // back to the real default. The marker is removed (and restored) so a
+        // stray export in the developer's shell cannot flip this test — no
+        // other test depends on the marker being set.
+        let saved = std::env::var("ANCHOR_ALLOW_TEST_URLS").ok();
+        std::env::remove_var("ANCHOR_ALLOW_TEST_URLS");
+        let dir = tempdir().unwrap();
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let svc = SettingsService::new(store);
+        let conn = Connection::open(dir.path().join("t.db")).unwrap();
+        conn.execute("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)", [])
+            .unwrap();
+        svc.set("ollama_base_url", "http://localhost:1", &conn).unwrap();
+        let got = svc.get("ollama_base_url", Some(&conn));
+        if let Some(v) = saved {
+            std::env::set_var("ANCHOR_ALLOW_TEST_URLS", v);
+        }
+        assert_eq!(got, Some("http://localhost:11434".to_string()));
     }
 }

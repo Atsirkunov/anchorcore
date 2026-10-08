@@ -297,3 +297,33 @@ def test_reasoning_effort_builds_payload(client):
     svc.clear("answer_reasoning_effort")
     svc.clear("answer_base_url")
     svc.clear("answer_api_key")
+
+
+def test_test_sentinel_ollama_url_ignored_outside_tests(monkeypatch, tmp_path):
+    """A stray test-only ollama_base_url (dead port :1) must never break a
+    real launch: without ANCHOR_ALLOW_TEST_URLS=1 the effective value falls
+    back to the real default, whether it came from env or a DB override."""
+    from app.app_settings import SettingsService
+    from app.config import Settings, guard_test_ollama_url
+    from app.secrets import SecretStore
+
+    monkeypatch.delenv("ANCHOR_ALLOW_TEST_URLS", raising=False)
+    monkeypatch.setenv("ANCHOR_OLLAMA_BASE_URL", "http://localhost:1")
+
+    # env layer: a fresh Settings re-reads the process env
+    assert Settings().ollama_base_url == "http://localhost:11434"
+    # helper: trailing-slash + 127.0.0.1 forms; the real URL is untouched
+    assert guard_test_ollama_url("http://localhost:1/") == "http://localhost:11434"
+    assert guard_test_ollama_url("http://127.0.0.1:1") == "http://localhost:11434"
+    assert guard_test_ollama_url("http://localhost:11434") == "http://localhost:11434"
+
+    # service layer: DB overrides holding the sentinel are masked too
+    svc = SettingsService(Settings(), SecretStore(tmp_path / "secrets.enc"))
+    svc.set("ollama_base_url", "http://localhost:1")
+    try:
+        assert svc.get("ollama_base_url") == "http://localhost:11434"
+        monkeypatch.setenv("ANCHOR_ALLOW_TEST_URLS", "1")
+        svc._invalidate("ollama_base_url")
+        assert svc.get("ollama_base_url") == "http://localhost:1"
+    finally:
+        svc.clear("ollama_base_url")
