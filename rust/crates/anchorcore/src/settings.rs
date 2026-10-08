@@ -73,6 +73,11 @@ fn env_value(key: &str) -> Option<String> {
 pub struct SettingsService {
     secrets: SecretStore,
     cache: RwLock<HashMap<String, (String, Instant)>>,
+    /// Canonical data dir for DB-backed settings reads. Without it, cached_get
+    /// falls back to ANCHOR_DATA_DIR/CWD — the wrong DB whenever the app runs
+    /// with --data-dir (or ~/.anchorcore) and the env var is unset, making
+    /// saved settings (answer model, provider trust) invisible to ask/search.
+    data_dir: RwLock<Option<std::path::PathBuf>>,
 }
 
 impl SettingsService {
@@ -80,7 +85,14 @@ impl SettingsService {
         Self {
             secrets,
             cache: RwLock::new(HashMap::new()),
+            data_dir: RwLock::new(None),
         }
+    }
+
+    /// Pin the data dir for DB-backed reads (called once at startup).
+    pub fn set_data_dir(&self, dir: &std::path::Path) {
+        *self.data_dir.write().unwrap() = Some(dir.to_path_buf());
+        self.cache.write().unwrap().clear();
     }
 
     pub fn get(&self, key: &str, conn: Option<&Connection>) -> Option<String> {
@@ -184,9 +196,15 @@ impl SettingsService {
                 }
             }
         }
-        // need DB read; open a short-lived connection to data dir (respect state.data_dir via env fallback + ANCHOR_DATABASE_URL)
-        // Use open_db (WAL/busy_timeout/FK) not raw Connection::open (P1 4.2 fix)
-        let data_dir = std::env::var("ANCHOR_DATA_DIR").unwrap_or_else(|_| "data".to_string());
+        // need DB read; prefer the pinned data dir (set at startup), else the
+        // legacy env/CWD fallback. Use open_db (WAL/busy_timeout/FK), not raw open.
+        let data_dir = self
+            .data_dir
+            .read()
+            .unwrap()
+            .clone()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| std::env::var("ANCHOR_DATA_DIR").unwrap_or_else(|_| "data".to_string()));
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::open_db(&db_path).ok();
         let db_val = conn.as_ref().and_then(|c| db_value(c, key));

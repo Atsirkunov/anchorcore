@@ -27,6 +27,10 @@ pub struct AskTurn {
 pub struct AskResponse {
     pub answer: String,
     pub citations: Vec<Citation>,
+    /// Machine-readable gate outcome (Phase-1 deterministic reads): None when
+    /// content was returned, Some("gated_provider") when everything relevant
+    /// was withheld from an untrusted answer provider.
+    pub refusal: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -47,6 +51,15 @@ pub struct SearchRequest {
     pub k: Option<usize>,
     pub project_id: Option<i64>,
     pub public_only: Option<bool>,
+    /// A3 compact-by-default selector: comma list from
+    /// `summary,source_ref,score,content` (or `all`). Chunk `content` is
+    /// omitted unless requested — harnesses walk cheap citable hits, then
+    /// drill down verbatim via get_entity/context.
+    pub fields: Option<String>,
+    /// A3 cursor pagination: zero-based offset into the gated hit list.
+    pub cursor: Option<usize>,
+    /// A3 cursor pagination: page size (defaults to `k`).
+    pub limit: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -68,6 +81,14 @@ pub struct SearchHit {
 #[derive(Serialize)]
 pub struct SearchResponse {
     pub hits: Vec<SearchHit>,
+    /// Count of hits withheld by the provider-trust gate (Phase-1).
+    pub blocked: usize,
+    /// Some("gated_provider") when relevant hits existed but none survived
+    /// gating — lets harnesses react deterministically instead of guessing.
+    pub refusal: Option<String>,
+    /// A3 cursor for the next page (offset into the gated hit list), None
+    /// when this page exhausts what the caller may see.
+    pub next_cursor: Option<usize>,
 }
 
 async fn rewrite_question(settings: &SettingsService, req: &AskRequest) -> String {
@@ -209,6 +230,7 @@ pub async fn ask(
         return AskResponse {
             answer: "No relevant knowledge found yet. Ingest sources first.".to_string(),
             citations: vec![],
+            refusal: None,
         };
     }
 
@@ -228,6 +250,7 @@ pub async fn ask(
                 return AskResponse {
                     answer: "Relevant knowledge was found but it is sensitive/PII and the answer provider is not approved for it. Enable a local provider, list it in ANCHOR_TRUSTED_PROVIDERS, or set ANCHOR_CLOUD_TRUST=1 to answer.".to_string(),
                     citations: vec![],
+                    refusal: Some("gated_provider".to_string()),
                 };
             }
         }
@@ -239,7 +262,7 @@ pub async fn ask(
     let context = sections.join("\n\n");
     let answer = generate_answer(settings, &question, &context, &history_for_gen).await;
     let citations = build_citations(&hits, &data_dir_string);
-    AskResponse { answer, citations }
+    AskResponse { answer, citations, refusal: None }
 }
 
 fn settings_snapshot(settings: &SettingsService) -> std::collections::HashMap<String, String> {
@@ -413,9 +436,38 @@ fn gate_answer_hits(conn: &Connection, hits: &[retrieval::Hit]) -> (Vec<retrieva
     (allowed, blocked)
 }
 
-fn is_answer_trusted(settings: &SettingsService) -> bool {
+pub(crate) fn is_answer_trusted(settings: &SettingsService) -> bool {
     let base = settings.get("answer_base_url", None).unwrap_or_else(|| "https://api.openai.com/v1".to_string());
     crate::common::provider_trusted(&base)
+}
+
+/// Phase-1 deterministic gating for single-entity reads (get/related/context).
+/// Mirrors gate_answer_hits: source label sensitive/pii, or PII-flagged chunks
+/// on the entity's item, means an untrusted provider may not read it.
+/// Returns Some(reason) when blocked, None when readable.
+pub(crate) fn gate_entity_content(conn: &Connection, entity_id: i64) -> Option<String> {
+    let item_id: i64 = conn.query_row("SELECT item_id FROM entities WHERE id=?1", [entity_id], |r| r.get(0)).ok()?;
+    let (source_id, label): (i64, String) = conn
+        .query_row(
+            "SELECT s.id, s.label FROM sources s JOIN ingested_items i ON i.source_id = s.id WHERE i.id = ?1",
+            [item_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()?;
+    let pii: i64 = conn
+        .query_row("SELECT COUNT(*) FROM chunks WHERE item_id = ?1 AND is_pii = 1", [item_id], |r| r.get(0))
+        .unwrap_or(0);
+    if label == "sensitive" || label == "pii" || pii > 0 {
+        Some(format!(
+            "entity {} blocked: source {} label '{}'{}, untrusted answer provider",
+            entity_id,
+            source_id,
+            label,
+            if pii > 0 { " + PII-flagged chunks" } else { "" }
+        ))
+    } else {
+        None
+    }
 }
 
 pub async fn search(
@@ -432,6 +484,15 @@ pub async fn search(
     let k = req.k.unwrap_or(8).clamp(1, 50);
     let project_id = req.project_id;
     let public_only = req.public_only.unwrap_or(false);
+    // A3: compact-by-default — full chunk bytes only on explicit opt-in.
+    let want_content = req
+        .fields
+        .as_deref()
+        .map(|f| f.split(',').any(|t| { let t = t.trim(); t == "content" || t == "all" }))
+        .unwrap_or(false);
+    // A3: cursor pagination over the gated list (deterministic full walks).
+    let limit = req.limit.unwrap_or(k).clamp(1, 50);
+    let cursor = req.cursor.unwrap_or(0);
     let _settings_clone = settings_snapshot(settings);
     let hits = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir_for_block);
@@ -440,17 +501,46 @@ pub async fn search(
     })
     .await
     .unwrap_or_default();
+    // Phase-1: same provider-trust gate as ask — an untrusted provider must not
+    // receive sensitive/PII chunk content through the deterministic read path.
+    let mut hits = hits;
+    let mut blocked_count = 0usize;
+    let mut refusal: Option<String> = None;
+    if !is_answer_trusted(settings) && !hits.is_empty() {
+        let hits_for_gate = hits.clone();
+        let data_dir_gate = data_dir_string.clone();
+        let (filtered, blocked) = tokio::task::spawn_blocking(move || {
+            let db_path = crate::db::resolve_db_path(&data_dir_gate);
+            let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+            gate_answer_hits(&conn, &hits_for_gate)
+        })
+        .await
+        .unwrap_or((vec![], vec![]));
+        blocked_count = blocked.len();
+        if !blocked.is_empty() {
+            record_gate_event(&data_dir_string, &blocked).await;
+            if filtered.is_empty() {
+                refusal = Some("gated_provider".to_string());
+            }
+        }
+        hits = filtered;
+    }
+    // Paginate after gating so a harness sees a stable walk of exactly what
+    // it may read; blocked/refusal still describe the whole gated set.
+    let total_allowed = hits.len();
+    let page: Vec<crate::retrieval::Hit> = hits.into_iter().skip(cursor).take(limit).collect();
+    let next_cursor = if cursor + page.len() < total_allowed { Some(cursor + page.len()) } else { None };
     let db_path = crate::db::resolve_db_path(&data_dir_string);
     let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
-    let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+    let ids: Vec<i64> = page.iter().map(|h| h.chunk_id).collect();
     let tag_map = tags_for_chunks(&conn, &ids);
-    let hits = hits.into_iter().map(|h| {
+    let hits = page.into_iter().map(|h| {
         SearchHit {
             chunk_id: Some(h.chunk_id),
             entity_id: h.entity_id,
             kind: hit_kind(&h),
             summary: take_chars(&h.content, 200),
-            content: take_chars(&h.content, 4000),
+            content: if want_content { take_chars(&h.content, 4000) } else { String::new() },
             source_ref: display_source_ref(&h),
             path: h.path.clone(),
             tags: tag_map.get(&h.chunk_id).cloned().unwrap_or_default(),
@@ -460,7 +550,7 @@ pub async fn search(
             score: rounded_score(h.score),
         }
     }).collect();
-    SearchResponse { hits }
+    SearchResponse { hits, blocked: blocked_count, refusal, next_cursor }
 }
 
 fn search_sync_inner(conn: &Connection, query: &str, k: usize, project_id: Option<i64>, public_only: bool, query_embedding: Option<Vec<f32>>) -> Vec<crate::retrieval::Hit> {
@@ -590,5 +680,152 @@ async fn generate_answer(settings: &SettingsService, question: &str, context: &s
             format!("Answer for: {}\n\n{}", question, context.chars().take(1500).collect::<String>())
         }
         _ => format!("Answer for: {}\n\n[Answer model unreachable; showing context]\n\n{}", question, context.chars().take(1500).collect::<String>()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// Seed a temp DB: one ordinary + one sensitive source, each with an item,
+    /// a chunk with distinctive content, and an entity. Returns (data_dir, conn).
+    fn seed_gate_db() -> (tempfile::TempDir, Connection, Arc<SettingsService>) {
+        let dir = tempdir().unwrap();
+        let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (connector, name) VALUES ('folder','ordinary')", [])
+            .unwrap();
+        conn.execute("INSERT INTO sources (connector, name, label) VALUES ('folder','secret','sensitive')", [])
+            .unwrap();
+        let ord: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
+        let sen: i64 = conn.query_row("SELECT id FROM sources WHERE name='secret'", [], |r| r.get(0)).unwrap();
+        for (sid, word) in [(ord, "sunshine"), (sen, "moonvault")] {
+            conn.execute(
+                "INSERT INTO ingested_items (source_id, content_hash, title, text) VALUES (?1,'h','t',?2)",
+                rusqlite::params![sid, format!("quarterly {} report numbers", word)],
+            )
+            .unwrap();
+            let item: i64 = conn.query_row("SELECT id FROM ingested_items WHERE source_id=?1", [sid], |r| r.get(0)).unwrap();
+            conn.execute(
+                "INSERT INTO chunks (item_id, source_ref, content) VALUES (?1,'f.md',?2)",
+                rusqlite::params![item, format!("quarterly {} report numbers", word)],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO entities (item_id, kind, summary) VALUES (?1,'decision',?2)",
+                rusqlite::params![item, format!("{} entity", word)],
+            )
+            .unwrap();
+        }
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let settings = Arc::new(SettingsService::new(store));
+        settings.set_data_dir(dir.path());
+        // Hermetic embeddings: closed port refuses instantly, so tests fall
+        // back to deterministic_embed instead of stalling on DNS/connect.
+        settings.set("embed_base_url", "http://127.0.0.1:9", &conn).unwrap();
+        (dir, conn, settings)
+    }
+
+    fn mk_hit(source_id: i64, pii: bool) -> crate::retrieval::Hit {
+        crate::retrieval::Hit {
+            chunk_id: 1,
+            entity_id: None,
+            item_id: None,
+            source_id: Some(source_id),
+            section_id: None,
+            path: String::new(),
+            score: 1.0,
+            content: "x".to_string(),
+            source_ref: "f.md".to_string(),
+            is_pii: pii,
+            status: None,
+        }
+    }
+
+    #[test]
+    fn gate_answer_hits_filters_sensitive_and_pii() {
+        let (_dir, conn, _settings) = seed_gate_db();
+        let ord: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
+        let sen: i64 = conn.query_row("SELECT id FROM sources WHERE name='secret'", [], |r| r.get(0)).unwrap();
+        let (allowed, blocked) = gate_answer_hits(&conn, &[mk_hit(ord, false), mk_hit(sen, false), mk_hit(ord, true)]);
+        assert_eq!(allowed.len(), 1);
+        assert_eq!(blocked.len(), 2);
+    }
+
+    #[test]
+    fn gate_entity_content_blocks_sensitive_source() {
+        let (_dir, conn, _settings) = seed_gate_db();
+        let eid_ord: i64 = conn.query_row("SELECT id FROM entities WHERE summary LIKE 'sunshine%'", [], |r| r.get(0)).unwrap();
+        let eid_sen: i64 = conn.query_row("SELECT id FROM entities WHERE summary LIKE 'moonvault%'", [], |r| r.get(0)).unwrap();
+        assert!(gate_entity_content(&conn, eid_ord).is_none());
+        let reason = gate_entity_content(&conn, eid_sen).expect("sensitive entity must be gated");
+        assert!(reason.contains("sensitive"), "reason: {}", reason);
+        assert!(gate_entity_content(&conn, 999999).is_none(), "missing entity must not gate (404 path owns it)");
+    }
+
+    #[tokio::test]
+    async fn search_gated_provider_refusal() {
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        // Default settings: example remote base is untrusted (no ANCHOR_CLOUD_TRUST here).
+        settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
+        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None };
+        let res = search(&settings, &embedder, req, &data_dir).await;
+        assert!(res.hits.is_empty(), "sensitive hit must be withheld, got {:?}", res.hits.len());
+        assert_eq!(res.refusal.as_deref(), Some("gated_provider"));
+        assert!(res.blocked >= 1);
+    }
+
+    #[tokio::test]
+    async fn search_trusted_provider_returns_hits() {
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        // Localhost is trusted in every environment — deterministic trust.
+        settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        assert!(is_answer_trusted(&settings));
+        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None };
+        let res = search(&settings, &embedder, req, &data_dir).await;
+        assert!(!res.hits.is_empty(), "trusted provider must see the sensitive hit");
+        assert!(res.refusal.is_none());
+        assert_eq!(res.blocked, 0);
+    }
+
+    #[tokio::test]
+    async fn search_compact_by_default_full_on_opt_in() {
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        let base = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None };
+        let compact = search(&settings, &embedder, base, &data_dir).await;
+        assert!(!compact.hits.is_empty());
+        assert!(compact.hits.iter().all(|h| h.content.is_empty()), "default must omit chunk bytes");
+        assert!(compact.hits.iter().all(|h| !h.summary.is_empty() && !h.source_ref.is_empty()));
+        let full_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("summary,source_ref,score,content".to_string()), cursor: None, limit: None };
+        let full = search(&settings, &embedder, full_req, &data_dir).await;
+        assert!(full.hits.iter().all(|h| !h.content.is_empty()), "fields incl. content must return bytes");
+    }
+
+    #[tokio::test]
+    async fn search_cursor_pagination_walks_all_hits() {
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        // Both seeded chunks share these words, so one page of 1 must leave a next cursor.
+        let mk = |cursor: Option<usize>| SearchRequest { query: "quarterly report numbers".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("all".to_string()), cursor, limit: Some(1) };
+        let p1 = search(&settings, &embedder, mk(None), &data_dir).await;
+        assert_eq!(p1.hits.len(), 1, "page size 1 must return exactly one hit");
+        let next = p1.next_cursor.expect("first page must carry a cursor when hits remain");
+        let p2 = search(&settings, &embedder, mk(Some(next)), &data_dir).await;
+        assert_eq!(p2.hits.len(), 1);
+        assert!(p2.next_cursor.is_none(), "second page must exhaust the two seeded hits");
+        let mut ids: Vec<Option<i64>> = vec![p1.hits[0].chunk_id, p2.hits[0].chunk_id];
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 2, "two pages must cover two distinct chunks");
     }
 }

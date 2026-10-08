@@ -207,6 +207,7 @@ export type AskTurn = {
 export type AskResponse = {
   answer: string;
   citations: Citation[];
+  refusal?: string | null;
 };
 
 export type MergeProposal = {

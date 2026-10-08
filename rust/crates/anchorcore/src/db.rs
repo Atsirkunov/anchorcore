@@ -241,6 +241,8 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/11_sections.sql")),
         // R14.4 dynamic tags
         M::up(include_str!("../migrations/12_tags.sql")),
+        // Backfill created_at default on system_events (older chains lack it -> audit writes fail)
+        M::up(include_str!("../migrations/13_system_events_default.sql")),
     ])
 }
 
