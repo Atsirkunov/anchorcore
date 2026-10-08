@@ -14,13 +14,15 @@ name = "anchorcore-mcp"
 path = "src/bin/mcp.rs"
 
 [dependencies]
+aes = "0.8"
 axum = { version = "0.7", features = ["json"] }
+cbc = "0.1"
 tokio = { version = "1", features = ["full"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 rusqlite_migration = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2", "system-proxy"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -31,7 +33,6 @@ keyring = "2"
 sha2 = "0.10"
 hex = "0.4"
 base64 = "0.22"
-fernet = "0.2"
 pbkdf2 = { version = "0.12", features = ["simple"] }
 hmac = "0.12"
 rand = "0.8"
