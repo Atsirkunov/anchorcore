@@ -1,12 +1,25 @@
 import logging
+import os
 import queue
 import time
 from pathlib import Path
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
+from watchdog.observers.api import BaseObserver
+from watchdog.observers.polling import PollingObserver
 
 logger = logging.getLogger(__name__)
+
+
+def _observer_class() -> type[BaseObserver]:
+    # ANCHOR_WATCHER=polling (used by the test suite): macOS FSEvents
+    # segfaults under rapid schedule→stop churn (remove_watch after a failed
+    # add_watch, "Cannot start fsevents stream"). The polling backend is pure
+    # Python — deterministic teardown, and it still delivers events.
+    if os.environ.get("ANCHOR_WATCHER", "").lower() == "polling":
+        return PollingObserver
+    return Observer
 
 SUPPORTED_SUFFIXES = {".txt", ".md", ".markdown", ".text", ".csv", ".json", ".pdf", ".html", ".htm"}
 
@@ -45,16 +58,18 @@ class FolderWatcher:
     """
 
     def __init__(self, debounce_seconds: float = 3.0):
-        self._observer: Observer | None = None
+        self._observer: BaseObserver | None = None
         self._sink: queue.Queue[tuple[int, float]] = queue.Queue()
         self._handlers: dict[int, _SyncHandler] = {}
         self._watches: dict[int, object] = {}
         self._debounce_seconds = debounce_seconds
         self._pending: dict[int, float] = {}
 
-    def _ensure_observer(self) -> Observer:
+    def _ensure_observer(self) -> BaseObserver:
         if self._observer is None:
-            self._observer = Observer()
+            cls = _observer_class()
+            logger.info("watcher: using %s backend", cls.__name__)
+            self._observer = cls()
         return self._observer
 
     def add(self, source_id: int, path: str) -> bool:
@@ -62,6 +77,10 @@ class FolderWatcher:
         if not path_obj.is_dir():
             logger.warning("watcher: folder not found for source %s: %s", source_id, path)
             return False
+        if source_id in self._watches:
+            # reloads re-add every source: drop the stale watch first so
+            # emitters don't accumulate (one leaked thread+stream per reload).
+            self.remove(source_id)
         handler = _SyncHandler(source_id, self._sink)
         watch = self._ensure_observer().schedule(handler, str(path_obj), recursive=True)
         self._handlers[source_id] = handler
@@ -89,6 +108,17 @@ class FolderWatcher:
             self._observer.stop()
             self._observer.join(timeout=5)
             self._observer = None
+        # Full reset: watch handles belong to the dead observer, and queued /
+        # pending events must not leak across a stop/start cycle (every test
+        # runs one). The next start() re-adds current sources via reload.
+        self._handlers.clear()
+        self._watches.clear()
+        self._pending.clear()
+        while True:
+            try:
+                self._sink.get_nowait()
+            except queue.Empty:
+                break
 
     def drain(self) -> set[int]:
         """Source ids whose last event is older than the debounce window.
