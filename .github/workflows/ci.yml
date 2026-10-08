@@ -78,6 +78,7 @@ jobs:
           mkdir -p /tmp/ac-ci-data
           ANCHOR_DATA_DIR=/tmp/ac-ci-data ANCHOR_DATABASE_URL=sqlite:////tmp/ac-ci-test.db \
             ANCHOR_SECRETS_NO_KEYRING=1 ANCHOR_OLLAMA_BASE_URL=http://localhost:1 \
+            ANCHOR_ALLOW_TEST_URLS=1 \
             ANCHOR_CLASSIFIER_TIMEOUT=1.0 ANCHOR_HTTP_CONNECT_TIMEOUT=0.2 \
             ANCHOR_ANSWER_BASE_URL=https://api.openai.com/v1 \
             ./rust/target/debug/anchorcore --port 8123 --data-dir /tmp/ac-ci-data &
