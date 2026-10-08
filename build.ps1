@@ -4,7 +4,7 @@
 # (Rust release build, frontend/dist embedded) for non-developer testers.
 # Same layout as the CI asset (release.yml build-rust-windows).
 # Requires: Rust stable (cargo on PATH), Node deps installed.
-# (Legacy Python PyInstaller path retired — backend/ is deprecated.)
+# (Legacy Python retired — backend/ archived on tag archive/python-final.)
 #
 # NOTE: no $ErrorActionPreference = "Stop" here — native tools (npm,
 # cargo) write logs to stderr, which PowerShell would treat as

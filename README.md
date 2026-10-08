@@ -63,7 +63,7 @@ sample/     Mini-company demo corpus — connect it as a folder source
             (guide: docs/sample-dataset.md)
 hosting/    Hosted skeleton — Python FastAPI image, Postgres (docker-compose), env-driven
             (guide: hosting/README.md) — stays Python per R10.7 until hosted is ported
-backend/    Deprecated — Python FastAPI legacy, conformance only + hosted base. Do not use for new dev.
+backend/    Archived on tag archive/python-final — frozen Python backend; hosting image + conformance fetch it. Do not use for new dev.
 docs/       Product plan, architecture, packaging, releasing
 ```
 
@@ -77,7 +77,7 @@ root; pushing a `v*` tag builds all platform zips automatically (see `docs/relea
 
 **Developers (Rust — shipped):** `cargo run -p anchorcore -- --port 8000 --data-dir ~/.anchorcore` — applies migrations, starts Ollama, boots at http://localhost:8000. Add `cargo run -p anchorcore -- --port 8123` for conformance vs Python. Frontend dev: `cd frontend && npm run dev` at :5173 (proxies to :8000).
 
-**Legacy (Python — deprecated):** `.\start.ps1` (or `./start.sh`) — creates the venv + `.env`, Alembic, Ollama, backend at :8000. Use only for conformance `PYTHONPATH=backend pytest` vs Rust on :8123.
+**Legacy Python (archived):** the Python backend left the tree — it's frozen on tag `archive/python-final` (hosting image + conformance suite fetch it from there). To run it: `git checkout archive/python-final -- backend`, then `.\start.ps1` (or `./start.sh`).
 
 **Hosted (skeleton):** `docker compose -f hosting/docker-compose.yml up --build` — Python FastAPI image against Postgres (`pgvector/pg16`, see `hosting/README.md`). **R10.7 decision:** `hosting/` stays Python (Postgres/pgvector) — Rust is the local/packaged artifact (SQLite + `frontend/dist` embedded, `9.8M`, `codesign`); Rust Postgres is deferred (would need `deadpool` + `pgvector` migration, or SQLite-file volume on hosted).
 

@@ -1,7 +1,7 @@
 # Hosting skeleton (v1.5 + R10.7)
 
 > Same FastAPI app, env-driven. Local = SQLite + keychain. Hosted = Postgres + env secrets. No fork.
-> **R10.7 parity decision (2026-08-22):** `hosting/` stays **Python** (FastAPI + `psycopg` + `pgvector`); Rust (`rust/target/release/anchorcore`, `9.8M`) is the **local/packaged** artifact (SQLite `WAL`, `frontend/dist` embedded, `cargo test 47`). Rust Postgres (deadpool + `sqlx`/`pgvector`) is deferred — would duplicate Alembic history + `vec0` triggers; hosted can alternatively run Rust binary against a SQLite file volume (`ANCHORED_DATABASE_URL=sqlite:////data/anchorcore.db`) until Postgres parity is prioritized.
+> **R10.7 parity decision (2026-08-22):** `hosting/` stays **Python** (FastAPI + `psycopg` + `pgvector`); Rust (`rust/target/release/anchorcore`, `9.8M`) is the **local/packaged** artifact (SQLite `WAL`, `frontend/dist` embedded). Python backend frozen on tag `archive/python-final`. Rust Postgres (deadpool + `sqlx`/`pgvector`) is deferred — would duplicate Alembic history + `vec0` triggers; hosted can alternatively run Rust binary against a SQLite file volume (`ANCHOR_DATABASE_URL=sqlite:////data/anchorcore.db`) until Postgres parity is prioritized.
 
 ## What this is
 A minimal skeleton so you can run the **hosted** shape tomorrow without rewriting the app:
@@ -24,7 +24,7 @@ docker compose -f hosting/docker-compose.yml up --build
 # db at localhost:5432 (anchorcore/anchorcore)
 ```
 
-Migrations run via `backend/alembic/env.py` against `ANCHOR_DATABASE_URL`. Local dev still uses `data/anchorcore.db` — nothing changes unless you set `ANCHOR_DATABASE_URL` to `postgresql+...`.
+Migrations run via `backend/alembic/env.py` (from the archive tag) against `ANCHOR_DATABASE_URL`. Local dev still uses `data/anchorcore.db` — nothing changes unless you set `ANCHOR_DATABASE_URL` to `postgresql+...`.
 
 ## What still needs decisions (not in skeleton)
 
@@ -39,7 +39,7 @@ Migrations run via `backend/alembic/env.py` against `ANCHOR_DATABASE_URL`. Local
 Personal stays local free (no license check — `ANCHOR_EDITION` unset). This
 image is the Team edition (`ANCHOR_EDITION=team` baked into the Dockerfile)
 and requires a one-time platform license, verified offline at startup
-(`backend/app/license.py` — ed25519, no phone-home):
+(`backend/app/license.py` on the archive tag — ed25519, no phone-home):
 
 - Mount the license file: `-v /path/to/license.json:/data/license.json -e ANCHOR_LICENSE_FILE=/data/license.json`,
   or paste it inline via `-e ANCHOR_LICENSE='<json>'`.
@@ -55,3 +55,5 @@ and requires a one-time platform license, verified offline at startup
 3. Wire pgvector for `vec0` → pgvector migration and bundled model keys.
 
 Companion: `docs/architecture.md:8` (swap points), `docs/v2v3-scope.md:8` (sequencing).
+
+See `docs/archived-python.md` for the archive layout (what's frozen, how to refresh it).

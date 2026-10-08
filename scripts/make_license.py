@@ -35,7 +35,7 @@ def gen_keypair() -> int:
     pub = priv.public_key()
     print("PRIVATE (store in password manager, never commit):")
     print(priv.private_bytes_raw().hex())
-    print("PUBLIC (embed in backend/app/license.py PUBLIC_KEYS_HEX):")
+    print("PUBLIC (lives in backend/app/license.py PUBLIC_KEYS_HEX on tag archive/python-final):")
     print(pub.public_bytes_raw().hex())
     return 0
 

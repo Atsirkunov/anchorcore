@@ -8,8 +8,8 @@ name: Release
 #   AnchorCore-linux.zip    — anchorcore + anchorcore-mcp
 # The website Download buttons link straight at the latest windows/macos
 # assets (website/src/main.ts); keep these file names stable.
-# (Legacy Python PyInstaller jobs were removed — backend/ is deprecated,
-# kept for hosting/ + conformance only.)
+# (Legacy Python jobs removed — backend/ is archived on tag archive/python-final;
+# hosting/ + conformance fetch it frozen.)
 
 on:
   push:

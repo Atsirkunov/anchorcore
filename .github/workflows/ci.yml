@@ -4,19 +4,21 @@ on: push
 
 jobs:
   backend:
-    name: Backend tests (Python)
+    name: Backend tests (Python, archived)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
     steps:
       - uses: actions/checkout@v6
+      - name: Restore archived backend/
+        run: |
+          git fetch origin tag archive/python-final --no-tags
+          git checkout archive/python-final -- backend
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -r requirements.txt
-      - run: python -m pytest tests -q --ignore=tests/test_mcp.py
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r backend/requirements.txt
+      - run: python -m pytest backend/tests -q --ignore=backend/tests/test_mcp.py
 
   version-drift:
     name: Version single-source check
@@ -36,6 +38,10 @@ jobs:
       RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v6
+      - name: Restore archived backend/ (conformance suite)
+        run: |
+          git fetch origin tag archive/python-final --no-tags
+          git checkout archive/python-final -- backend
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"

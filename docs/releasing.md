@@ -18,10 +18,10 @@
 
 1. **Verify locally:**
    - [ ] `cargo test -p anchorcore` + `cargo check` clean — Rust green
-   - [ ] `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q` — conformance green
+   - [ ] restore `backend/` from tag `archive/python-final`, then `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q` — conformance green
    - [ ] `npm run build` + `npm run lint` + `npm run test` in `frontend/` — TypeScript + Vite clean
    - [ ] Sanity: `cargo run -p anchorcore -- --port 8000` → ask a question, check Settings
-2. **Bump the version** — edit `rust/Cargo.toml:6` `workspace.package.version` → `python scripts/sync_version.py` (writes `backend/app/config.py:11` for `hosting`)
+2. **Bump the version** — edit `rust/Cargo.toml:6` `workspace.package.version` → `python scripts/sync_version.py --check` (Cargo is the only source since the archive)
 3. **Update docs** — backlog items marked `DONE`; handover `docs/handover-*.md`
 4. **Tag and push:**
    ```

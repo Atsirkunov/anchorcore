@@ -4,7 +4,7 @@ This mirrors `/AGENTS.md` but for the `rust/` workspace. **Rust is now shipped**
 
 ## Contract-first (still, but Rust is source)
 
-* Same REST API as `backend/app/routers/*` — same paths, same query params, same JSON shapes, same `detail` errors. The Python `backend/tests` suite is the conformance suite; `cargo test` must stay green against the Rust binary (`124/3` now green, not 35/121).
+* Same REST API as `backend/app/routers/*` — same paths, same query params, same JSON shapes, same `detail` errors. The Python `backend/tests` suite (restore from tag `archive/python-final` first) is the conformance suite; `cargo test` must stay green against the Rust binary (`124/3` now green, not 35/121).
 * Same SQLite file + schema: Alembic history is truth. Rust `db.rs:22` `open_db` fast path + `init_db` once (`OnceLock` migrated), `PRAGMA foreign_keys=ON` stays (`backend/app/db.py`), `WAL`/`busy_timeout` 5s. Never hold `Connection` (`!Send`) across `await` — `spawn_blocking` like `sources.rs:121`.
 * Frontend unchanged: `frontend/dist` is embedded via `include_dir!` (`frontend.rs:27`) in Rust binary (`9.8M` + `3.4M` `codesign valid`).
 
