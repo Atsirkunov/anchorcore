@@ -3,7 +3,7 @@
 > Stack: **Rust (Axum) · React (Vite) · SQLite locally (sqlite-vec vec0 +
 > FTS5) / Postgres for hosted (`hosting/`, Python, `pgvector/pg16`) · Ollama
 > or BYO cloud LLM APIs** — env-driven. **Rust is the shipped backend;
-> Python `backend/` is deprecated except `hosting/`** (decision R10.7).
+> Python `backend/` is archived on tag `archive/python-final` (frozen copy fetched by `hosting/` image)** (decision R10.7).
 
 ---
 
@@ -372,7 +372,7 @@ erDiagram
 | Container | Responsibility | Tech |
 |---|---|---|
 | Web UI | Connect sources, project scoping, review queue, PII review, Q&A chat, model settings | React SPA (Vite, TS, 7 tabs) |
-| API | All endpoints, orchestration, config | **Rust Axum (shipped)** — FastAPI `backend/` deprecated except `hosting` |
+| API | All endpoints, orchestration, config | **Rust Axum (shipped)** — Python `backend/` archived on tag, frozen copy in `hosting` image |
 | Entity Store | Entities, provenance, window context, sync state | SQLite local (Rust `rusqlite`) / Postgres hosted (Python legacy) |
 | Vector Store | Chunk embeddings + similarity search | sqlite-vec vec0, same file (Rust static); pgvector image for hosted (Python-scan fallback on Postgres) |
 | Keyword Store | FTS5 bm25 for hybrid retrieval | SQLite FTS5 (trigger-synced; skipped on Postgres) |

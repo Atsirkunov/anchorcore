@@ -680,6 +680,63 @@ rollback-safe — OR a documented decision to stay on Python.
 
 ---
 
+### B46. Review archived-Python consumers: Docker image, license check, CI (P1)
+
+**Problem:** `backend/` left the tree (frozen on tag `archive/python-final`).
+Three live systems now consume that frozen snapshot instead of in-tree code,
+and the rewiring is unreviewed: the Team image fetches a tag tarball at build
+time, the license gate can only change via a tag move, and CI restores the tag
+for backend tests + conformance. Separately, the conformance job failed on the
+pre-archive HEAD for unknown reasons (logs need repo access to read).
+
+**Scope:**
+- Dockerfile: tarball fetch reliability (`curl --fail`?), tag-vs-SHA pinning
+  (tags are mutable — decide), layer caching, entrypoint/migration paths,
+  fresh-clone `docker build` works with no local `backend/`.
+- License check: frozen `license.py` — patch process (new tag + rebuild?),
+  key rotation story, issue→verify roundtrip still documented and tested.
+- CI: tag-restore steps on shallow clones, pip cache path, version-drift
+  scripts without the backend leg; diagnose + fix the conformance failure.
+
+**DoD:** `docker build` green from a fresh clone; CI green on main including
+conformance; license roundtrip verified; pinning decision recorded in
+`docs/archived-python.md`.
+
+### B47. Deploy the website (P1)
+
+**Problem:** the site builds but lives only in `website/dist/` — nothing is
+hosted and DNS doesn't point anywhere.
+
+**Scope:** pick the static host (Cloudflare Pages is an option), wire deploy
+(manual upload now, CI later?), point `anchorcore.dev` DNS, verify live:
+download links resolve to release assets, Formspree signup works, no mixed
+content. Export `og-card.png` for strict social crawlers.
+
+**DoD:** `https://anchorcore.dev` serves the current build; downloads +
+waitlist verified in production.
+
+### B48. End-to-end test on clean machines (P1)
+
+**Problem:** nothing has been validated outside dev checkouts — first user
+experience is untested.
+
+**Scope:** on clean Windows + macOS (no dev tools): download → unzip → run →
+sync `sample/` → ask → cited answers; MCP smoke via one harness; Team image:
+boots with a valid license, refuses without one. Record every papercut.
+
+**DoD:** both platforms pass the script; issues filed as backlog items.
+
+### B49. Hosted design: clean and secure (P2)
+
+**Problem:** hosted is a skeleton + plans; the owner has concrete ideas for a
+clean, secure design that aren't written down yet.
+
+**Scope:** design session with the owner → record decisions: auth model,
+per-user/per-workspace isolation, secrets handling, billing hooks, what runs
+where. Update `hosting.md` + `v2v3-scope.md` with the outcome.
+
+**DoD:** design doc merged; hosting backlog updated from it.
+
 ## Current execution priorities (agreed 2026-08-07 — updated after Aug review, amended for no-UX constraint)
 
 Explicit order — v1 core, hardening, scale and the website are DONE (v1.0.10–1.0.12). Queue below is post-website launch prep.
@@ -720,5 +777,9 @@ Explicit order — v1 core, hardening, scale and the website are DONE (v1.0.10�
 | 5 | B29 remainder: CHANGELOG + hosted prep | **P1** | website shipped; changelog discipline + pilot prep open |
 | 6 | B28 Drive OAuth polish | **P2** | OAuth browser flow + `data/drive/<name>/` mirror |
 | 7 | B45 Slack | **P2** | export-ZIP import local (free); live connector = Teams/hosted feature |
+| 8 | B46 archive-consumer review | **P1** | Dockerfile + license + CI after the backend archive |
+| 9 | B47 deploy website | **P1** | host + DNS + production link check |
+| 10 | B48 end-to-end test | **P1** | clean Win/Mac script incl. Team license negative |
+| 11 | B49 hosted design | **P2** | owner design session → decisions in hosting.md/v2v3 |
 
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md), [design-system.md](./design-system.md)*

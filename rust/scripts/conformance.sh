@@ -7,6 +7,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 RUST_DIR="$ROOT/rust"
+# backend/ (tests + venv) lives on the archive tag — restore it if missing
+if [ ! -d "$ROOT/backend" ]; then
+  git -C "$ROOT" fetch origin tag archive/python-final --no-tags
+  git -C "$ROOT" checkout archive/python-final -- backend
+fi
 PORT="${ANCHOR_TEST_PORT:-8123}"
 URL="http://127.0.0.1:$PORT"
 
@@ -36,7 +41,9 @@ for i in {1..20}; do
 done
 
 echo "=> Running Python conformance tests against Rust..."
-ANCHOR_TEST_RUST_URL="$URL" "$ROOT/backend/.venv/bin/pytest" "$ROOT/backend/tests/test_rust_conformance.py" -v
+PYTEST_BIN="$ROOT/backend/.venv/bin/pytest"
+command -v pytest >/dev/null 2>&1 && PYTEST_BIN="pytest"
+ANCHOR_TEST_RUST_URL="$URL" "$PYTEST_BIN" "$ROOT/backend/tests/test_rust_conformance.py" -v
 # Also run pure Rust retrieval unit tests
 cargo test --manifest-path "$RUST_DIR/Cargo.toml" -p anchorcore -- --nocapture
 
