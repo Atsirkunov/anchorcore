@@ -18,7 +18,11 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r backend/requirements.txt
-      - run: PYTHONPATH=backend python -m pytest backend/tests -q --ignore=backend/tests/test_mcp.py
+      # Frozen backend's __version__ (1.0.12) intentionally lags live Cargo.toml —
+      # test_version_is_single_source_of_truth compares the two, so it fails on
+      # every version bump. Deselected; version single-source is enforced by the
+      # version-drift job (scripts/sync_version.py --check).
+      - run: PYTHONPATH=backend python -m pytest backend/tests -q --ignore=backend/tests/test_mcp.py --deselect backend/tests/test_system.py::test_version_is_single_source_of_truth
 
   version-drift:
     name: Version single-source check
@@ -97,9 +101,10 @@ jobs:
       - name: Conformance pytest vs Rust
         run: |
           pip install -r backend/requirements.txt
+          # Same deselect as backend job: frozen __version__ lags live Cargo.toml.
           PYTHONPATH=backend ANCHOR_DATA_DIR=/tmp/ac-ci-data ANCHOR_DATABASE_URL=sqlite:////tmp/ac-ci-test.db \
             ANCHOR_SECRETS_NO_KEYRING=1 ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 \
-            python -m pytest backend/tests -q --ignore=backend/tests/test_mcp.py
+            python -m pytest backend/tests -q --ignore=backend/tests/test_mcp.py --deselect backend/tests/test_system.py::test_version_is_single_source_of_truth
       - name: Stop Rust
         if: always()
         run: kill $(cat /tmp/ac-ci.pid) || true; sleep 1; cat /tmp/ac-ci-data/anchorcore.log || true
