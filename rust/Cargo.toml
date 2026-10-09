@@ -3,7 +3,7 @@ members = ["crates/anchorcore"]
 resolver = "2"
 
 [workspace.package]
-version = "1.0.12"
+version = "1.0.13"
 edition = "2021"
 authors = ["AnchorCore"]
 # Custom source-available license — see /LICENSE.md (Personal free, Team paid).
