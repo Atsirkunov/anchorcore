@@ -1,0 +1,13 @@
+// AnchorCore website — Workers Static Assets (B47).
+// Deploy: npm run build && npx wrangler deploy
+// Custom domain anchorcore.dev is attached post-deploy (Workers account domains API).
+{
+  "name": "anchorcore-website",
+  "compatibility_date": "2026-10-09",
+  "assets": {
+    "directory": "./dist"
+  },
+  "routes": [
+    { "pattern": "anchorcore.dev/*", "zone_name": "anchorcore.dev" }
+  ]
+}
