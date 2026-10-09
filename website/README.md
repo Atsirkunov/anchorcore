@@ -10,7 +10,7 @@ Stack: Vite static, `Stone & Sage` `paper #F2F0EB` + `sage #4A5A52` same tokens 
 cd website
 npm install
 npm run dev    # http://localhost:5174
-npm run build  # dist/ -> deploy to GitHub Pages / Cloudflare / Vercel
+npm run build && npx wrangler deploy  # https://anchorcore.dev
 ```
 
 ## Tweakable copy
@@ -21,7 +21,7 @@ npm run build  # dist/ -> deploy to GitHub Pages / Cloudflare / Vercel
 
 ## Deploy
 
-Any static host. `Download` buttons link straight at the latest release assets (`.../releases/latest/download/AnchorCore-{windows,macos}.zip`, OS-aware via `src/main.ts`); they resolve once a tag with those asset names is published. Keep the `release.yml` asset names stable.
+Live at anchorcore.dev via Workers Static Assets (`wrangler.jsonc`: `anchorcore-website` worker, `anchorcore.dev/*` route + custom hostname; `wrangler login` once, then `npm run build && npx wrangler deploy`). `Download` buttons link straight at the latest release assets (`.../releases/latest/download/AnchorCore-{windows,macos}.zip`, OS-aware via `src/main.ts`); they resolve once a tag with those asset names is published. Keep the `release.yml` asset names stable.
 
 ## Social / brand assets (R16.5)
 
