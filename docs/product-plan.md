@@ -706,7 +706,7 @@ conformance; license roundtrip verified; pinning decision recorded in
 `PYTHONPATH=backend` fix); license gate reviewed sound; pinning recorded.
 Fresh-clone `docker build` moved to B48 (no Docker on this machine).
 
-### B47. Deploy the website (P1)
+### B47. Deploy the website (P1) — DONE
 
 **Problem:** the site builds but lives only in `website/dist/` — nothing is
 hosted and DNS doesn't point anywhere.
@@ -718,6 +718,14 @@ content. Export `og-card.png` for strict social crawlers.
 
 **DoD:** `https://anchorcore.dev` serves the current build; downloads +
 waitlist verified in production.
+
+**Done:** live via Workers Static Assets (worker `anchorcore-website`,
+`anchorcore.dev/*` route + custom hostname, auto DNS + cert). og-card.png
+exported (1200x630), tags absolute. Verified: home 200, both zips 200 with
+release-matching sizes, no remote http fetches, Formspree form exists
+(405 on GET). Local upstream resolver negative-cached at verify time —
+authoritative + 1.1.1.1 correct. Real signup test left to owner. CI deploy
+(stored token) still open.
 
 ### B48. End-to-end test on clean machines (P1)
 
