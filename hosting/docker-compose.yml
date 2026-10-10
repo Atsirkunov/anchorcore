@@ -1,46 +1,34 @@
-name: anchorcore-hosting
+# AnchorCore Team self-hosted — ONE container, the same Rust backend as the
+# local app (SQLite on the appdata volume, UI embedded, no Postgres sidecar).
+# Quickstart + license setup: hosting/README.md
+#
+#   cp .env.example .env
+#   docker compose -f hosting/docker-compose.yml up --build
+name: anchorcore-team
 
 services:
-  db:
-    image: pgvector/pgvector:pg16
-    environment:
-      POSTGRES_USER: anchorcore
-      POSTGRES_PASSWORD: anchorcore
-      POSTGRES_DB: anchorcore
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U anchorcore"]
-      interval: 5s
-      retries: 10
-
   app:
     build:
       context: ..
       dockerfile: hosting/Dockerfile
-    depends_on:
-      db:
-        condition: service_healthy
+    image: anchorcore:team
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
     env_file:
       - .env
     environment:
-      ANCHOR_DATABASE_URL: postgresql+psycopg://anchorcore:anchorcore@db:5432/anchorcore
-      ANCHOR_CORS_ORIGINS: http://localhost:5173,http://localhost:3000
       ANCHOR_DATA_DIR: /data
-      # Secrets: in hosted, mount from env / secret manager. Keychain fallback is disabled inside container.
       ANCHOR_SECRETS_NO_KEYRING: "1"
+      # Reach an Ollama running on the host (Linux uses the host-gateway below).
       ANCHOR_OLLAMA_BASE_URL: http://host.docker.internal:11434
-      # .env overrides above — see hosting/.env.example
-    ports:
-      - "8000:8000"
+      # Team license — mount it below and uncomment this:
+      # ANCHOR_LICENSE_FILE: /data/license.json
     volumes:
       - appdata:/data
-    # For local hosted emulation, expose host Ollama via host.docker.internal (Docker Desktop).
+      # - ./license.json:/data/license.json:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
 volumes:
-  pgdata:
   appdata:

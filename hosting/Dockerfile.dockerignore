@@ -1,0 +1,21 @@
+# Build context filter for hosting/Dockerfile (BuildKit: <Dockerfile>.dockerignore).
+# Keeps the context small — only frontend/ + rust/ are copied in.
+.git
+.github
+.agents
+.claude
+agent
+docs
+website
+sample
+scripts
+build
+dist
+data
+rust/target
+**/node_modules
+frontend/dist
+**/.env
+*.zip
+palette-preview*.html
+skills-lock.json
