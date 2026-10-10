@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import { summarizePulls, useModelPull } from "./useModelPull";
 import { theme } from "./theme";
 import type { Citation, OnboardingState } from "./types";
 
@@ -33,6 +34,12 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
   const [answerModel, setAnswerModel] = useState("");
   const [savingConfig, setSavingConfig] = useState(false);
   const [configMsg, setConfigMsg] = useState<string | null>(null);
+  const pull = useModelPull();
+  const [startingOllama, setStartingOllama] = useState(false);
+  const [startMsg, setStartMsg] = useState<string | null>(null);
+  const [usingOllama, setUsingOllama] = useState(false);
+  const missing = state?.ollama.missing_models ?? [];
+  const pullSummary = summarizePulls(pull.pulls, missing);
 
   useEffect(() => {
     api.onboarding().then(setState).catch((e) => setError(String(e)));
@@ -47,6 +54,12 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
         setAnswerApiKey(k === "***set***" ? "" : k);
         setAnswerModel((s as unknown as Record<string, string>).answer_model || "");
       }).catch(() => {});
+    }
+  }, [step]);
+
+  useEffect(() => {
+    if (step === 3) {
+      api.onboarding().then(setState).catch(() => {});
     }
   }, [step]);
 
@@ -67,6 +80,52 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
       setConfigMsg(e instanceof Error ? e.message : String(e));
     } finally {
       setSavingConfig(false);
+    }
+  }
+
+  async function startOllama() {
+    setStartingOllama(true);
+    setStartMsg(null);
+    try {
+      const res = await api.startOllama();
+      if (res.ok) {
+        setStartMsg(res.already_running ? "Ollama already running — re-checking…" : "Ollama started — re-checking…");
+        await delay(1200);
+        await recheck();
+      } else {
+        setStartMsg(res.error ?? "Could not start Ollama — install it first (see below).");
+      }
+    } catch (e) {
+      setStartMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStartingOllama(false);
+    }
+  }
+
+  async function installModels() {
+    if (missing.length === 0 || pull.pulling) return;
+    const done = await pull.startPull(missing);
+    if (done.length > 0) await recheck();
+  }
+
+  async function useOllamaForAnswers() {
+    setUsingOllama(true);
+    setError(null);
+    try {
+      await api.updateSettings({ answer_base_url: "http://localhost:11434/v1", answer_model: "llama3.2:3b" });
+      const fresh = await api.onboarding();
+      setState(fresh);
+      const stillMissing = fresh.ollama.missing_models ?? [];
+      if (stillMissing.length > 0) {
+        const done = await pull.startPull(stillMissing);
+        if (done.length > 0) await recheck();
+      } else {
+        await recheck();
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUsingOllama(false);
     }
   }
 
@@ -162,7 +221,15 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
             </div>
             {state && !state.ollama.reachable && (
               <div style={styles.note}>
-                <div>Install Ollama, then start it and it will be detected here:</div>
+                <div>Install Ollama, then start it — or start it now if it&apos;s already installed:</div>
+                <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center" }}>
+                  <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} disabled={startingOllama} onClick={startOllama}>
+                    {startingOllama ? "Starting…" : "Start Ollama"}
+                  </button>
+                  <button style={styles.button} onClick={recheck}>Re-check</button>
+                </div>
+                {startMsg && <div style={{ fontSize: 12, marginTop: 6 }}>{startMsg}</div>}
+                <div style={{ marginTop: 8 }}>Don&apos;t have it yet?</div>
                 {hints.brew && <pre style={styles.code}>{hints.brew}</pre>}
                 {hints.installer && (
                   <a href={hints.installer} target="_blank" rel="noreferrer" style={{ color: theme.accentAlt }}>
@@ -171,21 +238,52 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
                 )}
               </div>
             )}
-            {state?.ollama.reachable && state.ollama.missing_models.length > 0 && (
+            {state?.ollama.reachable && missing.length > 0 && (
               <div style={styles.note}>
-                <div>Models are missing — pull them:</div>
-                <pre style={styles.code}>ollama pull {state.ollama.missing_models.join(" && ollama pull ")}</pre>
+                <div>These models aren&apos;t installed yet — answers and classification stay basic until they are:</div>
+                <div style={{ ...styles.code, whiteSpace: "normal" }}>{missing.join(", ")}</div>
+                {!pull.pulling ? (
+                  <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent, marginTop: 6 }} onClick={installModels}>
+                    Install {missing.length} model{missing.length === 1 ? "" : "s"} (large download)
+                  </button>
+                ) : (
+                  <div style={{ marginTop: 6 }}>
+                    <div style={{ background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: 6, height: 8, overflow: "hidden" }}>
+                      <div style={{ background: theme.accentAlt, height: "100%", width: `${pullSummary.pct}%` }} />
+                    </div>
+                    {pull.pulls.map((p) => (
+                      <div key={p.model} style={{ fontSize: 12, marginTop: 4 }}>
+                        {p.model}: {p.done ? (p.error ? `failed \u2014 ${p.error}` : "done") : p.total > 0 ? `${p.status} \u2014 ${(p.completed / 1048576).toFixed(0)} / ${(p.total / 1048576).toFixed(0)} MB` : p.status}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {pull.pullError && <div style={{ fontSize: 12, color: theme.red, marginTop: 6 }}>{pull.pullError}</div>}
+                <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
+                  Terminal fallback: <code>ollama pull {missing.join(" && ollama pull ")}</code>
+                </div>
               </div>
             )}
-            {state?.ollama.reachable && state.ollama.missing_models.length === 0 && (
+            {state?.ollama.reachable && missing.length === 0 && (
               <div style={{ ...styles.checkRow, marginTop: 8 }}>
                 <span style={{ ...styles.dot, background: theme.green }} />
                 <span>Classifier + embeddings models ready</span>
               </div>
             )}
-            {state?.answer_provider === "missing" && (
+            {state && !state.answer_ready && (
               <div style={styles.note}>
-                No answer model configured yet — you can set one later in Settings (or point answers at Ollama). Questions still work locally.
+                <div>No working answer model — answers will be keyword excerpts, not composed answers.</div>
+                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                  {state.ollama.reachable ? (
+                    <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} disabled={usingOllama} onClick={useOllamaForAnswers}>
+                      {usingOllama ? "Setting up…" : "Use Ollama for answers (free)"}
+                    </button>
+                  ) : (
+                    <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} onClick={() => setStep(1)}>
+                      Configure a model →
+                    </button>
+                  )}
+                </div>
               </div>
             )}
             <div style={styles.actions}>
@@ -208,12 +306,22 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
             <div style={{ display: "grid", gap: 8 }}>
               <label style={{ fontSize: 13, color: theme.textMuted }}>Ollama base URL (local LLM)</label>
               <input style={styles.input} value={ollamaBaseUrl} onChange={(e) => setOllamaBaseUrl(e.target.value)} placeholder="http://localhost:11434" />
-              <label style={{ fontSize: 13, color: theme.textMuted }}>Answer API base URL (cloud, e.g. https://api.openai.com/v1 — leave empty to use Ollama)</label>
-              <input style={styles.input} value={answerBaseUrl} onChange={(e) => setAnswerBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1 or empty for Ollama" />
+              <label style={{ fontSize: 13, color: theme.textMuted }}>Answer API base URL — http://localhost:11434/v1 for Ollama, or a cloud URL</label>
+              <input style={styles.input} value={answerBaseUrl} onChange={(e) => setAnswerBaseUrl(e.target.value)} placeholder="http://localhost:11434/v1 (Ollama) or https://api.openai.com/v1 (cloud)" />
               <label style={{ fontSize: 13, color: theme.textMuted }}>Answer API key (if cloud) — stored in OS keychain</label>
               <input style={styles.input} type="password" value={answerApiKey} onChange={(e) => setAnswerApiKey(e.target.value)} placeholder="sk-..." />
               <label style={{ fontSize: 13, color: theme.textMuted }}>Answer model</label>
               <input style={styles.input} value={answerModel} onChange={(e) => setAnswerModel(e.target.value)} placeholder="gpt-4o-mini or llama3.2:3b" />
+              <button
+                style={{ ...styles.button, background: theme.bgHover, border: `1px solid ${theme.border}`, justifySelf: "start" }}
+                onClick={() => {
+                  setAnswerBaseUrl("http://localhost:11434/v1");
+                  if (!answerModel.trim()) setAnswerModel("llama3.2:3b");
+                  setConfigMsg("Using Ollama for answers — Save & continue to apply.");
+                }}
+              >
+                Use Ollama for answers (free, local)
+              </button>
             </div>
             {configMsg && <div style={{ fontSize: 12, color: theme.accentAlt }}>{configMsg}</div>}
             <div style={styles.actions}>
@@ -222,7 +330,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
               <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} disabled={savingConfig} onClick={saveConfig}>{savingConfig ? "Saving…" : "Save & continue →"}</button>
             </div>
             <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
-              Ollama: <a href="https://ollama.com/download" target="_blank" rel="noreferrer" style={{ color: theme.accentAlt }}>Download</a> then `ollama pull llama3.2:3b && ollama pull nomic-embed-text` — or set a cloud key above.
+              Local path: install the models from step 0, then use the Ollama button above. Cloud path: paste a base URL + key.
             </div>
           </div>
         )}
@@ -265,6 +373,9 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
         {step === 3 && (
           <div style={styles.body}>
             <div style={styles.note}>Ask a question about what you just connected — the answer cites its sources.</div>
+            {state && !state.answer_ready && (
+              <div style={styles.note}>Heads up: no working answer model yet — this answer will be keyword excerpts. Go Back to step 0 to install the models.</div>
+            )}
             <div style={{ display: "flex", gap: 8 }}>
               <input
                 style={styles.input}

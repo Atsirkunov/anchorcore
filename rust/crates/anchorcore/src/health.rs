@@ -26,7 +26,8 @@ pub async fn health(State(state): State<AppState>) -> Json<Value> {
     };
 
     // Mirrors backend/app/status.py:19 ollama_reachable + answer_provider via SettingsService
-    let ollama = if is_ollama_reachable(&state.settings).await { "ok" } else { "offline" };
+    let readiness = crate::ollama::model_readiness(&state.settings).await;
+    let ollama = if readiness.reachable { "ok" } else { "offline" };
     let answer_key = answer_provider(&state.settings);
 
     Json(json!({
@@ -35,28 +36,14 @@ pub async fn health(State(state): State<AppState>) -> Json<Value> {
         "components": {
             "ollama": ollama,
             "answer_key": answer_key,
+            "missing_models": readiness.missing_models,
+            "answer_ready": readiness.answer_ready,
             "pending_embeddings": pending_embeddings,
             "tasks": {},
             "classifier": { "concurrency": 4 },
             "failing_sources": failing_sources
         }
     }))
-}
-
-async fn is_ollama_reachable(settings: &SettingsService) -> bool {
-    // Use SettingsService so DB overrides win, like Python status.py:19
-    let base = settings
-        .get("ollama_base_url", None)
-        .unwrap_or_else(|| "http://localhost:11434".to_string());
-    let url = format!("{}/api/tags", base.trim_end_matches('/'));
-    let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).build() {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    match client.get(&url).send().await {
-        Ok(r) => r.status().is_success(),
-        Err(_) => false,
-    }
 }
 
 fn answer_provider(settings: &SettingsService) -> Value {
