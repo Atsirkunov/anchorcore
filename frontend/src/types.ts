@@ -206,12 +206,16 @@ export type AskTurn = {
   role: "user" | "assistant";
   content: string;
   citations?: Citation[];
+  mode?: string;
+  retrieval?: string;
 };
 
 export type AskResponse = {
   answer: string;
   citations: Citation[];
   refusal?: string | null;
+  mode?: string;
+  retrieval?: string;
 };
 
 export type PullProgress = {

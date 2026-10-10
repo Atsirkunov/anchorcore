@@ -121,11 +121,15 @@ impl Embedder {
         Ok(vectors)
     }
 
-    /// Deterministic query embedding for retrieval when remote is unavailable
+    /// B58: strict query embedding — `None` when remote is unavailable, so
+    /// retrieval degrades to honest keyword-only. (Previously fell back to
+    /// `deterministic_embed`, whose hash vectors scored as noise against
+    /// real model chunk vectors.) `deterministic_embed` remains for tags,
+    /// which compare deterministic vectors against each other.
     pub async fn embed_query(&self, text: &str) -> Option<Vec<f32>> {
         match self.embed(vec![text.to_string()]).await {
-            Ok(v) if !v.is_empty() => Some(v.into_iter().next().unwrap()),
-            _ => Some(deterministic_embed(text)),
+            Ok(v) if !v.is_empty() => v.into_iter().next(),
+            _ => None,
         }
     }
 
