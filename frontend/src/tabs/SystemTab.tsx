@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
+import { useModelPull } from "../useModelPull";
 import { theme } from "../theme";
 import type { Job, LogFile, SystemEvent, SystemStatus } from "../types";
 
@@ -14,6 +15,7 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
   const [error, setError] = useState<string | null>(null);
   const [startingOllama, setStartingOllama] = useState(false);
   const [ollamaMsg, setOllamaMsg] = useState<string | null>(null);
+  const pull = useModelPull();
 
   const refresh = useCallback(() => {
     api
@@ -84,6 +86,23 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
                 missing: {status.ollama.missing_models.join(", ")}
               </div>
             )}
+            {status.ollama.reachable && status.ollama.missing_models.length > 0 && !pull.pulling && (
+              <button
+                onClick={async () => {
+                  const done = await pull.startPull(status.ollama.missing_models ?? []);
+                  if (done.length > 0) refresh();
+                }}
+                style={{ ...styles.button, background: theme.accent, color: theme.onAccent, fontSize: 12, padding: "0.35rem 0.7rem", marginTop: 6 }}
+              >
+                Install missing
+              </button>
+            )}
+            {pull.pulling && (
+              <div style={{ fontSize: 12, marginTop: 6 }}>
+                Installing… {pull.pulls.filter((p) => p.done).length}/{pull.pulls.length || status.ollama.missing_models.length}
+              </div>
+            )}
+            {pull.pullError && <div style={{ fontSize: 12, color: theme.red, marginTop: 4 }}>{pull.pullError}</div>}
             <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
               {!status.ollama.reachable && (
                 <button
@@ -126,6 +145,7 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
             <div style={styles.cardTitle}>Answer model</div>
             <div style={{ fontSize: 12 }}>
               {status.answer.provider} · {status.answer.model}
+              {status.answer_ready === false && <div style={{ color: theme.amber }}>not working — answers are excerpts only</div>}
             </div>
           </div>
           <div style={styles.card}>

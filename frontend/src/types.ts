@@ -53,6 +53,8 @@ export type Health = {
   components: {
     ollama: string;
     answer_key: string;
+    missing_models: string[];
+    answer_ready: boolean;
     pending_embeddings: number;
     tasks: Record<string, string>;
     classifier: ClassifierStats;
@@ -88,6 +90,7 @@ export type OnboardingState = {
     missing_models: string[];
   };
   answer_provider: "ollama" | "configured" | "missing";
+  answer_ready: boolean;
   sample: {
     available: boolean;
     path: string | null;
@@ -109,6 +112,7 @@ export type SystemStatus = {
   retrieval: RetrievalStatus;
   embedder: EmbedderStatus;
   answer: { provider: string; model: string; base_url: string };
+  answer_ready: boolean;
   tasks: Record<string, string>;
   pending_embeddings: number;
   failing_sources: { id: number; name: string; error: string | null; count: number }[];
@@ -208,6 +212,15 @@ export type AskResponse = {
   answer: string;
   citations: Citation[];
   refusal?: string | null;
+};
+
+export type PullProgress = {
+  model: string;
+  status: string;
+  completed: number;
+  total: number;
+  done: boolean;
+  error: string | null;
 };
 
 export type MergeProposal = {

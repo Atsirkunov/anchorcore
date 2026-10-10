@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { modelIssues } from "./modelHealth";
 import { useProjects } from "./useProjects";
 import { theme } from "./theme";
 import { OnboardingWizard } from "./OnboardingWizard";
@@ -68,20 +69,16 @@ export default function App() {
     };
   }, []);
 
+  const model = health ? modelIssues(health) : [];
   const failingForBanner = health
     ? health.components.failing_sources.filter(
         (s) => !runningJobs?.some((j) => j.source_id === s.id && (j.status === "running" || j.status === "pending")),
       )
     : [];
-  const issues = health
-    ? [
-        ...(health.components.ollama === "offline" ? ["Ollama offline — classification falls back to rules. Settings → Test connection."] : []),
-        ...(health.components.answer_key === "missing" ? ["No answer model — answers show context only. Set ANCHOR_ANSWER_API_KEY or point ANCHOR_ANSWER_BASE_URL at Ollama."] : []),
-        ...failingForBanner.map((s) => `Sync failing: ${s.name} (${s.count}×) — ${s.error ?? "unknown error"}`),
-      ]
-    : [];
-  const issuesSig = JSON.stringify(issues);
-  const bannerVisible = issues.length > 0 && dismissedSig !== issuesSig;
+  const others = failingForBanner.map((s) => `Sync failing: ${s.name} (${s.count}×) — ${s.error ?? "unknown error"}`);
+  const othersSig = JSON.stringify(others);
+  const visibleOthers = dismissedSig === othersSig ? [] : others;
+  const bannerVisible = model.length > 0 || visibleOthers.length > 0;
 
   return (
     <div style={styles.wrap}>
@@ -155,19 +152,36 @@ export default function App() {
       {bannerVisible && (
         <div style={styles.banner}>
           <div style={{ flex: 1 }}>
-            {issues.map((issue, i) => (
-              <div key={i}>• {issue}</div>
+            {model.map((issue, i) => (
+              <div key={`m${i}`}>• {issue}</div>
+            ))}
+            {visibleOthers.map((issue, i) => (
+              <div key={`o${i}`}>• {issue}</div>
             ))}
           </div>
-          <button
-            onClick={() => {
-              localStorage.setItem("banner-dismissed", issuesSig);
-              setDismissedSig(issuesSig);
-            }}
-            style={styles.dismiss}
-          >
-            Dismiss
-          </button>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start", flexShrink: 0 }}>
+            {model.length > 0 && (
+              <>
+                <button onClick={() => setShowWizard(true)} style={styles.dismiss}>
+                  Set up models
+                </button>
+                <button onClick={() => setTab("settings")} style={styles.dismiss}>
+                  Settings
+                </button>
+              </>
+            )}
+            {visibleOthers.length > 0 && (
+              <button
+                onClick={() => {
+                  localStorage.setItem("banner-dismissed", othersSig);
+                  setDismissedSig(othersSig);
+                }}
+                style={styles.dismiss}
+              >
+                Dismiss
+              </button>
+            )}
+          </div>
         </div>
       )}
       <main style={styles.main}>

@@ -1,4 +1,4 @@
-import type { AppSettings, AskResponse, AskTurn, Dispute, Entity, Health, Job, LogFile, MergeProposal, OnboardingState, PiiChunk, PiiConfig, Project, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
+import type { AppSettings, AskResponse, AskTurn, Dispute, Entity, Health, Job, LogFile, MergeProposal, OnboardingState, PiiChunk, PiiConfig, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
 
 export class RequestAbortedError extends Error {
   constructor(message = "Request cancelled") {
@@ -214,6 +214,13 @@ export const api = {
   logDownloadUrl: (name: string) => `/system/logs/${encodeURIComponent(name)}`,
 
   startOllama: () => request<{ ok: boolean; already_running?: boolean; launched?: boolean; error?: string }>("/system/ollama/start", { method: "POST" }),
+  pullModels: (models: string[]) =>
+    request<{ started: string[] }>("/system/ollama/pull", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ models }),
+    }),
+  ollamaPulls: () => request<{ pulls: PullProgress[] }>("/system/ollama/pulls"),
 
   piiConfig: () => request<PiiConfig>("/pii/config"),
   updatePiiConfig: (payload: { custom_words?: string[]; disabled_categories?: string[] }) =>
