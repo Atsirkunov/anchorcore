@@ -1,59 +1,88 @@
-# Hosting skeleton (v1.5 + R10.7)
+# Team self-hosted — one container (Rust)
 
-> Same FastAPI app, env-driven. Local = SQLite + keychain. Hosted = Postgres + env secrets. No fork.
-> **R10.7 parity decision (2026-08-22):** `hosting/` stays **Python** (FastAPI + `psycopg` + `pgvector`); Rust (`rust/target/release/anchorcore`, `9.8M`) is the **local/packaged** artifact (SQLite `WAL`, `frontend/dist` embedded). Python backend frozen on tag `archive/python-final`. Rust Postgres (deadpool + `sqlx`/`pgvector`) is deferred — would duplicate Alembic history + `vec0` triggers; hosted can alternatively run Rust binary against a SQLite file volume (`ANCHOR_DATABASE_URL=sqlite:////data/anchorcore.db`) until Postgres parity is prioritized.
+> **Same backend as the Personal app.** This image runs the shipped Rust
+> binary: Axum + SQLite (sqlite-vec/FTS5), the React UI embedded, state on a
+> `/data` volume. One container, one process — no Postgres sidecar, no Python.
+> The Team edition requires a one-time platform license, verified offline at
+> startup (missing/forged refuses to boot; lapsed maintenance warns and runs).
 
-## What this is
-A minimal skeleton so you can run the **hosted** shape tomorrow without rewriting the app:
-
-- `Dockerfile` — builds the backend + bundled `frontend/dist` (requires `npm run build` once).
-- `docker-compose.yml` — `app` + `pgvector:pg16` Postgres, healthchecked, `pgdata` persisted. Uses `psycopg` driver.
-- `.env.example` — copy to `.env` and fill `ANCHOR_*`.
-- `entrypoint.sh` — `alembic upgrade head` then `uvicorn`.
-
-Follows `docs/v2v3-scope.md:3` — same code, swap via `ANCHOR_DATABASE_URL`, `SecretStore` interface, `VectorStore` → pgvector later.
-
-## Run hosted locally (emulation)
+## Quickstart
 
 ```bash
-# from repo root
-npm run build --prefix frontend   # embed UI
-cp hosting/.env.example hosting/.env  # edit if needed
+# from the repo root
+cp hosting/.env.example hosting/.env     # edit: license + models + access URL
 docker compose -f hosting/docker-compose.yml up --build
 # app at http://localhost:8000
-# db at localhost:5432 (anchorcore/anchorcore)
 ```
 
-Migrations run via `backend/alembic/env.py` (from the archive tag) against `ANCHOR_DATABASE_URL`. Local dev still uses `data/anchorcore.db` — nothing changes unless you set `ANCHOR_DATABASE_URL` to `postgresql+...`.
+Build without Compose:
 
-## What still needs decisions (not in skeleton)
+```bash
+docker build -f hosting/Dockerfile -t anchorcore:team .
+docker run -d --name anchorcore -p 8000:8000 \
+  -v anchorcore-data:/data \
+  -v "$PWD/license.json:/data/license.json:ro" \
+  -e ANCHOR_LICENSE_FILE=/data/license.json \
+  -e ANCHOR_OLLAMA_BASE_URL=http://host.docker.internal:11434 \
+  anchorcore:team
+```
 
-- Provider: Fly / Hetzner / Render — all work with this image. Skeleton is provider-agnostic.
-- Auth: **skeleton done** (`/auth/status|signup|login|me`, B40, `ANCHOR_AUTH_SECRET` enables JWT; local stays no-auth). Next: Google OAuth / per-project share tokens (B30 gate already enforces `public_only`).
-- Vector store: `vec_chunks` vec0 is SQLite-only (B33) and skips on Postgres (fallback to Python scan); Compose uses `pgvector/pgvector` image so DB is ready for future `pgvector` wiring.
-- Object storage + Drive OAuth sign-in (B28 polish) — the local Drive connector ships (token-based); hosted OAuth + mirror not wired.
-- TLS / domain — add Caddy/Traefik or provider's proxy.
+Releases also publish a prebuilt image: `ghcr.io/atsirkunov/anchorcore:<version>`
+and `:team` (built by CI on `v*` tags).
 
-## Personal vs Team
+## License
 
-Personal stays local free (no license check — `ANCHOR_EDITION` unset). This
-image is the Team edition (`ANCHOR_EDITION=team` baked into the Dockerfile)
-and requires a one-time platform license, verified offline at startup
-(`backend/app/license.py` on the archive tag — ed25519, no phone-home):
+The image bakes `ANCHOR_EDITION=team` and verifies the license offline on
+every boot — ed25519, format-compatible with `scripts/make_license.py`
+(checker: `rust/crates/anchorcore/src/license.rs`).
 
-- Mount the license file: `-v /path/to/license.json:/data/license.json -e ANCHOR_LICENSE_FILE=/data/license.json`,
-  or paste it inline via `-e ANCHOR_LICENSE='<json>'`.
-- Missing/forged license → container refuses to boot. Expired maintenance →
-  boots with a warning (perpetual license: support lapses, the app keeps running).
-- Issue licenses with `python scripts/make_license.py issue --org "Acme"`.
-  The signing private key lives with the seller only — never commit it.
+- Mount the file: `-v /path/to/license.json:/data/license.json:ro -e ANCHOR_LICENSE_FILE=/data/license.json`
+  (Compose: uncomment the volume + env lines in `docker-compose.yml`), or paste
+  the JSON into `ANCHOR_LICENSE`.
+- Missing/forged → refuses to boot (exit 2). Expired maintenance → boots with a
+  warning (perpetual license: support/updates lapse, the app keeps running).
+- Issue licenses with `python scripts/make_license.py issue --org "Acme"` on
+  the seller machine. The signing private key never ships or gets committed.
 
-## Next steps
+## Models
 
-1. `docker compose up` should turn green with an empty DB (smoke: `curl localhost:8000/health`).
-2. Add read-only share links (project tokens, `docs/v2v3-scope.md:4`) — hosted auth shipped (B40).
-3. Wire pgvector for `vec0` → pgvector migration and bundled model keys.
+Same options as Personal:
 
-Companion: `docs/architecture.md:8` (swap points), `docs/v2v3-scope.md:8` (sequencing).
+- **Local (default):** run [Ollama](https://ollama.com) on the host; Compose
+  already points the container at `host.docker.internal:11434`. Pull
+  `llama3.2:3b` + `nomic-embed-text` there.
+- **Cloud:** any OpenAI-compatible API — set base URL + key in `.env` or in
+  the app's Settings tab (runtime-mutable, no restart).
+- **Without models:** keyword search still works; answers degrade honestly.
 
-See `docs/archived-python.md` for the archive layout (what's frozen, how to refresh it).
+## Networking & auth
+
+- The container listens on `0.0.0.0:8000`; map ports or put it behind your
+  ingress / Cloudflare Tunnel. The app speaks plain HTTP — terminate TLS in
+  front (Caddy, Traefik, your cloud LB).
+- `http://localhost:8000` works out of the box. For LAN/VPC IPs or a domain,
+  add each access URL to `ANCHOR_CORS_ORIGINS` (Host/Origin allowlist).
+- Team logins: set `ANCHOR_AUTH_SECRET` to enable `/auth` (signup/login,
+  HS256 JWT). Unset = single-user, no login — keep the port private then.
+
+## Operations
+
+- **Data** (the `appdata` volume, `/data`): `anchorcore.db` (SQLite),
+  `secrets.enc.*` (file secret store), `anchorcore.log`, your `license.json`
+  if mounted. Back it up like any file — there is no database server.
+- **Migrations** apply automatically at startup (`rusqlite_migration`).
+- **Health:** `GET /health`; the image ships a `HEALTHCHECK`.
+- **Config:** `.env` / compose `environment:` — see `.env.example`. Runtime
+  model settings can also be changed in the app (Settings tab overrides env).
+
+## History (why this changed)
+
+The first skeleton (B46/v1.5) was a two-service Python stack — FastAPI built
+from the frozen `archive/python-final` snapshot + a `pgvector/pg16` Postgres —
+while the website promised "One Docker container" (B59). R19.1 moved the Team
+image onto the shipped Rust binary: the promise is now the artifact. Postgres +
+pgvector remains an option for the future Hosted (cloud) tier only; it is not
+the Team self-hosted story.
+
+See `docs/archived-python.md` for the archive layout (frozen backend, used by
+the conformance suite and nothing else).

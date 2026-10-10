@@ -23,6 +23,7 @@ mod frontend;
 mod hashing;
 mod health;
 mod jobs;
+mod license;
 mod ollama;
 mod pii;
 mod pipeline;
@@ -55,6 +56,8 @@ struct Args {
     port: u16,
     #[arg(long, default_value = "")]
     data_dir: String,
+    #[arg(long, default_value = "")]
+    host: String,
 }
 
 fn resolve_data_dir(cli: &str) -> PathBuf {
@@ -86,6 +89,20 @@ fn resolve_data_dir(cli: &str) -> PathBuf {
         }
     }
     PathBuf::from("data")
+}
+
+fn resolve_host(cli: &str) -> String {
+    if !cli.is_empty() {
+        return cli.to_string();
+    }
+    if let Ok(v) = std::env::var("ANCHOR_HOST") {
+        if !v.is_empty() {
+            return v;
+        }
+    }
+    // Local-first default: the personal app stays loopback-only. The Team
+    // container sets --host 0.0.0.0 (or ANCHOR_HOST) explicitly.
+    "127.0.0.1".to_string()
 }
 
 fn format_panic_message(
@@ -343,6 +360,16 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
+    // Team edition (Docker image sets ANCHOR_EDITION=team): refuse to boot
+    // without a valid license; lapsed maintenance only warns (perpetual).
+    if std::env::var("ANCHOR_EDITION").as_deref() == Ok(license::TEAM_EDITION) {
+        if let Err(msg) = license::enforce_team_license() {
+            tracing::error!("{}", msg);
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+    }
+
     let args = Args::parse();
     let data_dir = resolve_data_dir(&args.data_dir);
     std::fs::create_dir_all(&data_dir).ok();
@@ -368,7 +395,7 @@ async fn main() {
 
     let app = build_router(state);
 
-    let addr = format!("127.0.0.1:{}", args.port);
+    let addr = format!("{}:{}", resolve_host(&args.host), args.port);
     tracing::info!("listening on {}", addr);
     maybe_open_browser(&addr);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
