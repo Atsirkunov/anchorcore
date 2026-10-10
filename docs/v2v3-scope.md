@@ -15,8 +15,8 @@ Locked decisions from the publishing-strategy review; each maps to a backlog ite
 |---|---|---|
 | D1 | Domain: **`anchorcore.dev`** (Cloudflare Registrar). `.ai`/`.com`/`.app` taken but parked | Done — site targets `anchorcore.dev` |
 | D2 | Website: static single page (plain Vite); landing + guides + download; personal free forever, team one-time license, no prices on site | Shipped — live at anchorcore.dev (Cloudflare Workers, B47) |
-| D3 | Pricing: personal local free forever; Team self-hosted = one-time platform license (perpetual + 1yr maintenance, offline ed25519 key — shipped: `LICENSE.md` + `backend/app/license.py` + `scripts/make_license.py`); hosted pricing TBD from pilots — no per-seat | Decided + Team half shipped |
-| D4 | Hosted = low-risk, quota-bounded features only (hosted sync, MCP endpoint, webhooks, share links, review); cheap-tier metered bundled models; per-workspace caps | Plan — hosting skeleton + auth shipped, service design open (B49) |
+| D3 | Pricing: personal local free forever; Team self-hosted = one-time platform license (perpetual + 1yr maintenance, offline ed25519 key — shipped: `LICENSE.md` + `rust/crates/anchorcore/src/license.rs` + `scripts/make_license.py`); hosted pricing TBD from pilots — no per-seat | Decided + Team half shipped |
+| D4 | Hosted = low-risk, quota-bounded features only (hosted sync, MCP endpoint, webhooks, share links, review); cheap-tier metered bundled models; per-workspace caps | Plan — Team image shipped (R19.1) + auth shipped, service design open (B49) |
 | D5 | License: **custom source-available license** (`LICENSE.md`: personal use free, commercial/Team use paid, ed25519 keys verified offline). *Revised — the original BSL 1.1 decision was dropped; there is currently no small-org carve-out.* | Shipped |
 | D6 | Enterprise: **sell the platform, don't host it** — Docker + SSO/RBAC/audit, flat annual per deployment + support; enterprise telemetry = SLA feature | Plan |
 | D7 | Telemetry: **opt-in, off by default, counts-only** (never content), pseudonymous reset-able ID, transparency screen; public signals (release downloads, stars) complement | Decided, not implemented — no telemetry exists anywhere yet |
@@ -57,8 +57,8 @@ Still open: hosting choice (Cloudflare Pages is an option, not chosen),
 
 **Principle: same code, env-driven.** The local app already has the full API
 (connectors, settings service, jobs). Hosted = run it on a server with
-Postgres + a real object store instead of SQLite + keychain. Per R10.7 the
-hosted image stays Python even though local ships Rust.
+Postgres + a real object store instead of SQLite + keychain. The Team
+self-hosted image already ships the same Rust binary in ONE container (R19.1); the cloud Postgres swap is future work (B49).
 
 | Decision | v1 (local) | v2 (hosted) | Notes |
 |---|---|---|---|
@@ -73,10 +73,7 @@ hosted image stays Python even though local ships Rust.
 **Ops shape (recommended, pragmatic):** one app + Postgres + object storage
 on a small VPS (Hetzner per D9) — one server per region; scale later. GitHub
 Actions deploys on tag (planned — no workflow yet).
-**Skeleton (shipped):** `hosting/` (Dockerfile + `docker-compose.yml` +
-`.env.example`) runs the same image locally with `pgvector/pgvector:pg16` —
-no provider lock-in, no fork. Same `ANCHOR_DATABASE_URL` switch drives
-SQLite→Postgres; see `hosting/README.md`.
+**Shipped today (R19.1):** `hosting/` is ONE Rust container (Dockerfile + `docker-compose.yml` + `.env.example`, SQLite volume, license gate) — the Team self-hosted product. The Postgres + object-storage swap above is the cloud-tier design (B49), not shipped. See `hosting/README.md`.
 
 **Locked stack (2026-08-10, D8–D9):**
 
@@ -84,13 +81,13 @@ SQLite→Postgres; see `hosting/README.md`.
 |---|---|---|
 | Front door (DNS/SSL/CDN) | Cloudflare free plan on `anchorcore.dev` | free TLS + DDoS absorption |
 | Ingress | **Cloudflare Tunnel** (`cloudflared`) | no open ports on the VPS — nothing to firewall; the tunnel dials out |
-| The computer | **Hetzner CX22** (2 vCPU / 4 GB / 40 GB), ~€4–5/mo | cheapest reliable; Docker Compose runs both services |
-| App + DB | Docker Compose: `anchorcore` (Python image per R10.7) + `postgres` | one command to start/update; same code, env-driven (DB swap point) |
+| The computer | **Hetzner CX22** (2 vCPU / 4 GB / 40 GB), ~€4–5/mo | cheapest reliable; runs the cloud stack (app + Postgres, B49) |
+| App + DB | Team (shipped): ONE Rust container (R19.1). Cloud (B49): app + Postgres, TBD | one command to start/update on the team box; cloud DB swap not wired |
 | Files | Cloudflare R2 (D8) | free 10 GB, $0 egress → share links cost nothing to serve |
 | Billing | Stripe Checkout (hosted pages) + webhooks | no PCI burden; the app turns features on when a payment webhook arrives |
 | Uptime | UptimeRobot free plan | emails you if the site dies; you don't stare at dashboards |
 | Backups | nightly `pg_dump` → R2 | if the computer dies, restore on a new one in ~30 min |
-| Deploy | GitHub Actions builds a Docker image on `v*` tag → GHCR → VPS pulls | planned, no workflow yet |
+| Deploy | GitHub Actions builds the Team image on `v*` → GHCR (shipped: `release.yml` `docker-team`) | VPS pull leg still planned; Team users build/pull themselves |
 
 Deliberately **not** in scope until real demand: Kubernetes, multi-region,
 autoscaling, managed DBs. One box, ~€10–15/mo fixed + model tokens
@@ -183,7 +180,7 @@ prices on site — price discovery happens in pilot conversations.
 | 2 | Website landing + download page | ✅ shipped |
 | 3 | Docs presence | decided: GitHub repo itself, no separate docs site |
 | 4 | Read-only share links (project tokens) | open, needs B14.2 MCP HTTP |
-| 5 | Hosted pilot (1 server, signup, free tier) | open, skeleton in `hosting/` |
+| 5 | Hosted pilot (1 server, signup, free tier) | open; Team image shipped (R19.1), pilot service still to build |
 | 6 | Hosted pricing + Stripe billing | open, needs pilot feedback |
 | 7 | Teams (invites, permissions) | open, needs hosted |
 | 8 | Enterprise (SSO, audit, on-prem) | open, needs teams + contradictions |

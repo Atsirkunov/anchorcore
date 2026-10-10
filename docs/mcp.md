@@ -76,7 +76,7 @@ is logged to `system_events` (`component='mcp'`, visible under
 `GET /system/errors?component=mcp`).
 
 Legacy: the B14.1 Python sidecar (`backend/anchorcore_mcp.py` +
-`backend/app/mcp/`, same 6 tools) is archived on tag `archive/python-final` (hosting/conformance fetch it frozen). New work
+`backend/app/mcp/`, same 6 tools) is archived on tag `archive/python-final` (the conformance suite fetches it frozen). New work
 is Rust (`rust/crates/anchorcore/src/bin/mcp.rs`).
 
 ### 4.2 Centralized — streamable HTTP (planned, B14.2)

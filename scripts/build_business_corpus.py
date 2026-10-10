@@ -280,7 +280,7 @@ def main():
     print(f"Path: {OUT}  (add as Local folder source, Sync)")
     print(f"Preview: ls {OUT}/tech/rfcs | head; wc -l {OUT}/**/*.md | tail")
     if est_chunks < 5000:
-        print("Tip: --scale 5k for ~150k chunks to stress vec0/RRF/graph; >300k will hit SQLite single-writer lock — then test hosting/ Postgres.")
+        print("Tip: --scale 5k for ~150k chunks to stress vec0/RRF/graph; >300k will hit SQLite single-writer lock - beyond pilot scale (Postgres swap is future work, B49).")
     # manifest
     manifest = {"n": n, "files": total, "mb": round(size_mb,1), "est_chunks": est_chunks, "real_logs": real_logs, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     (OUT/"_manifest.json").write_text(json.dumps(manifest, indent=2))
