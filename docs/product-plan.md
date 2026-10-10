@@ -240,7 +240,7 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **Expected:** 3-5x wall-clock reduction on GPU machines; scales with hardware. Without `OLLAMA_NUM_PARALLEL`, requests queue at the server (no speedup, no harm).
 
-### B12. Retrieval quality: hybrid search + chunk cleaning (P2 — discovered, confirmed live) — DONE (build); re-test on rulebook
+### B12. Retrieval quality: hybrid search + chunk cleaning (P2 — discovered, confirmed live) — DONE (build + rulebook re-test; optional rerank remains)
 **Problem:** full-document chunks are raw extracted text (repeated headers, page numbers, encoding garbage) and vector-only search with `nomic-embed-text` ranks them poorly — a DVCA question scored all candidates ~0.7 and surfaced unrelated sections, while clean entity-summary chunks retrieved far better. Verified with a retrieval probe on the 237-page rulebook (only 5 chunks mention DVSE/DVCA; they ranked below unrelated chunks).
 
 **Done (build):**
@@ -418,7 +418,7 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 **Problem:** v1 is local-first and free; there's no website, hosted path, pricing, or changelog discipline — nothing for people to find/try/pay for.
 
 **Scope (per [v2v3-scope.md](./v2v3-scope.md)):**
-- Website: ✅ landing (60s demo), download, pricing shipped; docs = GitHub repo (no separate site); changelog page still open
+- Website: ✅ landing (60s demo), download, pricing shipped; on-domain guides render repo docs; changelog page still open
 - Hosting: same code, env-driven — Postgres + object storage + server-side connectors; single-region VPS first
 - File sharing: read-only share links (project tokens) → collaborators → permissions (the Teams tier trigger)
 - Release mgmt: mandatory CHANGELOG.md + SemVer; update-checker later
@@ -428,7 +428,7 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 **DoD:** a stranger lands on the website, downloads the app (or starts the hosted free tier), and asks a cited question in under 3 minutes; a changelog accompanies every release.
 
 ### B14. Agent connectivity via MCP (P1 — see [mcp.md](./mcp.md)) — B14.1 + R12.5 DONE, B14.2–B14.4 open
-**Problem:** users want their own harnesses (Claude Code, Codex, opencode) to use AnchorCore's memory, but today only the browser UI can reach it.
+**Problem:** users want their own harnesses (Claude Code, Codex, opencode) to use AnchorCore's memory; the stdio sidecar (B14.1/R12.5) ships, and B14.2–B14.4 extend it to shared/HTTP, write-back and registry installs.
 
 **Scope (per [mcp.md](./mcp.md)):**
 - B14.1 Local stdio MCP server, read-only: `ask`, `search`, `get_entity`, `get_source`, `list_sources`, `memory_status` — thin adapters over existing services; results respect status/dispute filtering
@@ -436,9 +436,9 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 - B14.3 Write-back `ingest` tool (items stored `unverified`, author `mcp:<token>`, routed to the review UI)
 - B14.4 Registry publishing for one-command harness installs
 
-**DoD:** a tester points Claude Code at their AnchorCore memory (local or centralized), asks a question, and gets a cited answer; every MCP call appears in the audit trail.
+**DoD:** a tester points Claude Code at their AnchorCore memory (local or centralized), asks a question, and gets a cited answer; every `ask`/`search` call appears in the audit trail.
 
-### B30. Data labeling: PII/sensitive gating of models, sharing, and answers (P1 for PII — v1 risk, P2 rest)
+### B30. Data labeling: PII/sensitive gating of models, sharing, and answers (P1 for PII — v1 risk, P2 rest) — DONE (v1.0.8)
 **Problem:** cloud classification exists (B23) — but nothing stops PII or sensitive content from being sent to a cloud model, or surfaced in shared/agent-facing answers. For team use (v2) this is a hard blocker; even locally it's a trust story ("what leaves my machine?").
 
 **Concept — labels on sources, gates on everything else:**
@@ -545,7 +545,7 @@ rollback-safe — OR a documented decision to stay on Python.
 
 **DoD:** asking "what superseded the security-transfers decision?" (or a natural phrasing the model paraphrases) returns the newer decision's summary as a cited, connected result without the words co-occurring in both documents. — met (live: "Who owns the billing migration?" surfaces the connected security-transfers decision at score 0.9).
 
-### B33. Retrieval at scale: vec0 index (P1 — tech debt, blocks large corpora)
+### B33. Retrieval at scale: vec0 index (P1 — tech debt, blocks large corpora) — DONE
 **Problem:** `_vector_search` in `backend/app/answer_engine.py:529` loads every `chunks.embedding` into Python and computes cosine — O(N). Works at 100s chunks, collapses at 10k. sqlite-vec `vec0` virtual table is already bundled (`packaging.spec:32`) but unused.
 
 **Scope:**
@@ -557,7 +557,7 @@ rollback-safe — OR a documented decision to stay on Python.
 
 **Done (B33):** migration `b33a0c1` creates `vec_chunks` (vec0, cosine metric) + AI/AD/AU triggers + backfill (skips gracefully when sqlite-vec isn't loadable); `alembic/env.py` loads sqlite-vec on migration connections; `_vector_search` → `vec_chunks` query with `k = :limit` + project JOIN, falling back to the Python scan on dim mismatch/extension missing; `embed_dim` config; `/system/status.retrieval` latency/backend snapshot + SystemTab card; `test_vec_chunks_table_exists`, `test_vec0_insert_and_retrieval`, `test_vec0_project_scoping`, `test_vec0_perf_probe` (1k chunks <100ms).
 
-### B34. Backend hardening: version, routing, secrets, jobs (P0 — correctness)
+### B34. Backend hardening: version, routing, secrets, jobs (P0 — correctness) — DONE
 **Problem (from review):** four small correctness debts compound: (1) `APP_VERSION` duplicated `backend/app/main.py:109` vs `backend/app/routers/system.py:28`; (2) `GET /projects/default` duplicated `backend/app/routers/projects.py:43` + `88` (second silently wins); (3) secret mask lists in `backend/app/secrets.py:108` and `backend/app/routers/sources.py:84` diverge — new field leaks; (4) `JobManager` `backend/app/jobs.py:150` creates unbounded `asyncio.create_task` — concurrent reclassifies can starve loop.
 
 **Scope:**
@@ -570,7 +570,7 @@ rollback-safe — OR a documented decision to stay on Python.
 
 **Done (B34):** `__version__` lives in `app/config.py`, imported by `main.py` + `system.py`; duplicate `GET /projects/default` route deleted (first kept); `SECRET_SOURCE_FIELDS` single tuple in `secrets.py` (sources router references it via module attr so a new field auto-masks); `JobManager` bounded (MAX_CONCURRENT=2, rest persist as `pending` + queue, dispatch on slot free, queued job cancellable); `_age_decay(created_at, halflife, now=)` uses one clock per query. Tests: version single-source, secret auto-mask, `test_job_queue_bounds_concurrency`.
 
-### B35. Ingestion pipeline decomposition (P2 — maintainability)
+### B35. Ingestion pipeline decomposition (P2 — maintainability) — DONE
 **Problem:** `backend/app/pipeline.py:498` mixes DB lifecycle, LLM concurrency, 3 chunk kinds, cleaning `cleaning.py:68`, distillation — highest churn file. Changes risk SQLite lock regressions `pipeline.py:192` commit-before-LLM.
 
 **Scope:**
@@ -582,7 +582,7 @@ rollback-safe — OR a documented decision to stay on Python.
 
 **Done (B35):** `pipeline.py` 298 lines; `chunking.py` (chunk_text/chunk_document/_split_section/_is_heading/classify_windows), `hashing.py` (window_hash/content_hash — single source, re-exported by classifier.py/models.py), `distill.py` (`distill_and_store`, `signal`) extracted; commit-before-LLM invariant preserved + validated by `test_commit_before_llm_invariant` (asserts no write tx open during classifier). `tests/test_pipeline_decomposition.py` + existing `test_retrieval.py` chunking tests cover the extracted modules.
 
-### B36. Frontend platform hardening (P0 — dev + reliability)
+### B36. Frontend platform hardening (P0 — dev + reliability) — DONE
 **Problem:** `frontend/vite.config.ts:8` missing `/projects` proxy → `api.ts:58` fails in `vite dev`; `frontend/src/api.ts:3` `fetch` has no timeout/abort; `frontend/src/main.tsx:1` no `ErrorBoundary` → packaged `console=False` (`backend/run_app.py:101`) white-screens; `frontend/src/SettingsTab.tsx:66` strips `***set***` but `SourcesTab.tsx:152` sends it verbatim.
 
 **Scope:**
@@ -595,7 +595,7 @@ rollback-safe — OR a documented decision to stay on Python.
 
 **Done (B36):** `/projects` proxy added to `vite.config.ts`; `api.request()` accepts an `AbortSignal` + 30s timeout, throws `RequestAbortedError` ("Request cancelled"); `AskTab` Cancel button aborts the `/qa` request; `ErrorBoundary` (self-contained, no new dep) wraps the app + each tab in `main.tsx`/`App.tsx` with Copy error / Download log; `stripPlaceholders` shared helper used by SettingsTab + SourcesTab edit form. Vitest covers placeholder + abort + error parsing.
 
-### B37. Frontend decomposition & design system (P1 — maintainability, **no UX expertise required**)
+### B37. Frontend decomposition & design system (P1 — maintainability, **no UX expertise required**) — DONE
 **Problem:** `frontend/src/tabs/SourcesTab.tsx:384` is 384-line god component (11 `useState`, sources+jobs+projects+edit+jira); polling soup `SourcesTab:61` 1s + `App.tsx:88` 5s + `SystemTab:32` 10s + `App:69` 30s, no `AbortController`; inline `styles:Record<string,CSSProperties>` duplicated `App.tsx:181` across 6 files; `App.tsx:29` vs `SourcesTab:17` duplicate `projects` state.
 
 **Constraint:** owner has no UX/UI expertise — this item is **engineer-only**. No custom design; adopt an off-the-shelf system so good UX comes for free. Visual polish is deferred to validation feedback.
@@ -611,7 +611,7 @@ rollback-safe — OR a documented decision to stay on Python.
 
 **Done (B37):** `SourcesTab` is a 76-line composition; logic split into `tabs/sources/{ProjectSection,SourceForm,SourceRow}.tsx`; single `useJobsPoll` hook (TanStack Query, pauses when idle/tab-hidden); `ProjectsContext` (ProjectsProvider + useProjects) removes the App/SourcesTab duplicate `/projects` fetch; health + running-jobs polling moved to TanStack Query; `theme.ts` color tokens replace per-file inline hex (App/System/Entities/Ask/Settings/Review/OnboardingWizard/ErrorBoundary); AskTab turn keys + EntitiesTab busyId fixes.
 
-### B38. Testing & observability uplift (P1 — confidence)
+### B38. Testing & observability uplift (P1 — confidence) — DONE
 **Problem:** `package.json:11` has zero frontend tests/lint (`backend/tests:1` has 88 tests); `backend/app/routers/entities.py:120` `GET /review/duplicates` is O(n²) uncapped (cap 25 but scans all); shared test DB `backend/tests/conftest.py:26` accumulates — brittle; no perf regression guard.
 
 **Scope:**
@@ -624,7 +624,7 @@ rollback-safe — OR a documented decision to stay on Python.
 
 **Done (B38):** `vitest` + `eslint` configured (`vitest.config.ts`, `eslint.config.js`, `npm run test/lint` scripts, CI runs lint+test+build); `src/placeholders.test.ts` + `src/api.test.ts` (7 tests); `GET /review/duplicates` paginated with `limit` (clamped ≤100)/`offset`/`kind` + >500-candidate early-exit sampling; `isolated_db` fixture for empty-DB tests; retrieval latency probes in `test_retrieval.py` (B33) + `test_testing_uplift.py`; shared-DB contract documented in `tests/README.md`.
 
-### B39. Security & distribution follow-through (P1 — trust, P2 — reach)
+### B39. Security & distribution follow-through (P1 — trust, P2 — reach) — DONE (thin gate; bundled inference still deferred)
 **Problem:** B30 PII gating `docs/product-plan.md:430` is spec-only — cloud classifier `classifier.py:280` can leak `sensitive` source; Ollama prereq `docs/packaging.md:69` blocks non-technical testers; contradicts local-first privacy promise `docs/architecture.md:300`.
 
 **Scope:**
@@ -738,6 +738,39 @@ boots with a valid license, refuses without one. Record every papercut.
 
 **DoD:** both platforms pass the script; issues filed as backlog items.
 
+**Progress (2026-10-09):** script written (`docs/b48-clean-machine.md` — §1
+common checklist, §2 MCP smoke, §3 macOS + §4 Docker copy-paste legs).
+Static checks green: v1.0.13 release carries 5 assets (CI-built zips);
+website `latest/download` URLs live (B47); `sync_version --check` ok 1.0.13
+(both scripts); tree == v1.0.13 for `rust/` + `frontend/` (post-tag commits
+touch only CI/docs/website); `sample/` 10 files present. Executable legs
+blocked on this box (sandboxed shell: no network for the zip, no MSVC
+`link.exe` for a local release build, no Docker, no Mac, no Ollama) —
+handed to the owner: (a) paste §3 on a Mac, (b) run §4 where Docker exists,
+(c) drop `AnchorCore-windows.zip` in reach so the Windows + MCP legs can run
+here. Papercuts so far: B50 (no `sample/` in release zips), B51 (windowed
+exe gives no console feedback). B48 stays OPEN until Windows + macOS pass §1.
+
+**Progress (2026-10-09, pass 2 — sandbox lifted, network on):** Windows §1
+**PASS (simulated-clean** — isolated `C:\Temp\b48`, fresh data dir, release
+binary; dev tools exist on the box): zip `8,837,897` bytes, exes only, no
+`sample/`; first run stays up, `/health` ok (`ollama: offline`,
+`pending_embeddings: 0`); source create `201`, sync `10/10` in `47s`
+(`38` entities); ask #1 `5` citations (security-transfers decision),
+ask #2 `5` citations naming **Sarah**; UI `/` + JS bundle (`335kB`,
+`needs_wizard`/`csrf` strings present) serve `200`; relaunch recreates a
+wiped data dir cleanly. §2 MCP **PASS** via Inspector CLI: `tools/list` =
+`ask, search, get_entity, get_source, list_sources, memory_status`;
+`memory_status` ok (`1.0.13`, `vec0`); bonus `ask` over MCP returns the
+cited Sarah answer. Script bugs fixed in the doc (would have failed macOS
+verbatim): §1 POSTs now fetch `GET /csrf` + `X-CSRF-Token` (bare POSTs
+`403`); §2 uses Inspector `-e ANCHOR_BACKEND_URL=…` (`export` doesn't
+propagate) and drops the invalid `--tool-arg '{}'`. New papercuts: B52
+(onboarding fakes `ollama.reachable`), B53 (verbatim `\\?\` source refs +
+empty citation paths). Still needs the owner: macOS §3 paste, Docker §4
+(no Docker on this box — say so if you have none either and the CI
+docker-build fallback gets added instead).
+
 ### B49. Hosted design: clean and secure (P2)
 
 **Problem:** hosted is a skeleton + plans; the owner has concrete ideas for a
@@ -749,7 +782,310 @@ where. Update `hosting.md` + `v2v3-scope.md` with the outcome.
 
 **DoD:** design doc merged; hosting backlog updated from it.
 
-## Current execution priorities (agreed 2026-08-07 — updated after Aug review, amended for no-UX constraint)
+### B50. Ship the sample corpus with releases (P1, from B48)
+
+**Problem:** release zips contain binaries only — no `sample/` corpus — so
+the first-run wizard's "try the sample company" path reports
+`sample.available: false` (`system.rs:230` finds nothing next to a release
+install) and the new user's fastest route to value is dead on arrival.
+
+**Scope:** pick one: (a) bundle `sample/` inside the zips + resolve it from
+the exe dir, (b) one-click in-app download (fetch + verify hash from the
+release tag), or (c) wizard links out with instructions. Whatever it is, a
+release install must reach a synced sample source without git/a browser.
+
+**DoD:** from a fresh release install, the wizard's sample path syncs and
+answers with citations; B48 §1.3 becomes unnecessary.
+
+### B51. Release exe gives no console feedback (P2, from B48)
+
+**Problem:** the Windows release exe is `windows_subsystem = "windows"`
+(`main.rs:6`), so launching it from a terminal with `--port`/`--data-dir`
+prints nothing — not even startup errors (panics go to `anchorcore.log`
+only). Scripted/terminal first runs look hung until `/health` responds, and
+failures are silent until you find the log.
+
+**Scope:** when launched from a console (std handles present), attach and
+log startup + `listening on …` + fatal errors to stderr; keep double-click
+silent. macOS bundle binary: same treatment if trivial.
+
+**DoD:** `anchorcore.exe --port 8123 --data-dir …` from PowerShell prints a
+startup line and any fatal error; double-click behavior unchanged.
+
+### B52. Onboarding fakes `ollama.reachable` (P2, from B48) — DONE (via B54)
+
+**Problem:** `GET /system/onboarding` reports `ollama.reachable: true` on a
+box with no Ollama (verified: connection refused on `:11434`, no process),
+while `/health` (`ollama: offline`), `/system/status`, and MCP
+`memory_status` all correctly report unreachable. Root cause:
+`system.rs:219` never probes — it just checks the base URL isn't a dummy
+test URL (`http://localhost:1`), so any real-looking configured URL reads
+"reachable". The first-run wizard's step-1 Ollama check therefore claims
+success on Ollama-less machines and skips the install guidance.
+
+**Scope:** make `onboarding_handler` use the same `probe_ollama` as
+`status_handler` (or share one helper); keep it fast (short timeout, the
+wizard blocks on it). Add a test with an unroutable base URL asserting
+`reachable: false`.
+
+**DoD:** on a box without Ollama, `/system/onboarding` reports
+`reachable: false` and the wizard shows install instructions; with Ollama
+up it reports `true`.
+
+### B53. Verbatim `\\?\` source refs + empty citation paths (P3, from B48)
+
+**Problem:** on Windows, folder citations carry `source_ref` =
+``\\?\C:\…`` (the `canonicalize()` verbatim prefix, `folder.rs:59` stored
+raw at `folder.rs:92`) and `path: ""` on every citation (entity and
+document alike). Citations pass B48's bar (present, grounded, file-backed)
+but render ugly and the empty `path` breaks the "section breadcrumb"
+expectation in the B48 doc.
+
+**Scope:** strip the `\\?\` (and `\\?\UNC\`) prefix when storing or
+serializing folder `source_ref`; fill `path` with the section breadcrumb
+(or the relative file path) where a section path exists, else leave empty
+by contract and relax the B48 wording to match.
+
+**DoD:** a Windows folder sync yields citations with clean `C:\…` (or
+relative) refs and `path` populated wherever a section is known; B48 §1.8
+wording matches the contract.
+
+### B54. Dummy-proof model setup (P1, owner request) — DONE (code; Rust gates run in CI)
+
+**Problem:** a user could sail through the wizard with zero models and land in
+the Ask tab getting keyword excerpts with no idea why. No model install existed
+in the UI (only Start-Ollama + copy-paste `ollama pull`), `missing_models` was
+hardcoded `[]`, the wizard's "leave empty to use Ollama" hint was wrong (empty
+falls back to the OpenAI default), and the degraded-model banner was
+permanently dismissible.
+
+**Done (guided setup + Pull button, skip allowed + sticky banner):**
+- Backend (`rust/.../ollama.rs`, new): `model_readiness` — one `/api/tags`
+  fetch yields real `reachable` (fixes B52), real `missing_models`
+  (classifier/embed/answer roles, family-only match like `test_ollama`), and
+  `answer_ready` (cloud key OR local answer model present). Wired into
+  `/health`, `/system/status`, `/system/onboarding` (all additive fields).
+- Backend: `POST /system/ollama/pull` (validates 1–5 names, local-base only,
+  502 when Ollama down; pulls sequentially via Ollama `/api/pull` streaming
+  into a process-global progress map — no AppState change) +
+  `GET /system/ollama/pulls` for polling. 12 unit tests (matching, validation,
+  NDJSON chunk parsing).
+- Wizard step 0: Start-Ollama button + install instructions when down;
+  Install-models button with progress bar + per-model MB + terminal fallback
+  when models are missing; "Use Ollama for answers" one-click (sets
+  `answer_base_url`/`answer_model`, pulls what's missing) when the answer path
+  isn't ready. Step 1 drops the wrong "leave empty" hint for an explicit
+  Ollama/Cloud choice; step 3 warns when answers will be excerpts.
+- App banner: model issues (`modelHealth.ts`, 6 vitest) are sticky with
+  [Set up models] (reopens wizard) + [Settings] buttons; sync-failure issues
+  keep Dismiss. System tab Ollama card gains Install-missing with progress;
+  Answer card flags "not working".
+- Frontend types are defensive (`?? []`, `??` fallbacks) so the new UI
+  degrades cleanly against an older backend.
+
+**Verified:** `npm run lint` clean, vitest `17/17` (10 new), `npm run build`
+(tsc + vite) clean; Rust files parse + new module fmt-clean (rustfmt).
+Full `cargo test`/`cargo check`/live run NOT possible on this box (no C
+toolchain/linker — even build scripts fail) — backend tests are authored for
+CI, which must gate the merge.
+
+**DoD:** a first-run user with no models sees Install/Start buttons (never a
+bare terminal command), can't miss that answers are degraded (sticky banner +
+wizard warnings), and reaches composed answers without leaving the UI. — met
+in code; live pass after CI + a linked build.
+
+### B55. Retrieval/answer eval harness (P1)
+
+**Problem:** retrieval quality is where this product lives or dies, and today
+it is measured by hand. The good numbers in this doc (B12: §372 at 0.931,
+§434 at 0.892) are one-off live probes — unrepeatable, untracked, and blind
+to regressions. The retrieval stack keeps gaining knobs (RRF weights, age
+halflife, per-item caps, tag threshold, TOC depth) with no way to tune them
+except vibes; a change that helps DVCA questions can silently sink billing
+ones. No stranger can verify "answers well" without trusting us.
+
+**Scope:**
+- Golden set: ~30–50 questions over a frozen corpus (`sample/` + a slice of
+  the business-scale generator, pinned) with expected citations (doc + section)
+  and expected answer facts. Stored as data (`eval/golden.jsonl` or similar),
+  easy to extend from real tester questions.
+- Deterministic retrieval eval (CI-safe, no LLM): recall@k + MRR against the
+  expected citations, citation precision on the top-k set. Runs in CI on
+  every push; fails on regression vs. the recorded baseline.
+- Answer eval (nightly/manual, LLM-judged): faithfulness (every claim cited,
+  no unsupported claims) + citation coverage, judged by a pinned cloud model
+  with the rubric checked in. Cheap enough to run before releases.
+- Baseline + report: `eval/baseline.json` + a one-command run
+  (`npm`/`cargo` script) printing a small table (metric, now, baseline,
+  delta). Doc section: how to add a case, when to re-baseline (deliberately,
+  never silently).
+- Explicit non-goals: no eval-driven auto-tuning yet; no human-rating UI.
+
+**DoD:** `main` carries a green retrieval-eval gate (recall@k + MRR vs.
+baseline); a release run produces the answer-quality table; adding a tester
+question as a golden case takes minutes and is documented.
+
+### B56. Watcher misses same-file content edits (P1 — discovered in file-update review)
+
+**Problem:** editing a watched file in place never triggers an auto-sync.
+`notify` fires and the source lands in `to_sync`, but `run` then gates on
+the file *set* changing (`new_set != old_set` in
+`rust/crates/anchorcore/src/watcher/service.rs:198` `fetch_and_compare`) —
+a content edit adds/removes no files, so `trigger_sync` is never called.
+The pipeline itself handles content changes correctly once a sync runs
+(`pipeline.rs:276` `upsert_doc` compares `content_hash` per
+`(source_id, external_id)`, re-classifies only changed windows), but the
+watcher only auto-syncs adds/deletes. Edits sit stale until a manual sync
+or scheduler tick. The `poll_changed` paths (which include the modified
+file) are discarded — only non-emptiness is checked.
+
+This hits the Obsidian-vault use case hardest: a vault is overwhelmingly
+in-place `.md` edits, not adds/deletes — so the flagship "point at your
+vault" flow barely auto-syncs at all. Worse, `docs/guides/obsidian-vault.md:18`
+currently promises "New and edited notes are picked up automatically",
+which is false for edits until this lands.
+
+**Scope:**
+- Compare content, not just set membership: track per-file mtime/size (or
+  a cheap hash) in `known_files` alongside the path set, or pass the
+  `poll`-returned paths through so a modify event triggers sync directly.
+- Keep the 3s debounce + 1s settle behavior; don't sync twice when an edit
+  also changes the set (single `trigger_sync` per loop pass per source).
+- Regression test: write file → sync → edit file in place → watcher fires
+  sync → new content retrievable. Keep CCN ≤ 15 in touched fns.
+
+**DoD:** editing a watched file auto-syncs within ~10s and the new text is
+returned by `/qa`; add/delete behavior unchanged; the
+`obsidian-vault.md:18` "edited notes are picked up automatically" promise
+is true again (verify with a vault-shaped fixture: edit `.md` in place,
+no new files); `cargo test` green.
+
+### B57. Deleted files linger in the index forever (P1 — discovered in file-update review)
+
+**Problem:** nothing ever cleans up removed files. `stale` on
+`ingested_items` is only ever written as `0` (insert/update in
+`pipeline.rs:287,290`); no code path sets `stale=1` or deletes rows for
+files that disappeared from the folder. Deleted docs keep their entities,
+chunks, and embeddings, so answers keep citing ghost documents with
+full confidence.
+
+**Scope:**
+- Detect disappearance during sync: after `FolderConnector::fetch`, diff
+  fetched `external_id`s against stored `ingested_items` for the source.
+- Decide semantics and implement one: hard-delete (item + entities +
+  chunks + vec rows + tags/merge actions) vs. soft `stale=1` with
+  retrieval exclusion (note `retrieval.rs:128` `status_ok` already
+  excludes `stale`/`disputed` *entities* — item-level `stale` needs the
+  same treatment in `load_hits`/chunks queries if soft-delete is chosen).
+- Surface in UI if soft: doc-grouped Entities shows stale docs distinctly
+  (reuses B41 grouping); hard-delete needs no UI.
+- Regression test: sync → delete file → sync → doc no longer cited.
+  `cargo test` + conformance green.
+
+**DoD:** a file deleted from a watched folder stops appearing in answers
+after the next sync; no orphan chunks/entities/vec rows left behind;
+documented which semantic (hard/soft) was chosen and why.
+
+### B58. Degraded answers impersonate composed ones (P1 — discovered in review)
+
+**Problem:** when no answer/embed model runs, output degrades through three
+paths with no machine-readable signal: (1) `embed_query` silently falls
+back to `deterministic_embed` hash vectors, which are then scored against
+real model chunk vectors — cross-distribution noise folded into ranking
+(`rust/crates/anchorcore/src/embedder.rs:125`); (2) `generate_answer`
+returns raw context dumps shaped exactly like composed answers
+(`refusal: None`, full citations, only an inline bracketed note differs —
+`rust/crates/anchorcore/src/answer.rs:638`); (3) `record_degraded` fires
+only on empty hits (R10.5), so model-down-with-hits logs nothing, and the
+B54 banner reflects config-level health, not per-request truth — a
+transient outage mid-session shows nothing on the answer itself.
+
+**Scope:**
+- `AskResponse`/`SearchResponse` carry a per-request `mode` (`composed` /
+  `context_only` / `keyword_only`) threaded from the path actually taken;
+  `generate_answer` returns `(text, mode)`.
+- AskTab renders a per-answer, non-dismissible banner from the flag,
+  visually distinct from composed answers. The B54 global banner stays
+  for config state — do not touch B54's files (`modelHealth.ts`, wizard,
+  health components).
+- When the remote embedder fails, skip the vector leg (honest
+  keyword-only) instead of scoring deterministic query vectors against
+  model vectors; verify with a retrieval probe before/after.
+- Degraded-answer counter in `/system/status` (count, don't spam events
+  per R10.5).
+- Regression tests: no-key ask → `context_only`; embed-down search →
+  `keyword_only`; UI test for the per-answer banner.
+
+**DoD:** every answer/search response truthfully reports how it was
+produced; the UI never renders a context dump as a composed answer; no
+cross-distribution vector scoring; `cargo test` + frontend vitest green.
+
+### B59. Team image promises one Docker container, ships a two-service Python stack (P1 — discovered in website/README audit)
+
+**Problem:** the site sells Team as literally one container — hero
+`website/src/main.ts:16,18` ("Run on your infrastructure — one container." /
+"One Docker container — your team's memory, on your infra"), FAQ
+`website/index.html:248`, pricing `website/index.html:262` — and `README.md:35`
+repeats it (`docs/design-system.md:96` carries the same voice). The artifact
+ships **two** services: `hosting/docker-compose.yml` runs `app` (Python FastAPI
+image built from the frozen `archive/python-final` snapshot,
+`hosting/Dockerfile:5,15`) plus `db` (`pgvector/pgvector:pg16`,
+`hosting/docker-compose.yml:4`). False twice over: not one container, and not
+the shipped Rust backend — the 2026-08-21 review already flagged the two
+divergent codebases (`docs/review-2026-08-21-full.md:80`). A buyer who expects
+one container gets a Compose stack plus a Postgres to operate.
+
+**Resolution (chosen): ship the single container the site promises — the Rust
+binary (Axum + SQLite/sqlite-vec/FTS5, `frontend/dist` embedded), no DB
+sidecar.** Team self-hosted is a 3–30 person team in a VPC; SQLite on a mounted
+volume is the same engine the Personal app runs. Postgres + pgvector stays the
+*Hosted*-cloud topology (B49, `docs/v2v3-scope.md` D9), not the Team-container
+story. This supersedes R10.7's "`hosting/` stays Python" for the Team image —
+R10.7 itself noted the Rust-against-a-SQLite-volume shape as the alternative.
+
+**Scope:**
+- Multi-stage `hosting/Dockerfile` (keep the path so the B48 §4 script keeps
+  working): stage 1 builds `frontend/dist` + `cargo build --release -p anchorcore`;
+  runtime stage debian-slim/distroless with `ca-certificates`, non-root user,
+  `ANCHOR_DATA_DIR=/data`, `ANCHOR_SECRETS_NO_KEYRING=1` (fallback file store),
+  `EXPOSE 8000`, `HEALTHCHECK` on `/health`. A plain `docker run -p 8000:8000
+  -v anchorcore-data:/data` boots the app; migrations apply at start
+  (`rusqlite_migration`) — no entrypoint, no uvicorn/Alembic, no Python.
+- Team license gate parity: today `ANCHOR_EDITION=team` is enforced only by
+  the frozen Python `backend/app/license.py` (ed25519, offline; issued via
+  `scripts/make_license.py`). Port the check into Rust so the single-container
+  Team image still refuses to boot without a valid license and boots with a
+  lapsed-maintenance warning; keep the documented license-mount / inline
+  `ANCHOR_LICENSE=...` flow.
+- `hosting/docker-compose.yml` for Team: exactly one service (data volume +
+  optional license mount) — or retire it in favor of the documented `docker run`
+  one-liner. Any Compose-with-Postgres file moves to a clearly labeled
+  hosted-cloud variant (B49), outside the Team quickstart.
+- Doc consistency pass in the same commit: `hosting/README.md` (currently
+  "skeleton … stays Python, R10.7"), `docs/hosting.md`, `docs/architecture.md`,
+  `README.md:35,64,82`, `rust/README.md`, `docs/v2v3-scope.md` (D9/ops shape) —
+  Team = one container; Postgres only in the Hosted-cloud row.
+- CI + release: build and publish the image on `v*` tags to GHCR
+  (`ghcr.io/atsirkunov/anchorcore:<version>` + `:team`) so "Deploy via Docker"
+  works from a clean machine; smoke leg (boot → `/health` → UI 200 → unlicensed
+  refusal) closes the open B48 §4 Docker script.
+- Website: keep the "One Docker container" claims (they become true); point
+  the Team card CTA at the real one-liner/registry per R18.5, and add "no
+  database to run — SQLite on a volume" where it helps the buyer.
+- **Fallback (only if single-container slips):** reword the promise to "one
+  Docker Compose stack" everywhere it appears (`website/src/main.ts:16,18`,
+  `website/index.html:248,262`, `README.md:35`, `docs/design-system.md:96`) —
+  never ship a claim the artifact doesn't meet.
+
+**DoD:** from a fresh clone, `docker build -f hosting/Dockerfile -t anchorcore .`
++ `docker run -p 8000:8000 -v anchorcore-data:/data anchorcore` serves the UI,
+syncs `sample/`, and answers with citations — **single container, no Postgres
+process**; unlicensed Team boot refuses and licensed boot passes (B48 §4
+script green); the Team compose file has exactly one service; CI publishes the
+image on tags; website/README/hosting docs match the artifact; `cargo test` +
+frontend build green.
+
+## Current execution priorities (agreed 2026-08-07 — updated after Aug review + the B48 pass, amended for no-UX constraint)
 
 Explicit order — v1 core, hardening, scale and the website are DONE (v1.0.10–1.0.12). Queue below is post-website launch prep.
 
@@ -789,8 +1125,18 @@ Explicit order — v1 core, hardening, scale and the website are DONE (v1.0.10�
 | 5 | B29 remainder: CHANGELOG + hosted prep | **P1** | website shipped; changelog discipline + pilot prep open |
 | 6 | B28 Drive OAuth polish | **P2** | OAuth browser flow + `data/drive/<name>/` mirror |
 | 7 | B45 Slack | **P2** | export-ZIP import local (free); live connector = Teams/hosted feature |
-| 9 | B47 deploy website | **P1** | host + DNS + production link check |
-| 10 | B48 end-to-end test | **P1** | clean Win/Mac script incl. Team license negative |
+| — | B47 deploy website | ✅ DONE | live at anchorcore.dev (Cloudflare Workers Static Assets) |
+| 10 | B48 end-to-end test | **P1** | Windows §1 + MCP §2 PASS (simulated-clean); Mac §3 + Docker §4 await owner |
 | 11 | B49 hosted design | **P2** | owner design session → decisions in hosting.md/v2v3 |
+| 12 | B50 sample corpus in releases | **P1** | wizard sample path dead on release installs (from B48) |
+| 13 | B51 console feedback for exe | **P2** | windowed exe silent in terminal runs (from B48) |
+| — | B52 onboarding Ollama probe | ✅ DONE (via B54) | real probe + install guidance in wizard |
+| — | B54 dummy-proof model setup | ✅ DONE (CI gates Rust) | guided wizard + Pull button + sticky degraded banner |
+| 15 | B53 citation path cosmetics | **P3** | verbatim `\\?\` refs + empty `path` on Windows (from B48) |
+| 16 | B55 eval harness | **P1** | golden Q&A set + CI retrieval gate + release answer eval |
+| 17 | B56 watcher content edits | **P1** | in-place edits never auto-sync (set-compare gate); breaks Obsidian-vault "edited notes picked up automatically" promise |
+| 18 | B57 deleted-file cleanup | **P1** | removed files never purged; ghost docs cited (stale only ever written 0) |
+| 19 | B58 degraded-answer honesty | **P1** | per-response mode flag + per-answer banner; drop silent deterministic query vectors |
+| 20 | B59 single-container Team image | **P1** | site promises "One Docker container" but `hosting/` is a two-service Python stack; ship the Rust single container (or reword) |
 
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md), [design-system.md](./design-system.md)*

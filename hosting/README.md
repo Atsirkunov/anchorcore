@@ -31,7 +31,7 @@ Migrations run via `backend/alembic/env.py` (from the archive tag) against `ANCH
 - Provider: Fly / Hetzner / Render — all work with this image. Skeleton is provider-agnostic.
 - Auth: **skeleton done** (`/auth/status|signup|login|me`, B40, `ANCHOR_AUTH_SECRET` enables JWT; local stays no-auth). Next: Google OAuth / per-project share tokens (B30 gate already enforces `public_only`).
 - Vector store: `vec_chunks` vec0 is SQLite-only (B33) and skips on Postgres (fallback to Python scan); Compose uses `pgvector/pgvector` image so DB is ready for future `pgvector` wiring.
-- Object storage / Drive connector (B28 — next) — env keys reserved, not wired.
+- Object storage + Drive OAuth sign-in (B28 polish) — the local Drive connector ships (token-based); hosted OAuth + mirror not wired.
 - TLS / domain — add Caddy/Traefik or provider's proxy.
 
 ## Personal vs Team
@@ -51,7 +51,7 @@ and requires a one-time platform license, verified offline at startup
 ## Next steps
 
 1. `docker compose up` should turn green with an empty DB (smoke: `curl localhost:8000/health`).
-2. Add hosted auth + read-only share links (project tokens, `docs/v2v3-scope.md:4`).
+2. Add read-only share links (project tokens, `docs/v2v3-scope.md:4`) — hosted auth shipped (B40).
 3. Wire pgvector for `vec0` → pgvector migration and bundled model keys.
 
 Companion: `docs/architecture.md:8` (swap points), `docs/v2v3-scope.md:8` (sequencing).

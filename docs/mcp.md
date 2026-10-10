@@ -4,7 +4,7 @@
 > to AnchorCore's memory — locally or against a shared instance — and
 > consume it with full provenance.
 > Status: **shipped** — Rust sidecar `anchorcore-mcp` (stdio, 6 read-only
-> tools, `public_only` gate, per-call audit). HTTP transport and write-back
+> tools, `public_only` gate, ask/search audit). HTTP transport and write-back
 > are planned (B14.2/B14.3).
 
 ---
@@ -40,7 +40,7 @@ needs custom glue; MCP is the glue.
 | `ask` | `question` (required), `project_id?`, `public_only?` | composed answer + citations | `POST /qa`, `POST /qa/public` |
 | `search` | `query` (required), `k` (default 8, max 50), `project_id?`, `public_only?` | verbatim cited chunks + scores | `POST /qa/search` |
 | `get_entity` | `entity_id` | entity + provenance | Entity graph |
-| `get_source` | `source_id` | source details, secrets masked | Sources |
+| `get_source` | `source_id` | source details (no config/secrets) | Sources |
 | `list_sources` | — | names, connectors, last sync | Sources |
 | `memory_status` | — | version, model availability, pending embeddings | `/system/status` |
 
@@ -71,7 +71,7 @@ claude mcp add anchorcore -- C:\path\to\anchorcore-mcp.exe
 # opencode: "mcp" entry in opencode.json with local stdio command
 ```
 
-Details: stdio JSON-RPC (`initialize`/`tools/list`/`tools/call`); every call
+Details: stdio JSON-RPC (`initialize`/`tools/list`/`tools/call`); every `ask`/`search` call
 is logged to `system_events` (`component='mcp'`, visible under
 `GET /system/errors?component=mcp`).
 
@@ -97,11 +97,11 @@ claude mcp add anchorcore --transport http https://your-host/mcp
 
 | Concern | Approach |
 |---|---|
-| Transport | Bearer token in `Authorization` header (MCP HTTP spec) |
-| Config | `ANCHOR_MCP_TOKEN` (secret, env/SecretStore, never in DB/logs) |
+| Transport (HTTP, planned) | Bearer token in `Authorization` header (MCP HTTP spec) |
+| Config | `ANCHOR_MCP_TOKEN` (secret; read from env, never in DB/logs) |
 | Localhost | stdio needs no token; binds 127.0.0.1 |
 | Permission tiers (v2) | read-only key vs write-back key; per-team scoping |
-| Audit | Every MCP call writes a `system_events` row (`component='mcp'`: tool, query sketch, hit counts) — "who asked what" is always answerable |
+| Audit | Every `ask`/`search` call writes a `system_events` row (`component='mcp'`: tool, query sketch, hit counts) — "who asked what" is always answerable |
 | Rate limiting | Simple per-token sliding window (v2; cheap, do it when tokens exist) |
 
 ## 6. Write-back (v2, planned)
@@ -120,7 +120,7 @@ producers, not just consumers. Risks to manage:
   server, the 6 tool definitions, HTTP calls into the app, audit logging.
 - `backend/app/mcp/` + `backend/anchorcore_mcp.py` — legacy Python sidecar on the archive tag.
 - Config: `ANCHOR_BACKEND_URL` (default `http://127.0.0.1:8000`),
-  `ANCHOR_MCP_TOKEN` (HTTP transport, planned).
+  `ANCHOR_MCP_TOKEN` is optional — sent as `Bearer` to the backend when set (required for the planned HTTP transport).
 - Planned: mount `/mcp` on the Axum app when the HTTP transport ships.
 
 Deliberately unchanged by MCP: DB schema (it's an adapter, not a new data

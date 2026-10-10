@@ -1,42 +1,42 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="220" viewBox="0 0 720 220" role="img" aria-labelledby="title desc">
-<title id="title">AnchorCore TOC — hierarchical sections</title>
-<desc id="desc">Tree: §434 Scope and §437 Dates with 4.2.1 Subsection, showing parent/level/path</desc>
+<title id="title">AnchorCore TOC — a PRD's sections tree</title>
+<desc id="desc">Tree: §3 Billing migration and §4 Security transfers, with 4.2 Parallel-run plan nested, showing parent and path</desc>
 <rect width="720" height="220" rx="12" fill="#F2F0EB" stroke="#e2ddd6"/>
 <!-- header -->
 <rect x="14" y="14" width="692" height="28" rx="8" fill="#ffffff" stroke="#e2ddd6"/>
 <text x="24" y="32" font-family="ui-monospace,Menlo,monospace" font-size="11" letter-spacing="0.06em" fill="#6b7280" font-weight="700">TOC — sections tree</text>
-<text x="692" y="32" text-anchor="end" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#9aa0a8">434 · 437 · 4.2.1</text>
+<text x="692" y="32" text-anchor="end" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#9aa0a8">§3 · §4 · 4.2</text>
 <!-- vertical spine -->
 <line x1="28" y1="58" x2="28" y2="188" stroke="#4A5A52" stroke-width="1.5" stroke-linecap="round" opacity="0.9"/>
-<!-- §434 node -->
+<!-- §3 node -->
 <circle cx="28" cy="70" r="6" fill="#4A5A52" stroke="#ffffff" stroke-width="2"/>
 <rect x="44" y="58" width="260" height="26" rx="8" fill="#ffffff" stroke="#e2ddd6"/>
-<text x="54" y="75" font-family="Georgia,serif" font-size="12" fill="#1a1d1a" font-weight="700">§434 Scope</text>
-<text x="54" y="75" dx="92" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#9aa0a8">section</text>
-<text x="44" y="98" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#6b7280">434 Scope — 2 passages · billing, scope</text>
-<!-- §437 node -->
+<text x="54" y="75" font-family="Georgia,serif" font-size="12" fill="#1a1d1a" font-weight="700">§3 Billing migration</text>
+<text x="54" y="75" dx="145" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#9aa0a8">section</text>
+<text x="44" y="98" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#6b7280">§3 Billing — 3 passages · webhooks</text>
+<!-- §4 node -->
 <circle cx="28" cy="120" r="6" fill="#4A5A52" stroke="#ffffff" stroke-width="2"/>
 <rect x="44" y="108" width="260" height="26" rx="8" fill="#ffffff" stroke="#e2ddd6"/>
-<text x="54" y="125" font-family="Georgia,serif" font-size="12" fill="#1a1d1a" font-weight="700">§437 Dates</text>
-<text x="54" y="125" dx="88" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#9aa0a8">section</text>
-<text x="44" y="148" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#6b7280">437 Dates — 1 passage</text>
+<text x="54" y="125" font-family="Georgia,serif" font-size="12" fill="#1a1d1a" font-weight="700">§4 Security transfers</text>
+<text x="54" y="125" dx="150" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#9aa0a8">section</text>
+<text x="44" y="148" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#6b7280">§4 Transfers — 2 passages · settlement</text>
 <!-- 4.2.1 child -->
 <line x1="28" y1="134" x2="48" y2="164" stroke="#9A8B7A" stroke-width="1.2" stroke-dasharray="3 3" opacity="0.9"/>
 <circle cx="52" cy="164" r="5" fill="#9A8B7A" stroke="#ffffff" stroke-width="2"/>
 <rect x="64" y="152" width="280" height="26" rx="8" fill="#ffffff" stroke="#e2ddd6"/>
-<text x="74" y="169" font-family="Georgia,serif" font-size="11" fill="#1a1d1a" font-weight="600">4.2.1 Subsection Detail</text>
-<text x="74" y="169" dx="170" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="#9aa0a8">under §437</text>
-<text x="64" y="190" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#6b7280">path: 437 Dates › 4.2.1 Subsection Detail — breadcrumb</text>
+<text x="74" y="169" font-family="Georgia,serif" font-size="11" fill="#1a1d1a" font-weight="600">4.2 Parallel-run plan</text>
+<text x="74" y="169" dx="115" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="#9aa0a8">under §3</text>
+<text x="64" y="190" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#6b7280">path: §3 Billing › 4.2 Parallel-run plan — breadcrumb</text>
 <!-- right side: tags + summary hint -->
 <rect x="420" y="58" width="286" height="140" rx="10" fill="#ffffff" stroke="#e2ddd6"/>
 <text x="434" y="78" font-family="ui-monospace,Menlo,monospace" font-size="10" letter-spacing="0.06em" fill="#4A5A52" font-weight="700">TAGS — auto topics</text>
 <g font-family="ui-monospace,Menlo,monospace" font-size="10">
   <rect x="434" y="86" width="58" height="18" rx="999" fill="#E2E8E3" stroke="#d4cfc6"/><text x="463" y="98" text-anchor="middle" fill="#4A5A52" font-weight="700">billing</text>
-  <rect x="498" y="86" width="48" height="18" rx="999" fill="#EDE8E0" stroke="#e2ddd6"/><text x="522" y="98" text-anchor="middle" fill="#9A8B7A">dvca</text>
-  <rect x="552" y="86" width="52" height="18" rx="999" fill="#EDE8E0" stroke="#e2ddd6"/><text x="578" y="98" text-anchor="middle" fill="#9A8B7A">scope</text>
+  <rect x="498" y="86" width="62" height="18" rx="999" fill="#EDE8E0" stroke="#e2ddd6"/><text x="529" y="98" text-anchor="middle" fill="#9A8B7A">webhooks</text>
+  <rect x="566" y="86" width="56" height="18" rx="999" fill="#EDE8E0" stroke="#e2ddd6"/><text x="594" y="98" text-anchor="middle" fill="#9A8B7A">rollout</text>
 </g>
 <text x="434" y="120" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#6b7280">similar topics merge automatically</text>
-<text x="434" y="134" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#6b7280">count: billing×3, dvca×1</text>
+<text x="434" y="134" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#6b7280">count: billing×3, rollout×2</text>
 <line x1="434" y1="144" x2="692" y2="144" stroke="#e2ddd6"/>
 <text x="434" y="160" font-family="ui-monospace,Menlo,monospace" font-size="10" letter-spacing="0.06em" fill="#4A5A52" font-weight="700">HOW A SEARCH RUNS</text>
 <text x="434" y="174" font-family="system-ui,Inter,sans-serif" font-size="11" fill="#1a1d1a">topics → summaries → passages</text>

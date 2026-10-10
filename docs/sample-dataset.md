@@ -1,6 +1,6 @@
 # Try the sample company
 
-> The demo corpus lives in `sample/` — point your source at that folder.
+> The demo corpus lives in the repo's `sample/` folder — clone the repo (or grab the folder from GitHub) and point your source at it; release zips ship the app only.
 
 A fictional payments company ("the payments team"): decisions, meetings, specs,
 and people — designed so you can try every part of the product in a minute.
@@ -54,4 +54,4 @@ merging and dispute flow.
 - Disputed: dispute the contradicting claim, and answers stop citing it.
 
 **4. People & ownership**
-- "Who owns the billing migration?" → Sarah, cited from the decisions and notes.
+- "Who owns the billing provider migration?" → Sarah, cited from the decisions and notes.

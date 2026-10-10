@@ -40,8 +40,21 @@
         <a href="#demo">Demo</a>
         <a href="#roadmap">Roadmap</a>
         <a href="#privacy">Privacy</a>
-        <a class="nav-cta" href="#download">Download</a>
       </nav>
+      <a class="nav-cta" href="#download">Download</a>
+      <!-- phones (≤760px): same section links, collapsed behind the burger — keep in sync with .nav (R18.1) -->
+      <details class="navmenu" id="navmenu">
+        <summary class="navmenu-btn"><span class="sr-only">Sections</span><span class="burger" aria-hidden="true"></span></summary>
+        <nav class="nav-mobile">
+          <a href="#how">How it works</a>
+          <a href="#guides">Guides</a>
+          <a href="#faq">FAQ</a>
+          <a href="#pricing">Pricing</a>
+          <a href="#demo">Demo</a>
+          <a href="#roadmap">Roadmap</a>
+          <a href="#privacy">Privacy</a>
+        </nav>
+      </details>
     </div>
   </header>
 
@@ -67,17 +80,17 @@
           </div>
           <div id="cta-note" class="cta-note">macOS & Windows • one download, no Docker • data stays on your machine</div>
 
-          <div class="cta-note">Ask in the browser — or from your coding agent (<a href="#demo">MCP</a>: Claude Code, Codex, Cursor). Same memory, same citations.</div>
+          <div class="cta-note">Ask in the browser — or from your coding agent (<a href="#demo">MCP</a>: Claude Code, Codex, opencode, Cursor). Same memory, same citations.</div>
         </div>
 
         <div class="shot">
           <div class="shot-bar">Ask your memory — cited answer</div>
           <div class="shot-body">
-            <div class="q">What was decided about DVCA movements and why?</div>
-            <div class="a">DVCA movements are restricted to settlement-only. Incoming transfers were excluded — reconciliation would be too complex. Cited from PRD v3 §4.2 and the planning notes.</div>
+            <div class="q">What did we decide about the billing provider migration, and why?</div>
+            <div class="a">Approved — the new provider gives us usage-based pricing, idempotent webhooks and a real sandbox, which the legacy one lacked. Two sprints, owned by Sarah, with a parallel run and a feature-flag rollback.</div>
             <div class="cites">
-              <div class="cite"><span class="bar sage"></span><div><b>PRD v3 §4.2 — DVCA</b> <small>decision · 82%</small><p>“Security Transfers MVP excludes incoming transfers — reconciliation complexity.”</p><small>d1-security-transfers-scope.md · decision</small></div></div>
-              <div class="cite"><span class="bar stone"></span><div><b>Planning notes</b> <small>note · owner: Sarah</small><p>“Sarah owns billing migration — supersedes DVCA flow.”</p><small>m2-q3-planning.md · meeting notes</small></div></div>
+              <div class="cite"><span class="bar sage"></span><div><b>Billing provider migration — approved</b> <small>decision · 87%</small><p>“Security review passed with no blocking findings after the data-retention gap was closed.”</p><small>d2-billing-provider-approval.md · decision</small></div></div>
+              <div class="cite"><span class="bar stone"></span><div><b>Q3 planning notes</b> <small>note · owner: Sarah</small><p>“Billing provider migration parallel-run starts Monday. Sarah owns it.”</p><small>m2-q3-planning.md · meeting notes</small></div></div>
             </div>
           </div>
           <div class="shot-foot">2 citations · answered on your machine</div>
@@ -114,11 +127,11 @@
         <div class="duo">
           <div class="fig">
             <img src="/hero-toc.svg" alt="Document headings become a sections tree, so answers cite the exact section" loading="lazy" />
-            <p class="cap">Headings become a sections tree — answers cite §434, not “somewhere in the PDF”.</p>
+            <p class="cap">Headings become a sections tree — answers cite §4.2, not “somewhere in the PDF”.</p>
           </div>
           <div class="fig">
             <div id="graph-mini"></div>
-            <p class="cap">Decisions link to their owners and to what they replace — answers follow those links.</p>
+            <p class="cap">Decisions link to their owners and to what blocks them — answers follow those links.</p>
           </div>
         </div>
         <!-- Sealed by design — privacy as step 0 of how it works, not its own chapter -->
@@ -156,10 +169,10 @@
       <div class="wrap">
         <h2>60-second demo</h2>
         <ol class="demo">
-          <li><b>Connect</b> the <code>sample/</code> demo folder — 10 files become about 50 linked decisions, people and specs.</li>
+          <li><b>Connect</b> the <code>sample/</code> demo folder (from the repo) — 10 files become about 40 linked decisions, people and specs.</li>
           <li>Ask: <code>What was decided about security transfers, and why?</code> → cited <code>PRD v3 §4.2</code>.</li>
           <li>Follow-up: <code>show the movements for it</code> → <code>security-transfers-spec.md</code> steps 1–6.</li>
-          <li>Ask: <code>Who owns billing migration?</code> → <code>Sarah</code>, traced through the planning notes.</li>
+          <li>Ask: <code>Who owns the billing provider migration?</code> → <code>Sarah</code>, traced through the planning notes.</li>
         </ol>
         <div class="cols two">
           <div class="col"><h3>In the browser — for humans</h3><p>Download, unzip, run — the app opens at <code>http://127.0.0.1:8000</code> → Sources → Local folder → <code>sample/</code> → Sync → Ask. Cited answers with clickable section links.</p><code>download → unzip → run</code></div>
@@ -173,7 +186,7 @@
         <p class="small">Personal use needs no Docker and no account — your data stays in a folder on your machine. Full protocol reference: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">agent docs (MCP)</a>.</p>
         <div class="fig">
           <div id="graph-mini-2"></div>
-          <p class="cap">One question, linked answers — <code>Who owns billing migration?</code> walks decision → note → owner. Irrelevant branches are pruned before answering.</p>
+          <p class="cap">One question, linked answers — <code>Who owns the billing provider migration?</code> walks owner → decision → risk. Irrelevant branches are pruned before answering.</p>
         </div>
       </div>
     </section>
@@ -183,7 +196,7 @@
       <div class="wrap">
         <h2>Guides</h2>
         <div class="cols">
-          <div class="col"><h3>Quick start — folder</h3><p>Download the app → open it → Sources → Local folder → <code>sample/</code> → Sync → Ask. Your data lives on your machine. No Docker, no account.</p><small>10 files → about 50 entities · <a href="#guide-quickstart">sample guide</a></small></div>
+          <div class="col"><h3>Quick start — folder</h3><p>Download the app → open it → grab the <code>sample/</code> folder from the repo → Sources → Local folder → Sync → Ask. Your data lives on your machine. No Docker, no account.</p><small>10 files → about 40 entities · <a href="#guide-quickstart">sample guide</a></small></div>
           <div class="col"><h3>Projects — scoped search</h3><p>Group sources into projects — Client X, Research, Team. Pick one to scope every question to just those sources, or search everything.</p><small>Projects in the header · public-only toggle for sharing</small></div>
           <div class="col"><h3>PII gate</h3><p>Label each source Public, Internal, Sensitive, or PII. Sensitive ones are never sent to cloud AI you haven't approved — matched locally only, every refusal logged. Review flagged items in the PII tab.</p><small>per-source labels · PII review tab</small></div>
           <div class="col"><h3>Any JSON API</h3><p>Tickets, issues, CMS, your own backend — point at the API, map its fields, preview 5 records, sync. Passwords and tokens stay in your OS keychain.</p><small><a href="#guide-rest">REST API guide</a></small></div>
@@ -230,8 +243,8 @@
         <h2>FAQ</h2>
         <div class="faq">
           <div class="qa"><h4>Is my data private?</h4><p>Yes. The app only listens on your own machine, keeps everything in a database on your disk, and stores passwords in your OS keychain. Sources you mark Sensitive or PII are never sent to cloud AI unless you explicitly approve that provider.</p></div>
-          <div class="qa"><h4>How does it read documents?</h4><p>It splits documents at their headings (§434, 4.2.1, Article 12…) and packs the text into short passages. Each section gets a summary and topic tags, so answers cite the exact section — not “somewhere in the PDF”.</p></div>
-          <div class="qa"><h4>Does it stay fast as my library grows?</h4><p>Yes. It first narrows thousands of documents down to the few relevant sections using tags and summaries, then searches inside just those — instead of scanning everything. Measured at well under 50ms per search on a 5,000-document library.</p></div>
+          <div class="qa"><h4>How does it read documents?</h4><p>It splits documents at their headings (§4.2, 3.1.1, Article 12…) and packs the text into short passages. Each section gets a summary and topic tags, so answers cite the exact section — not “somewhere in the PDF”.</p></div>
+          <div class="qa"><h4>Does it stay fast as my library grows?</h4><p>Yes. It first narrows thousands of documents down to the few relevant sections using tags and summaries, then searches inside just those — instead of scanning everything. Measured at ~7ms per search on a 30k-chunk benchmark — projected to stay well under 50ms at 5,000 documents.</p></div>
           <div class="qa"><h4>Is it free?</h4><p>Personal local app — free. Team self-hosted (one Docker container, your VPC) is a one-time platform license, perpetual including a year of support and updates. Hosted is coming soon — join the waitlist.</p></div>
           <div class="qa"><h4>Do I need Ollama?</h4><p>No. Without it you still get full-text search over everything. Add Ollama (one install, two free models) for AI answers with citations.</p></div>
           <div class="qa"><h4>Citations you can click?</h4><p>Every answer lists its sources with section links like <code>Art 12 › 12.3</code> — click to jump to the passage. Coding agents get the same cited format.</p></div>

@@ -161,7 +161,7 @@ async function initGuides(): Promise<void> {
 
 // Guides / FAQ hash routing — keep paper mono/serif, no new hex (C3)
 function initHashNav() {
-  const navLinks = document.querySelectorAll<HTMLAnchorElement>(".nav a[href^='#']");
+  const navLinks = document.querySelectorAll<HTMLAnchorElement>(".nav a[href^='#'], .nav-mobile a[href^='#']");
   function setActive() {
     const hash = location.hash || "#how";
     navLinks.forEach(a => {
@@ -189,11 +189,11 @@ document.getElementById("capture-form-2")?.addEventListener("submit", (e) => {
 const TERM_LINES: { cls: string; text: string; type?: boolean; pause?: number }[] = [
   { cls: "t-dim", text: "$ ANCHOR_BACKEND_URL=http://127.0.0.1:8000 anchorcore-mcp", type: true },
   { cls: "t-dim", text: "# stdio sidecar — spawned by your harness, no browser", pause: 350 },
-  { cls: "t-out", text: '→ tools/call {"name": "ask", "arguments": {"question": "Who owns billing migration?"}}', type: true },
+  { cls: "t-out", text: '→ tools/call {"name": "ask", "arguments": {"question": "Who owns the billing provider migration?"}}', type: true },
   { cls: "t-dim", text: "··· searching memory: meaning + keywords + links", pause: 650 },
-  { cls: "t-in", text: "← Sarah owns billing migration — supersedes DVCA flow.", pause: 300 },
-  { cls: "t-in", text: "← [decision] m2-q3-planning · owner: Sarah · 82%" },
-  { cls: "t-in", text: "← [note] PRD v3 §4.2 · 71%" },
+  { cls: "t-in", text: "← Sarah owns the billing provider migration — parallel run starts Monday.", pause: 300 },
+  { cls: "t-in", text: "← [decision] d2-billing-provider-approval · owner: Sarah · 87%" },
+  { cls: "t-in", text: "← [note] m2-q3-planning · 74%" },
   { cls: "t-dim", text: "← done: 1 answer · 2 citations · logged" },
 ];
 
@@ -304,6 +304,17 @@ function initGuidebook(): void {
   });
 }
 
+// Mobile nav (R18.1): <details> works without JS; close it on link click, outside click, Escape, desktop resize.
+function initNavMenu(): void {
+  const menu = document.getElementById("navmenu") as HTMLDetailsElement | null;
+  if (!menu) return;
+  const close = (): void => { menu.open = false; };
+  menu.addEventListener("click", (e) => { if ((e.target as HTMLElement).closest("a")) close(); });
+  document.addEventListener("click", (e) => { if (menu.open && !menu.contains(e.target as Node)) close(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+  window.matchMedia("(min-width: 761px)").addEventListener("change", close);
+}
+
 // Airy scroll reveal — one observer, no deps
 function initReveal(): void {
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
@@ -330,6 +341,7 @@ function initReveal(): void {
 initTrack();
 initDownloadLinks();
 initHashNav();
+initNavMenu();
 void initGuides();
 initGuidebook();
 initReveal();
