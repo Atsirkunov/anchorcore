@@ -123,6 +123,9 @@ async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool) ->
     audit_mcp("ask", &format!("q={} public_only={} hits={}", question.chars().take(80).collect::<String>(), public_only, result.get("citations").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0)));
     let answer = result.get("answer").and_then(|v| v.as_str()).unwrap_or("").chars().take(4000).collect::<String>();
     let refusal = result.get("refusal").and_then(|v| v.as_str()).map(|s| s.to_string());
+    // B58: pass degradation flags through ("unknown" against an older backend).
+    let mode = result.get("mode").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+    let retrieval = result.get("retrieval").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
     let citations: Vec<Value> = result.get("citations").and_then(|v| v.as_array()).cloned().unwrap_or_default().into_iter().map(|c| json!({
         "entity_id": c.get("entity_id"),
         "kind": c.get("kind").and_then(|v| v.as_str()).unwrap_or("document"),
@@ -131,7 +134,7 @@ async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool) ->
         "score": c.get("score"),
         "snippet": c.get("snippet").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>()
     })).collect();
-    Ok(json!({"answer": answer, "citations": citations, "refusal": refusal}))
+    Ok(json!({"answer": answer, "citations": citations, "refusal": refusal, "mode": mode, "retrieval": retrieval}))
 }
 
 async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only: bool) -> Result<Value, String> {
@@ -166,7 +169,8 @@ async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only
     })).collect();
     let refusal = result.get("refusal").and_then(|v| v.as_str()).map(|s| s.to_string());
     let blocked = result.get("blocked").and_then(|v| v.as_u64()).unwrap_or(0);
-    Ok(json!({"query": query, "hits": hits, "blocked": blocked, "refusal": refusal}))
+    let retrieval = result.get("retrieval").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+    Ok(json!({"query": query, "hits": hits, "blocked": blocked, "refusal": refusal, "retrieval": retrieval}))
 }
 
 async fn tool_get_entity(entity_id: i64) -> Result<Value, String> {

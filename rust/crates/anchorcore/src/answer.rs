@@ -31,6 +31,12 @@ pub struct AskResponse {
     /// content was returned, Some("gated_provider") when everything relevant
     /// was withheld from an untrusted answer provider.
     pub refusal: Option<String>,
+    /// B58: how the answer text was produced — "composed" (an answer model
+    /// wrote it), "context_only" (matching context, no model ran), "none".
+    pub mode: String,
+    /// B58: how retrieval ranked — "hybrid" (vector + keyword on a real
+    /// query embedding) or "keyword_only" (embedder unavailable).
+    pub retrieval: String,
 }
 
 #[derive(Serialize)]
@@ -89,6 +95,8 @@ pub struct SearchResponse {
     /// A3 cursor for the next page (offset into the gated hit list), None
     /// when this page exhausts what the caller may see.
     pub next_cursor: Option<usize>,
+    /// B58: how retrieval ranked — "hybrid" or "keyword_only" (see AskResponse).
+    pub retrieval: String,
 }
 
 async fn rewrite_question(settings: &SettingsService, req: &AskRequest) -> String {
@@ -207,8 +215,10 @@ pub async fn ask(
     data_dir: &str,
 ) -> AskResponse {
     let question = rewrite_question(settings, &req).await;
-    // R8.1: embed query for vector search (hybrid) — deterministic fallback when remote unavailable
+    // R8.1: embed query for vector search (hybrid) — B58 strict: None when
+    // remote unavailable, so retrieval degrades to honest keyword-only.
     let query_embedding = embedder.embed_query(&question).await;
+    let retrieval = if query_embedding.is_some() { "hybrid" } else { "keyword_only" };
     // Do DB retrieval in blocking thread to avoid holding !Send Connection across await
     let data_dir_string = data_dir.to_string();
     let data_dir_for_hits = data_dir_string.clone();
@@ -231,6 +241,8 @@ pub async fn ask(
             answer: "No relevant knowledge found yet. Ingest sources first.".to_string(),
             citations: vec![],
             refusal: None,
+            mode: "none".to_string(),
+            retrieval: retrieval.to_string(),
         };
     }
 
@@ -251,6 +263,8 @@ pub async fn ask(
                     answer: "Relevant knowledge was found but it is sensitive/PII and the answer provider is not approved for it. Enable a local provider, list it in ANCHOR_TRUSTED_PROVIDERS, or set ANCHOR_CLOUD_TRUST=1 to answer.".to_string(),
                     citations: vec![],
                     refusal: Some("gated_provider".to_string()),
+                    mode: "none".to_string(),
+                    retrieval: retrieval.to_string(),
                 };
             }
         }
@@ -260,9 +274,10 @@ pub async fn ask(
     // Build context and generate (no DB borrow across await) — R10.6 UTF-8 safe (was byte slice)
     let sections: Vec<String> = hits.iter().enumerate().map(|(i, h)| format!("[S{}] {}", i+1, h.content.chars().take(2000).collect::<String>())).collect();
     let context = sections.join("\n\n");
-    let answer = generate_answer(settings, &question, &context, &history_for_gen).await;
+    let (answer, composed) = generate_answer(settings, &question, &context, &history_for_gen).await;
     let citations = build_citations(&hits, &data_dir_string);
-    AskResponse { answer, citations, refusal: None }
+    let mode = if composed { "composed" } else { "context_only" };
+    AskResponse { answer, citations, refusal: None, mode: mode.to_string(), retrieval: retrieval.to_string() }
 }
 
 fn settings_snapshot(settings: &SettingsService) -> std::collections::HashMap<String, String> {
@@ -478,6 +493,8 @@ pub async fn search(
 ) -> SearchResponse {
     let query_for_embed = req.query.clone();
     let query_embedding = embedder.embed_query(&query_for_embed).await;
+    // B58 strict: None when remote unavailable → honest keyword-only.
+    let retrieval = if query_embedding.is_some() { "hybrid" } else { "keyword_only" };
     let data_dir_string = data_dir.to_string();
     let data_dir_for_block = data_dir_string.clone();
     let query = req.query.clone();
@@ -550,7 +567,7 @@ pub async fn search(
             score: rounded_score(h.score),
         }
     }).collect();
-    SearchResponse { hits, blocked: blocked_count, refusal, next_cursor }
+    SearchResponse { hits, blocked: blocked_count, refusal, next_cursor, retrieval: retrieval.to_string() }
 }
 
 fn search_sync_inner(conn: &Connection, query: &str, k: usize, project_id: Option<i64>, public_only: bool, query_embedding: Option<Vec<f32>>) -> Vec<crate::retrieval::Hit> {
@@ -635,12 +652,15 @@ async fn rewrite_followup(settings: &SettingsService, question: &str, history: &
     heuristic_rewrite(question, history)
 }
 
-async fn generate_answer(settings: &SettingsService, question: &str, context: &str, history: &[AskTurn]) -> String {
+/// B58: returns (answer text, composed) — `composed` is true only when an
+/// answer model actually wrote the text. Every other path returns matching
+/// context with `false`, so callers can report `mode` truthfully.
+async fn generate_answer(settings: &SettingsService, question: &str, context: &str, history: &[AskTurn]) -> (String, bool) {
     let base = settings.get("answer_base_url", None).unwrap_or_else(|| "https://api.openai.com/v1".to_string());
     let key = settings.get("answer_api_key", None).unwrap_or_default();
     let is_local = base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1");
     if !is_local && key.is_empty() {
-        return format!("Answer for: {}\n\n[No model key configured. Matching context:]\n\n{}", question, context.chars().take(1500).collect::<String>());
+        return (format!("Answer for: {}\n\n[No model key configured. Matching context:]\n\n{}", question, context.chars().take(1500).collect::<String>()), false);
     }
     // For R2.2, we do not yet call LLM; return context stub (will be wired in R3.4)
     // Try to call LLM if configured (best-effort, like Python fallback)
@@ -648,7 +668,7 @@ async fn generate_answer(settings: &SettingsService, question: &str, context: &s
     let url = format!("{}/chat/completions", base.trim_end_matches('/'));
     let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build() {
         Ok(c) => c,
-        Err(_) => return format!("Answer for: {}\n\n{}", question, context.chars().take(1500).collect::<String>()),
+        Err(_) => return (format!("Answer for: {}\n\n{}", question, context.chars().take(1500).collect::<String>()), false),
     };
     let mut headers = reqwest::header::HeaderMap::new();
     if !key.is_empty() {
@@ -674,12 +694,12 @@ async fn generate_answer(settings: &SettingsService, question: &str, context: &s
         Ok(resp) if resp.status().is_success() => {
             if let Ok(j) = resp.json::<serde_json::Value>().await {
                 if let Some(content) = j.pointer("/choices/0/message/content").and_then(|v| v.as_str()) {
-                    return content.to_string();
+                    return (content.to_string(), true);
                 }
             }
-            format!("Answer for: {}\n\n{}", question, context.chars().take(1500).collect::<String>())
+            (format!("Answer for: {}\n\n{}", question, context.chars().take(1500).collect::<String>()), false)
         }
-        _ => format!("Answer for: {}\n\n[Answer model unreachable; showing context]\n\n{}", question, context.chars().take(1500).collect::<String>()),
+        _ => (format!("Answer for: {}\n\n[Answer model unreachable; showing context]\n\n{}", question, context.chars().take(1500).collect::<String>()), false),
     }
 }
 
@@ -721,8 +741,8 @@ mod tests {
         let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
         let settings = Arc::new(SettingsService::new(store));
         settings.set_data_dir(dir.path());
-        // Hermetic embeddings: closed port refuses instantly, so tests fall
-        // back to deterministic_embed instead of stalling on DNS/connect.
+        // Hermetic embeddings: closed port refuses instantly, so tests run
+        // keyword-only (B58 strict embed_query) instead of stalling on DNS/connect.
         settings.set("embed_base_url", "http://127.0.0.1:9", &conn).unwrap();
         (dir, conn, settings)
     }
@@ -827,5 +847,65 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), 2, "two pages must cover two distinct chunks");
+    }
+
+    #[tokio::test]
+    async fn ask_reports_context_only_without_model() {
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        // Untrusted base + no key: ordinary hit survives the gate, but no
+        // model can compose — the response must say so (B58).
+        settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
+        let req = AskRequest { question: "sunshine".to_string(), history: None, project_id: None, public_only: None };
+        let res = ask(&settings, &embedder, req, &data_dir).await;
+        assert!(!res.citations.is_empty(), "keyword hit on ordinary source must survive");
+        assert_eq!(res.mode, "context_only");
+        assert_eq!(res.retrieval, "keyword_only");
+        assert!(res.answer.contains("No model key"), "answer: {}", res.answer.chars().take(120).collect::<String>());
+        assert!(res.refusal.is_none());
+    }
+
+    #[tokio::test]
+    async fn search_reports_keyword_only_without_embedder() {
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        let req = SearchRequest { query: "sunshine".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None };
+        let res = search(&settings, &embedder, req, &data_dir).await;
+        assert!(!res.hits.is_empty(), "keyword search must find the seeded chunk");
+        assert_eq!(res.retrieval, "keyword_only");
+    }
+
+    #[tokio::test]
+    async fn generate_answer_falls_back_without_key() {
+        let (_dir, _conn, settings) = seed_gate_db();
+        let (text, composed) = generate_answer(&settings, "q", "ctx", &[]).await;
+        assert!(!composed);
+        assert!(text.contains("No model key"), "text: {}", text.chars().take(120).collect::<String>());
+    }
+
+    #[tokio::test]
+    async fn generate_answer_composed_true_with_mock_server() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (_dir, conn, settings) = seed_gate_db();
+        // Minimal hermetic OpenAI-compatible server: one canned completion.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let _ = sock.read(&mut buf).await;
+                let body = r#"{"choices":[{"message":{"content":"mocked answer"}}]}"#;
+                let head = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len());
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body.as_bytes()).await;
+            }
+        });
+        settings.set("answer_base_url", &format!("http://127.0.0.1:{}", port), &conn).unwrap();
+        let (text, composed) = generate_answer(&settings, "q", "ctx", &[]).await;
+        assert!(composed, "mock model must yield composed=true, got: {}", text.chars().take(120).collect::<String>());
+        assert_eq!(text, "mocked answer");
     }
 }

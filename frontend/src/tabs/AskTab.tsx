@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, RequestAbortedError } from "../api";
 import { theme } from "../theme";
+import { modeBannerNotes } from "../answerMode";
 import type { AskTurn } from "../types";
 
 const SAMPLE_QUESTIONS = [
@@ -34,7 +35,6 @@ function TagChips({ tags }: { tags?: string[] }) {
     </span>
   );
 }
-
 export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSources?: () => void }) {
   const [turns, setTurns] = useState<AskTurn[]>([]);
   const [question, setQuestion] = useState("");
@@ -71,7 +71,7 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
       setTurns((prev) => [
         ...prev,
         { role: "user", content: question },
-        { role: "assistant", content: response.answer, citations: response.citations },
+        { role: "assistant", content: response.answer, citations: response.citations, mode: response.mode, retrieval: response.retrieval },
       ]);
       setQuestion("");
     } catch (e) {
@@ -180,6 +180,11 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
                 style={{ ...styles.bubble, background: theme.bgCard, animation: `popIn 0.45s ease both`, animationDelay: stagger }}
               >
                 <div style={{ fontSize: 11, color: theme.purple, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>AnchorCore</div>
+                {modeBannerNotes(t.mode, t.retrieval).map((note) => (
+                  <div key={note} style={styles.degradedNote}>
+                    {note}
+                  </div>
+                ))}
                 <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.7 }}>{t.content}</div>
                 {t.citations && t.citations.length > 0 && (
                   <div style={{ marginTop: 14 }}>
@@ -252,6 +257,15 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 14,
     padding: "1.25rem 1.4rem",
     fontSize: 14,
+  },
+  degradedNote: {
+    background: theme.amberBg,
+    color: theme.amber,
+    border: `1px solid ${theme.amber}`,
+    borderRadius: 8,
+    padding: "0.45rem 0.7rem",
+    fontSize: 12,
+    marginBottom: 10,
   },
   cite: {
     marginTop: 8,
