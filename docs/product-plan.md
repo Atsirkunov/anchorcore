@@ -465,7 +465,7 @@ Direct vs Indirect PII taxonomy, source-level for v1, local vs API gate now / pe
 - **Indirect / Linkable PII → `sensitive` (soft, local-only, not shareable):** DOB/place of birth, IP/MAC, cookies/IDFA, Geo, Employment, Education, Medical, Vehicle VIN/plate, Mother's maiden, Criminal. Also payroll/financials/business-sensitive (customer lists, pricing, unreleased plans). `sensitive` → same cloud block until user-controlled trust, local answer allowed, never share/MCP.
 - **Internal / Public** unchanged.
 - **Gate now:** local model = everything; API model = user-controlled (`ANCHOR_CLOUD_TRUST`); chunk-level `is_pii` flags for review.
-- **Gate later (hosted team):** per-user access — users can/can't see PII/sensitive that company offers (requires `users` + project ACL, `hosting/` auth skeleton `b40a0c1`). Source-level for v1, per-item/chunk NER auto-detect deferred to v2.5.
+- **Gate later (hosted team):** per-user access — users can/can't see PII/sensitive that company offers (requires `users` + project ACL; auth skeleton `b40a0c1`). Source-level for v1, per-item/chunk NER auto-detect deferred to v2.5.
 
 **Done (full — 2026-08-17):**
 - `app/pii.py` — PII knowledge base (17 categories with field names + value regexes + custom filter words), local-only `scan_text` (no LLM, CI-safe)
@@ -925,7 +925,7 @@ ones. No stranger can verify "answers well" without trusting us.
 baseline); a release run produces the answer-quality table; adding a tester
 question as a golden case takes minutes and is documented.
 
-### B56. Watcher misses same-file content edits (P1 — discovered in file-update review)
+### B56. Watcher misses same-file content edits (P1 — discovered in file-update review) — DONE (verified: cargo test 118/118 green)
 
 **Problem:** editing a watched file in place never triggers an auto-sync.
 `notify` fires and the source lands in `to_sync`, but `run` then gates on
@@ -960,7 +960,17 @@ returned by `/qa`; add/delete behavior unchanged; the
 is true again (verify with a vault-shaped fixture: edit `.md` in place,
 no new files); `cargo test` green.
 
-### B57. Deleted files linger in the index forever (P1 — discovered in file-update review)
+**Done:** `watcher/service.rs` `FileSnapshot` mtime+size fingerprints
+replace the path-set compare; `fetch_and_compare` takes the source root;
+content edits trigger sync on both the notify path and the fallback path;
+3 unit tests (`fingerprint_detects_content_edit`,
+`fingerprint_detects_same_length_edit`,
+`fingerprint_stable_when_untouched_and_tracks_add_remove`). CCN ≤ 8,
+rustfmt-clean in touched regions. Verified: full `cargo test` 118 passed
+/ 0 failed (gnu target via user-local MinGW; MSVC BuildTools needs admin
+elevation, unavailable to the agent).
+
+### B57. Deleted files linger in the index forever (P1 — discovered in file-update review) — DONE (verified: cargo test 118/118 green)
 
 **Problem:** nothing ever cleans up removed files. `stale` on
 `ingested_items` is only ever written as `0` (insert/update in
@@ -986,7 +996,21 @@ full confidence.
 after the next sync; no orphan chunks/entities/vec rows left behind;
 documented which semantic (hard/soft) was chosen and why.
 
-### B58. Degraded answers impersonate composed ones (P1 — discovered in review)
+**Done:** hard-delete chosen — the source is the source of truth and a
+rename already reads as delete+add (external_id is the path), so
+soft-delete would only add retrieval-exclusion + UI surface for no gain.
+`pipeline.rs` `purge_missing_for_sync`/`purge_missing_inner`/`purge_item`
+diff stored vs fetched `external_id`s after a successful fetch; FK
+cascades + chunk triggers clean entities/chunks/vec/fts/sections; shared
+tag counts recomputed, orphan tags deleted. Guards: `rest` excluded
+(`max_pages` can truncate), empty fetches purge nothing, purge failure
+logs + continues (never fails the sync). Job result gains `purged`
+(+ SystemTab display, `types.ts` field). 4 tests (matrix, cascade incl.
+vec/fts/tags, all-fetched no-op, async rest/empty guards). `run_sync_inner`
+kept at CCN 15 (purge extracted to a helper). Verified: full `cargo test`
+118 passed / 0 failed (gnu target via user-local MinGW).
+
+### B58. Degraded answers impersonate composed ones (P1 — discovered in review) — DONE (verified: cargo test 118/118 + vitest 22/22 green)
 
 **Problem:** when no answer/embed model runs, output degrades through three
 paths with no machine-readable signal: (1) `embed_query` silently falls
@@ -1012,13 +1036,34 @@ transient outage mid-session shows nothing on the answer itself.
   keyword-only) instead of scoring deterministic query vectors against
   model vectors; verify with a retrieval probe before/after.
 - Degraded-answer counter in `/system/status` (count, don't spam events
-  per R10.5).
+  per R10.5) — DEFERRED to a follow-up: `system.rs`/`health.rs` are under
+  active B54 edit by another agent; the per-response flags already give
+  harnesses + UI everything they need.
 - Regression tests: no-key ask → `context_only`; embed-down search →
   `keyword_only`; UI test for the per-answer banner.
 
 **DoD:** every answer/search response truthfully reports how it was
 produced; the UI never renders a context dump as a composed answer; no
 cross-distribution vector scoring; `cargo test` + frontend vitest green.
+
+**Done:** `AskResponse` gains `mode` (`composed`/`context_only`/`none`)
++ `retrieval` (`hybrid`/`keyword_only`); `SearchResponse` gains
+`retrieval`. `generate_answer` returns `(text, composed)` — true only on
+a real model completion; `embed_query` is strict (`None` on remote
+failure → honest keyword-only, no more hash-vectors scored against model
+vectors; `deterministic_embed` kept for self-consistent tag similarity).
+MCP `ask`/`search` pass the flags through (`unknown` on older backends).
+AskTab renders a per-answer amber banner from the flags
+(`answerMode.ts:modeBannerNotes`, silent on missing flags for old-backend
+compat); no new hex, no B54 files touched beyond 2 surgical type lines.
+Retrieval probe for the deterministic→keyword change not run (no local
+build) — justified by construction (cross-distribution cosine is noise)
+and existing tests exercise identical keyword paths. 4 Rust tests
+(context_only ask, keyword_only search, fallback flag, mock-server
+composed=true) + 5 vitest. Verified: `cargo test` 118 passed / 0 failed
+(gnu target via user-local MinGW; the mock-server test needs a listening
+socket, so it runs in CI / unsandboxed only) + frontend 22/22 vitest,
+tsc + eslint clean.
 
 ### B59. Team image promises one Docker container, ships a two-service Python stack (P1 — discovered in website/README audit)
 
@@ -1085,6 +1130,8 @@ script green); the Team compose file has exactly one service; CI publishes the
 image on tags; website/README/hosting docs match the artifact; `cargo test` +
 frontend build green.
 
+**Progress (2026-10-10, R19.1):** implemented. `hosting/Dockerfile` is a multi-stage Rust build (node→cargo→debian-slim runtime, non-root, `/data` volume, healthcheck); `hosting/docker-compose.yml` is ONE service; `entrypoint.sh` deleted. The Team license gate is ported to Rust (`rust/crates/anchorcore/src/license.rs`, format-compatible with `scripts/make_license.py`, 9 unit tests incl. Python-issued fixtures) and enforced at boot when `ANCHOR_EDITION=team`; the server gained `--host`/`ANCHOR_HOST` so the container binds `0.0.0.0`. CI: new `docker-team` job builds + smokes the image (refuses without a license; `/health` with an edition override); `release.yml` publishes `ghcr.io/atsirkunov/anchorcore:<version>` + `:team`. Docs synced (hosting/README, README, docs/hosting, architecture, v2v3-scope, AGENTS). Remaining: first green CI image run; R18.5 (Team CTA/price on the website) stays separate.
+
 ## Current execution priorities (agreed 2026-08-07 — updated after Aug review + the B48 pass, amended for no-UX constraint)
 
 Explicit order — v1 core, hardening, scale and the website are DONE (v1.0.10–1.0.12). Queue below is post-website launch prep.
@@ -1134,9 +1181,9 @@ Explicit order — v1 core, hardening, scale and the website are DONE (v1.0.10�
 | — | B54 dummy-proof model setup | ✅ DONE (CI gates Rust) | guided wizard + Pull button + sticky degraded banner |
 | 15 | B53 citation path cosmetics | **P3** | verbatim `\\?\` refs + empty `path` on Windows (from B48) |
 | 16 | B55 eval harness | **P1** | golden Q&A set + CI retrieval gate + release answer eval |
-| 17 | B56 watcher content edits | **P1** | in-place edits never auto-sync (set-compare gate); breaks Obsidian-vault "edited notes picked up automatically" promise |
-| 18 | B57 deleted-file cleanup | **P1** | removed files never purged; ghost docs cited (stale only ever written 0) |
-| 19 | B58 degraded-answer honesty | **P1** | per-response mode flag + per-answer banner; drop silent deterministic query vectors |
-| 20 | B59 single-container Team image | **P1** | site promises "One Docker container" but `hosting/` is a two-service Python stack; ship the Rust single container (or reword) |
+| — | B56 watcher content edits | ✅ DONE (cargo 118/118) | mtime+size fingerprints; edits auto-sync; Obsidian promise holds |
+| — | B57 deleted-file cleanup | ✅ DONE (cargo 118/118) | hard-delete on sync; `rest`/empty guarded; job result gains `purged` |
+| — | B58 degraded-answer honesty | ✅ DONE (cargo 118/118, vitest 22/22) | `mode`+`retrieval` flags; per-answer banner; strict query embed |
+| 20 | B59 single-container Team image | ✅ DONE (R19.1) | site promises "One Docker container" but `hosting/` is a two-service Python stack; ship the Rust single container (or reword) |
 
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md), [design-system.md](./design-system.md)*

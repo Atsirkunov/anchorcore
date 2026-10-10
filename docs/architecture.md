@@ -1,9 +1,9 @@
 # AnchorCore — Architecture Overview
 
-> Stack: **Rust (Axum) · React (Vite) · SQLite locally (sqlite-vec vec0 +
-> FTS5) / Postgres for hosted (`hosting/`, Python, `pgvector/pg16`) · Ollama
-> or BYO cloud LLM APIs** — env-driven. **Rust is the shipped backend;
-> Python `backend/` is archived on tag `archive/python-final` (frozen copy fetched by `hosting/` image)** (decision R10.7).
+> Stack: **Rust (Axum) · React (Vite) · SQLite (vec0 + FTS5) · Ollama
+> or BYO cloud LLM APIs** — env-driven. **Rust is the shipped backend everywhere:
+> the local app and the one-container Team image (`hosting/`, R19.1). Python
+> `backend/` is archived on tag `archive/python-final` (conformance suite).**
 
 ---
 
@@ -11,9 +11,9 @@
 
 One local process = the entire product. No Docker, no required sidecar services, no
 setup. **Local:** Rust binary `anchorcore` (`frontend/dist` embedded,
-SQLite `vec0` + FTS5). **Hosted:** `hosting/` Docker + Postgres stays a
-Python FastAPI image, env-driven via `ANCHOR_DATABASE_URL` — the SQLite
-FTS5/vec0 triggers skip on Postgres (falls back to scan). See
+SQLite + FTS5). **Team self-hosted:** `hosting/` runs this same binary in ONE
+container (`/data` volume, UI embedded, license-gated — R19.1); a future
+Hosted cloud tier would swap SQLite → Postgres (B49). See
 `hosting/README.md` + `docs/v2v3-scope.md`.
 
 ## 2. System Diagram
@@ -372,10 +372,10 @@ erDiagram
 | Container | Responsibility | Tech |
 |---|---|---|
 | Web UI | Connect sources, project scoping, review queue, PII review, Q&A chat, model settings | React SPA (Vite, TS, 7 tabs) |
-| API | All endpoints, orchestration, config | **Rust Axum (shipped)** — Python `backend/` archived on tag, frozen copy in `hosting` image |
-| Entity Store | Entities, provenance, window context, sync state | SQLite local (Rust `rusqlite`) / Postgres hosted (Python legacy) |
-| Vector Store | Chunk embeddings + similarity search | sqlite-vec vec0, same file (Rust static); pgvector image for hosted (Python-scan fallback on Postgres) |
-| Keyword Store | FTS5 bm25 for hybrid retrieval | SQLite FTS5 (trigger-synced; skipped on Postgres) |
+| API | All endpoints, orchestration, config | **Rust Axum (shipped)** — same binary in the local app and the Team container; Python `backend/` archived (conformance) |
+| Entity Store | Entities, provenance, window context, sync state | SQLite (Rust `rusqlite`) — local app and Team container |
+| Vector Store | Chunk embeddings + similarity search | sqlite-vec vec0 when the module is present, same file; in-code cosine scan fallback (Rust) |
+| Keyword Store | FTS5 bm25 for hybrid retrieval | SQLite FTS5 (trigger-synced, same file) |
 | Classifier | Doc-type detection + entity extraction | Ollama or cloud OpenAI-compatible + rule fallback (Rust `classifier.rs`) |
 | Embedder | Chunk embeddings | Ollama or cloud OpenAI-compatible (Rust `embedder.rs`) |
 | Answer Engine | Planner → Executor → RRF fusion → graph walk → cited answer | BYO cloud model or Ollama (Rust `answer.rs`/`retrieval.rs`) |
@@ -387,7 +387,7 @@ erDiagram
 ## 7. Security
 
 - Credentials: **OS Keychain** (`keyring`), encrypted-file fallback; never in DB/config/logs.
-- Local server binds 127.0.0.1 (hosted binds `0.0.0.0` behind a CORS allowlist).
+- Local server binds 127.0.0.1 by default; the Team container sets `--host 0.0.0.0` (Host/Origin allowlist; set `ANCHOR_AUTH_SECRET` for logins).
 - Secret values masked in logs, error responses, and API payloads (`***set***`).
 - Tests never touch the real keychain (`ANCHOR_SECRETS_NO_KEYRING`).
 - **Data labels:** `sources.label` (`public|internal|sensitive|pii`, default
@@ -403,13 +403,13 @@ erDiagram
 
 | Interface | v1 (shipped) | v2+ swap |
 |---|---|---|
-| `VectorStore` | sqlite-vec | Qdrant / pgvector (hosted) |
+| `VectorStore` | sqlite-vec | Qdrant / pgvector (hosted cloud, B49) |
 | `ModelClient` | Ollama + BYO OpenAI-compatible | Any provider |
 | `SecretStore` | Keychain | Cloud secret manager |
 | `Connector` | Folder, Drive, Jira, Linear, REST | Slack, Notion, Confluence |
 | `AgentAdapter` | MCP sidecar (stdio, read-only) — see [mcp.md](./mcp.md) | MCP HTTP transport / registry / write-back |
 | `SettingsService` | DB-backed overrides + keychain secrets | Cloud config service |
-| `DB` | SQLite local · Postgres hosted (Python) | Postgres for Rust if hosted is ported |
+| `DB` | SQLite — local app + Team container | Postgres for the hosted cloud tier (B49) |
 
 ## 9. Evolution Path
 

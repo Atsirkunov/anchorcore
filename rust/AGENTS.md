@@ -1,6 +1,6 @@
 # AnchorCore Rust — agent guide (shipped `v1.0.13`)
 
-This mirrors `/AGENTS.md` but for the `rust/` workspace. **Rust is now shipped** (`v1.0.13`, `cargo test` + `cargo check` green + honest conformance vs Rust via CI `rust-conformance`). `backend/` is legacy conformance only; new work is in `rust/` unless it's `hosting/` Postgres. Read this + `rust/BACKLOG.md` + `docs/rust-port.md` + `docs/handover-2026-08-21-retire.md:1`.
+This mirrors `/AGENTS.md` but for the `rust/` workspace. **Rust is now shipped** (`v1.0.13`, `cargo test` + `cargo check` green + honest conformance vs Rust via CI `rust-conformance`). `backend/` is legacy conformance only; new work is in `rust/` — `hosting/` is this same binary in one container (R19.1, license gate `license.rs`). Read this + `rust/BACKLOG.md` + `docs/rust-port.md` + `docs/handover-2026-08-21-retire.md:1`.
 
 ## Contract-first (still, but Rust is source)
 
