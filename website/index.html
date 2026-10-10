@@ -16,7 +16,8 @@
     {"@type":"Question","name":"Is my data private?","acceptedAnswer":{"@type":"Answer","text":"Yes. AnchorCore runs on your own machine, stores data locally, and keeps secrets in the OS keychain. Sensitive and PII sources are never sent to cloud AI you have not approved."}},
     {"@type":"Question","name":"How is this different from NotebookLM or ChatGPT file search?","acceptedAnswer":{"@type":"Answer","text":"Those are cloud-only uploads. AnchorCore is local-first and self-hostable, connects to folders, Drive, Jira and Linear directly, and gates sensitive sources per your model policy."}},
     {"@type":"Question","name":"Do I need Ollama?","acceptedAnswer":{"@type":"Answer","text":"No. Full-text search works without it. Add Ollama for AI answers with citations."}},
-    {"@type":"Question","name":"Is it free?","acceptedAnswer":{"@type":"Answer","text":"Yes, the personal local app is free. Team self-hosted is a one-time platform license, perpetual including a year of support and updates. Hosted is coming soon."}}
+    {"@type":"Question","name":"Is it free?","acceptedAnswer":{"@type":"Answer","text":"Yes, the personal local app is free. Team self-hosted is a one-time platform license, perpetual including a year of support and updates. Hosted is coming soon."}},
+    {"@type":"Question","name":"Can I check the code myself?","acceptedAnswer":{"@type":"Answer","text":"Yes. AnchorCore is source-available: the repository is public, so you can read what the app does (no telemetry; it only contacts the endpoints you configure) and build it yourself. Personal use is free; team and commercial use require a paid license."}}
   ]}
   </script>
   <meta property="og:type" content="website" />
@@ -150,6 +151,7 @@
               <span class="seal-chip">Every answer cited</span>
               <span class="seal-chip">On your machine</span>
             </div>
+            <p class="seal-verify">Source-available — <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">verify it in the code</a>: no telemetry, and the app only contacts the endpoints you configure (<code>answer.rs</code>, <code>security.rs</code>).</p>
             <details class="seal-more">
               <summary>How sensitive data is gated</summary>
               <table class="matrix">
@@ -243,6 +245,7 @@
         <h2>FAQ</h2>
         <div class="faq">
           <div class="qa"><h4>Is my data private?</h4><p>Yes. The app only listens on your own machine, keeps everything in a database on your disk, and stores passwords in your OS keychain. Sources you mark Sensitive or PII are never sent to cloud AI unless you explicitly approve that provider.</p></div>
+          <div class="qa"><h4>Can I check the code myself?</h4><p>Yes — AnchorCore is source-available. The app is Rust and the repository is public, so you can read exactly what it does (no telemetry; it only contacts the model, Drive, Jira, Linear or API endpoints you set up) and build it yourself. Personal use is free; team and commercial use need a paid license — see <a href="https://github.com/Atsirkunov/anchorcore/blob/main/LICENSE.md">LICENSE.md</a>.</p></div>
           <div class="qa"><h4>How does it read documents?</h4><p>It splits documents at their headings (§4.2, 3.1.1, Article 12…) and packs the text into short passages. Each section gets a summary and topic tags, so answers cite the exact section — not “somewhere in the PDF”.</p></div>
           <div class="qa"><h4>Does it stay fast as my library grows?</h4><p>Yes. It first narrows thousands of documents down to the few relevant sections using tags and summaries, then searches inside just those — instead of scanning everything. Measured at ~7ms per search on a 30k-chunk benchmark — projected to stay well under 50ms at 5,000 documents.</p></div>
           <div class="qa"><h4>Is it free?</h4><p>Personal local app — free. Team self-hosted (one Docker container, your VPC) is a one-time platform license, perpetual including a year of support and updates. Hosted is coming soon — join the waitlist.</p></div>
@@ -303,7 +306,7 @@
 
   <footer>
     <div class="wrap foot">
-      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg><b>AnchorCore</b> v1 local · free for personal use · Team self-hosted licensed · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">GitHub</a> · <a href="#privacy">Privacy</a></div>
+      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg><b>AnchorCore</b> v1 local · free for personal use · Team self-hosted licensed · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="#privacy">Privacy</a></div>
       <div class="mono">Private by default · cited by design</div>
     </div>
   </footer>
