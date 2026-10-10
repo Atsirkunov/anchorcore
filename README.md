@@ -61,9 +61,9 @@ rust/       Rust service (Axum) — connectors, ingestion, classification, RAG Q
 frontend/   React SPA (Vite) — Ask, Sources, Entities, Review, Settings, System
 sample/     Mini-company demo corpus — connect it as a folder source
             (guide: docs/sample-dataset.md)
-hosting/    Hosted skeleton — Python FastAPI image, Postgres (docker-compose), env-driven
-            (guide: hosting/README.md) — stays Python per R10.7 until hosted is ported
-backend/    Archived on tag archive/python-final — frozen Python backend; hosting image + conformance fetch it. Do not use for new dev.
+hosting/    Team image — ONE container, the same Rust binary (SQLite volume, license gate)
+            (guide: hosting/README.md) — Dockerfile + Compose + CI smoke (R19.1)
+backend/    Archived on tag archive/python-final — frozen Python backend; the conformance suite fetches it. Do not use for new dev.
 docs/       Product plan, architecture, packaging, releasing
 ```
 
@@ -77,11 +77,11 @@ root; pushing a `v*` tag builds all platform zips automatically (see `docs/relea
 
 **Developers (Rust — shipped):** `cargo run -p anchorcore -- --port 8000 --data-dir ~/.anchorcore` — applies migrations, starts Ollama, boots at http://localhost:8000. Add `cargo run -p anchorcore -- --port 8123` for conformance vs Python. Frontend dev: `cd frontend && npm run dev` at :5173 (proxies to :8000).
 
-**Legacy Python (archived):** the Python backend left the tree — it's frozen on tag `archive/python-final` (hosting image + conformance suite fetch it from there). To run it: `git checkout archive/python-final -- backend`, then `.\start.ps1` (or `./start.sh`).
+**Legacy Python (archived):** the Python backend left the tree — it's frozen on tag `archive/python-final` (the conformance suite fetches it from there). To run it: `git checkout archive/python-final -- backend`, then `.\start.ps1` (or `./start.sh`).
 
-**Hosted (skeleton):** `docker compose -f hosting/docker-compose.yml up --build` — Python FastAPI image against Postgres (`pgvector/pg16`, see `hosting/README.md`). **R10.7 decision:** `hosting/` stays Python (Postgres/pgvector) — Rust is the local/packaged artifact (SQLite + `frontend/dist` embedded, `9.8M`, `codesign`); Rust Postgres is deferred (would need `deadpool` + `pgvector` migration, or SQLite-file volume on hosted).
+**Team (self-hosted) — one container (R19.1/B59):** `docker compose -f hosting/docker-compose.yml up --build` runs the same Rust binary as the app — SQLite on a volume, UI embedded, Team license gate (`ANCHOR_EDITION=team`, `rust/crates/anchorcore/src/license.rs`), no Postgres sidecar; releases publish `ghcr.io/atsirkunov/anchorcore:<version>` + `:team`. See [hosting/README.md](./hosting/README.md). Postgres remains a future swap for the Hosted cloud tier only (B49).
 
-**Prerequisites:** Rust (stable) + Node 20+ for local dev, Python 3.12 only for `hosting/`/conformance, [Ollama](https://ollama.com):
+**Prerequisites:** Rust (stable) + Node 20+ for local dev, Python 3.12 only for the archived conformance suite, [Ollama](https://ollama.com):
 
 ```bash
 ollama pull llama3.2:3b       # classifier
@@ -169,7 +169,7 @@ resets the thread.
 - No `ANCHOR_ANSWER_API_KEY` and cloud base URL → answers return matching context instead of LLM text.
 - Everything degrades gracefully; add Ollama or a model key (Settings tab) to unlock the full experience.
 
-## API surface (v1 — env-driven: SQLite local, Postgres hosted via `hosting/`)
+## API surface (v1 — one binary: SQLite everywhere; the Team image runs this same app)
 
 - `POST /sources` — connect a folder (path, `label` internal|public|sensitive|pii B39) or Jira (base_url, email, token, project)
 - `GET /sources/{id}/config` — source config (secrets masked) — shown as folder path / Jira details in the Sources tab
@@ -189,7 +189,7 @@ resets the thread.
  - `GET /system/status`, `GET /system/errors`, `GET /system/logs[/{file}]`, `GET /system/onboarding` — health, errors, log download, wizard trigger (B8, skippable)
  - `GET /sections?item_id=&source_id=`, `GET /sections/:id/chunks`, `GET /tags`, `GET /tags/:id/chunks` — hierarchical TOC & dynamic taxonomy (Phase 14, `sections.rs:1`, `tags.rs:1`)
 
-## Data model (SQLite local / Postgres hosted + Alembic migrations)
+## Data model (SQLite — the local app and Team container share the same file format)
 
 | Table | Notes |
 |---|---|
@@ -197,9 +197,9 @@ resets the thread.
 | `projects` / `project_sources` | source bundles for scoped search (B15) |
 | `entities` | kinds decision/document/action/note; `window_text`/`window_index` = classifier input; status verified/disputed/stale |
 | `relationships` | typed links (supersedes/depends_on/owns/blocks) |
-| `chunks` | `kind` = document/entity/distilled (+ section_summary/doc_summary Phase 14); `section_id`/`level`/`path` (Phase 14); `is_pii` + `pii_categories` (B30); embeddings (float32 blobs); FTS5 `chunks_fts` + vec0 `vec_chunks` (B33) kept in sync by triggers (SQLite-only, skip on Postgres) |
+| `chunks` | `kind` = document/entity/distilled (+ section_summary/doc_summary Phase 14); `section_id`/`level`/`path` (Phase 14); `is_pii` + `pii_categories` (B30); embeddings (float32 blobs); FTS5 `chunks_fts` + vec0 `vec_chunks` (B33) kept in sync by triggers (SQLite-only; in-code scan fallback) |
 | `sections` / `tags` / `chunk_tags` | Phase 14: hierarchical TOC (`sections` parent/level/path/summary + `summary_embedding`) + dynamic taxonomy (`tags` embedding + count, many:many via `chunk_tags`; reuse if `cosine>0.82` else create) |
-| `chunks_fts` / `vec_chunks` | FTS5 keyword index / vec0 cosine index (SQLite), triggers sync; Postgres skips (fallback to Python scan) |
+| `chunks_fts` / `vec_chunks` | FTS5 keyword index / vec0 cosine index (SQLite), triggers sync; in-code cosine scan when vec0 is unavailable |
 | `merge_actions` | duplicate proposals + decisions |
 | `jobs` | sync/reclassify progress + history |
 | `system_events` | structured error/audit trail |

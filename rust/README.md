@@ -1,6 +1,6 @@
 # AnchorCore Rust Port — workspace
 
-> **Status: shipped as of `v1.0.9` `7131cfe` (2026-08-21).** Python `backend/` is archived on tag `archive/python-final` (frozen conformance + hosted Postgres; see R10.7: `hosting/` stays Python); Rust `rust/` is the shipped artifact (single source `rust/Cargo.toml:6`). All `backend/tests` `110/17` honest green vs Rust on `:8123` (`cargo test` + `cargo check` green via CI `rust-conformance`). See `docs/rust-port.md:1` (evaluation closed) + `rust/BACKLOG.md:1` (all R0–R6 done, R7–R10.6 done) + `docs/handover-2026-08-21-retire.md:1`.
+> **Status: shipped as of `v1.0.9` `7131cfe` (2026-08-21).** Python `backend/` is archived on tag `archive/python-final` (frozen conformance; see R19.1: `hosting/` is the one-container Rust Team image); Rust `rust/` is the shipped artifact (single source `rust/Cargo.toml:6`). All `backend/tests` `110/17` honest green vs Rust on `:8123` (`cargo test` + `cargo check` green via CI `rust-conformance`). See `docs/rust-port.md:1` (evaluation closed) + `rust/BACKLOG.md:1` (all R0–R6 done, R7–R10.6 done) + `docs/handover-2026-08-21-retire.md:1`.
 
 ## Why a separate folder?
 
@@ -48,4 +48,4 @@ PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore
 
 Release is `rust/Cargo.toml:6` single edit → `scripts/sync_version.py` → `cargo test` + `cargo build --release` → `git tag vX.Y.Z` → `git push origin vX.Y.Z` (CI `release.yml` builds `AnchorCore-{windows,macos,linux}.zip`).
 
-Petite note: `backend/` is archived on tag `archive/python-final` (frozen `hosting/` Postgres path); `packaging.spec` retired with it.
+Petite note: `backend/` is archived on tag `archive/python-final` (frozen conformance path); `packaging.spec` retired with it.

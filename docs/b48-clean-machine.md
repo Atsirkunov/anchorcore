@@ -247,36 +247,41 @@ Paste back: the full transcript + `mac-app.log` tail on any failure.
 set -euo pipefail
 rm -rf /tmp/b48-fresh && git clone https://github.com/Atsirkunov/anchorcore.git /tmp/b48-fresh
 cd /tmp/b48-fresh
-git checkout v1.0.13
-npm run build --prefix frontend   # embed UI (Dockerfile COPYs frontend/dist)
-docker build -f hosting/Dockerfile -t anchorcore:hosting .
+git checkout main   # or the first release with R19.1 (v1.0.14+)
 # --- license roundtrip (documented seller flow) ---
 pip install cryptography >/dev/null 2>&1 || true
 python scripts/make_license.py gen-keypair   # RECORD the public key
+# TEST ONLY: register the throwaway public key in
+# rust/crates/anchorcore/src/license.rs (PUBLIC_KEYS_HEX) — do not commit.
 export ANCHOR_LICENSE_PRIVATE_KEY=<hex from gen-keypair>
 python scripts/make_license.py issue --org "B48 Test" > /tmp/b48-license.json
 cat /tmp/b48-license.json
-# --- boots WITH a valid license ---
+# --- one image: UI + Rust binary, SQLite volume, no Postgres ---
+docker build -f hosting/Dockerfile -t anchorcore:team .
+# --- refuses WITHOUT a license (Team gate) ---
+if docker run --rm --name b48-nolic anchorcore:team; then
+  echo "FAIL: booted without a license"; exit 1
+else
+  echo "refused as expected (non-zero exit)"
+fi
+# --- boots WITH one ---
 docker run -d --name b48-team -p 8123:8000 \
   -v /tmp/b48-license.json:/data/license.json \
-  -e ANCHOR_LICENSE_FILE=/data/license.json anchorcore:hosting
+  -e ANCHOR_LICENSE_FILE=/data/license.json anchorcore:team
 sleep 8; curl -sf http://127.0.0.1:8123/health; echo
+curl -s http://127.0.0.1:8123/ | head -c 120; echo   # UI served by the same container
 docker logs b48-team 2>&1 | tail -5
 docker rm -f b48-team
-# --- refuses WITHOUT one ---
-docker run --name b48-nolic -p 8123:8000 anchorcore:hosting & sleep 8
-docker logs b48-nolic 2>&1 | tail -10   # expect license refusal, container exited/non-healthy
-curl -sf http://127.0.0.1:8123/health && echo UNEXPECTED-HEALTHY || echo REFUSED-AS-EXPECTED
-docker rm -f b48-nolic || true
 echo DOCKER-LEG-DONE
 ```
 
-Expected: build green; licensed boot serves `/health`; unlicensed boot refuses
-(non-zero exit or license error in logs, no healthy `/health`).
-**Caveat:** the image verifies against `PUBLIC_KEYS_HEX` frozen on tag
-`archive/python-final` — a freshly minted keypair verifies ONLY if that public
-key is registered there. If refusal happens even with the fresh license, paste
-the log line: that decides whether it's a test-setup artifact or a real bug.
+Expected: build green; licensed boot serves `/health` + the UI from the same
+container (no Postgres); unlicensed boot exits 2 with a license error.
+**Caveat:** the image verifies against `PUBLIC_KEYS_HEX` in
+`rust/crates/anchorcore/src/license.rs` (production key) — a freshly minted
+keypair verifies ONLY after registering it there and rebuilding. If refusal
+happens even with the fresh license, paste the log line: that decides whether
+it's a test-setup artifact or a real bug.
 
 ## 5. Recording results
 

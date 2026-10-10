@@ -6,15 +6,14 @@ The Python backend left the tree and is frozen on tag
 
 ## What's frozen there
 
-- `backend/app` — FastAPI app incl. `license.py` (Team license gate)
-- `backend/alembic` — migrations (run by the hosting image)
+- `backend/app` — FastAPI app (incl. the old Python Team gate — superseded by `rust/crates/anchorcore/src/license.rs`, R19.1)
+- `backend/alembic` — Python migrations (historical schema reference)
 - `backend/tests` — test suite incl. the Rust conformance suite
 - `backend/requirements.txt`, `.env.example`, `run_app.py`, `anchorcore_mcp.py`
 
 ## Who consumes it
 
-- `hosting/Dockerfile` downloads the tag tarball at build time
-  (`ARG BACKEND_TAG`, default `archive/python-final`).
+- Nothing in `hosting/` anymore — R19.1 builds the Rust binary from main.
 - CI (`backend`, `rust-conformance` jobs) checks the tag out.
 - `rust/scripts/conformance.sh` restores it automatically when missing.
 
@@ -26,10 +25,9 @@ Restore into your checkout (does not move HEAD):
 git checkout archive/python-final -- backend
 ```
 
-To change frozen code (license-gate fixes only — never features): commit on a
-branch, move the tag, rebuild + re-verify the Team image, record it below.
+To change frozen code: commit on a branch, move the tag, re-run the conformance suite, record it below. (Never add features — the backend is frozen.)
 
-Pinning decision (B46): the Dockerfile tracks the tag by name, not a commit
+Pinning decision (B46): consumers track the tag by name, not a commit
 SHA. Rationale: this repo is solo-controlled — anyone who can move the tag
 can push main. Revisit SHA pinning if outside contributors join.
 
