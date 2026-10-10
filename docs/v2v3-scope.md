@@ -14,9 +14,9 @@ Locked decisions from the publishing-strategy review; each maps to a backlog ite
 | # | Decision | Status |
 |---|---|---|
 | D1 | Domain: **`anchorcore.dev`** (Cloudflare Registrar). `.ai`/`.com`/`.app` taken but parked | Done — site targets `anchorcore.dev` |
-| D2 | Website: static single page (plain Vite); landing + guides + download; personal free forever, team one-time license, no prices on site | Built — host choice still open |
+| D2 | Website: static single page (plain Vite); landing + guides + download; personal free forever, team one-time license, no prices on site | Shipped — live at anchorcore.dev (Cloudflare Workers, B47) |
 | D3 | Pricing: personal local free forever; Team self-hosted = one-time platform license (perpetual + 1yr maintenance, offline ed25519 key — shipped: `LICENSE.md` + `backend/app/license.py` + `scripts/make_license.py`); hosted pricing TBD from pilots — no per-seat | Decided + Team half shipped |
-| D4 | Hosted = low-risk, quota-bounded features only (hosted sync, MCP endpoint, webhooks, share links, review); cheap-tier metered bundled models; per-workspace caps | Plan (nothing built) |
+| D4 | Hosted = low-risk, quota-bounded features only (hosted sync, MCP endpoint, webhooks, share links, review); cheap-tier metered bundled models; per-workspace caps | Plan — hosting skeleton + auth shipped, service design open (B49) |
 | D5 | License: **custom source-available license** (`LICENSE.md`: personal use free, commercial/Team use paid, ed25519 keys verified offline). *Revised — the original BSL 1.1 decision was dropped; there is currently no small-org carve-out.* | Shipped |
 | D6 | Enterprise: **sell the platform, don't host it** — Docker + SSO/RBAC/audit, flat annual per deployment + support; enterprise telemetry = SLA feature | Plan |
 | D7 | Telemetry: **opt-in, off by default, counts-only** (never content), pseudonymous reset-able ID, transparency screen; public signals (release downloads, stars) complement | Decided, not implemented — no telemetry exists anywhere yet |
