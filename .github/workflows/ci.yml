@@ -126,3 +126,38 @@ jobs:
       - run: npm run lint
       - run: npm run test
       - run: npm run build
+
+  docker-team:
+    name: Team image (one container) — build + smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
+      - name: Build (hosting/Dockerfile)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: hosting/Dockerfile
+          tags: anchorcore:team
+          load: true
+          cache-from: type=gha,scope=team-image
+          cache-to: type=gha,mode=max,scope=team-image
+      - name: Refuses to boot without a license
+        run: |
+          if timeout 90 docker run --rm anchorcore:team; then
+            echo "FAIL: Team image booted without a license"; exit 1
+          fi
+      - name: Boots (edition override) and serves /health
+        run: |
+          docker run -d --name ac-smoke -e ANCHOR_EDITION=personal -p 8000:8000 anchorcore:team
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/health; then break; fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8000/health
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs ac-smoke || true
+      - name: Cleanup
+        if: always()
+        run: docker rm -f ac-smoke || true
