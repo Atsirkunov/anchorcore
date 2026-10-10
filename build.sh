@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AnchorCore packaged build (B24 + Rust shipped 1.0.13). Run from repo root:
+# AnchorCore packaged build (B24 + Rust shipped 1.0.14). Run from repo root:
 #   ./build.sh
 # Produces dist/AnchorCore.app — double-click macOS app (no terminal, opens browser),
 # ad-hoc signed so Gatekeeper shows "Open" on first run. Rust binary is the shipped

@@ -14,7 +14,7 @@
 2. Builds Rust `AnchorCore-{windows,macos,linux}.zip` (`cargo build --release`, `frontend/dist` embedded via `include_dir!`, `codesign` on macOS)
 3. Attaches the three zips to the GitHub Release for that tag (website Download buttons link straight at the windows/macos ones — keep those file names stable)
 
-## Release checklist (Rust — shipped 1.0.13)
+## Release checklist (Rust — shipped 1.0.14)
 
 1. **Verify locally:**
    - [ ] `cargo test -p anchorcore` + `cargo check` clean — Rust green
@@ -25,8 +25,8 @@
 3. **Update docs** — backlog items marked `DONE`; handover `docs/handover-*.md`; stale-claim sweep: `git grep -n "shipped 1\.0\." docs README.md website` (old versions) + `git grep -n "bundled sample"` (B50) — fix or confirm historical
 4. **Tag and push:**
    ```
-   git tag v1.0.13
-   git push origin v1.0.13
+   git tag v1.0.14
+   git push origin v1.0.14
    ```
 5. **Verify the Release** (github.com → Releases): `AnchorCore-windows.zip` + `AnchorCore-macos.zip` (+linux) present; download on clean machines, unzip, run, smoke `curl /health`
 6. **Hand off** — testers get the GitHub Release URL, not a repo checkout
