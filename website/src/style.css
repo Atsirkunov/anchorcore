@@ -97,6 +97,7 @@ h1{font-family:Georgia,serif;letter-spacing:-0.03em;line-height:1.04;font-size:v
 .seal-chips{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 4px}
 .seal-chip{font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:999px;padding:4px 12px;background:var(--paper);color:var(--sageH)}
 .seal-more{margin-top:10px;font-size:13px}
+.seal-verify{margin:12px 0 0;font-size:13px;color:var(--sageH)}
 .seal-more summary{cursor:pointer;font-weight:700;font-size:13px;color:var(--sage);width:fit-content}
 .seal-more .matrix{margin-top:12px}
 .seal-more .cap{font-size:12px;color:var(--dim);margin:10px 0 0}
