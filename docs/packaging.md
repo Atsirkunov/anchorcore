@@ -1,7 +1,7 @@
 # AnchorCore — Packaging Plan
 
 > Goal: ship AnchorCore as a runnable app a non-developer can launch.
-> Status: **Rust shipped (1.0.13)** — `rust/target/release/anchorcore` release binary (`frontend/dist` embedded via `include_dir!`, `9.8M`, ad-hoc `codesign`) is the local artifact. **Python `backend/` PyInstaller (`packaging.spec`) is archived on tag `archive/python-final`** (hosting image fetches it frozen). Legacy `dist/AnchorCore.exe/.app` (B20/B24) remain documented for history.
+> Status: **Rust shipped (1.0.14)** — `rust/target/release/anchorcore` release binary (`frontend/dist` embedded via `include_dir!`, `9.8M`, ad-hoc `codesign`) is the local artifact. **Python `backend/` PyInstaller (`packaging.spec`) is archived on tag `archive/python-final`** (conformance suite fetches it frozen). Legacy `dist/AnchorCore.exe/.app` (B20/B24) remain documented for history.
 
 ---
 

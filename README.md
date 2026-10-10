@@ -57,7 +57,7 @@ Team and commercial use requires a paid license.
 ## Project layout
 
 ```
-rust/       Rust service (Axum) — connectors, ingestion, classification, RAG Q&A — shipped artifact (1.0.13, single source rust/Cargo.toml)
+rust/       Rust service (Axum) — connectors, ingestion, classification, RAG Q&A — shipped artifact (1.0.14, single source rust/Cargo.toml)
 frontend/   React SPA (Vite) — Ask, Sources, Entities, Review, Settings, System
 sample/     Mini-company demo corpus — connect it as a folder source
             (guide: docs/sample-dataset.md)
