@@ -2,7 +2,7 @@
 
 Your memory — finally searchable.
 
-AnchorCore turns your folders, Jira, and Linear into a private AI knowledge base
+AnchorCore turns your folders, Drive, Jira, Linear and JSON APIs into a private AI knowledge base
 on your own machine. Ask "what was decided about X, and why?" — get a cited answer
 that shows exactly where it came from.
 
@@ -22,8 +22,8 @@ on your machine — nothing leaves it unless you configure a cloud model.
 ## 60-second start
 
 1. Download and run the app (above).
-2. Sources → Local folder → point at the bundled `sample/` demo corpus (or your
-   own folder) → Sync.
+2. Sources → Local folder → point at the repo's `sample/` demo corpus (grab the
+   folder from GitHub; release zips ship the app only — or use your own) → Sync.
 3. Ask: "What was decided about security transfers, and why?" → cited answer.
 
 Tip: install [Ollama](https://ollama.com) and pull `llama3.2:3b` +
@@ -46,9 +46,9 @@ Team and commercial use requires a paid license.
 
 - [Product Plan](./docs/product-plan.md) — what we're building, for whom, and why (+ full backlog)
 - [Architecture](./docs/architecture.md) — system view + architecture diagram
-- [Packaging](./docs/packaging.md) — Windows exe + macOS app (both built from one spec)
-- [Releasing](./docs/releasing.md) — release checklist: tag → CI builds both executables
-- [Agent connectivity (MCP)](./docs/mcp.md) — how harnesses (Claude Code, Codex, opencode) will use the memory
+- [Packaging](./docs/packaging.md) — Rust binary + MCP sidecar zips for Windows, macOS and Linux
+- [Releasing](./docs/releasing.md) — release checklist: tag → CI builds all platform zips
+- [Agent connectivity (MCP)](./docs/mcp.md) — how harnesses (Claude Code, Codex, opencode, Cursor) use the memory
 - [v2/v3 business scoping](./docs/v2v3-scope.md) — website, hosting, sharing, pricing, free tier
 - [Design system](./docs/design-system.md) — color tokens, typography, messaging, website approach (single source for app + site)
 - [Rust port evaluation](./docs/rust-port.md) — is a Rust backend worth it? (distribution vs LLM latency)
@@ -57,7 +57,7 @@ Team and commercial use requires a paid license.
 ## Project layout
 
 ```
-rust/       Rust service (Axum) — connectors, ingestion, classification, RAG Q&A — shipped artifact (1.0.12, single source rust/Cargo.toml)
+rust/       Rust service (Axum) — connectors, ingestion, classification, RAG Q&A — shipped artifact (1.0.13, single source rust/Cargo.toml)
 frontend/   React SPA (Vite) — Ask, Sources, Entities, Review, Settings, System
 sample/     Mini-company demo corpus — connect it as a folder source
             (guide: docs/sample-dataset.md)
@@ -103,7 +103,7 @@ in DB/logs):
 | Answer (Q&A) | Ollama | any OpenAI-compatible + key, reasoning effort (none/low/medium/high) |
 
 Each section: provider dropdown, API key, base URL, model, **Test connection**.
-`.env` remains the default layer — see `backend/.env.example` for all keys.
+`.env` remains the default layer — the Settings tab is the normal way to configure it; env keys are listed in `hosting/.env.example` (full legacy list on tag `archive/python-final`).
 
 ## How knowledge is built
 

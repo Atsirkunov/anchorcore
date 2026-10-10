@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AnchorCore packaged build (B24 + Rust shipped 1.0.10). Run from repo root:
+# AnchorCore packaged build (B24 + Rust shipped 1.0.13). Run from repo root:
 #   ./build.sh
 # Produces dist/AnchorCore.app — double-click macOS app (no terminal, opens browser),
 # ad-hoc signed so Gatekeeper shows "Open" on first run. Rust binary is the shipped
@@ -68,6 +68,6 @@ rm -f "$ROOT/dist/AnchorCore-macos.zip"
 (cd "$ROOT/dist" && zip -rq AnchorCore-macos.zip AnchorCore.app)
 
 echo ""
-echo "Done: $ROOT/dist/AnchorCore-macos.zip (Rust $VERSION, double-click, opens http://127.0.0.1:8123)"
+echo "Done: $ROOT/dist/AnchorCore-macos.zip (Rust $VERSION, double-click, opens http://127.0.0.1:8000)"
 echo "Unzip it, then double-click AnchorCore.app. First run creates"
-echo "~/.anchorcore data dir and opens http://127.0.0.1:8123 (set ANCHOR_OPEN_BROWSER=0 to disable)"
+echo "~/.anchorcore data dir and opens http://127.0.0.1:8000 (set ANCHOR_OPEN_BROWSER=0 to disable)"

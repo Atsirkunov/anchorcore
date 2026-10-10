@@ -1,7 +1,7 @@
 # AnchorCore — Packaging Plan
 
 > Goal: ship AnchorCore as a runnable app a non-developer can launch.
-> Status: **Rust shipped (1.0.11, B31)** — `rust/target/release/anchorcore` single binary (`frontend/dist` embedded via `include_dir!`, `9.8M`, ad-hoc `codesign`) is the local artifact. **Python `backend/` PyInstaller (`packaging.spec`) is archived on tag `archive/python-final`** (hosting image fetches it frozen). Legacy `dist/AnchorCore.exe/.app` (B20/B24) remain documented for history.
+> Status: **Rust shipped (1.0.13)** — `rust/target/release/anchorcore` release binary (`frontend/dist` embedded via `include_dir!`, `9.8M`, ad-hoc `codesign`) is the local artifact. **Python `backend/` PyInstaller (`packaging.spec`) is archived on tag `archive/python-final`** (hosting image fetches it frozen). Legacy `dist/AnchorCore.exe/.app` (B20/B24) remain documented for history.
 
 ---
 
@@ -9,7 +9,7 @@
 
 | Piece | Form | Notes |
 |---|---|---|
-| API backend | **Rust Axum** (single binary) | `cargo build --release -p anchorcore` → `rust/target/release/anchorcore` (`frontend/dist` embedded) |
+| API backend | **Rust Axum** + MCP sidecar | `cargo build --release` → `rust/target/release/anchorcore` + `anchorcore-mcp` (`frontend/dist` embedded; both ship in the zips) |
 | UI | Vite static build (`frontend/dist`) | Embedded via `rust/crates/anchorcore/src/frontend.rs:1` `include_dir!`; served at `127.0.0.1:8000` |
 | Classifier/embed model | External Ollama | Auto-started; models pulled via Settings/sync |
 | Data | SQLite + sqlite-vec `vec0` | Per-user: `~/.anchorcore` |
@@ -20,9 +20,9 @@
 One command from the repo root:
 
 ```bash
-npm run build && cargo build --release -p anchorcore
-# artifact: rust/target/release/anchorcore (9.8M) + frontend/dist embedded
-# release zip: dist/AnchorCore-macos.zip / AnchorCore-windows.zip via release.yml
+npm run build && cargo build --release
+# artifacts: rust/target/release/anchorcore + anchorcore-mcp (9.8M, frontend/dist embedded)
+# release zips: dist/AnchorCore-{windows,macos,linux}.zip via release.yml
 ```
 
 `release.yml` builds `AnchorCore-{windows,macos,linux}.zip` on every `v*` tag (`frontend` → `cargo build --release` → `codesign`).
@@ -50,7 +50,7 @@ Security → Open Anyway) approves it once.
 
 1. Unzip → double-click `anchorcore.exe` / `AnchorCore.app` (no Terminal window on either; panics append to `anchorcore.log`)
 2. Ollama starts (if installed), browser opens `http://127.0.0.1:8000`
-3. Sources tab → connect a folder (e.g. the bundled `sample/`)
+3. Sources tab → connect a folder (e.g. `sample/` from the repo)
 4. Sync; ask questions with citations
 
 `~/.anchorcore/` holds the DB, logs, secrets. Deleting it = fresh start.
@@ -61,7 +61,7 @@ and logs land in `~/.anchorcore/anchorcore.log`.)
 
 | Item | Why | Effort |
 |---|---|---|
-| Ollama installer check | exe assumes Ollama present; add guided install/first-run (B8 overlap) | 0.5 day |
+| ✅ Ollama guided install (B8/B54) | first-run wizard checks Ollama + pulls models | done |
 | macOS notarization | silent Gatekeeper approval; needs Apple Developer account ($99/yr) | 1–2 days |
 | Windows installer (Inno Setup/NSIS) | nicer than a raw exe | 0.5 day |
 | ✅ Windows windowed exe (no console) | subsystem flag + panic-to-log hook in `main.rs` | done, needs CI build check |
@@ -72,7 +72,7 @@ and logs land in `~/.anchorcore/anchorcore.log`.)
 ## 6. Platform strategy
 
 - Windows first (implemented). macOS next (implemented — windowed `.app` bundle,
-  ad-hoc signed; notarization deferred). Linux after.
+  ad-hoc signed; notarization deferred). Linux zips ship in CI (not advertised on the site yet).
 - One artifact per platform; data always per-user outside the binary.
 
 ---

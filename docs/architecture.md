@@ -9,7 +9,7 @@
 
 ## 1. Runtime Model: Local-First, Hosted Env-Driven
 
-One local process = the entire product. No Docker, no sidecar services, no
+One local process = the entire product. No Docker, no required sidecar services, no
 setup. **Local:** Rust binary `anchorcore` (`frontend/dist` embedded,
 SQLite `vec0` + FTS5). **Hosted:** `hosting/` Docker + Postgres stays a
 Python FastAPI image, env-driven via `ANCHOR_DATABASE_URL` — the SQLite
@@ -414,7 +414,7 @@ erDiagram
 ## 9. Evolution Path
 
 ```
-v1 (shipped, 1.0.12): local-first app — folder/Drive/Jira/Linear/REST connectors,
+v1 (shipped, 1.0.13): local-first app — folder/Drive/Jira/Linear/REST connectors,
     document-aware classification + review queue, cited Q&A (hybrid RRF + vec0 +
     planner/executor + graph walk + distillation + projects + PII gate),
     hierarchical sections, MCP sidecar, Team self-hosted (Docker + offline license),

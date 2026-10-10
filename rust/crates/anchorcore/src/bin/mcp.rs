@@ -275,7 +275,7 @@ fn tool_defs() -> Value {
         },
         {
             "name": "get_source",
-            "description": "Fetch one source's details and config (secrets masked).",
+            "description": "Fetch one source's details (connector, label, sync status, recent errors). Config and secrets are not returned.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
