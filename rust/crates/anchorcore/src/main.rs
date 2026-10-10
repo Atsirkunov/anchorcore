@@ -23,6 +23,7 @@ mod frontend;
 mod hashing;
 mod health;
 mod jobs;
+mod ollama;
 mod pii;
 mod pipeline;
 mod projects;
@@ -287,6 +288,8 @@ fn build_router(state: health::AppState) -> Router {
         .route("/system/logs", get(system::logs_handler))
         .route("/system/logs/:name", get(system::log_download_handler))
         .route("/system/ollama/start", post(system::ollama_start_handler))
+        .route("/system/ollama/pull", post(ollama::pull_handler))
+        .route("/system/ollama/pulls", get(ollama::pulls_handler))
         // auth (R6.3 B40)
         .route("/auth/status", get(auth::status_handler))
         .route("/auth/signup", post(auth::signup_handler))

@@ -79,11 +79,7 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     // capture settings values before blocking (use cached snapshot without DB conn for speed)
     let snap = status_snapshot(&state.settings);
-    let ollama_reachable = if ollama_probe_disabled(&snap.ollama_base) {
-        false
-    } else {
-        probe_ollama(&snap.ollama_base, 3).await
-    };
+    let readiness = crate::ollama::model_readiness(&state.settings).await;
     let classifier_is_local = provider_is_local(&snap.classifier_base);
     let embed_is_local = provider_is_local(&snap.embed_base);
     let result = tokio::task::spawn_blocking(move || {
@@ -103,11 +99,11 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
             "data_dir": "redacted",
             "database": "redacted",
             "ollama": {
-                "reachable": ollama_reachable,
+                "reachable": readiness.reachable,
                 "base_url": snap.ollama_base,
                 "classifier_model": snap.classifier_model,
                 "embed_model": snap.embed_model,
-                "missing_models": []
+                "missing_models": readiness.missing_models
             },
             "classifier": {
                 "provider": if classifier_is_local { "local" } else { "cloud" },
@@ -131,6 +127,7 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
                 "model": snap.answer_model,
                 "base_url": snap.answer_base,
             },
+            "answer_ready": readiness.answer_ready,
             "pending_embeddings": pending,
             "failing_sources": failing,
             "tasks": {}
@@ -210,13 +207,13 @@ pub async fn errors_handler(
 pub async fn onboarding_handler(State(state): State<AppState>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let settings = state.settings.clone();
+    let readiness = crate::ollama::model_readiness(&settings).await;
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let sources_count: i64 = conn.query_row("SELECT COUNT(*) FROM sources", [], |r| r.get(0)).unwrap_or(0);
         let needs_wizard = sources_count == 0;
         let ollama_base = settings.get("ollama_base_url", None).unwrap_or_else(|| "http://localhost:11434".to_string());
-        let ollama_reachable = !(ollama_base == "http://localhost:1" || ollama_base == "http://127.0.0.1:1" || ollama_base == "http://localhost:1/" || ollama_base == "http://127.0.0.1:1/");
         let answer_base = settings.get("answer_base_url", None).unwrap_or_else(|| "https://api.openai.com/v1".to_string());
         let answer_api_key = settings.get("answer_api_key", None).unwrap_or_default();
         let answer_provider = if answer_base.starts_with("http://localhost") || answer_base.starts_with("http://127.0.0.1") {
@@ -249,11 +246,12 @@ pub async fn onboarding_handler(State(state): State<AppState>) -> Json<Value> {
             "needs_wizard": needs_wizard,
             "sources_count": sources_count,
             "ollama": {
-                "reachable": ollama_reachable,
+                "reachable": readiness.reachable,
                 "base_url": ollama_base,
-                "missing_models": []
+                "missing_models": readiness.missing_models
             },
             "answer_provider": answer_provider,
+            "answer_ready": readiness.answer_ready,
             "sample": {
                 "available": sample_available,
                 "path": sample_path
