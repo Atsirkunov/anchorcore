@@ -209,6 +209,11 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          # Only the platform zips: the docker-team job's *.dockerbuild
+          # provenance record is not a valid zip and breaks an unfiltered
+          # download (5 failed retries on v1.0.14).
+          pattern: AnchorCore-*
+          merge-multiple: true
           path: artifacts
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
