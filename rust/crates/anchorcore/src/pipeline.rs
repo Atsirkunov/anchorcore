@@ -130,6 +130,99 @@ async fn fetch_docs(connector_type: &str, config: &serde_json::Value, source_id:
     Ok(docs)
 }
 
+/// B57: connectors whose fetch returns the complete current set, so a stored
+/// item missing from fetch means "deleted remotely". `rest` is excluded:
+/// `max_pages` can truncate the list, and purging on a partial fetch would
+/// delete live items.
+fn connector_supports_purge(connector_type: &str) -> bool {
+    matches!(connector_type, "folder" | "jira" | "gdrive" | "linear")
+}
+
+/// B57: hard-delete stored items absent from `fetched`. The source is the
+/// source of truth (a rename already reads as delete+add). FK cascades +
+/// chunks triggers clean entities/chunks/vec/fts/sections; only the shared
+/// `tags.count` needs a recompute in `purge_item`.
+async fn purge_missing_items(
+    data_dir: &str,
+    source_id: i64,
+    fetched: std::collections::HashSet<String>,
+) -> Result<i64, String> {
+    run_db(data_dir, move |conn| purge_missing_inner(conn, source_id, &fetched)).await
+}
+
+/// B57: sync-time entry point. Purge is cleanup — a failure must not fail
+/// the whole sync, so errors are logged and count as zero. Empty fetches
+/// purge nothing (a misconfiguration must not wipe the index). Extracted
+/// so `run_sync_inner` stays at its CCN budget.
+async fn purge_missing_for_sync(
+    data_dir: &str,
+    source_id: i64,
+    connector_type: &str,
+    docs: &[IngestionDoc],
+) -> i64 {
+    if !connector_supports_purge(connector_type) || docs.is_empty() {
+        return 0;
+    }
+    let fetched: std::collections::HashSet<String> =
+        docs.iter().map(|d| d.external_id.clone()).collect();
+    match purge_missing_items(data_dir, source_id, fetched).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!("purge failed for source {}: {}", source_id, e);
+            0
+        }
+    }
+}
+
+fn purge_missing_inner(
+    conn: &Connection,
+    source_id: i64,
+    fetched: &std::collections::HashSet<String>,
+) -> Result<i64, String> {
+    let stored: Vec<(i64, String)> = conn
+        .prepare("SELECT id, external_id FROM ingested_items WHERE source_id=?1")
+        .map_err(|e| e.to_string())?
+        .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    let mut purged = 0i64;
+    for (id, external_id) in stored {
+        if fetched.contains(&external_id) {
+            continue;
+        }
+        purge_item(conn, id)?;
+        purged += 1;
+    }
+    Ok(purged)
+}
+
+fn purge_item(conn: &Connection, item_id: i64) -> Result<(), String> {
+    let tag_ids: Vec<i64> = conn
+        .prepare(
+            "SELECT DISTINCT tag_id FROM chunk_tags WHERE chunk_id IN (
+                 SELECT id FROM chunks WHERE item_id=?1
+                 UNION
+                 SELECT id FROM chunks WHERE entity_id IN (SELECT id FROM entities WHERE item_id=?1))",
+        )
+        .map_err(|e| e.to_string())?
+        .query_map([item_id], |r| r.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    conn.execute("DELETE FROM ingested_items WHERE id=?1", [item_id])
+        .map_err(|e| e.to_string())?;
+    for tag_id in tag_ids {
+        conn.execute(
+            "UPDATE tags SET count = (SELECT COUNT(*) FROM chunk_tags WHERE tag_id=?1) WHERE id=?1",
+            [tag_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let _ = conn.execute("DELETE FROM tags WHERE count <= 0", []);
+    Ok(())
+}
+
 pub struct Pipeline {
     pub classifier: Arc<Classifier>,
     pub embedder: Arc<Embedder>,
@@ -199,15 +292,15 @@ impl Pipeline {
 
     /// Record the sync outcome without clobbering a concurrent cancel (R9.1),
     /// then promote the next pending job.
-    fn finish_job(&self, conn: &Connection, source_id: i64, job_id: i64, res: Result<(i64, i64), String>) {
+    fn finish_job(&self, conn: &Connection, source_id: i64, job_id: i64, res: Result<(i64, i64, i64), String>) {
         match res {
-            Ok((items, entities)) => {
+            Ok((items, entities, purged)) => {
                 // R9.1: do not clobber concurrent cancel
                 let cur: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "done".to_string());
                 if cur == "cancelled" {
                     self.jobs.maybe_promote(conn);
                 } else {
-                    let result = serde_json::json!({"items": items, "entities": entities}).to_string();
+                    let result = serde_json::json!({"items": items, "entities": entities, "purged": purged}).to_string();
                     let _ = conn.execute("UPDATE jobs SET status='done', finished_at=datetime('now'), result=?1, error=NULL WHERE id=?2", rusqlite::params![result, job_id]);
                     record_sync_success(conn, source_id);
                     // update job total/processed
@@ -235,7 +328,7 @@ impl Pipeline {
         }
     }
 
-    async fn run_sync_inner(&self, source_id: i64, job_id: i64, force_reclassify: bool, data_dir: &str) -> Result<(i64, i64), String> {
+    async fn run_sync_inner(&self, source_id: i64, job_id: i64, force_reclassify: bool, data_dir: &str) -> Result<(i64, i64, i64), String> {
         // load source
         let (connector_type, config_str) = run_db(data_dir, move |conn| {
             let mut stmt = conn.prepare("SELECT connector, config FROM sources WHERE id = ?1").map_err(|e| e.to_string())?;
@@ -245,6 +338,9 @@ impl Pipeline {
         config = resolve_config(data_dir, source_id, config);
         // fetch docs — R10.2: Jira/GDrive/Linear must not silently succeed with 0 items
         let docs = fetch_docs(&connector_type, &config, source_id).await?;
+        // B57: purge stored items that disappeared remotely (hard-delete).
+        let purged_items =
+            purge_missing_for_sync(data_dir, source_id, &connector_type, &docs).await;
         // update job total
         let total_docs = docs.len() as i64;
         run_db(data_dir, move |conn| {
@@ -270,7 +366,7 @@ impl Pipeline {
                 Ok(())
             }).await?;
         }
-        Ok((created_items, new_entities))
+        Ok((created_items, new_entities, purged_items))
     }
 
     async fn upsert_doc(&self, data_dir: &str, source_id: i64, doc: &IngestionDoc, _force: bool) -> Result<bool, String> {
@@ -947,5 +1043,131 @@ mod tests {
         create_summaries_inner(&conn, iid, full_text, base, false).unwrap();
         let cnt2: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE kind='section_summary'", [], |r| r.get(0)).unwrap();
         assert_eq!(cnt2, 3);
+    }
+
+    #[test]
+    fn connector_supports_purge_matrix() {
+        for c in ["folder", "jira", "gdrive", "linear"] {
+            assert!(connector_supports_purge(c), "{} must purge", c);
+        }
+        for c in ["rest", "slack", ""] {
+            assert!(!connector_supports_purge(c), "{} must not purge", c);
+        }
+    }
+
+    #[test]
+    fn purge_missing_removes_item_and_cascades() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let conn = crate::db::init_db(&path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('s','folder','{}',1,'',0)", []).unwrap();
+        let sid = conn.last_insert_rowid();
+        let mk_item = |ext: &str| -> i64 {
+            conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale) VALUES (?1,?2,'t','text','h','',0)", rusqlite::params![sid, ext]).unwrap();
+            conn.last_insert_rowid()
+        };
+        let keep = mk_item("keep.md");
+        let gone = mk_item("gone.md");
+        conn.execute("INSERT INTO entities (item_id, kind, summary) VALUES (?1,'decision','gone entity')", [gone]).unwrap();
+        let gone_e = conn.last_insert_rowid();
+        conn.execute("INSERT INTO entities (item_id, kind, summary) VALUES (?1,'decision','keep entity')", [keep]).unwrap();
+        let keep_e = conn.last_insert_rowid();
+        let emb = vec![0u8; 768 * 4];
+        conn.execute("INSERT INTO chunks (item_id, kind, source_ref, content, embedding) VALUES (?1,'document','gone.md','gone content',?2)", rusqlite::params![gone, emb]).unwrap();
+        let gone_c = conn.last_insert_rowid();
+        conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content) VALUES (?1,'entity','gone.md','gone entity chunk')", [gone_e]).unwrap();
+        conn.execute("INSERT INTO chunks (item_id, kind, source_ref, content) VALUES (?1,'document','keep.md','keep content')", [keep]).unwrap();
+        let keep_c = conn.last_insert_rowid();
+        conn.execute("INSERT INTO sections (item_id, level, title, path) VALUES (?1,1,'S','S')", [gone]).unwrap();
+        conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?1,'related')", [gone_e]).unwrap();
+        conn.execute("INSERT INTO disputes (entity_id, reason, user) VALUES (?1,'r','u')", [gone_e]).unwrap();
+        conn.execute("INSERT INTO merge_actions (entity_a_id, entity_b_id) VALUES (?1,?2)", rusqlite::params![gone_e, keep_e]).unwrap();
+        conn.execute("INSERT INTO tags (name, count) VALUES ('solo',1)", []).unwrap();
+        let solo = conn.last_insert_rowid();
+        conn.execute("INSERT INTO tags (name, count) VALUES ('shared',2)", []).unwrap();
+        let shared = conn.last_insert_rowid();
+        conn.execute("INSERT INTO chunk_tags (chunk_id, tag_id) VALUES (?1,?2)", rusqlite::params![gone_c, solo]).unwrap();
+        conn.execute("INSERT INTO chunk_tags (chunk_id, tag_id) VALUES (?1,?2)", rusqlite::params![gone_c, shared]).unwrap();
+        conn.execute("INSERT INTO chunk_tags (chunk_id, tag_id) VALUES (?1,?2)", rusqlite::params![keep_c, shared]).unwrap();
+        let vec_before: i64 = conn.query_row("SELECT COUNT(*) FROM vec_chunks WHERE rowid=?1", [gone_c], |r| r.get(0)).unwrap();
+        assert_eq!(vec_before, 1);
+        let fts_before: i64 = conn.query_row("SELECT COUNT(*) FROM chunks_fts WHERE rowid=?1", [gone_c], |r| r.get(0)).unwrap();
+        assert_eq!(fts_before, 1);
+
+        let fetched: std::collections::HashSet<String> = ["keep.md".to_string()].into_iter().collect();
+        let n = purge_missing_inner(&conn, sid, &fetched).unwrap();
+        assert_eq!(n, 1);
+        let items: i64 = conn.query_row("SELECT COUNT(*) FROM ingested_items", [], |r| r.get(0)).unwrap();
+        assert_eq!(items, 1);
+        let gone_entities: i64 = conn.query_row("SELECT COUNT(*) FROM entities WHERE item_id=?1", [gone], |r| r.get(0)).unwrap();
+        assert_eq!(gone_entities, 0);
+        let gone_chunks: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE item_id=?1 OR entity_id=?2", rusqlite::params![gone, gone_e], |r| r.get(0)).unwrap();
+        assert_eq!(gone_chunks, 0);
+        let rels: i64 = conn.query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0)).unwrap();
+        assert_eq!(rels, 0);
+        let merges: i64 = conn.query_row("SELECT COUNT(*) FROM merge_actions", [], |r| r.get(0)).unwrap();
+        assert_eq!(merges, 0);
+        let disputes: i64 = conn.query_row("SELECT COUNT(*) FROM disputes", [], |r| r.get(0)).unwrap();
+        assert_eq!(disputes, 0);
+        let secs: i64 = conn.query_row("SELECT COUNT(*) FROM sections WHERE item_id=?1", [gone], |r| r.get(0)).unwrap();
+        assert_eq!(secs, 0);
+        let vec_after: i64 = conn.query_row("SELECT COUNT(*) FROM vec_chunks WHERE rowid=?1", [gone_c], |r| r.get(0)).unwrap();
+        assert_eq!(vec_after, 0);
+        let fts_after: i64 = conn.query_row("SELECT COUNT(*) FROM chunks_fts WHERE rowid=?1", [gone_c], |r| r.get(0)).unwrap();
+        assert_eq!(fts_after, 0);
+        let solo_left: i64 = conn.query_row("SELECT COUNT(*) FROM tags WHERE id=?1", [solo], |r| r.get(0)).unwrap();
+        assert_eq!(solo_left, 0);
+        let shared_count: i64 = conn.query_row("SELECT count FROM tags WHERE id=?1", [shared], |r| r.get(0)).unwrap();
+        assert_eq!(shared_count, 1);
+        let keep_entities: i64 = conn.query_row("SELECT COUNT(*) FROM entities WHERE item_id=?1", [keep], |r| r.get(0)).unwrap();
+        assert_eq!(keep_entities, 1);
+        let keep_chunks: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE item_id=?1", [keep], |r| r.get(0)).unwrap();
+        assert_eq!(keep_chunks, 1);
+        let keep_e_left: i64 = conn.query_row("SELECT COUNT(*) FROM entities WHERE id=?1", [keep_e], |r| r.get(0)).unwrap();
+        assert_eq!(keep_e_left, 1);
+    }
+
+    #[tokio::test]
+    async fn purge_for_sync_guards_rest_and_empty() {
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('s','folder','{}',1,'',0)", []).unwrap();
+        let sid = conn.last_insert_rowid();
+        conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale) VALUES (?1,'a.md','t','text','h','',0)", [sid]).unwrap();
+        drop(conn);
+        let doc = IngestionDoc {
+            external_id: "b.md".to_string(),
+            title: "b".to_string(),
+            text: "x".to_string(),
+            author: String::new(),
+            updated_at: None,
+            source_ref: String::new(),
+        };
+        // rest connector never purges, even when the item is absent
+        let n = purge_missing_for_sync(&data_dir, sid, "rest", std::slice::from_ref(&doc)).await;
+        assert_eq!(n, 0);
+        // empty fetch purges nothing
+        let n = purge_missing_for_sync(&data_dir, sid, "folder", &[]).await;
+        assert_eq!(n, 0);
+        let conn = crate::db::open_db(&db_path).unwrap();
+        let items: i64 = conn.query_row("SELECT COUNT(*) FROM ingested_items", [], |r| r.get(0)).unwrap();
+        assert_eq!(items, 1);
+    }
+
+    #[test]
+    fn purge_missing_keeps_everything_when_all_fetched() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let conn = crate::db::init_db(&path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('s','folder','{}',1,'',0)", []).unwrap();
+        let sid = conn.last_insert_rowid();
+        conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale) VALUES (?1,'a.md','t','text','h','',0)", [sid]).unwrap();
+        let fetched: std::collections::HashSet<String> = ["a.md".to_string()].into_iter().collect();
+        let n = purge_missing_inner(&conn, sid, &fetched).unwrap();
+        assert_eq!(n, 0);
+        let items: i64 = conn.query_row("SELECT COUNT(*) FROM ingested_items", [], |r| r.get(0)).unwrap();
+        assert_eq!(items, 1);
     }
 }
