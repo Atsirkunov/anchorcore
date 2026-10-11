@@ -46,7 +46,19 @@ Only data flow: waitlist form → Formspree
 (owner must conclude the Art. 28 DPA in their Formspree account). Only storage:
 `localStorage["anchorcore.track"]` hero-tab preference (exempt, disclosed in the
 notice). Do not add analytics/trackers without revisiting the notice + consent.
-**Impressum: deferred, not forgotten.** §5 DDG requires a publishable postal
+****Edge-injected agent bridge (R18.10).** Cloudflare's WebMCP preview adds
+`/.webmcp/bridge.js` to every HTML response for this domain. It is **not a repo
+asset** — `git grep webmcp` finds only the disclosures — and it is served from
+our own origin, so it is not a third-party request. Toggle: Cloudflare
+dashboard → Agent Readiness → WebMCP, where the default packs "Content
+Credentials" (C2PA) and "Site MCP Server" are what `data-packs="c2pa,mcp-server-client"`
+renders. Audited 2026-10-11 from the served bytes (73 KB, 1 file, minified): no
+external URLs, no cookies or storage, no XHR/WebSocket/sendBeacon/postMessage;
+it registers `scan_images_c2pa` / `inspect_image_c2pa` plus the site-as-MCP-server
+bridge, and the image tool fetches images already on the page when an agent calls
+it. Turning it off is a dashboard toggle — nothing in the repo changes. The
+privacy notice discloses it (keep that line in sync if the packs change).
+Impressum: deferred, not forgotten.** §5 DDG requires a publishable postal
 address for a commercial site; the owner has not supplied one, and shipping a
 placeholder would be worse than the deferral. When it exists, add the block to
 `privacy.html` (see the comment in its `<head>`).
