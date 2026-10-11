@@ -52,8 +52,15 @@ function initDownloadLinks(): void {
   }
 }
 
+// Single source for the default hero copy (R18.9): the personal text is
+// authored in index.html, so the first paint is never swapped and crawlers
+// index the same sentence users read. Captured before any track switch - a
+// later switch would leave the DOM holding that track's text instead.
+let personalCopy: { title: string; sub: string; proof: string } | null = null;
+
 function setTrack(t: Track) {
-  const c = copy[t];
+  const base = copy[t];
+  const c = t === "personal" && personalCopy ? { ...base, ...personalCopy } : base;
   const title = document.getElementById("hero-title");
   const sub = document.getElementById("hero-sub");
   const proof = document.getElementById("track-proof");
@@ -63,7 +70,7 @@ function setTrack(t: Track) {
   if (title) title.textContent = c.title;
   if (sub) sub.textContent = c.sub;
   if (proof) proof.textContent = c.proof;
-  if (roadmap) roadmap.textContent = c.roadmap;
+  if (roadmap) roadmap.textContent = base.roadmap;
   if (cta) {
     if (t === "team") {
       // Mirror the Team pricing card action (R18.5) - one target for the hero
@@ -105,6 +112,13 @@ function initTrack() {
   const valid: Track[] = ["personal", "team", "hosted"];
   const initial: Track = (params && valid.includes(params) ? params : null) ?? (stored && valid.includes(stored) ? stored : null) ?? "personal";
   // default to personal for faster validation (design-system.md:128)
+  // capture the authored copy once, before any switch can rewrite it (R18.9)
+  const text = (id: string, fallback: string) => document.getElementById(id)?.textContent?.trim() || fallback;
+  personalCopy = {
+    title: text("hero-title", copy.personal.title),
+    sub: text("hero-sub", copy.personal.sub),
+    proof: text("track-proof", copy.personal.proof),
+  };
   setTrack(initial);
   document.querySelectorAll<HTMLButtonElement>(".track-toggle .toggle").forEach(b => {
     b.addEventListener("click", () => setTrack(b.dataset.track as Track));
