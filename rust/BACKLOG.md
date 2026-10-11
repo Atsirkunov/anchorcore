@@ -57,13 +57,13 @@ Status: `todo` | `doing` | `done` (✅). Update this file when you pick/complete
 
 > Order: R25.1 + R25.6 (parallel) → R25.2 → R25.3 → R25.4 + R25.5 → R25.7 (~5d). Phases B/C (encrypted folder packs → zero-knowledge hosted/Team relay) stay in `docs/plan-backup-sync.md` §9 until Phase A ships and decisions §8 are signed off.
 
-### Phase 18 — Landing-page audit + example content (`website/`) — 1 partial / 17 shipped
+### Phase 18 — Landing-page audit + example content (`website/`) — 17 shipped / 1 partial (deferred)
 
 > Shipped: R18.1, R18.2, R18.16-R18.18 (see shipped log). R18.6 and R18.14 are partial — their notes say what is left. Acceptance per task: `npm run build` green in `website/`, no new hex outside `:root`, deploy via `cd website && npm run build && npx wrangler deploy`; `git grep -i acme` clean.
 
 | ID | Title | Priority | Est | Dependencies | DoD | Files |
 |---|---|---|---|---|---|---|
-| R18.13 | Social proof + evidence for claims | P2 | 0.5d | — | **Done 2026-10-11:** the empty "wall of love" placeholder is gone (a comment marks where it returns with a real quote) and the FAQ latency claim now links `rust/scripts/bench_retrieval.py`, so the number can be checked instead of believed. **Still open:** one real trust signal. Release assets total 17 downloads all-time (3 on v1.0.16, 0 on v1.0.17) and the repo has 0 stars / 0 forks, so neither number is honest proof — this needs a real user quote from the owner (or a download milestone worth showing). | `website/index.html` |
+| R18.13 | Social proof + evidence for claims | P2 | 0.5d | — | **Done 2026-10-11:** the empty "wall of love" placeholder is gone and the FAQ latency claim links `rust/scripts/bench_retrieval.py`. **Deferred by the owner 2026-10-11** — the remaining requirement is one real trust signal, and the honest numbers (17 downloads all-time, 0 stars, 0 forks) argue the other way; the owner is collecting user feedback first. Close this by adding a real quote, or by showing a download milestone once one exists. | `website/index.html` |
 
 > Order: R18.4 → R18.3 + R18.5 (parallel) → R18.6 (partial via R18.16) → R18.7 → R18.8 + R18.9 → R18.10 + R18.11 → R18.12-R18.14 → R18.15 last.
 
@@ -71,7 +71,7 @@ Status: `todo` | `doing` | `done` (✅). Update this file when you pick/complete
 
 ## Shipped log (2026-10-10 — 2026-10-11)
 
-> Committed and shipped as of `v1.0.18` (2026-10-11) — the working-tree era ended with `4528b99`/`b233bea`. Full evidence lives in each commit or `docs/handover-*.md`.
+> Committed and shipped as of `v1.0.19` (2026-10-11) — the working-tree era ended with `4528b99`/`b233bea`. Full evidence lives in each commit or `docs/handover-*.md`.
 
 | Date | Task | Shipped |
 |---|---|---|
@@ -133,4 +133,12 @@ Full tables + verification evidence: [`BACKLOG-archive.md`](./BACKLOG-archive.md
 * Packaging: `docs/packaging.md`
 * MCP zero-setup plan: `docs/plan-mcp-zero-setup.md`
 * Archive: `rust/BACKLOG-archive.md`
+
+
+### Phase 26 — Website tooling follow-ups (from the Phase 18 audit, 2026-10-11)
+
+| ID | Title | Priority | Est | Dependencies | DoD | Files |
+|---|---|---|---|---|---|---|
+| R26.1 | Type-check + lint gate for `website/` | P1 | 0.25d | — | The site runs only `vite build`, which strips TypeScript without checking it — every `main.ts`/`GraphMini.ts` change in the Phase 18 release was type-checked by nothing. Add `tsc --noEmit` + eslint to `website/package.json` and run them in CI alongside `frontend/`. DoD: a deliberate type error in `website/src/main.ts` (e.g. a wrong property name) fails CI; `npm run build` still green. | `website/package.json`, `website/tsconfig.json` (new), `website/eslint.config.js` (new), `.github/workflows/ci.yml` |
+| R26.2 | Fix `--stone` text contrast | P2 | 0.25d | — | `--stone` (#9A8B7A) sits at 2.71-3.31:1 on the page surfaces and is used as text in `.matrix .n` (`✗ refused, audited`). R18.4 scoped itself to `--dim` and Lighthouse's a11y pass scores the short cell as passable, so neither closed it. DoD: `.matrix .n` reaches >= 4.5:1 (use `--dim`/`--sageH` for the text and keep `--stone` for strokes), and `git grep -n "color:var(--stone)" website/src/style.css` returns nothing that renders text. | `website/src/style.css` |
 

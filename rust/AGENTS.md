@@ -1,6 +1,6 @@
-# AnchorCore Rust — agent guide (shipped `v1.0.18`)
+# AnchorCore Rust — agent guide (shipped `v1.0.19`)
 
-This mirrors `/AGENTS.md` but for the `rust/` workspace. **Rust is now shipped** (`v1.0.18`, `cargo test` + `cargo check` green + honest conformance vs Rust via CI `rust-conformance`). `backend/` is legacy conformance only; new work is in `rust/` — `hosting/` is this same binary in one container (R19.1, license gate `license.rs`). Read this + `rust/BACKLOG.md` + `docs/rust-port.md` + `docs/handover-2026-08-21-retire.md:1`.
+This mirrors `/AGENTS.md` but for the `rust/` workspace. **Rust is now shipped** (`v1.0.19`, `cargo test` + `cargo check` green + honest conformance vs Rust via CI `rust-conformance`). `backend/` is legacy conformance only; new work is in `rust/` — `hosting/` is this same binary in one container (R19.1, license gate `license.rs`). Read this + `rust/BACKLOG.md` + `docs/rust-port.md` + `docs/handover-2026-08-21-retire.md:1`.
 
 ## Contract-first (still, but Rust is source)
 
@@ -12,7 +12,7 @@ This mirrors `/AGENTS.md` but for the `rust/` workspace. **Rust is now shipped**
 
 * Pick open work from `rust/BACKLOG.md`: **Phase 20** (`R20.*`, MCP zero-setup UX — `docs/plan-mcp-zero-setup.md`), **Phase 23** (`R23.*`, agent-friendly config), **Phase 18** (`R18.*`, website audit) — plus the shipped log (R19, R21–R24). Completed Phases 0–17: `rust/BACKLOG-archive.md`. Tasks still sized for parallel agents (file-disjoint). Full review driving earlier phases: `docs/review-2026-08-21-full.md:1`.
 * For each task: schema/migration (if any) → router/handler → wire in `main.rs` → test (new `cargo test` green + existing Python `backend/tests` via HTTP on `:8123`) → docs. Note: R9.2 makes conformance honest (`127` collect → `110/17` vs Rust via CI `rust-conformance`); old "124/3" & "115/8/3" were inflated/stale (see `docs/review-2026-08-21-full.md:1`).
-* Keep `rust/Cargo.toml:6` single source (`1.0.18` via `scripts/sync_version.py`); crates live under `rust/crates/*`.
+* Keep `rust/Cargo.toml:6` single source (`1.0.19` via `scripts/sync_version.py`); crates live under `rust/crates/*`.
 * Log decisions in `rust/docs/decisions.md`; update `docs/handover-*.md` on retire.
 
 ## Gotchas (from Python)
