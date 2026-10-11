@@ -71,10 +71,10 @@
           <h1 id="hero-title">Your memory — finally searchable.</h1>
           <p id="hero-sub" class="sub">Your notes, PDFs, Jira, Linear and Drive in one searchable private memory. Ask like you remember it — get the source.</p>
 
-          <div class="track-toggle" role="tablist" aria-label="Personal, Team or Hosted">
-            <button data-track="personal" class="toggle active" role="tab" aria-selected="true">Personal</button>
-            <button data-track="team" class="toggle" role="tab" aria-selected="false">Team · Self-hosted</button>
-            <button data-track="hosted" class="toggle" role="tab" aria-selected="false">Hosted <span class="soon">soon</span></button>
+          <div class="track-toggle" role="group" aria-label="Personal, Team or Hosted">
+            <button data-track="personal" class="toggle active" aria-pressed="true">Personal</button>
+            <button data-track="team" class="toggle" aria-pressed="false">Team · Self-hosted</button>
+            <button data-track="hosted" class="toggle" aria-pressed="false">Hosted <span class="soon">soon</span></button>
           </div>
           <p id="track-proof" class="proof">300-page PDF? Page 250 still cited. Your second brain, not another chatbot.</p>
 
@@ -123,9 +123,9 @@
       <div class="wrap">
         <h2>How it works</h2>
         <div class="steps">
-          <div class="step"><span>1</span><h4>Everything in one memory</h4><p>Point it at a folder, Google Drive, Jira, Linear, or any JSON API — decisions file into a single private memory. Nothing to migrate; automatic sync keeps it fresh.</p><code>connect → read → file</code></div>
-          <div class="step"><span>2</span><h4>Decisions, not just documents</h4><p>Each document is read for what matters — who decided what and why, who owns it, what it replaces — instead of dumping whole files into the AI's memory.</p><code>who · what · why</code></div>
-          <div class="step"><span>3</span><h4>Answers that show their work</h4><p>Ask like you remember it — in the browser, or from your coding agent. Every answer cites its source and section, never a guess.</p><code>Ask → cited answer</code></div>
+          <div class="step"><span>1</span><h3>Everything in one memory</h3><p>Point it at a folder, Google Drive, Jira, Linear, or any JSON API — decisions file into a single private memory. Nothing to migrate; automatic sync keeps it fresh.</p><code>connect → read → file</code></div>
+          <div class="step"><span>2</span><h3>Decisions, not just documents</h3><p>Each document is read for what matters — who decided what and why, who owns it, what it replaces — instead of dumping whole files into the AI's memory.</p><code>who · what · why</code></div>
+          <div class="step"><span>3</span><h3>Answers that show their work</h3><p>Ask like you remember it — in the browser, or from your coding agent. Every answer cites its source and section, never a guess.</p><code>Ask → cited answer</code></div>
         </div>
         <div class="code">connect → read → file → ask → cited answer</div>
         <div class="duo">
@@ -252,21 +252,21 @@
           <span id="guide-quickstart" class="anchor"></span>
           <span id="guide-rest" class="anchor"></span>
           <p class="small">Pick a guide — it opens right here.</p>
-          <div class="guide-tabs" role="tablist" aria-label="Guides">
-            <button class="guide-tab" data-guide="guide-obsidian-body" role="tab" aria-selected="false">Obsidian vault</button>
-            <button class="guide-tab" data-guide="guide-quickstart-body" role="tab" aria-selected="false">Sample company</button>
-            <button class="guide-tab" data-guide="guide-rest-body" role="tab" aria-selected="false">JSON API</button>
+          <div class="guide-tabs">
+            <button class="guide-tab" id="guide-tab-obsidian" data-guide="guide-obsidian-body" aria-expanded="false" aria-controls="panel-obsidian">Obsidian vault</button>
+            <button class="guide-tab" id="guide-tab-quickstart" data-guide="guide-quickstart-body" aria-expanded="false" aria-controls="panel-quickstart">Sample company</button>
+            <button class="guide-tab" id="guide-tab-rest" data-guide="guide-rest-body" aria-expanded="false" aria-controls="panel-rest">JSON API</button>
           </div>
           <div class="guide-panels">
-            <article class="guide-panel" id="panel-obsidian" role="tabpanel" hidden>
+            <article class="guide-panel" id="panel-obsidian" aria-labelledby="guide-tab-obsidian" hidden>
               <h3>Use your Obsidian vault</h3>
               <div class="guide-body" id="guide-obsidian-body"></div>
             </article>
-            <article class="guide-panel" id="panel-quickstart" role="tabpanel" hidden>
+            <article class="guide-panel" id="panel-quickstart" aria-labelledby="guide-tab-quickstart" hidden>
               <h3>Try the sample company</h3>
               <div class="guide-body" id="guide-quickstart-body"></div>
             </article>
-            <article class="guide-panel" id="panel-rest" role="tabpanel" hidden>
+            <article class="guide-panel" id="panel-rest" aria-labelledby="guide-tab-rest" hidden>
               <h3>Connect any JSON API</h3>
               <div class="guide-body" id="guide-rest-body"></div>
             </article>
@@ -281,14 +281,14 @@
       <div class="wrap">
         <h2>FAQ</h2>
         <div class="faq">
-          <div class="qa"><h4>Is my data private?</h4><p>Yes. The app only listens on your own machine, keeps everything in a database on your disk, and stores passwords in your OS keychain. Sources you mark Sensitive or PII are never sent to cloud AI unless you explicitly approve that provider.</p></div>
-          <div class="qa"><h4>Can I check the code myself?</h4><p>Yes — AnchorCore is source-available. The app is Rust and the repository is public, so you can read exactly what it does (no telemetry; it only contacts the model, Drive, Jira, Linear or API endpoints you set up) and build it yourself. Personal use is free; team and commercial use need a paid license — see <a href="https://github.com/Atsirkunov/anchorcore/blob/main/LICENSE.md">LICENSE.md</a>.</p></div>
-          <div class="qa"><h4>How does it read documents?</h4><p>It splits documents at their headings (§4.2, 3.1.1, Article 12…) and packs the text into short passages. Each section gets a summary and topic tags, so answers cite the exact section — not “somewhere in the PDF”.</p></div>
-          <div class="qa"><h4>Does it stay fast as my library grows?</h4><p>Yes. It first narrows thousands of documents down to the few relevant sections using tags and summaries, then searches inside just those — instead of scanning everything. Measured at ~7ms per search on a 30k-chunk benchmark — projected to stay well under 50ms at 5,000 documents.</p></div>
-          <div class="qa"><h4>Is it free?</h4><p>Personal local app — free. Team self-hosted (one Docker container, your VPC) is a one-time platform license, perpetual including a year of support and updates. Hosted is coming soon — join the waitlist.</p></div>
-          <div class="qa"><h4>Do I need Ollama?</h4><p>No. Without it you still get full-text search over everything. Add Ollama (one install, two free models) for AI answers with citations.</p></div>
-          <div class="qa"><h4>Citations you can click?</h4><p>Every answer lists its sources with section links like <code>Art 12 › 12.3</code> — click to jump to the passage. Coding agents get the same cited format.</p></div>
-          <div class="qa"><h4>How is this different from NotebookLM or ChatGPT file search?</h4><p>Those are cloud uploads. AnchorCore runs on your machine, connects to folders, Drive, Jira, Linear and APIs — not just uploads — and never sends sources you marked sensitive to AI you haven't approved.</p></div>
+          <div class="qa"><h3>Is my data private?</h3><p>Yes. The app only listens on your own machine, keeps everything in a database on your disk, and stores passwords in your OS keychain. Sources you mark Sensitive or PII are never sent to cloud AI unless you explicitly approve that provider.</p></div>
+          <div class="qa"><h3>Can I check the code myself?</h3><p>Yes — AnchorCore is source-available. The app is Rust and the repository is public, so you can read exactly what it does (no telemetry; it only contacts the model, Drive, Jira, Linear or API endpoints you set up) and build it yourself. Personal use is free; team and commercial use need a paid license — see <a href="https://github.com/Atsirkunov/anchorcore/blob/main/LICENSE.md">LICENSE.md</a>.</p></div>
+          <div class="qa"><h3>How does it read documents?</h3><p>It splits documents at their headings (§4.2, 3.1.1, Article 12…) and packs the text into short passages. Each section gets a summary and topic tags, so answers cite the exact section — not “somewhere in the PDF”.</p></div>
+          <div class="qa"><h3>Does it stay fast as my library grows?</h3><p>Yes. It first narrows thousands of documents down to the few relevant sections using tags and summaries, then searches inside just those — instead of scanning everything. Measured at ~7ms per search on a 30k-chunk benchmark — projected to stay well under 50ms at 5,000 documents.</p></div>
+          <div class="qa"><h3>Is it free?</h3><p>Personal local app — free. Team self-hosted (one Docker container, your VPC) is a one-time platform license, perpetual including a year of support and updates. Hosted is coming soon — join the waitlist.</p></div>
+          <div class="qa"><h3>Do I need Ollama?</h3><p>No. Without it you still get full-text search over everything. Add Ollama (one install, two free models) for AI answers with citations.</p></div>
+          <div class="qa"><h3>Citations you can click?</h3><p>Every answer lists its sources with section links like <code>Art 12 › 12.3</code> — click to jump to the passage. Coding agents get the same cited format.</p></div>
+          <div class="qa"><h3>How is this different from NotebookLM or ChatGPT file search?</h3><p>Those are cloud uploads. AnchorCore runs on your machine, connects to folders, Drive, Jira, Linear and APIs — not just uploads — and never sends sources you marked sensitive to AI you haven't approved.</p></div>
         </div>
       </div>
     </section>
