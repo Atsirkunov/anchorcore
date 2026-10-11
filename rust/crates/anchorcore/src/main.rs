@@ -18,12 +18,16 @@ mod db;
 mod distill;
 mod embedder;
 mod entities;
+mod extract;
 mod fernet;
 mod frontend;
+mod fsbrowse;
 mod hashing;
 mod health;
 mod jobs;
 mod license;
+mod mcp;
+mod mcp_setup;
 mod ollama;
 mod pii;
 mod pipeline;
@@ -302,6 +306,11 @@ fn build_router(state: health::AppState) -> Router {
         .route("/system/status", get(system::status_handler))
         .route("/system/onboarding", get(system::onboarding_handler))
         .route("/system/errors", get(system::errors_handler))
+        .route("/system/fs", get(fsbrowse::fs_browse_handler))
+        .route("/system/mcp", get(system::mcp_info_handler))
+        .route("/system/mcp/clients", get(mcp_setup::clients_handler))
+        .route("/system/mcp/connect", post(mcp_setup::connect_handler))
+        .route("/system/mcp/disconnect", post(mcp_setup::disconnect_handler))
         .route("/system/logs", get(system::logs_handler))
         .route("/system/logs/:name", get(system::log_download_handler))
         .route("/system/ollama/start", post(system::ollama_start_handler))
@@ -354,8 +363,30 @@ fn maybe_open_browser(addr: &str) {
     });
 }
 
+fn mcp_mode_requested() -> bool {
+    // R20.8: `anchorcore mcp` runs the stdio MCP server. A copy/rename to
+    // `anchorcore-mcp[.exe]` keeps pre-merge client configs working.
+    let mut args = std::env::args();
+    let argv0 = args.next().unwrap_or_default();
+    if let Some(first) = args.next() {
+        if first == "mcp" {
+            return true;
+        }
+    }
+    let stem = std::path::Path::new(&argv0)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    stem == "anchorcore-mcp"
+}
+
 #[tokio::main]
 async fn main() {
+    // R20.8: stdio MCP mode — no server, no DB init, no browser.
+    if mcp_mode_requested() {
+        mcp::run().await;
+        return;
+    }
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();

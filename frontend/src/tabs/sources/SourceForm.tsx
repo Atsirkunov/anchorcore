@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../../api";
+import { FolderPicker } from "../../FolderPicker";
 import { stripPlaceholders } from "../../placeholders";
 import { theme, commonStyles } from "../../theme";
 import type { Source } from "../../types";
@@ -266,6 +267,7 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
   const [connector, setConnector] = useState("folder");
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [label, setLabel] = useState("internal");
   const [jira, setJira] = useState({ base_url: "", email: "", token: "", project: "" });
   const [gdrive, setGdrive] = useState({ folder_id: "", token: "" });
@@ -316,7 +318,24 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
         </select>
         <input style={commonStyles.input} placeholder="Source name" value={name} onChange={(e) => setName(e.target.value)} />
         {connector === "folder" ? (
-          <input style={commonStyles.input} placeholder="Folder path (absolute)" value={path} onChange={(e) => setPath(e.target.value)} />
+          <>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input style={{ ...commonStyles.input, flex: 1 }} placeholder="Folder path (absolute)" value={path} onChange={(e) => setPath(e.target.value)} />
+              <button type="button" style={commonStyles.button} title="Browse folders on this machine" onClick={() => setPickerOpen((v) => !v)}>
+                Browse…
+              </button>
+            </div>
+            {pickerOpen && (
+              <FolderPicker
+                initialPath={path}
+                onSelect={(p) => {
+                  setPath(p);
+                  setPickerOpen(false);
+                }}
+                onCancel={() => setPickerOpen(false)}
+              />
+            )}
+          </>
         ) : connector === "gdrive" ? (
           <>
             <input style={commonStyles.input} placeholder="Drive folder ID (from URL …/folders/…)" value={gdrive.folder_id} onChange={(e) => setGdrive({ ...gdrive, folder_id: e.target.value })} />
@@ -366,6 +385,7 @@ export function SourceEditForm({
   const [editEnabled, setEditEnabled] = useState(source.enabled);
   const [editLabel, setEditLabel] = useState<string>(source.label);
   const [editPath, setEditPath] = useState(config.path ?? "");
+  const [editPickerOpen, setEditPickerOpen] = useState(false);
   const [editJira, setEditJira] = useState({
     base_url: config.base_url ?? "",
     email: config.email ?? "",
@@ -415,7 +435,24 @@ export function SourceEditForm({
     <div style={{ display: "grid", gap: 6, marginTop: 10, paddingTop: 10, borderTop: `1px solid ${theme.border}` }}>
       <input style={commonStyles.input} placeholder="Source name" value={editName} onChange={(e) => setEditName(e.target.value)} />
       {source.connector === "folder" ? (
-        <input style={commonStyles.input} placeholder="Folder path (absolute)" value={editPath} onChange={(e) => setEditPath(e.target.value)} />
+        <>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input style={{ ...commonStyles.input, flex: 1 }} placeholder="Folder path (absolute)" value={editPath} onChange={(e) => setEditPath(e.target.value)} />
+            <button type="button" style={commonStyles.button} title="Browse folders on this machine" onClick={() => setEditPickerOpen((v) => !v)}>
+              Browse…
+            </button>
+          </div>
+          {editPickerOpen && (
+            <FolderPicker
+              initialPath={editPath}
+              onSelect={(p) => {
+                setEditPath(p);
+                setEditPickerOpen(false);
+              }}
+              onCancel={() => setEditPickerOpen(false)}
+            />
+          )}
+        </>
       ) : source.connector === "gdrive" ? (
         <>
           <input style={commonStyles.input} placeholder="Drive folder ID" value={editGdrive.folder_id} onChange={(e) => setEditGdrive({ ...editGdrive, folder_id: e.target.value })} />

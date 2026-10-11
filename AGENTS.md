@@ -18,7 +18,7 @@ Repo: `git@github.com:Atsirkunov/anchorcore.git`. Backend under `backend/` (depr
 
 - Dev (Rust — shipped): `cargo run -p anchorcore -- --port 8000 --data-dir ~/.anchorcore` (migrations, watcher, jobs; `cargo test -p anchorcore` 59, `cargo check 0`). For conformance vs Python (restore `backend/` from tag `archive/python-final` first): `cargo run -p anchorcore -- --port 8123 --data-dir /tmp/ac-dev` + `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=test_mcp.py`
 - Dev (Python legacy — deprecated): `./start.sh` (venv, migrations, Ollama, backend :8000) — conformance only. Do not use for new features.
-- Backend tests (conformance — restore `backend/` from the archive tag first): `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=test_mcp.py` (honest accounting, `skipIf` for Python-internal, `rust/BACKLOG.md` R9.2) via CI `rust-conformance`. `cargo test -p anchorcore` green + `cargo check` clean.
+- Backend tests (conformance — restore `backend/` from the archive tag first): `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=test_mcp.py` (honest accounting, `skipIf` for Python-internal, `rust/BACKLOG-archive.md` R9.2) via CI `rust-conformance`. `cargo test -p anchorcore` green + `cargo check` clean.
 - Frontend: `cd frontend && npm run build` (tsc + vite; must pass before a UI change is done) — embedded via `rust/crates/anchorcore/src/frontend.rs:1`
 - Team image (one container, R19.1/B59): `docker compose -f hosting/docker-compose.yml up --build` (or `docker build -f hosting/Dockerfile -t anchorcore:team .`). License gate `ANCHOR_EDITION=team` → `rust/crates/anchorcore/src/license.rs` (issue: `python scripts/make_license.py`); CI smoke `docker-team`; GHCR publish on tags.
 - Release (single source): edit `rust/Cargo.toml:6` `workspace.package.version` → `python scripts/sync_version.py --check` (Cargo-only since the archive) → `cargo test` + `cargo build --release` (`frontend/dist` embedded, `9.8M`, `codesign valid`) → `git tag vX.Y.Z` → `git push origin vX.Y.Z` (CI builds `AnchorCore-{windows,macos,linux}.zip`)
@@ -39,8 +39,13 @@ Repo: `git@github.com:Atsirkunov/anchorcore.git`. Backend under `backend/` (depr
 - `backend/app/chunking.py` / `hashing.py` / `distill.py` — extracted from `pipeline.py` (B35). `chunking.py:14` `chunk_text` (800/100 char-based), `chunking.py:49` `chunk_document` (heading-aware `_is_heading` `§434`/`4.2.1`/`Article 12`/ALL-CAPS → `1600` max paragraph-packed sections), `chunking.py:99` `classify_windows` (16000, 50% overlap). Rust parity `rust/crates/anchorcore/src/chunking.rs:16/68/133`. Cleaning before chunking `cleaning.py:17` (`clean_text` + `repeated_lines`).
 - `backend/app/pii.py` — PII knowledge base + `scan_text` (B30), categories + custom words, persisted in `app_settings`.
 - `backend/app/auth.py` — hosted auth (B40): PBKDF2 + HS256 JWT, `get_current_user`/`require_auth` (off when `ANCHOR_AUTH_SECRET` empty).
-- `backend/app/classifier.py` — per-doc-type extraction prompts, `detect_document_type`, `classify`,
-  `distill`; rule-based fallbacks for all (tests must pass without Ollama). Takes `cloud_trusted` (B39).
+- `backend/app/classifier.py` / Rust `classifier.rs` — per-doc-type extraction prompts
+  (`standards|runbook|documentation|meeting|decision_log|prd|general`), `detect_document_type` (LLM with
+  `detect_rules` fallback), `classify`, `distill`; rule-based fallbacks for all (tests must pass without
+  Ollama) — note-only types (standards/runbook/documentation) never emit decision/action. Takes
+  `cloud_trusted` (B39). **R22.1:** the Rust pipeline must call `Classifier::classify`/`distill` per
+  window — don't route extraction back through `classify_rules` (that shipped 1.0.10–1.0.14 and fabricated
+  decisions/actions from process docs).
 - `backend/app/routers/` — `sources.py` (create/list/update/delete + config + jobs, label B39),
   `entities.py` (`GET /{id}`, `PATCH`, `GET /{id}/related`, `POST /{id}/dispute`, `GET /{id}/disputes`, **`GET /{id}/context` B27 neighbour expansion**; `review_router` for low-confidence/duplicates/merge), `qa.py` (`POST /qa` + `POST /qa/public` B30 share-safe), `projects.py`, `settings.py`, `system.py` (status/errors/logs/onboarding B8), `pii.py` (`/pii/config`, `/pii/review`, `/pii/review/{id}`, `/pii/scan/{source}`), `auth.py` (`/auth/status`, `/auth/signup`, `/auth/login`, `/auth/me` B40).
 - `backend/app/secrets.py` — `SecretStore` (OS keychain, encrypted-file fallback when
@@ -103,8 +108,8 @@ Key rules:
 
 * Now **shipped artifact**: `rust/` workspace is source of truth (`rust/Cargo.toml:6` `1.0.14` single source via `scripts/sync_version.py`), same API + same SQLite file as Python. `backend/` is legacy conformance only (R19.1: `hosting/` is the one-container Rust Team image). `cargo test` + `cargo check` green + honest conformance vs Rust (`127` collect) via `ci.yml:12` `rust-conformance`.
 * `cargo run -p anchorcore -- --port 8123` on `:8123` vs `PYTHONPATH=backend pytest` conformance (`110/17` honest, was `115/8/3`/`124/3`), `cargo test` + `cargo check` clean (R11.3 `RUSTFLAGS="-D warnings"` + `clippy -- -D unwrap_used` with local `allow`), watcher `watcher/service.rs:12` `3s` debounce + `scheduler.rs:30` `reload_sources` `interval.tick → jobs.create_job` + `Pipeline` executor (`R11.1`), `db.rs:22` `open_db` fast path, `jobs.rs:101` `PROMOTE_LOCK` + `pipeline.rs:61` wait-loop, `answer.rs:78` `rewrite_followup` + `generate_answer` `Conversation so far` (`R11.4` only pronoun, `R11.7` `6` cap), `auth.rs:21` `429` `5/60s` per-email (`R11.5` `ANCHOR_TRUSTED_PROXY`), Phase 14 `chunking.rs:68` `chunk_document_with_sections` `sections` + `tags.rs:50` `0.82` + `retrieval.rs:836` `toc_search` `migrations/11_12` + `sections.rs`/`tags.rs` `GET /sections|/tags` + `R12.5` `mcp.rs:92` `public_only` `audit_mcp`.
-* **Post-1.0.10 polish:** `rust/BACKLOG.md:127` Phase 11 `R11.1–R11.10` + Phase 12 `R12.5` MCP `public_only` audit + Phase 14 `R14.1–R14.6` hierarchical TOC (see `docs/guides/hierarchical-toc.md`). Full write-up: `docs/handover-2026-08-28-v1.0.11.md:1` + `docs/review-2026-08-21-full.md:1`.
-* AI agents: pick one task from `rust/BACKLOG.md` **Phase 18** (landing-page audit `R18.1`–`R18.15`) or **Phase 17** `R17.*`; keep `PRAGMA foreign_keys=ON` + `spawn_blocking` + per-key `secrets.enc.<sha256>` 64 hex.
+* **Post-1.0.10 polish (archived):** Phase 11 `R11.1–R11.10` + Phase 12 `R12.5` MCP `public_only` audit + Phase 14 `R14.1–R14.6` hierarchical TOC in `rust/BACKLOG-archive.md` (see `docs/guides/hierarchical-toc.md`). Full write-up: `docs/handover-2026-08-28-v1.0.11.md:1` + `docs/review-2026-08-21-full.md:1`.
+* AI agents: pick open work from `rust/BACKLOG.md` — **Phase 20** (`R20.*`, MCP zero-setup UX — `docs/plan-mcp-zero-setup.md`), **Phase 23** (`R23.*`, agent-friendly config) or **Phase 18** (`R18.*`, website audit); shipped work is in its shipped log, completed Phases 0–17 in `rust/BACKLOG-archive.md`. Keep `PRAGMA foreign_keys=ON` + `spawn_blocking` + per-key `secrets.enc.<sha256>` 64 hex.
 
 ## Gotchas (learned the hard way — don't reintroduce)
 
@@ -133,7 +138,7 @@ Key rules:
   `b33a0c1` and kept in sync by triggers; `AnswerEngine._vector_search` queries it (`k = :limit`)
   and falls back to the pure-Python cosine scan when the extension/table is unavailable or the
   embedding dims don't match. `/system/status.retrieval` exposes latency + backend (vec0 vs scan).
-- **Single version source:** `rust/Cargo.toml:6` `workspace.package.version` (`1.0.14` via `scripts/sync_version.py` (backend leg removed after the archive), see `rust/BACKLOG.md:63` R5.3; `ci.yml:12` `version-drift` checks both `scripts/sync_version.py` + `rust/scripts/sync_version.py` — they are identical, duplicate kept for `cargo run` from `rust/` vs root, drift risk noted `rust/BACKLOG.md:127` R11.10; `rust-conformance` job only gates merges when branch protection is enabled).
+- **Single version source:** `rust/Cargo.toml:6` `workspace.package.version` (`1.0.14` via `scripts/sync_version.py` (backend leg removed after the archive), see `rust/BACKLOG-archive.md` R5.3; `ci.yml:12` `version-drift` checks both `scripts/sync_version.py` + `rust/scripts/sync_version.py` — they are identical, duplicate kept for `cargo run` from `rust/` vs root, drift risk noted `rust/BACKLOG-archive.md` R11.10; `rust-conformance` job only gates merges when branch protection is enabled).
 - **Job concurrency is bounded (B34):** `JobManager.MAX_CONCURRENT` (2) pipeline runs at once; excess
   syncs persist as `pending` and queue. `_age_decay` takes a fixed `now` per query.
 - **PII gate (B39):** `sources.label` (internal|public|sensitive|pii) + provider trust — local
@@ -154,10 +159,15 @@ Key rules:
   empty string as "clear it". Don't reintroduce a single-file fallback.
 - **`POST /sources` for a Jira connector does NOT validate the instance** — config-only; only a sync
   fails if credentials are wrong. Fine for tests/onboarding.
+- **Folder connector + purge (B57/R22.1):** files that exist but cannot be read are returned as
+  `skipped` and must never be purged; PDFs extract via `pdf-extract` in Rust (was a stub until 2026-10-11 —
+  sync used to delete ingested PDFs because fetch skipped them). Keep new file types' error paths
+  reporting, not dropping.
+- **File formats live in `extract.rs` (R24.2/B9):** folder + Drive both call `extract_file`/`extract_bytes` — Word (`docx/docm`), PowerPoint (`pptx/pptm`), Excel (`xlsx/xlsm/xlsb/xls`) + `ods` via calamine, `odt/odp`, `rtf`, `eml` (mailparse), `pdf`, `html`, text (UTF-8 / UTF-16 with-and-without BOM / cp1252 fallback). Add new types to `SUPPORTED_EXTS` + a `match` arm there (never in a connector); `MIME_KINDS`/`kind_for` maps Drive MIME → kind. Drive `plan_for` exports native Google types (Docs→text, Sheets→csv, Slides→text, other→pdf) and extracts uploads by MIME (octet-stream → filename extension); failures/empty → `skipped` (purge-safe). Legacy `.doc`/`.ppt` are deliberately unsupported.
 - **Frontend build type-checks** (`tsc -b && vite build`) — unused vars/imports fail the build (see the
   `ollamaOk` lesson). Keep TS types in `types.ts` in sync with backend schemas or the build breaks.
 - **Empty-string `app_settings` rows mean "unset"** — the Settings UI saves `''` for blank fields (e.g. "Local Ollama" leaves `classifier_base_url`/`embed_base_url` empty). Python's `_cached_get` and the Rust port both returned `Some('')` on a cache miss but `None` on a cache hit, so `.or_else(ollama_base_url)` chains worked only within the 3s cache TTL — retrieval flapped `hybrid` ↔ `keyword_only`, `test-connection` failed with "API key required for a cloud embedding provider", and `/system/status` mislabeled local providers as "cloud". Fixed via `settings.rs` `non_empty()`: empty reads as `None` on every path and `set("")` deletes the row. Never reintroduce `Some("")` — `format!("{}/v1/embeddings", "")` is a relative URL and fails.
-- **Repo files are CRLF** — the edit tool matches exact text, so multi-line finds with LF fail; use single-line anchors or a script that preserves CRLF. On boxes without a C toolchain/linker even `cargo check` fails (build scripts); verify Rust with `rustfmt --check` (parse + style) and let CI run `cargo test`/`clippy`.
+- **Repo files are CRLF** — the edit tool matches exact text, so multi-line finds with LF fail; use single-line anchors or a script that preserves CRLF. On boxes without a C toolchain/linker even `cargo check` fails (build scripts); verify Rust with `rustfmt --check` (parse + style) and let CI run `cargo test`/`clippy`. Pure std/serde_json-only logic can still run locally: extract the module into a scratch crate and `cargo +stable-x86_64-pc-windows-gnu test` with `...\x86_64-pc-windows-gnu\bin\self-contained` + `...\bin` prepended to `PATH` — works while no dep needs C or `windows-sys`/raw-dylib (dlltool then needs MinGW `as.exe`, absent).
 
 ## UI notes
 
@@ -168,6 +178,7 @@ Key rules:
   or the bundled `sample/` corpus (sync with live progress) → ask a question with cited answer.
   Sample path resolves via `Path(__file__).resolve().parents[3] / "sample"` (dev checkout only; frozen
   apps report `sample.available: false`).
+- `frontend/src/FolderPicker.tsx` — folder browser for folder sources ("Browse…" in the SourceForm add/edit branch + wizard step 2). Talks to `GET /system/fs` (`fsbrowse.rs`: child dirs only, roots view = Home + drives, 400 `detail` on relative/missing; never canonicalize → no `\\?\` leak). Keep the typed-path input — pasting a known path stays fastest.
 - `AskTab` renders turns newest-first (B19). `SourcesTab` is a thin composition (B37): project/source
   logic lives in `tabs/sources/{ProjectSection,SourceForm,SourceRow}.tsx`; job polling is the single
   `useJobsPoll` hook (TanStack Query); `projects` state lives in `ProjectsContext` (no duplicate fetch).

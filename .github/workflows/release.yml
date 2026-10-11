@@ -2,10 +2,11 @@ name: Release
 
 # Builds distributable apps on every tag push (e.g. v1.0.12) and attaches
 # them to the GitHub Release for the tag.
-# Assets (Rust — frontend/dist embedded via include_dir!, no Python runtime):
-#   AnchorCore-windows.zip  — anchorcore.exe + anchorcore-mcp.exe
+# Assets (Rust — frontend/dist embedded via include_dir!, no Python runtime;
+# R20.8: one executable per OS — the app and `anchorcore mcp` are the same file):
+#   AnchorCore-windows.zip  — anchorcore.exe
 #   AnchorCore-macos.zip    — AnchorCore.app bundle (ad-hoc signed)
-#   AnchorCore-linux.zip    — anchorcore + anchorcore-mcp
+#   AnchorCore-linux.zip    — anchorcore
 # Also publishes the Team container image (hosting/Dockerfile) to GHCR:
 #   ghcr.io/atsirkunov/anchorcore:<version> and :team
 # The website Download buttons link straight at the latest windows/macos
@@ -42,8 +43,7 @@ jobs:
         run: |
           mkdir -p dist
           cp rust/target/release/anchorcore dist/anchorcore
-          cp rust/target/release/anchorcore-mcp dist/anchorcore-mcp
-          cd dist && zip -r AnchorCore-linux.zip anchorcore anchorcore-mcp
+          cd dist && zip -r AnchorCore-linux.zip anchorcore
       - name: Upload Rust Linux
         uses: actions/upload-artifact@v4
         with:
@@ -79,9 +79,6 @@ jobs:
           mkdir -p "dist/AnchorCore.app/Contents/Resources"
           cp rust/target/release/anchorcore "dist/AnchorCore.app/Contents/MacOS/AnchorCore"
           chmod +x "dist/AnchorCore.app/Contents/MacOS/AnchorCore"
-          if [ -f rust/target/release/anchorcore-mcp ]; then
-            cp rust/target/release/anchorcore-mcp "dist/AnchorCore.app/Contents/MacOS/anchorcore-mcp"
-          fi
           cat > "dist/AnchorCore.app/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -139,9 +136,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item rust/target/release/anchorcore.exe dist/anchorcore.exe
-          Copy-Item rust/target/release/anchorcore-mcp.exe dist/anchorcore-mcp.exe
           Push-Location dist
-          Compress-Archive -Path anchorcore.exe,anchorcore-mcp.exe -DestinationPath AnchorCore-windows.zip -Force
+          Compress-Archive -Path anchorcore.exe -DestinationPath AnchorCore-windows.zip -Force
           Pop-Location
       - name: Upload Rust Windows
         uses: actions/upload-artifact@v4

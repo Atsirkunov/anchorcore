@@ -39,7 +39,7 @@ Rust binary embeds `frontend/dist` via `include_dir!` at compile time (`rust/cra
 
 ```bash
 cargo build --release
-# artifacts: rust/target/release/anchorcore + anchorcore-mcp (9.8M)
+# artifact: rust/target/release/anchorcore (9.8M, app + `anchorcore mcp` mode)
 # full zips, same layout as CI:
 .\build.ps1          # Windows: dist/AnchorCore-windows.zip (Rust)
 ./build.sh           # macOS: dist/AnchorCore-macos.zip (.app, ad-hoc signed)

@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import { FolderPicker } from "./FolderPicker";
+import { McpConnectCard } from "./McpConnect";
 import { summarizePulls, useModelPull } from "./useModelPull";
 import { theme } from "./theme";
 import type { Citation, OnboardingState } from "./types";
 
-const STEPS = ["Setup checks", "Configure model", "Connect a source", "Ask a question"];
+const STEPS = ["Setup checks", "Configure model", "Connect a source", "Ask a question", "Connect an agent"];
 
 function delay(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -21,6 +23,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
   const [state, setState] = useState<OnboardingState | null>(null);
   const [step, setStep] = useState(0);
   const [folderPath, setFolderPath] = useState("");
+  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ total: number; processed: number } | null>(null);
   const [question, setQuestion] = useState("");
@@ -338,7 +341,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
         {step === 2 && (
           <div style={styles.body}>
             <div style={styles.note}>
-              AnchorCore ingests a folder of notes/docs (Markdown, txt, PDF). You can also use the bundled sample corpus to try it.
+              AnchorCore ingests a folder of notes and business docs (Markdown, text, Office, OpenDocument, RTF, email, PDF). You can also use the bundled sample corpus to try it.
             </div>
             {state?.sample.available && (
               <button style={{ ...styles.button, background: theme.blueBg, color: theme.accentAlt }} disabled={busy} onClick={connectSample}>
@@ -353,10 +356,23 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
                 onChange={(e) => setFolderPath(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && connectFolder()}
               />
+              <button style={styles.button} disabled={busy} title="Browse folders on this machine" onClick={() => setFolderPickerOpen((v) => !v)}>
+                Browse…
+              </button>
               <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} disabled={busy} onClick={connectFolder}>
                 Connect
               </button>
             </div>
+            {folderPickerOpen && (
+              <FolderPicker
+                initialPath={folderPath}
+                onSelect={(p) => {
+                  setFolderPath(p);
+                  setFolderPickerOpen(false);
+                }}
+                onCancel={() => setFolderPickerOpen(false)}
+              />
+            )}
             {busy && progress && (
               <div style={{ marginTop: 10, fontSize: 13, color: theme.accentAlt }}>
                 {progress.total > 0 ? `Ingesting… ${progress.processed}/${progress.total}` : "Ingesting…"}
@@ -406,6 +422,21 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
             <div style={styles.actions}>
               <button style={styles.button} onClick={() => setStep(2)}>← Back</button>
               <button style={{ ...styles.button, background: theme.buttonBg }} onClick={onClose}>Done — open AnchorCore</button>
+              <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} onClick={() => setStep(4)}>Connect an agent →</button>
+            </div>
+          </div>
+        )}
+
+        {step === 4 && (
+          <div style={styles.body}>
+            <div style={styles.note}>
+              Optional: let Claude Code, Codex, opencode, Cursor or Claude Desktop use this memory. Connect writes that app&apos;s config (backed up first) — you can change it anytime in System.
+            </div>
+            <McpConnectCard />
+            <div style={styles.actions}>
+              <button style={styles.button} onClick={() => setStep(3)}>← Back</button>
+              <button style={{ ...styles.button, background: "transparent", border: `1px solid ${theme.border}`, color: theme.textMuted }} onClick={onClose}>Skip</button>
+              <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} onClick={onClose}>Done — open AnchorCore</button>
             </div>
           </div>
         )}

@@ -1,4 +1,4 @@
-import type { AppSettings, AskResponse, AskTurn, Dispute, Entity, Health, Job, LogFile, MergeProposal, OnboardingState, PiiChunk, PiiConfig, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
+import type { AppSettings, AskResponse, AskTurn, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, PiiChunk, PiiConfig, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
 
 export class RequestAbortedError extends Error {
   constructor(message = "Request cancelled") {
@@ -211,6 +211,25 @@ export const api = {
     return request<SystemEvent[]>(`/system/errors?${q}`);
   },
   systemLogs: () => request<LogFile[]>("/system/logs"),
+  systemMcp: () => request<McpInfo>("/system/mcp"),
+  browseFolders: (path?: string) => {
+    const q = new URLSearchParams();
+    if (path?.trim()) q.set("path", path.trim());
+    return request<FolderListing>(`/system/fs${q.toString() ? `?${q}` : ""}`);
+  },
+  mcpClients: () => request<{ clients: McpClient[] }>("/system/mcp/clients"),
+  mcpConnect: (client: string) =>
+    request<{ ok: boolean; method?: string; config_path?: string; backup?: string | null; removed?: boolean; error?: string }>("/system/mcp/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client }),
+    }),
+  mcpDisconnect: (client: string) =>
+    request<{ ok: boolean; method?: string; config_path?: string; removed?: boolean; error?: string }>("/system/mcp/disconnect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client }),
+    }),
   logDownloadUrl: (name: string) => `/system/logs/${encodeURIComponent(name)}`,
 
   startOllama: () => request<{ ok: boolean; already_running?: boolean; launched?: boolean; error?: string }>("/system/ollama/start", { method: "POST" }),

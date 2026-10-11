@@ -1,6 +1,6 @@
 # AnchorCore Rust Port — workspace
 
-> **Status: shipped as of `v1.0.9` `7131cfe` (2026-08-21).** Python `backend/` is archived on tag `archive/python-final` (frozen conformance; see R19.1: `hosting/` is the one-container Rust Team image); Rust `rust/` is the shipped artifact (single source `rust/Cargo.toml:6`). All `backend/tests` `110/17` honest green vs Rust on `:8123` (`cargo test` + `cargo check` green via CI `rust-conformance`). See `docs/rust-port.md:1` (evaluation closed) + `rust/BACKLOG.md:1` (all R0–R6 done, R7–R10.6 done) + `docs/handover-2026-08-21-retire.md:1`.
+> **Status: shipped as of `v1.0.9` `7131cfe` (2026-08-21).** Python `backend/` is archived on tag `archive/python-final` (frozen conformance; see R19.1: `hosting/` is the one-container Rust Team image); Rust `rust/` is the shipped artifact (single source `rust/Cargo.toml:6`). All `backend/tests` `110/17` honest green vs Rust on `:8123` (`cargo test` + `cargo check` green via CI `rust-conformance`). See `docs/rust-port.md:1` (evaluation closed) + `rust/BACKLOG.md` (open work; completed Phases 0–17 in `rust/BACKLOG-archive.md`) + `docs/handover-2026-08-21-retire.md:1`.
 
 ## Why a separate folder?
 
@@ -37,7 +37,7 @@ rust/
 
 ```bash
 source $HOME/.cargo/env
-cargo build -p anchorcore --release  # 9.8M anchorcore + 3.4M anchorcore-mcp, codesign valid
+cargo build -p anchorcore --release  # 9.8M single binary (app + `anchorcore mcp` mode), codesign valid
 cargo run -p anchorcore -- --port 8123 --data-dir /tmp/ac-data & curl http://127.0.0.1:8123/health
 cargo test -p anchorcore  # all green (harness + jobs atomic + auth 401 + scheduler + R10.4 queue)
 cargo check -p anchorcore # 0 warnings

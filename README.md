@@ -49,6 +49,7 @@ Team and commercial use requires a paid license.
 - [Packaging](./docs/packaging.md) — Rust binary + MCP sidecar zips for Windows, macOS and Linux
 - [Releasing](./docs/releasing.md) — release checklist: tag → CI builds all platform zips
 - [Agent connectivity (MCP)](./docs/mcp.md) — how harnesses (Claude Code, Codex, opencode, Cursor) use the memory
+- [Agent setup skill](./.agents/skills/anchorcore-setup/SKILL.md) — hand it to your agent: install, configure models and sources, connect MCP, verify answers
 - [v2/v3 business scoping](./docs/v2v3-scope.md) — website, hosting, sharing, pricing, free tier
 - [Design system](./docs/design-system.md) — color tokens, typography, messaging, website approach (single source for app + site)
 - [Rust port evaluation](./docs/rust-port.md) — is a Rust backend worth it? (distribution vs LLM latency)
@@ -116,9 +117,12 @@ Sources (folder, Jira) -> extract text -> clean -> chunk -> classify -> entities
 
 - **Cleaning → chunking (B5/B12/B35):** text is cleaned (`clean_text` strips control chars, page numbers, repeated headers) then section-aware chunked: heading detection (`§434`, `4.2.1`, `Article 12`, ALL-CAPS) creates hard boundaries at `backend/app/chunking.py:49` / `rust/crates/anchorcore/src/chunking.rs:68`; paragraphs pack up to `ANCHOR_CHUNK_MAX_CHARS=1600`, oversized paras fall back to fixed `800/100` slices `chunk_text`. Entity summaries chunk separately at `800/100`. Classifier windows are `16000` chars with 50% overlap (`classify_windows`), hash-deduped for cheap reclassify.
 - **Document-aware classification**: one cheap call per document detects its
-  type (standards/runbook/meeting/decision_log/prd/general); the extraction
-  prompt adapts — e.g. regulatory standards produce only `note` entities
-  (rules/definitions), never spurious "decision"/"action" labels.
+  type (standards/runbook/documentation/meeting/decision_log/prd/general); the
+  extraction prompt adapts — e.g. regulatory standards and process documentation
+  produce only `note` entities (rules/definitions/steps), never spurious
+  "decision"/"action" labels. The rule fallback is type-aware too: note-only
+  types emit no entities without the LLM (no keyword guessing), and only
+  explicitly recorded choices ("we decided…", "Decision: …") count as decisions.
 - **Reviewable entities**: every entity stores the exact classifier input
   window (`window_text`) — the Review tab shows "what the classifier saw"
   behind each low-confidence item.

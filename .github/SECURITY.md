@@ -22,7 +22,7 @@ In scope:
 - The self-hosted team container (`hosting/`, one Rust image) — authentication,
   license gate (`ANCHOR_EDITION=team`, `rust/crates/anchorcore/src/license.rs`),
   multi-user data separation.
-- The MCP sidecar (`anchorcore-mcp`) — `public_only` gates and audit logging.
+- MCP mode (`anchorcore mcp`, same binary, R20.8) — `public_only` gates and audit logging.
 
 Out of scope:
 

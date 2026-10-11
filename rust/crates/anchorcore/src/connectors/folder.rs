@@ -1,46 +1,8 @@
 use super::{ConnectorError, IngestionDoc};
+use crate::extract;
 use chrono::{DateTime, Utc};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use walkdir::WalkDir;
-
-const SUPPORTED: &[&str] = &[".txt", ".md", ".markdown", ".text", ".csv", ".json", ".pdf", ".html", ".htm"];
-
-fn is_supported(p: &Path) -> bool {
-    p.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| SUPPORTED.contains(&format!(".{}", e.to_lowercase()).as_str()))
-        .unwrap_or(false)
-}
-
-fn read_plain_text(path: &Path) -> Result<String, ConnectorError> {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    match ext.as_str() {
-        "txt" | "md" | "markdown" | "text" | "csv" | "json" => {
-            std::fs::read_to_string(path)
-                .map_err(|e| ConnectorError(format!("read {}: {}", path.display(), e)))
-        }
-        "html" | "htm" => {
-            use std::sync::OnceLock;
-            static RE_SCRIPT: OnceLock<regex::Regex> = OnceLock::new();
-            static RE_STYLE: OnceLock<regex::Regex> = OnceLock::new();
-            static RE_TAG: OnceLock<regex::Regex> = OnceLock::new();
-            static RE_WS: OnceLock<regex::Regex> = OnceLock::new();
-            let s = std::fs::read_to_string(path)
-                .map_err(|e| ConnectorError(format!("read {}: {}", path.display(), e)))?;
-            // strip tags like Python's re
-            let re_script = RE_SCRIPT.get_or_init(|| regex::Regex::new(r"<script[^>]*>.*?</script>").unwrap());
-            let re_style = RE_STYLE.get_or_init(|| regex::Regex::new(r"<style[^>]*>.*?</style>").unwrap());
-            let re_tag = RE_TAG.get_or_init(|| regex::Regex::new(r"<[^>]+>").unwrap());
-            let re_ws = RE_WS.get_or_init(|| regex::Regex::new(r"\s+").unwrap());
-            let mut t = re_script.replace_all(&s, " ").to_string();
-            t = re_style.replace_all(&t, " ").to_string();
-            t = re_tag.replace_all(&t, " ").to_string();
-            Ok(re_ws.replace_all(&t, " ").trim().to_string())
-        }
-        "pdf" => Err(ConnectorError(format!("PDF not yet supported in Rust port: {}", path.display()))),
-        _ => Err(ConnectorError(format!("unsupported file type: {:?}", ext))),
-    }
-}
 
 pub struct FolderConnector {
     path: PathBuf,
@@ -62,6 +24,13 @@ impl FolderConnector {
     }
 
     pub fn fetch(&self) -> Result<(Vec<IngestionDoc>, String), ConnectorError> {
+        let (docs, _skipped, cursor) = self.fetch_with_skipped()?;
+        Ok((docs, cursor))
+    }
+
+    /// B57 safety: files that exist but could not be read (e.g. a corrupt PDF)
+    /// are reported as skipped — purge must never mistake them for deleted.
+    pub fn fetch_with_skipped(&self) -> Result<(Vec<IngestionDoc>, Vec<String>, String), ConnectorError> {
         if !self.path.exists() {
             return Err(ConnectorError(format!("folder does not exist: {}", self.path.display())));
         }
@@ -69,20 +38,25 @@ impl FolderConnector {
             return Err(ConnectorError(format!("folder does not exist: {}", self.path.display())));
         }
         let mut docs = Vec::new();
+        let mut skipped = Vec::new();
         for entry in WalkDir::new(&self.path).into_iter().filter_map(|e| e.ok()) {
             let p = entry.path();
-            if !p.is_file() || !is_supported(p) {
+            if !p.is_file() || !extract::is_supported_path(p) {
                 continue;
             }
-            let text = match read_plain_text(p) {
+            let rel = p.strip_prefix(&self.path).unwrap_or(p).to_string_lossy().to_string();
+            let text = match extract::extract_file(p) {
                 Ok(t) => t,
-                Err(_) => continue,
+                Err(e) => {
+                    tracing::warn!("folder file skipped ({}): {}", rel, e);
+                    skipped.push(rel);
+                    continue;
+                }
             };
             let mtime = std::fs::metadata(p)
                 .ok()
                 .and_then(|m| m.modified().ok())
                 .map(|t| DateTime::<Utc>::from(t));
-            let rel = p.strip_prefix(&self.path).unwrap_or(p).to_string_lossy().to_string();
             docs.push(IngestionDoc {
                 external_id: rel,
                 title: p.file_name().unwrap().to_string_lossy().to_string(),
@@ -92,7 +66,7 @@ impl FolderConnector {
                 source_ref: p.to_string_lossy().to_string(),
             });
         }
-        Ok((docs, String::new()))
+        Ok((docs, skipped, String::new()))
     }
 }
 
@@ -106,11 +80,17 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("a.md"), "# Hello\nWorld").unwrap();
         std::fs::write(dir.path().join("b.txt"), "plain").unwrap();
-        std::fs::write(dir.path().join("c.pdf"), "x").unwrap(); // pdf unsupported in Rust stub -> skipped
+        std::fs::write(dir.path().join("c.pdf"), "not a real pdf").unwrap();
+        // business format: routed through the shared extractor (extract.rs)
+        std::fs::write(dir.path().join("d.rtf"), r"{\rtf1\ansi Hello \b world\b0.\par}").unwrap();
         let cfg = serde_json::json!({"path": dir.path().to_string_lossy()});
         let c = FolderConnector::new(&cfg).unwrap();
-        let (docs, _) = c.fetch().unwrap();
-        assert_eq!(docs.len(), 2);
+        let (docs, skipped, _) = c.fetch_with_skipped().unwrap();
+        assert_eq!(docs.len(), 3);
         assert!(docs.iter().any(|d| d.title=="a.md"));
+        assert!(docs.iter().any(|d| d.title=="d.rtf" && d.text.contains("Hello world")));
+        // an unreadable file is reported, not silently dropped (purge safety)
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].ends_with("c.pdf"));
     }
 }
