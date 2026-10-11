@@ -23,7 +23,7 @@ argon2 = "0.5"
 chacha20poly1305 = "0.10"
 zeroize = "1"
 uuid = { version = "1", features = ["v7"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2", "system-proxy"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2", "system-proxy", "multipart", "stream"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

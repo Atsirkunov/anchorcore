@@ -59,6 +59,30 @@ The response streams the archive with
 `Content-Disposition: attachment`. The same options drive the System tab card
 and `anchorcore export` (CLI), so all three callers produce the same file.
 
+## CLI (headless / Team)
+
+```bash
+# export (passphrase, when used, comes from an environment variable — never argv)
+ANCHOR_BACKUP_PASSPHRASE='...' anchorcore export --out ~/backups/ac.anchorcore-backup --include-secrets
+
+# inspect an archive before touching the local data
+anchorcore import --file ac.anchorcore-backup --dry-run
+
+# merge it (uid upsert, local newer state wins)
+anchorcore import --file ac.anchorcore-backup
+
+# replace everything (typed confirmation required; safety backup first)
+anchorcore import --file ac.anchorcore-backup --mode replace --yes-destructive
+```
+
+`--data-dir`, `--port` and `--host` are global flags and work before or after
+the subcommand. When an AnchorCore instance is reachable
+(`ANCHOR_BACKEND_URL`, else `http://127.0.0.1:<port>`, else `127.0.0.1:8000`)
+the CLI talks to its API, so the app stays the single owner of the database;
+otherwise it works on the database directly (app stopped) and a locked
+database tells you to stop the app or point the CLI at its API. `--remap
+source_uid=new_path` (repeatable) remaps folder sources while importing.
+
 Exports are consistent while the app runs: the archive is written inside a
 single read snapshot (SQLite WAL), so a sync running in parallel cannot produce
 a half-updated record set. Every export writes a `backup` audit event into
