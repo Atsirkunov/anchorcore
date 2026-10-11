@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 
 /// VCS internals, dependency trees and build output — never worth ingesting
 /// even when a repo has no `.gitignore` (matched case-insensitively by name).
+/// Known limitation: a user folder that happens to share one of these names
+/// (e.g. a notes folder called `build`) is skipped too — only the watched
+/// root itself is exempt, so rename such folders to ingest them.
 const SKIP_DIRS: &[&str] = &[
     ".git", ".hg", ".svn", "node_modules", "bower_components", "vendor", "__pycache__", ".venv", "venv", "target",
     "dist", "build", ".next", ".nuxt", ".svelte-kit", ".cache", ".parcel-cache", ".tox", ".mypy_cache",

@@ -430,3 +430,52 @@ pub async fn ollama_start_handler(State(state): State<AppState>) -> Json<Value> 
     }
     Json(serde_json::json!({"ok": false, "error": "ollama launched but not reachable at ".to_string() + &base, "launched": true}))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::embedder::Embedder;
+    use crate::jobs::JobManager;
+    use crate::secrets::SecretStore;
+    use crate::settings::SettingsService;
+    use std::sync::Arc;
+
+    fn sorted_keys(v: &Value) -> Vec<String> {
+        let mut keys: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    /// Rust-side replacement for the frozen `test_onboarding_state`
+    /// (deselected from rust-conformance in ffd3e21 after B54 added
+    /// `answer_ready`): pins the exact `/system/onboarding` key set so any
+    /// future addition or rename fails loudly here instead of drifting.
+    #[tokio::test]
+    async fn onboarding_response_shape_is_versioned() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let store = SecretStore::new(dir.path().join("secrets.enc"));
+        let settings = Arc::new(SettingsService::new(store));
+        settings.set_data_dir(&data_dir);
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        let state = AppState {
+            data_dir: data_dir.to_string_lossy().to_string(),
+            settings,
+            jobs: JobManager::new(),
+            csrf_token: "test".to_string(),
+            embedder,
+        };
+        let res = onboarding_handler(State(state)).await;
+        let v = res.0;
+        assert_eq!(
+            sorted_keys(&v),
+            ["answer_provider", "answer_ready", "needs_wizard", "ollama", "sample", "sources_count"]
+        );
+        assert_eq!(sorted_keys(&v["ollama"]), ["base_url", "missing_models", "reachable"]);
+        assert_eq!(sorted_keys(&v["sample"]), ["available", "path"]);
+        assert_eq!(v["needs_wizard"], true);
+        assert_eq!(v["sources_count"], 0);
+        assert!(v["answer_ready"].is_boolean(), "answer_ready must be a bool: {v}");
+    }
+}

@@ -183,6 +183,12 @@ fn pull_map() -> &'static Mutex<HashMap<String, PullProgress>> {
     PULLS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Poison-tolerant lock: if a prior holder panicked mid-update, recover the
+/// map instead of crashing the server on a status read or a new pull.
+fn lock_pulls() -> std::sync::MutexGuard<'static, HashMap<String, PullProgress>> {
+    pull_map().lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn set_pull(
     model: &str,
     status: &str,
@@ -191,7 +197,7 @@ fn set_pull(
     done: bool,
     error: Option<String>,
 ) {
-    let mut map = pull_map().lock().unwrap();
+    let mut map = lock_pulls();
     map.insert(
         model.to_string(),
         PullProgress {
@@ -203,6 +209,36 @@ fn set_pull(
             error,
         },
     );
+}
+
+/// Claim models for a new pull worker: entries that are live (not done) are
+/// already in flight and must not spawn a second worker; everything else is
+/// marked queued. The caller must hold the map lock across this call so the
+/// check-and-claim is atomic. Returns (to_start, already_running). Pure over
+/// the map so it stays unit-testable without touching the global.
+fn claim_from_map(map: &mut HashMap<String, PullProgress>, models: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut to_start = Vec::new();
+    let mut already = Vec::new();
+    for m in models {
+        match map.get(m) {
+            Some(p) if !p.done => already.push(m.clone()),
+            _ => {
+                map.insert(
+                    m.clone(),
+                    PullProgress {
+                        model: m.clone(),
+                        status: "queued".to_string(),
+                        completed: 0,
+                        total: 0,
+                        done: false,
+                        error: None,
+                    },
+                );
+                to_start.push(m.clone());
+            }
+        }
+    }
+    (to_start, already)
 }
 
 // ----- pull validation + NDJSON parsing (pure, unit-tested) -----
@@ -416,15 +452,18 @@ pub async fn pull_handler(
             Json(json!({"detail": "Ollama is not reachable — start it first"})),
         ));
     }
-    for m in &models {
-        set_pull(m, "queued", 0, 0, false, None);
+    let (to_start, already_running) = {
+        let mut map = lock_pulls();
+        claim_from_map(&mut map, &models)
+    };
+    if !to_start.is_empty() {
+        tokio::spawn(run_pulls(base, to_start.clone()));
     }
-    tokio::spawn(run_pulls(base, models.clone()));
-    Ok(Json(json!({"started": models})))
+    Ok(Json(json!({"started": to_start, "already_running": already_running})))
 }
 
 pub async fn pulls_handler() -> Json<Value> {
-    let map = pull_map().lock().unwrap();
+    let map = lock_pulls();
     let mut pulls: Vec<PullProgress> = map.values().cloned().collect();
     pulls.sort_by(|a, b| a.model.cmp(&b.model));
     Json(json!({"pulls": pulls}))
@@ -564,5 +603,51 @@ mod tests {
         assert_eq!(last.status, "pulling");
         assert_eq!(last.completed, 5);
         assert_eq!(last.total, 9);
+    }
+
+    fn pull_row(model: &str, status: &str, done: bool) -> PullProgress {
+        PullProgress {
+            model: model.to_string(),
+            status: status.to_string(),
+            completed: 1,
+            total: 9,
+            done,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn claim_queues_fresh_models() {
+        let mut map = HashMap::new();
+        let (start, already) =
+            claim_from_map(&mut map, &["a".to_string(), "b".to_string()]);
+        assert_eq!(start, vec!["a".to_string(), "b".to_string()]);
+        assert!(already.is_empty());
+        assert_eq!(map["a"].status, "queued");
+        assert!(!map["b"].done);
+    }
+
+    #[test]
+    fn claim_skips_in_flight_but_restarts_finished() {
+        let mut map = HashMap::new();
+        map.insert("live".to_string(), pull_row("live", "pulling", false));
+        map.insert("old".to_string(), pull_row("old", "success", true));
+        let (start, already) = claim_from_map(
+            &mut map,
+            &["live".to_string(), "old".to_string(), "new".to_string()],
+        );
+        assert_eq!(already, vec!["live".to_string()]);
+        assert_eq!(start, vec!["old".to_string(), "new".to_string()]);
+        assert_eq!(map["live"].status, "pulling", "in-flight entry untouched");
+        assert_eq!(map["old"].status, "queued", "finished entry re-queued");
+    }
+
+    #[test]
+    fn claim_all_running_starts_nothing() {
+        let mut map = HashMap::new();
+        map.insert("a".to_string(), pull_row("a", "queued", false));
+        let (start, already) = claim_from_map(&mut map, &["a".to_string()]);
+        assert!(start.is_empty());
+        assert_eq!(already, vec!["a".to_string()]);
     }
 }

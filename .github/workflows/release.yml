@@ -11,6 +11,11 @@ name: Release
 #   ghcr.io/atsirkunov/anchorcore:<version> and :team
 # The website Download buttons link straight at the latest windows/macos
 # assets (website/src/main.ts); keep these file names stable.
+# The site itself (anchorcore.dev, Workers Static Assets) is deployed by the
+# deploy-website job below — but only when website/ changed since the previous
+# tag, so version-only releases don't churn the edge. Requires repo secrets
+# CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID (token needs Workers deploy
+# permissions; see https://developers.cloudflare.com/fundamentals/api/get-started/create-token/).
 # (Legacy Python jobs removed — backend/ is archived on tag archive/python-final;
 # only the conformance suite fetches it frozen.)
 
@@ -195,6 +200,51 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=team-image
           cache-to: type=gha,mode=max,scope=team-image
+
+  deploy-website:
+    name: Website — deploy to anchorcore.dev (when changed)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the change-detection step can diff against the
+          # previous tag (default shallow checkout has no earlier tags).
+          fetch-depth: 0
+      - name: Detect website changes since previous tag
+        id: changes
+        run: |
+          CUR="${GITHUB_REF_NAME}"
+          PREV="$(git describe --tags --abbrev=0 "${CUR}^" 2>/dev/null || true)"
+          if [ -z "$PREV" ]; then
+            echo "No previous tag found; treating website as changed."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "$PREV" "$CUR" -- website/; then
+            echo "website/ unchanged since $PREV; skipping deploy."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "website/ changed since $PREV."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.changes.outputs.changed == 'true'
+        with:
+          # Project wrangler (^4.149) requires Node >= 22.
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Website build
+        if: steps.changes.outputs.changed == 'true'
+        working-directory: website
+        run: npm ci && npm run build
+      - name: Deploy to anchorcore.dev
+        if: steps.changes.outputs.changed == 'true'
+        working-directory: website
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
   release:
     name: Attach artifacts to release

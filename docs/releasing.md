@@ -13,6 +13,7 @@
 1. Builds the frontend (`npm run build`)
 2. Builds Rust `AnchorCore-{windows,macos,linux}.zip` (`cargo build --release`, `frontend/dist` embedded via `include_dir!`, `codesign` on macOS)
 3. Attaches the three zips to the GitHub Release for that tag (website Download buttons link straight at the windows/macos ones — keep those file names stable)
+4. Deploys `website/` to `anchorcore.dev` via wrangler — but only when `website/` changed since the previous tag (`deploy-website` job diffs `$PREV_TAG..$TAG`). Needs repo secrets `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`, else the job fails on website releases until they're set
 
 ## Release checklist (Rust — shipped 1.0.15)
 
