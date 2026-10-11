@@ -38,9 +38,15 @@ Forms POST to Formspree (`FORMSPREE_ID` in `src/main.ts`) with the email + curre
 ## Privacy & GDPR
 
 No cookies, no analytics, no third-party requests on page load — so no cookie
-banner needed. The `#privacy` section in `index.html` is the Art. 13 notice;
-keep it in sync with `src/main.ts`. Only data flow: waitlist form → Formspree
+banner needed. The Art. 13 notice is its own page: `privacy.html` is a second
+Vite entry and builds to `/privacy` (R18.11), while `index.html` keeps a
+two-line summary in `#privacy` — the nav still links there, so its label keeps
+matching the on-page heading (R18.3). Keep both in sync with `src/main.ts`.
+Only data flow: waitlist form → Formspree
 (owner must conclude the Art. 28 DPA in their Formspree account). Only storage:
 `localStorage["anchorcore.track"]` hero-tab preference (exempt, disclosed in the
 notice). Do not add analytics/trackers without revisiting the notice + consent.
-Impressum still pending a publishable postal address (see pre-launch notes).
+**Impressum: deferred, not forgotten.** §5 DDG requires a publishable postal
+address for a commercial site; the owner has not supplied one, and shipping a
+placeholder would be worse than the deferral. When it exists, add the block to
+`privacy.html` (see the comment in its `<head>`).
