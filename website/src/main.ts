@@ -96,7 +96,7 @@ function setTrack(t: Track) {
   document.querySelectorAll<HTMLButtonElement>(".track-toggle .toggle").forEach(b => {
     const isActive = b.dataset.track === t;
     b.classList.toggle("active", isActive);
-    b.setAttribute("aria-selected", String(isActive));
+b.setAttribute("aria-pressed", String(isActive));
   });
 
   // persist for app hint (?track=) + reload
@@ -172,24 +172,48 @@ async function initGuides(): Promise<void> {
   ];
   for (const [id, md] of pairs) {
     const el = document.getElementById(id);
-    if (el) el.innerHTML = await marked.parse(stripH1(md));
+    if (!el) continue;
+    // headings are demoted two levels so they nest under the panel <h3>
+    // instead of jumping back to h2 inside the section (R18.8)
+    el.innerHTML = (await marked.parse(stripH1(md)))
+      .replace(/<(\/?)h([2-4])\b/g, (_m, close: string, lvl: string) => `<${close}h${Number(lvl) + 2}`);
   }
 }
 
 // Guides / FAQ hash routing — keep paper mono/serif, no new hex (C3)
 function initHashNav() {
-  const navLinks = document.querySelectorAll<HTMLAnchorElement>(".nav a[href^='#'], .nav-mobile a[href^='#']");
-  function setActive() {
-    const hash = location.hash || "#how";
+  const navLinks = [...document.querySelectorAll<HTMLAnchorElement>(".nav a[href^='#'], .nav-mobile a[href^='#']")];
+  if (navLinks.length === 0) return;
+  const paint = (hash: string) => {
     navLinks.forEach(a => {
-      const isActive = a.getAttribute("href") === hash;
+      const isActive = hash !== "" && a.getAttribute("href") === hash;
       a.style.textDecoration = isActive ? "underline" : "none";
       a.style.textUnderlineOffset = isActive ? "3px" : "";
       a.style.color = isActive ? "var(--sage)" : "var(--ink)";
+      if (isActive) a.setAttribute("aria-current", "true");
+      else a.removeAttribute("aria-current");
     });
-  }
-  window.addEventListener("hashchange", setActive);
-  setActive();
+  };
+  // R18.8: at the top of the page nothing is "current" (this used to
+  // underline "How it works" on load) and the highlight follows the section
+  // actually in view instead of only changing on hashchange.
+  paint(location.hash);
+  window.addEventListener("hashchange", () => paint(location.hash));
+  const sections = [...document.querySelectorAll<HTMLElement>("section[id]")]
+    .filter(s => navLinks.some(a => a.getAttribute("href") === `#${s.id}`));
+  if (sections.length === 0 || !("IntersectionObserver" in window)) return;
+  const ratios = new Map<string, number>();
+  const spy = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      const el = e.target as HTMLElement;
+      ratios.set(el.id, e.isIntersecting ? e.intersectionRatio : 0);
+    }
+    let best = "";
+    let bestRatio = 0;
+    ratios.forEach((ratio, id) => { if (ratio > bestRatio) { best = id; bestRatio = ratio; } });
+    paint(bestRatio > 0 ? `#${best}` : "");
+  }, { threshold: [0.15, 0.4, 0.75], rootMargin: "-72px 0px -40% 0px" });
+  sections.forEach(s => spy.observe(s));
 }
 
 // GraphMini — 3 nodes, Stone & Sage, no new hex (uses CSS vars)
@@ -313,7 +337,7 @@ function initGuideTabs(): void {
     tabs.forEach((t, i) => {
       const on = i === index;
       t.classList.toggle("active", on);
-      t.setAttribute("aria-selected", String(on));
+t.setAttribute("aria-expanded", String(on));
     });
     panels.forEach((p, i) => {
       if (!p) return;
