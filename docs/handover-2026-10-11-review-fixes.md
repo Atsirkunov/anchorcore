@@ -95,3 +95,19 @@ Report back: test counts for 5a, and for 5b the HTTP statuses plus
 whether the served homepage matches the local `dist` build (or how it
 differs). If the deploy is stale, say so — do not redeploy without the
 owner asking.
+
+---
+
+## Resolved (same day, later) — item 5 closed
+
+**5a — done.** `cargo test -p anchorcore` runs in CI (`ci.yml:75`) and both the
+`main` run and the `v1.0.17` tag run are green, so
+`answer::tests::generate_answer_composed_true_with_mock_server` passes
+unsandboxed → 158/158. Not a regression in `answer.rs`.
+
+**5b — done, deployed.** anchorcore.dev was live but stale (26,763 bytes, no
+Agent skill). The owner set `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`,
+run `38151430446` was rerun, and all six jobs are green: `anchorcore-website`
+version `8a99080d-5b94-4076-b658-aa8f131b76d6` serves 29,118 bytes with
+`agent-skill` ×3, `<h2>Agent skill</h2>`, home 200, `/og-card.png` 200. Details:
+`docs/handover-2026-10-11-v1.0.17.md`.
