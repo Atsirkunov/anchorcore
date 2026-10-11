@@ -1791,32 +1791,11 @@ fn parse_secret_key(key: &str) -> Option<(&str, &str)> {
 }
 
 fn apply_secrets_bundle(
-    zip: &mut zip::ZipArchive<std::fs::File>,
     data_dir: &Path,
-    opts: &ImportOptions,
+    entries: Vec<(String, String)>,
     ctx: &mut ImportCtx,
     report: &mut ImportReport,
 ) -> Result<(), String> {
-    let Ok(mut entry) = zip.by_name("secrets.bundle") else {
-        return Ok(());
-    };
-    entry_within_caps(entry.size(), entry.compressed_size(), MAX_BUNDLE_BYTES, "secrets.bundle")?;
-    let buf = read_entry_bounded(&mut entry, MAX_BUNDLE_BYTES, "secrets.bundle")?;
-    drop(entry);
-    let passphrase = match opts.passphrase.as_deref().map(str::trim) {
-        Some(p) if !p.is_empty() => p.to_string(),
-        _ => {
-            report.secrets_note = Some(
-                "archive contains secrets.bundle — skipped (no passphrase given); re-enter credentials".to_string(),
-            );
-            return Ok(());
-        }
-    };
-    let entries = open_bundle(&passphrase, &buf)?;
-    if opts.dry_run {
-        report.secrets_imported = entries.len() as u64;
-        return Ok(());
-    }
     let store = SecretStore::new(data_dir.join("secrets.enc"));
     for (key, value) in entries {
         let Some((uid, field)) = parse_secret_key(&key) else {
@@ -1833,6 +1812,36 @@ fn apply_secrets_bundle(
         report.secrets_imported += 1;
     }
     Ok(())
+}
+
+/// Read + decrypt `secrets.bundle` **before** anything is written: a wrong
+/// passphrase must fail the import cleanly, not after the records landed.
+fn read_bundle_entries(
+    zip: &mut zip::ZipArchive<std::fs::File>,
+    opts: &ImportOptions,
+    report: &mut ImportReport,
+) -> Result<Option<Vec<(String, String)>>, String> {
+    let Ok(mut entry) = zip.by_name("secrets.bundle") else {
+        return Ok(None);
+    };
+    entry_within_caps(entry.size(), entry.compressed_size(), MAX_BUNDLE_BYTES, "secrets.bundle")?;
+    let buf = read_entry_bounded(&mut entry, MAX_BUNDLE_BYTES, "secrets.bundle")?;
+    drop(entry);
+    let passphrase = match opts.passphrase.as_deref().map(str::trim) {
+        Some(p) if !p.is_empty() => p.to_string(),
+        _ => {
+            report.secrets_note = Some(
+                "archive contains secrets.bundle — skipped (no passphrase given); re-enter credentials".to_string(),
+            );
+            return Ok(None);
+        }
+    };
+    let entries = open_bundle(&passphrase, &buf)?;
+    if opts.dry_run {
+        report.secrets_imported = entries.len() as u64;
+        return Ok(None);
+    }
+    Ok(Some(entries))
 }
 
 fn sources_missing_embeddings(conn: &Connection) -> Result<Vec<i64>, String> {
@@ -1907,6 +1916,33 @@ fn finalize_report(
     Ok(())
 }
 
+fn mode_label(opts: &ImportOptions) -> String {
+    if opts.dry_run {
+        return "dry_run".to_string();
+    }
+    match opts.mode {
+        ImportMode::Merge => "merge".to_string(),
+        ImportMode::Replace => "replace".to_string(),
+    }
+}
+
+fn record_import_event(conn: &Connection, report: &ImportReport) {
+    record_export_event(
+        conn,
+        "info",
+        &serde_json::to_string(&json!({
+            "mode": report.mode,
+            "dry_run": report.dry_run,
+            "counts": report.counts,
+            "imported": report.imported,
+            "skipped": report.skipped,
+            "secrets_imported": report.secrets_imported,
+            "safety_backup": report.safety_backup,
+        }))
+        .unwrap_or_else(|_| "{}".to_string()),
+    );
+}
+
 /// Import an archive (merge or replace). Returns the dry-run report too, so the
 /// same call powers "show me what would happen" and the real import.
 pub fn import_archive(data_dir: &Path, archive_path: &Path, opts: &ImportOptions) -> Result<ImportReport, String> {
@@ -1917,16 +1953,12 @@ pub fn import_archive(data_dir: &Path, archive_path: &Path, opts: &ImportOptions
     let mut zip = open_archive(archive_path)?;
     let mut report = read_manifest(&mut zip)?;
     report.dry_run = opts.dry_run;
-    report.mode = if opts.dry_run {
-        "dry_run".to_string()
-    } else {
-        match opts.mode {
-            ImportMode::Merge => "merge".to_string(),
-            ImportMode::Replace => "replace".to_string(),
-        }
-    };
+    report.mode = mode_label(opts);
     let mut counts = BTreeMap::new();
     let mut ctx = ImportCtx::new(&conn, true, opts.remap.clone());
+
+    // Decrypt the bundle first: a wrong passphrase must abort before any write.
+    let bundle_entries = read_bundle_entries(&mut zip, opts, &mut report)?;
 
     if opts.mode == ImportMode::Replace && !opts.dry_run {
         let backup = safety_backup(data_dir)?;
@@ -1936,25 +1968,13 @@ pub fn import_archive(data_dir: &Path, archive_path: &Path, opts: &ImportOptions
         record_export_event(&conn, "error", &format!("import failed: {e}"));
         return Err(e);
     }
-    apply_secrets_bundle(&mut zip, data_dir, opts, &mut ctx, &mut report)?;
-    if opts.dry_run {
-        return finalize_report(&conn, opts, &mut ctx, counts, &mut report).map(|_| report);
+    if let Some(entries) = bundle_entries {
+        apply_secrets_bundle(data_dir, entries, &mut ctx, &mut report)?;
     }
     finalize_report(&conn, opts, &mut ctx, counts, &mut report)?;
-    record_export_event(
-        &conn,
-        "info",
-        &serde_json::to_string(&json!({
-            "mode": report.mode,
-            "dry_run": false,
-            "counts": report.counts,
-            "imported": report.imported,
-            "skipped": report.skipped,
-            "secrets_imported": report.secrets_imported,
-            "safety_backup": report.safety_backup,
-        }))
-        .unwrap_or_else(|_| "{}".to_string()),
-    );
+    if !opts.dry_run {
+        record_import_event(&conn, &report);
+    }
     Ok(report)
 }
 
@@ -2514,6 +2534,35 @@ mod tests {
         assert!(again.imported.get("source").is_none(), "{:?}", again.imported);
         assert_eq!(again.skipped.get("entity"), Some(&1u64));
         assert_eq!(one::<i64>(&db(dst.path()), "SELECT COUNT(*) FROM sources"), 1);
+    }
+
+    #[test]
+    fn import_with_wrong_passphrase_leaves_nothing_behind() {
+        let _env = EnvGuard::file_only();
+        let src = tempdir().unwrap();
+        seed(src.path());
+        let archive = exported(
+            src.path(),
+            ExportOptions {
+                include_secrets: true,
+                passphrase: Some("right".to_string()),
+                ..Default::default()
+            },
+        );
+        let dst = tempdir().unwrap();
+        let err = import_archive(
+            dst.path(),
+            &archive.path,
+            &ImportOptions {
+                passphrase: Some("wrong".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("wrong passphrase"), "{err}");
+        // the failure happens before the transaction: no partial import
+        assert_eq!(one::<i64>(&db(dst.path()), "SELECT COUNT(*) FROM sources"), 0);
+        assert_eq!(one::<i64>(&db(dst.path()), "SELECT COUNT(*) FROM ingested_items"), 0);
     }
 
     #[test]

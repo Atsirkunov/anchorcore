@@ -242,3 +242,56 @@ succeeds; a wrong passphrase fails cleanly with no partial import.
 A4/A5 (folder packs, zero-knowledge relay) belong to Phases B/C and stay in
 `docs/plan-backup-sync.md` §9 until Phase A ships and the §8 decisions are
 signed off.
+
+## Walkthrough: move to a new machine
+
+The short version, app-only (no terminal needed):
+
+1. **Old machine** — `System → Backup & restore`.
+   - Export without credentials (tick nothing) → the archive downloads.
+   - Optional: tick "Include source credentials", enter a passphrase and keep
+     it somewhere safe; losing it loses the bundle.
+2. **New machine** — install AnchorCore, open `System → Backup & restore`,
+   pick the archive, press **Preview (dry run)**:
+   - check the counts and the conflicts list,
+   - set the folder paths that changed (the old ones are pre-filled),
+   - press **Import (merge)**.
+3. Re-enter credentials: the card lists "Credentials to re-enter" (source name
+   + field); open **Sources**, edit each source and paste the token.
+4. Trigger a sync per source if you want fresh documents (the imported memory
+   already answers questions).
+5. Chunks arriving without vectors are re-embedded automatically (the card
+   shows the progress); answers report keyword-only until that finishes.
+
+Restoring after loss is the same flow: install, import the last archive, ask.
+
+With the CLI (headless / Team box):
+
+```bash
+# on the old machine
+anchorcore export --out /tmp/ac.anchorcore-backup            # no secrets
+ANCHOR_BACKUP_PASSPHRASE=... anchorcore export --out /tmp/ac-secrets.anchorcore-backup --include-secrets
+
+# on the new machine
+anchorcore import --file /tmp/ac.anchorcore-backup --dry-run  # inspect first
+anchorcore import --file /tmp/ac.anchorcore-backup
+```
+
+For a macOS build, the same commands run in Terminal; the archive format is
+OS-independent (timestamps come from SQLite, uids are UUIDv7, paths are remapped
+on import).
+
+## What has been verified (2026-10-12, Windows)
+
+| Check | Result |
+|---|---|
+| A1-ish: seeded instance → export → import into a fresh data dir | sources/entities/items restored; `/qa` answers `retrieval=hybrid` with citations; 56/56 chunks re-embedded by the queued `embed` job |
+| A2-ish: replace into an existing dir | typed confirmation required; automatic `safety-backup-*.anchorcore-backup` left on disk (never swept); data wiped and restored from the archive |
+| A3: secrets bundle end to end | raw token absent from the archive bytes; with the passphrase `secrets_imported=1` and `GET /sources/{id}/config` shows `***set***`; a wrong passphrase fails with no partial import (0 sources) |
+| Format gate | a manifest with `format_version: 99` is refused with "upgrade the app" |
+| No-plaintext grep test | `backup::tests::export_without_secrets_has_no_plaintext_markers` (decompressed entries + raw bytes); the live export check greps the archive for the planted token |
+| UI | live Playwright run: System-tab card, passphrase gating, real download, dry-run report, remap prefill, replace gating, zero console errors |
+
+Not yet run: the macOS leg of A1–A3 and a two-machine walkthrough of the release
+zip (both need hardware the session did not have — the code path is
+OS-independent and the Windows run is the recorded evidence).

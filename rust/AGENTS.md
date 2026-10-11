@@ -20,7 +20,9 @@ This mirrors `/AGENTS.md` but for the `rust/` workspace. **Rust is now shipped**
 * Job concurrency bounded (`JobManager.MAX_CONCURRENT=2`) — keep it.
 * Retrieval must filter `stale`/`disputed` via `_status_ok` equivalent — every path must gate it.
 * Secrets via OS keychain (`keyring` crate) + `***set***` placeholder — same UX as `backend/app/secrets.py`.
-* **No C toolchain/linker on this box** — `cargo check`/`cargo test` fail inside dependency build scripts (`link.exe` absent; the rustup GNU `gcc` is link-only and `self-contained` ships no `as.exe`, so `dlltool` fails on raw-dylib crates like `windows-sys`). Verify with `rustfmt --check` + `lizard -C 15`; pure std/serde_json logic can be extracted into a scratch crate and run locally via `cargo +stable-x86_64-pc-windows-gnu test` with `...\x86_64-pc-windows-gnu\bin\self-contained` and `...\bin` prepended to `PATH`. CI runs the real `cargo test`/clippy (R24.1 used this for `fsbrowse.rs`).
+* **Toolchain on this box (2026-10-12): Rust builds work.** No MSVC, but a portable MinGW + GNU-host toolchain is installed and cached: `C:\Users\Aleksandr\.local\winlibs\mingw64\bin` (WinLibs 16.2, ucrt) + rustup `stable-x86_64-pc-windows-gnu`. Invoke:
+  `$env:PATH = "C:\Users\Aleksandr\.local\winlibs\mingw64\bin;" + $env:PATH; cargo +stable-x86_64-pc-windows-gnu test --offline -p anchorcore --target x86_64-pc-windows-gnu` (from `rust/`). `cargo check`/`test`/`clippy`/`build` all work; `cargo +stable-x86_64-pc-windows-msvc` still fails (`link.exe` absent). `rust/target` is shared with the main checkout — a fresh `git worktree` needs `robocopy` of `rust/target` and `frontend/dist` (both gitignored) or a full rebuild + `npm run build` (see `docs/handover-2026-10-10-b54-verify.md`).
+* CI runs the real `cargo test`/clippy on every push (`ci.yml` `rust-conformance`); keep them green locally too.
 * `vec0` vs Python scan fallback — `rust` should use `sqlite-vec` statically linked.
 
 ## Cyclomatic complexity (Phase 13 — design for it from day one)
