@@ -1,14 +1,10 @@
 # AnchorCore — MCP zero-setup UX (plan)
 
-> Status: accepted 2026-10-11; revised same day — single-executable merge
-> (R20.8) and wizard enablement (R20.9) adopted. R20.1–R20.3 + R20.8 + R20.9
-> landed (see `rust/BACKLOG.md` Phase 20); R20.4–R20.7 open (runtime
-> discovery, release smoke, docs split, stdio-vs-HTTP decision).
-> Trigger: a Windows user followed the Agent-access card in the shipped UI —
-> it told them to run `ANCHOR_BACKEND_URL=... cargo run -p anchorcore --bin
-> anchorcore-mcp` — which cannot work without a Rust toolchain **and** a C
-> linker (MSVC `link.exe` absent; the rustup-bundled MinGW `gcc` is
-> link-only, `GCC-WARNING.txt`). Users must never need either.
+> Status: accepted 2026-10-11; revised same day - single-executable merge
+> (R20.8) and wizard enablement (R20.9) adopted. R20.1-R20.3 + R20.6 + R20.7 +
+> R20.8 + R20.9 landed (see `rust/BACKLOG.md` Phase 20); **R20.4** (runtime
+> discovery) and **R20.5** (release smoke) remain open. The stdio-vs-HTTP
+> question is settled under "Decisions recorded" below.
 
 ## What is already true (don't rebuild it)
 
@@ -85,6 +81,10 @@ freezes the command shape for everything downstream) → R20.3 + R20.4
 - **stdio + discovery is the local default; streamable HTTP (B14.2) is the
   Team/remote answer.** HTTP does not replace local stdio; it removes the
   path entirely for shared instances (`claude mcp add --transport http`).
+- **Re-ranked 2026-10-11 (R20.7): B14.2 streamable HTTP above B14.4 registry
+  publishing.** HTTP is the Team unblocker — one URL, no host paths for a
+  harness to discover — while the registry is a one-click convenience for
+  Claude users. Milestones and open questions updated in `docs/mcp.md` §9/§10.
 - **Client config writes need explicit user action** (button per client),
   with backup + merge — never clobber an existing `mcpServers` block.
   Read-only display of copy-paste snippets remains the fallback.
