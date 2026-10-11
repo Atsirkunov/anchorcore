@@ -78,6 +78,8 @@ root; pushing a `v*` tag builds all platform zips automatically (see `docs/relea
 
 **Developers (Rust — shipped):** `cargo run -p anchorcore -- --port 8000 --data-dir ~/.anchorcore` — applies migrations, starts Ollama, boots at http://localhost:8000. Add `cargo run -p anchorcore -- --port 8123` for conformance vs Python. Frontend dev: `cd frontend && npm run dev` at :5173 (proxies to :8000).
 
+**Agent skills (optional, for contributors and agents):** only our own two are tracked (`./.agents/skills/anchorcore-setup/SKILL.md` and `aida-landing-page/SKILL.md`). The vendored third-party skills are installed state, not source — restore them with `npx skills experimental_install` (manifest: `skills-lock.json`).
+
 **Legacy Python (archived):** the Python backend left the tree — it's frozen on tag `archive/python-final` (the conformance suite fetches it from there). To run it: `git checkout archive/python-final -- backend`, then `.\start.ps1` (or `./start.sh`).
 
 **Team (self-hosted) — one container (R19.1/B59):** `docker compose -f hosting/docker-compose.yml up --build` runs the same Rust binary as the app — SQLite on a volume, UI embedded, Team license gate (`ANCHOR_EDITION=team`, `rust/crates/anchorcore/src/license.rs`), no Postgres sidecar; releases publish `ghcr.io/atsirkunov/anchorcore:<version>` + `:team`. See [hosting/README.md](./hosting/README.md). Postgres remains a future swap for the Hosted cloud tier only (B49).
