@@ -5,7 +5,10 @@
   "name": "anchorcore-website",
   "compatibility_date": "2026-10-09",
   "assets": {
-    "directory": "./dist"
+    "directory": "./dist",
+    // resolve /privacy to privacy.html (R18.11 route); pinned so the clean
+    // URLs the footer and consent line use cannot depend on a default
+    "html_handling": "auto-trailing-slash"
   },
   "routes": [
     { "pattern": "anchorcore.dev/*", "zone_name": "anchorcore.dev" }
