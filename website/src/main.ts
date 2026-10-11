@@ -34,7 +34,9 @@ const WIN_ZIP = "https://github.com/Atsirkunov/anchorcore/releases/latest/downlo
 const MAC_ZIP = "https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-macos.zip";
 
 function isMacOs(): boolean {
-  const platform = navigator.userAgentData?.platform ?? navigator.platform ?? "";
+  // userAgentData ships ahead of the DOM lib's Navigator type; keep the fallback
+  const ua = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData;
+  const platform = ua?.platform ?? navigator.platform ?? "";
   return /mac/i.test(platform);
 }
 
@@ -101,7 +103,7 @@ b.setAttribute("aria-pressed", String(isActive));
   });
 
   // persist for app hint (?track=) + reload
-  try { localStorage.setItem("anchorcore.track", t); } catch {}
+try { localStorage.setItem("anchorcore.track", t); } catch { /* private mode; ?track= still carries it */ }
   const url = new URL(location.href);
   url.searchParams.set("track", t);
   history.replaceState(null, "", url.toString());
@@ -146,7 +148,7 @@ async function captureEmail(inputId: string, msgId: string, source: string) {
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify({ email, track, source }),
     });
-    const data = await res.json().catch(() => ({} as { errors?: { message: string }[] }));
+const data = (await res.json().catch(() => ({}))) as { errors?: { message: string }[] };
     if (res.ok) {
       if (msg) msg.textContent = `Thanks — you're on the ${track} list.`;
       if (el) el.value = "";
