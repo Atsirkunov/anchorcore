@@ -13,6 +13,7 @@ mod auth;
 mod backup;
 mod chunking;
 mod classifier;
+mod cli;
 mod common;
 mod connectors;
 mod db;
@@ -57,12 +58,23 @@ use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(long, default_value = "8000")]
+    #[arg(long, global = true, default_value = "8000")]
     port: u16,
-    #[arg(long, default_value = "")]
+    #[arg(long, global = true, default_value = "")]
     data_dir: String,
-    #[arg(long, default_value = "")]
+    #[arg(long, global = true, default_value = "")]
     host: String,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// R25.4: headless/Team backup commands — same engine as the UI (backup.rs).
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Export a portable .anchorcore-backup archive
+    Export(cli::ExportArgs),
+    /// Import a .anchorcore-backup archive (merge default, or replace)
+    Import(cli::ImportArgs),
 }
 
 fn resolve_data_dir(cli: &str) -> PathBuf {
@@ -412,6 +424,15 @@ async fn main() {
 
     let data_dir = resolve_data_dir(&args.data_dir);
     std::fs::create_dir_all(&data_dir).ok();
+    // R25.4: CLI subcommands run the backup engine and exit — no server, no
+    // watcher, no scheduler.
+    if let Some(command) = args.command {
+        let code = match command {
+            Command::Export(export) => cli::run_export(&data_dir, args.port, export).await,
+            Command::Import(import) => cli::run_import(&data_dir, args.port, import).await,
+        };
+        std::process::exit(code);
+    }
     install_panic_hook(&data_dir);
     let db_path = db::resolve_db_path(&data_dir.to_string_lossy());
     // init DB for side-effect (migrations, pragmas) - health/qa open per-request
