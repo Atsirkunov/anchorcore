@@ -97,6 +97,14 @@ fn env_value(key: &str) -> Option<String> {
     }
 }
 
+/// Empty/whitespace values mean "unset": the Settings UI stores `''` for
+/// blank fields, and Python's `db or env or default` chain treated them as
+/// falsy. Returning `None` keeps `.or_else(fallback)` chains (base URLs,
+/// models) working regardless of whether the 3s cache is warm or cold.
+fn non_empty(v: Option<String>) -> Option<String> {
+    v.filter(|s| !s.trim().is_empty())
+}
+
 pub struct SettingsService {
     secrets: SecretStore,
     cache: RwLock<HashMap<String, (String, Instant)>>,
@@ -128,14 +136,11 @@ impl SettingsService {
         }
         if SECRET_KEYS.contains(&key) {
             let skey = format!("{}{}", SECRET_PREFIX, key);
-            if let Some(v) = self.secrets.get(&skey) {
-                return Some(v);
-            }
-            return env_value(key);
+            return non_empty(self.secrets.get(&skey)).or_else(|| env_value(key));
         }
         // non-secret: check DB first if conn provided, else cache
         if let Some(c) = conn {
-            let resolved = db_value(c, key).or_else(|| env_value(key));
+            let resolved = non_empty(db_value(c, key).or_else(|| env_value(key)));
             return if key == "ollama_base_url" {
                 guard_test_ollama_url(resolved)
             } else {
@@ -179,6 +184,16 @@ impl SettingsService {
             }
             self.invalidate(key);
             tracing::info!("setting {} updated (secret)", key);
+            return Ok(());
+        }
+        if v.is_empty() {
+            // Empty means "unset": drop the override row so reads fall back to
+            // env/defaults. Mirrors the secret branch above and Python's
+            // falsy resolution — an empty row used to break base-URL fallbacks.
+            conn.execute("DELETE FROM app_settings WHERE key = ?1", rusqlite::params![key])
+                .map_err(|e| e.to_string())?;
+            self.invalidate(key);
+            tracing::info!("setting {} cleared (empty)", key);
             return Ok(());
         }
         // DB override
@@ -237,7 +252,7 @@ impl SettingsService {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::open_db(&db_path).ok();
         let db_val = conn.as_ref().and_then(|c| db_value(c, key));
-        let resolved = db_val.or_else(|| env_value(key));
+        let resolved = non_empty(db_val.or_else(|| env_value(key)));
         let resolved = if key == "ollama_base_url" {
             guard_test_ollama_url(resolved)
         } else {
@@ -543,6 +558,79 @@ mod tests {
         let svc = SettingsService::new(store);
         // default
         assert_eq!(svc.get("ollama_base_url", None), Some("http://localhost:11434".to_string()));
+    }
+
+    #[test]
+    fn empty_setting_reads_as_unset_in_all_paths() {
+        // Regression (dogfood v1.0.14): the Settings UI stores `''` for
+        // "Local Ollama" base URLs. Reads returned Some("") on the DB path
+        // but None on the cache-hit path, so `.or_else(ollama_base_url)`
+        // worked for only 3s after any other read — retrieval flapped
+        // between hybrid and keyword-only. Empty must always read as unset.
+        let saved_embed = std::env::var("ANCHOR_EMBED_BASE_URL").ok();
+        let saved_ollama = std::env::var("ANCHOR_OLLAMA_BASE_URL").ok();
+        let saved_db = std::env::var("ANCHOR_DATABASE_URL").ok();
+        std::env::remove_var("ANCHOR_EMBED_BASE_URL");
+        std::env::remove_var("ANCHOR_OLLAMA_BASE_URL");
+        std::env::remove_var("ANCHOR_DATABASE_URL");
+        let dir = tempdir().unwrap();
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let svc = SettingsService::new(store);
+        svc.set_data_dir(dir.path());
+        let conn = Connection::open(dir.path().join("anchorcore.db")).unwrap();
+        conn.execute("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)", [])
+            .unwrap();
+        conn.execute("INSERT INTO app_settings (key, value) VALUES ('embed_base_url', '')", [])
+            .unwrap();
+        // conn path, cache-miss path and cache-hit path all agree: empty == unset
+        assert_eq!(svc.get("embed_base_url", Some(&conn)), None);
+        assert_eq!(svc.get("embed_base_url", None), None);
+        assert_eq!(svc.get("embed_base_url", None), None);
+        // the consumer chain falls back to the shared Ollama base
+        let base = svc
+            .get("embed_base_url", None)
+            .or_else(|| svc.get("ollama_base_url", None));
+        assert_eq!(base, Some("http://localhost:11434".to_string()));
+        if let Some(v) = saved_embed {
+            std::env::set_var("ANCHOR_EMBED_BASE_URL", v);
+        }
+        if let Some(v) = saved_ollama {
+            std::env::set_var("ANCHOR_OLLAMA_BASE_URL", v);
+        }
+        if let Some(v) = saved_db {
+            std::env::set_var("ANCHOR_DATABASE_URL", v);
+        }
+    }
+
+    #[test]
+    fn storing_empty_clears_the_override_row() {
+        let saved = std::env::var("ANCHOR_CLASSIFIER_BASE_URL").ok();
+        std::env::remove_var("ANCHOR_CLASSIFIER_BASE_URL");
+        let dir = tempdir().unwrap();
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let svc = SettingsService::new(store);
+        let conn = Connection::open(dir.path().join("t.db")).unwrap();
+        conn.execute("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)", [])
+            .unwrap();
+        svc.set("classifier_base_url", "http://example.test/v1", &conn)
+            .unwrap();
+        assert_eq!(
+            svc.get("classifier_base_url", Some(&conn)),
+            Some("http://example.test/v1".to_string())
+        );
+        svc.set("classifier_base_url", "", &conn).unwrap();
+        let row: Option<String> = conn
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = 'classifier_base_url'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        assert_eq!(row, None);
+        assert_eq!(svc.get("classifier_base_url", Some(&conn)), None);
+        if let Some(v) = saved {
+            std::env::set_var("ANCHOR_CLASSIFIER_BASE_URL", v);
+        }
     }
 
     #[test]

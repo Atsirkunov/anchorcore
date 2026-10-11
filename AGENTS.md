@@ -156,6 +156,7 @@ Key rules:
   fails if credentials are wrong. Fine for tests/onboarding.
 - **Frontend build type-checks** (`tsc -b && vite build`) — unused vars/imports fail the build (see the
   `ollamaOk` lesson). Keep TS types in `types.ts` in sync with backend schemas or the build breaks.
+- **Empty-string `app_settings` rows mean "unset"** — the Settings UI saves `''` for blank fields (e.g. "Local Ollama" leaves `classifier_base_url`/`embed_base_url` empty). Python's `_cached_get` and the Rust port both returned `Some('')` on a cache miss but `None` on a cache hit, so `.or_else(ollama_base_url)` chains worked only within the 3s cache TTL — retrieval flapped `hybrid` ↔ `keyword_only`, `test-connection` failed with "API key required for a cloud embedding provider", and `/system/status` mislabeled local providers as "cloud". Fixed via `settings.rs` `non_empty()`: empty reads as `None` on every path and `set("")` deletes the row. Never reintroduce `Some("")` — `format!("{}/v1/embeddings", "")` is a relative URL and fails.
 - **Repo files are CRLF** — the edit tool matches exact text, so multi-line finds with LF fail; use single-line anchors or a script that preserves CRLF. On boxes without a C toolchain/linker even `cargo check` fails (build scripts); verify Rust with `rustfmt --check` (parse + style) and let CI run `cargo test`/`clippy`.
 
 ## UI notes
