@@ -11,6 +11,10 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# Wrangler (website/) - local state dir + local dev secret file
+.wrangler/
+.dev.vars*
+
 # Packaging (PyInstaller intermediates; the exe output lives in dist/)
 build/
 
