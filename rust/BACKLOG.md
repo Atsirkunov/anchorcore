@@ -57,7 +57,7 @@ Status: `todo` | `doing` | `done` (✅). Update this file when you pick/complete
 
 > Order: R25.1 + R25.6 (parallel) → R25.2 → R25.3 → R25.4 + R25.5 → R25.7 (~5d). Phases B/C (encrypted folder packs → zero-knowledge hosted/Team relay) stay in `docs/plan-backup-sync.md` §9 until Phase A ships and decisions §8 are signed off.
 
-### Phase 18 — Landing-page audit + example content (`website/`) — 18 shipped / 1 partial (deferred)
+### Phase 18 — 17 shipped / 1 partial (deferred)
 
 > Shipped: R18.1, R18.2, R18.16-R18.19 (see shipped log). R18.6 and R18.14 are partial — their notes say what is left. Acceptance per task: `npm run build` green in `website/`, no new hex outside `:root`, deploy via `cd website && npm run build && npx wrangler deploy`; `git grep -i acme` clean.
 
