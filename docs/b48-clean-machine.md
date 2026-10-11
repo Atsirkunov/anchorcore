@@ -18,9 +18,9 @@ Version: `v1.0.13` (`rust/Cargo.toml` `workspace.package.version`).
 
 | Asset | Contents | URL |
 |---|---|---|
-| `AnchorCore-windows.zip` | `anchorcore.exe` + `anchorcore-mcp.exe` | `https://github.com/Atsirkunov/anchorcore/releases/download/v1.0.13/AnchorCore-windows.zip` |
+| `AnchorCore-windows.zip` | `anchorcore.exe` (app + `anchorcore mcp`) | `https://github.com/Atsirkunov/anchorcore/releases/download/v1.0.13/AnchorCore-windows.zip` |
 | `AnchorCore-macos.zip` | `AnchorCore.app` (ad-hoc signed) | `https://github.com/Atsirkunov/anchorcore/releases/download/v1.0.13/AnchorCore-macos.zip` |
-| `AnchorCore-linux.zip` | `anchorcore` + `anchorcore-mcp` | `https://github.com/Atsirkunov/anchorcore/releases/download/v1.0.13/AnchorCore-linux.zip` |
+| `AnchorCore-linux.zip` | `anchorcore` (app + `anchorcore mcp`) | `https://github.com/Atsirkunov/anchorcore/releases/download/v1.0.13/AnchorCore-linux.zip` |
 
 Alternate entry: `https://anchorcore.dev` Download buttons (must resolve to the
 same assets — verify sizes match the Release page).
@@ -50,8 +50,9 @@ Windows: unzip to e.g. `C:\Temp\b48\app\` (no repo on PATH, no dev checkout
 involved). macOS: unzip to e.g. `~/b48/app/`, drag `AnchorCore.app` out if you
 like — the script below runs the bundle binary directly.
 
-Expected: `anchorcore.exe` + `anchorcore-mcp.exe` (Windows) or
-`AnchorCore.app/Contents/MacOS/AnchorCore` + `anchorcore-mcp` (macOS).
+Expected: `anchorcore.exe` (Windows) or
+`AnchorCore.app/Contents/MacOS/AnchorCore` (macOS) — R20.8: one binary per OS,
+`anchorcore mcp` is a mode.
 
 ### 1.3 Fetch the sample corpus (separate — not in the zip)
 
@@ -177,16 +178,17 @@ launch recreates it cleanly if you have time).
 
 ## 2. MCP smoke (one harness — Inspector CLI)
 
-Prereq: the app from §1 still running (the sidecar talks to it over
+Prereq: the app from §1 still running (MCP mode talks to it over
 `ANCHOR_BACKEND_URL`, default `http://127.0.0.1:8000` — override to `:8123`).
 
 ```bash
-# from the isolated dir (Windows: anchorcore-mcp.exe). NOTE: plain `export`
-# does NOT reach the sidecar — Inspector spawns it without your env. Pass the
-# backend URL with `-e` (found on the Windows leg, 2026-10-09):
-npx -y @modelcontextprotocol/inspector --cli ./anchorcore-mcp \
+# from the isolated dir (R20.8: one binary; `mcp` is the mode — Windows:
+# `.\anchorcore.exe mcp`). NOTE: plain `export` does NOT reach the child —
+# Inspector spawns it without your env. Pass the backend URL with `-e`
+# (found on the Windows leg, 2026-10-09):
+npx -y @modelcontextprotocol/inspector --cli ./anchorcore mcp \
   -e ANCHOR_BACKEND_URL=http://127.0.0.1:8123 --method tools/list
-npx -y @modelcontextprotocol/inspector --cli ./anchorcore-mcp \
+npx -y @modelcontextprotocol/inspector --cli ./anchorcore mcp \
   -e ANCHOR_BACKEND_URL=http://127.0.0.1:8123 --method tools/call \
   --tool-name memory_status
 # (--tool-arg takes key=value pairs only, and memory_status takes no args, so
@@ -202,8 +204,8 @@ Expected:
   pending embeddings).
 
 Fallback if `npx` is unavailable (no network/npm): raw JSON-RPC over stdio —
-`initialize` → `tools/list` → `tools/call{memory_status}` piped into the
-sidecar binary — exercises the same surface. Record which harness ran.
+`initialize` → `tools/list` → `tools/call{memory_status}` piped into
+`anchorcore mcp` — exercises the same surface. Record which harness ran.
 
 ## 3. macOS leg — copy-paste Terminal script (for the Mac owner)
 

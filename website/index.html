@@ -178,10 +178,10 @@
         </ol>
         <div class="cols two">
           <div class="col"><h3>In the browser — for humans</h3><p>Download, unzip, run — the app opens at <code>http://127.0.0.1:8000</code> → Sources → Local folder → <code>sample/</code> → Sync → Ask. Cited answers with clickable section links.</p><code>download → unzip → run</code></div>
-          <div class="col"><h3>From your agent — via MCP</h3><p>Claude Code, Codex, opencode, Cursor. Same memory over MCP — <code>ask</code> and <code>search</code> return the same cited answers, no browser needed. Same privacy gates; every agent answer is logged.</p><code>anchorcore-mcp</code></div>
+          <div class="col"><h3>From your agent — via MCP</h3><p>Claude Code, Codex, opencode, Cursor. Same memory over MCP — <code>ask</code> and <code>search</code> return the same cited answers, no browser needed. Same privacy gates; every agent answer is logged.</p><code>anchorcore mcp</code></div>
         </div>
         <div class="fig termwrap">
-          <div class="term-bar"><span>agent → anchorcore-mcp · stdio JSON-RPC</span><button id="term-replay" class="btn small secondary" type="button">Replay</button></div>
+          <div class="term-bar"><span>agent → anchorcore mcp · stdio JSON-RPC</span><button id="term-replay" class="btn small secondary" type="button">Replay</button></div>
           <div class="term-body" id="term-body" aria-live="polite"></div>
           <p class="cap">Abbreviated session — the wire carries full JSON-RPC <code>tools/call</code> returning the same cited answers as the browser UI.</p>
         </div>

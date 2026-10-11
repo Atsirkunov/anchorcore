@@ -1,11 +1,13 @@
 #![allow(dead_code, unused_imports, unused_variables)]
-//! AnchorCore MCP sidecar — stdio transport, 6 read-only tools.
+//! AnchorCore MCP mode — stdio transport, 6 read-only tools.
+//! R20.8: this is a mode of the single `anchorcore` binary, not a separate
+//! sidecar: `anchorcore mcp` (or a copy named `anchorcore-mcp`).
 //! Port of `backend/anchorcore_mcp.py` + `backend/app/mcp/server.py` + `tools.py`.
-//! Sidecar talks to running backend over 127.0.0.1 (single DB owner), like the browser UI.
+//! Talks to the running app over 127.0.0.1 (single DB owner), like the browser UI.
 //!
 //! Usage:
-//!   ANCHOR_BACKEND_URL=http://127.0.0.1:8000 cargo run -p anchorcore --bin anchorcore-mcp
-//!   claude mcp add anchorcore -- /path/to/anchorcore-mcp
+//!   anchorcore mcp
+//!   claude mcp add anchorcore -- /path/to/anchorcore mcp
 
 use std::sync::OnceLock;
 
@@ -376,8 +378,7 @@ async fn handle_request(req: Request) -> Option<Response> {
     }
 }
 
-#[tokio::main]
-async fn main() {
+pub async fn run() {
     let stdin = tokio::io::stdin();
     let mut reader = tokio::io::BufReader::new(stdin);
     let mut stdout = tokio::io::stdout();

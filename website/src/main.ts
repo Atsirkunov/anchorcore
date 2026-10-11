@@ -184,11 +184,11 @@ document.getElementById("capture-form-2")?.addEventListener("submit", (e) => {
 });
 
 // Terminal animation — abbreviated MCP stdio session (demo section).
-// Shapes mirror rust/crates/anchorcore/src/bin/mcp.rs (tools/call with
+// Shapes mirror rust/crates/anchorcore/src/mcp.rs (tools/call with
 // name + arguments.question); the on-page caption notes it is abbreviated.
 const TERM_LINES: { cls: string; text: string; type?: boolean; pause?: number }[] = [
-  { cls: "t-dim", text: "$ ANCHOR_BACKEND_URL=http://127.0.0.1:8000 anchorcore-mcp", type: true },
-  { cls: "t-dim", text: "# stdio sidecar — spawned by your harness, no browser", pause: 350 },
+  { cls: "t-dim", text: "$ anchorcore mcp", type: true },
+  { cls: "t-dim", text: "# stdio MCP mode — spawned by your harness, no browser", pause: 350 },
   { cls: "t-out", text: '→ tools/call {"name": "ask", "arguments": {"question": "Who owns the billing provider migration?"}}', type: true },
   { cls: "t-dim", text: "··· searching memory: meaning + keywords + links", pause: 650 },
   { cls: "t-in", text: "← Sarah owns the billing provider migration — parallel run starts Monday.", pause: 300 },

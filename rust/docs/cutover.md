@@ -33,7 +33,7 @@ PYTHONPATH=backend backend/.venv/bin/pytest backend/tests -q \
 
 1. **Version bump:** edit `rust/Cargo.toml` + `cargo test` + `cargo build --release` + `codesign` smoke `curl /health` + `/` (frontend)
 2. **Tag:** `git tag v1.0.9 && git push origin v1.0.9` — CI builds `dist/AnchorCore-rust-*` + `dist/AnchorCore-*` (Python) and attaches to GitHub Release
-3. **Smoke release artifacts:** unzip `AnchorCore-rust-macos.zip` → `./AnchorCore-rust --port 8123` → `curl /health` + `curl /pii/config` + `curl /` (frontend) + `echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ./anchorcore-mcp` (MCP)
+3. **Smoke release artifacts:** unzip `AnchorCore-rust-macos.zip` → `./AnchorCore-rust --port 8123` → `curl /health` + `curl /pii/config` + `curl /` (frontend) + `echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ./anchorcore mcp` (MCP — R20.8: mode of the same binary)
 4. **Retire Python:** update `docs/packaging.md` to Rust binary as default, keep `backend/` for hosted Postgres path until `hosting/` is also ported; remove `packaging.spec` PyInstaller path from `release.yml` when Rust is sole artifact
 5. **Post-cutover:** keep `backend/tests` as conformance suite via `ANCHOR_TEST_RUST_URL`; `rust/docs/decisions.md` logs any further `llama.cpp` revisit (R0.2)
 

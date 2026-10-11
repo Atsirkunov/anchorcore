@@ -1,5 +1,5 @@
 //! Ingestion pipeline — port of `backend/app/pipeline.py:1`.
-//! Folder → chunk → classify → distill → pii → embed (rule-based, no LLM needed for tests).
+//! Folder → chunk → classify (LLM + per-doc-type prompt, rules fallback) → distill → pii → embed.
 
 use std::sync::Arc;
 
@@ -90,13 +90,15 @@ async fn job_cancelled(data_dir: &str, job_id: i64) -> Result<bool, String> {
     Ok(job_status(data_dir, job_id).await? == "cancelled")
 }
 
-async fn fetch_docs(connector_type: &str, config: &serde_json::Value, source_id: i64) -> Result<Vec<IngestionDoc>, String> {
+/// Returns `(docs, skipped)` — `skipped` are files present at the source but
+/// unreadable (folder connector), kept out of purge (B57 safety).
+async fn fetch_docs(connector_type: &str, config: &serde_json::Value, source_id: i64) -> Result<(Vec<IngestionDoc>, Vec<String>), String> {
     // R10.2: Jira/GDrive/Linear must not silently succeed with 0 items
-    let docs = match connector_type {
+    let (docs, skipped) = match connector_type {
         "folder" => {
             let fc = FolderConnector::new(config).map_err(|e| e.to_string())?;
-            let (docs, _cursor) = fc.fetch().map_err(|e| e.to_string())?;
-            docs
+            let (docs, skipped, _cursor) = fc.fetch_with_skipped().map_err(|e| e.to_string())?;
+            (docs, skipped)
         }
         "jira" => {
             let jc = JiraConnector::new(config).map_err(|e| e.to_string())?;
@@ -105,17 +107,17 @@ async fn fetch_docs(connector_type: &str, config: &serde_json::Value, source_id:
                 // treat empty as not error for now, but log
                 tracing::warn!("Jira fetch returned 0 docs for source {}", source_id);
             }
-            docs
+            (docs, Vec::new())
         }
         "gdrive" => {
             let gc = GDriveConnector::new(config).map_err(|e| e.to_string())?;
-            let (docs, _cursor) = gc.fetch("").await.map_err(|e| e.to_string())?;
-            docs
+            let (docs, skipped, _cursor) = gc.fetch_with_skipped("").await.map_err(|e| e.to_string())?;
+            (docs, skipped)
         }
         "linear" => {
             let lc = LinearConnector::new(config).map_err(|e| e.to_string())?;
             let (docs, _cursor) = lc.fetch("").await.map_err(|e| e.to_string())?;
-            docs
+            (docs, Vec::new())
         }
         "rest" => {
             let rc = RestConnector::new(config).map_err(|e| e.to_string())?;
@@ -123,11 +125,11 @@ async fn fetch_docs(connector_type: &str, config: &serde_json::Value, source_id:
             if docs.is_empty() {
                 tracing::warn!("REST fetch returned 0 docs for source {}", source_id);
             }
-            docs
+            (docs, Vec::new())
         }
         _ => return Err(format!("unknown connector '{}'", connector_type)),
     };
-    Ok(docs)
+    Ok((docs, skipped))
 }
 
 /// B57: connectors whose fetch returns the complete current set, so a stored
@@ -159,12 +161,18 @@ async fn purge_missing_for_sync(
     source_id: i64,
     connector_type: &str,
     docs: &[IngestionDoc],
+    skipped: &[String],
 ) -> i64 {
-    if !connector_supports_purge(connector_type) || docs.is_empty() {
+    if !connector_supports_purge(connector_type) {
         return 0;
     }
-    let fetched: std::collections::HashSet<String> =
+    let mut fetched: std::collections::HashSet<String> =
         docs.iter().map(|d| d.external_id.clone()).collect();
+    // unreadable-but-present files still exist at the source — never purge them
+    fetched.extend(skipped.iter().cloned());
+    if fetched.is_empty() {
+        return 0;
+    }
     match purge_missing_items(data_dir, source_id, fetched).await {
         Ok(n) => n,
         Err(e) => {
@@ -337,10 +345,10 @@ impl Pipeline {
         let mut config: serde_json::Value = serde_json::from_str(&config_str).unwrap_or(serde_json::json!({}));
         config = resolve_config(data_dir, source_id, config);
         // fetch docs — R10.2: Jira/GDrive/Linear must not silently succeed with 0 items
-        let docs = fetch_docs(&connector_type, &config, source_id).await?;
+        let (docs, skipped) = fetch_docs(&connector_type, &config, source_id).await?;
         // B57: purge stored items that disappeared remotely (hard-delete).
         let purged_items =
-            purge_missing_for_sync(data_dir, source_id, &connector_type, &docs).await;
+            purge_missing_for_sync(data_dir, source_id, &connector_type, &docs, &skipped).await;
         // update job total
         let total_docs = docs.len() as i64;
         run_db(data_dir, move |conn| {
@@ -459,41 +467,46 @@ impl ClassifyCtx {
     async fn load_item_meta(&mut self) -> Result<(), String> {
         let source_id = self.source_id;
         let external_id = self.external_id.clone();
-        let (item_id, label, prev_hashes) = run_db(&self.data_dir, move |conn| {
+        let (item_id, label, prev_hashes, doc_type) = run_db(&self.data_dir, move |conn| {
             let item_id: i64 = conn.query_row("SELECT id FROM ingested_items WHERE source_id=?1 AND external_id=?2", rusqlite::params![source_id, external_id], |r| r.get(0)).map_err(|e| e.to_string())?;
             let label: String = conn.query_row("SELECT label FROM sources WHERE id=?1", [source_id], |r| r.get(0)).unwrap_or_else(|_| "internal".to_string());
             let s: String = conn.query_row("SELECT window_hashes FROM ingested_items WHERE id=?1", [item_id], |r| r.get(0)).unwrap_or_else(|_| "{}".to_string());
             let prev_hashes: std::collections::HashMap<String, String> = serde_json::from_str(&s).unwrap_or_default();
-            Ok((item_id, label, prev_hashes))
+            let doc_type: String = conn.query_row("SELECT doc_type FROM ingested_items WHERE id=?1", [item_id], |r| r.get(0)).unwrap_or_default();
+            Ok((item_id, label, prev_hashes, doc_type))
         }).await?;
         self.item_id = item_id;
         self.label = label;
         self.prev_hashes = prev_hashes;
+        self.doc_type = doc_type;
         self.new_hashes = self.prev_hashes.clone();
         Ok(())
     }
 
-    // gate + doc_type detection (P1 4.4 — was hardcoded general)
+    // B26 document-type pre-pass: one cheap detection per document, cached on
+    // the item; force reclassify re-detects (recovers from an earlier bad label).
     async fn detect_doc_type(&mut self) -> Result<(), String> {
         self.classify_trusted = cloud_trusted(&*self.settings, "classifier");
         self.embed_trusted = cloud_trusted(&*self.settings, "embed");
+        if !self.doc_type.is_empty() && !self.force {
+            return Ok(());
+        }
         let trusted = self.classify_trusted;
-        let doc_type = if trusted {
-            // Box LLM future to bound stack (large classifier future previously blew 8 MB)
-            Box::pin(self.classifier.detect_document_type(&self.full_text, trusted)).await
-        } else {
-            "general".to_string()
-        };
-        self.doc_type = doc_type;
-        Ok(())
+        // Box LLM future to bound stack (large classifier future previously blew 8 MB)
+        let doc_type = Box::pin(self.classifier.detect_document_type(&self.full_text, trusted)).await;
+        self.doc_type = doc_type.clone();
+        let item_id = self.item_id;
+        run_db(&self.data_dir, move |conn| {
+            conn.execute("UPDATE ingested_items SET doc_type=?1 WHERE id=?2", rusqlite::params![doc_type, item_id]).map_err(|e| e.to_string())?;
+            Ok(())
+        }).await
     }
 
     async fn classify_windows(&mut self) -> Result<usize, String> {
-        let mut total = 0usize;
+        // B26/R22.1: per-window LLM extraction (rules fallback inside
+        // `Classifier::classify`), hash-skipped and bounded-concurrency.
+        let mut jobs: Vec<(i64, String, String)> = Vec::new();
         for (idx, window) in self.windows.iter().enumerate() {
-            if job_cancelled(&self.data_dir, self.job_id).await? {
-                return Err("job cancelled".to_string());
-            }
             let index = (idx + 1) as i64;
             let h = window_hash(window);
             let unchanged = !self.force && self.prev_hashes.get(&index.to_string()).map(|p| *p == h).unwrap_or(false);
@@ -501,20 +514,31 @@ impl ClassifyCtx {
                 self.new_hashes.insert(index.to_string(), h);
                 continue;
             }
-            self.new_hashes.insert(index.to_string(), h.clone());
-            // delete stale entities for this window index if not force (already handled force)
-            if !self.force {
-                delete_stale_entities(self, Some(index)).await?;
-            }
+            self.new_hashes.insert(index.to_string(), h);
             let source_ref = if self.windows.len() > 1 {
                 format!("{} §{}", self.base_ref, index)
             } else {
                 self.base_ref.clone()
             };
-            // classify via rules (no LLM for tests)
-            let to_insert = classify_window(window, &source_ref, index);
-            // insert into DB
-            total += store_batch(self, to_insert).await?;
+            jobs.push((index, source_ref, window.clone()));
+        }
+        if jobs.is_empty() {
+            return Ok(0);
+        }
+        if job_cancelled(&self.data_dir, self.job_id).await? {
+            return Err("job cancelled".to_string());
+        }
+        let classified = classify_all(&self.classifier, &jobs, &self.doc_type, self.classify_trusted, &self.data_dir, self.job_id).await?;
+        let mut total = 0usize;
+        for ((index, source_ref, window), items) in jobs.iter().zip(classified) {
+            if job_cancelled(&self.data_dir, self.job_id).await? {
+                return Err("job cancelled".to_string());
+            }
+            // delete stale entities for this window index if not force (already handled force)
+            if !self.force {
+                delete_stale_entities(self, Some(*index)).await?;
+            }
+            total += store_batch(self, prepare_items(items, window, source_ref, *index)).await?;
         }
         Ok(total)
     }
@@ -784,22 +808,66 @@ async fn delete_stale_entities(ctx: &ClassifyCtx, window_index: Option<i64>) -> 
     }).await
 }
 
-// classify via rules + dedupe by summary lower
-fn classify_window(window: &str, source_ref: &str, index: i64) -> Vec<crate::classifier::ClassifiedItem> {
-    let items = crate::classifier::classify_rules(window, source_ref);
+fn classify_concurrency() -> usize {
+    std::env::var("ANCHOR_CLASSIFIER_CONCURRENCY").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(4)
+}
+
+/// Bounded-concurrency LLM classification for all changed windows; results keep
+/// window order. Batches keep cancellation latency at one model call.
+/// `Classifier::classify` falls back to type-aware rules on failure.
+async fn classify_all(
+    classifier: &Arc<Classifier>,
+    jobs: &[(i64, String, String)],
+    doc_type: &str,
+    trusted: bool,
+    data_dir: &str,
+    job_id: i64,
+) -> Result<Vec<Vec<crate::classifier::ClassifiedItem>>, String> {
+    let mut out: Vec<Vec<crate::classifier::ClassifiedItem>> = vec![Vec::new(); jobs.len()];
+    let mut start = 0usize;
+    for batch in jobs.chunks(classify_concurrency()) {
+        if job_cancelled(data_dir, job_id).await? {
+            return Err("job cancelled".to_string());
+        }
+        let mut set = tokio::task::JoinSet::new();
+        for (offset, (_index, source_ref, window)) in batch.iter().enumerate() {
+            let classifier = classifier.clone();
+            let doc_type = doc_type.to_string();
+            let source_ref = source_ref.clone();
+            let window = window.clone();
+            set.spawn(async move {
+                let items = classifier.classify(&window, &source_ref, &doc_type, trusted).await;
+                (offset, items)
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok((offset, items)) => out[start + offset] = items,
+                Err(e) => tracing::warn!("classification task failed: {}", e),
+            }
+        }
+        start += batch.len();
+    }
+    Ok(out)
+}
+
+/// Attach the source window + index and dedupe by summary (per window).
+fn prepare_items(items: Vec<crate::classifier::ClassifiedItem>, window: &str, source_ref: &str, index: i64) -> Vec<crate::classifier::ClassifiedItem> {
     let mut seen = std::collections::HashSet::new();
-    let mut to_insert = vec![];
+    let mut out = Vec::new();
     for mut it in items {
         let key = it.summary.to_lowercase();
-        if seen.contains(&key) {
+        if !seen.insert(key) {
             continue;
         }
-        seen.insert(key);
         it.window_text = window.to_string();
         it.window_index = Some(index);
-        to_insert.push(it);
+        if it.source_ref.is_empty() {
+            it.source_ref = source_ref.to_string();
+        }
+        out.push(it);
     }
-    to_insert
+    out
 }
 
 async fn store_batch(ctx: &ClassifyCtx, items: Vec<crate::classifier::ClassifiedItem>) -> Result<usize, String> {
@@ -906,7 +974,8 @@ fn distill_unit_content(unit: &crate::classifier::DistilledUnit) -> String {
     content
 }
 
-// B18 distillation (chat-like doc types → Q&A units), hash-skipped
+// B18 distillation (chat-like doc types → Q&A units), hash-skipped.
+// R22.1: uses the LLM distiller (rules fallback inside `Classifier::distill`).
 async fn distill_item(ctx: &ClassifyCtx) -> Result<(), String> {
     let distill_enabled = ctx.settings.get("distill_enabled", None).map(|v| v == "true" || v == "1" || v == "True").unwrap_or(true);
     if !(crate::distill::DISTILL_DOC_TYPES.contains(&ctx.doc_type.as_str()) && distill_enabled) {
@@ -914,33 +983,73 @@ async fn distill_item(ctx: &ClassifyCtx) -> Result<(), String> {
         return update_distill_hashes(ctx).await;
     }
     let item_id = ctx.item_id;
-    let base_ref = ctx.base_ref.clone();
-    let windows = ctx.windows.clone();
     let force = ctx.force;
     // R15.4: reuse classify-phase hashes (no re-hash of every window).
     let new_hashes = ctx.new_hashes.clone();
-    run_db(&ctx.data_dir, move |conn| {
+    let prev: std::collections::HashMap<String, String> = run_db(&ctx.data_dir, move |conn| {
         let prev_str: String = conn.query_row("SELECT distill_hashes FROM ingested_items WHERE id=?1", [item_id], |r| r.get(0)).unwrap_or_else(|_| "{}".to_string());
-        let prev: std::collections::HashMap<String, String> = serde_json::from_str(&prev_str).unwrap_or_default();
-        if !distill_changed_hashes(force, &new_hashes, &prev) {
-            // update hashes even if skip? keep prev
-            return Ok(());
-        }
+        Ok(serde_json::from_str(&prev_str).unwrap_or_default())
+    }).await?;
+    if !distill_changed_hashes(force, &new_hashes, &prev) {
+        return Ok(());
+    }
+    let jobs: Vec<(i64, String, String)> = ctx.windows.iter().enumerate().map(|(i, w)| {
+        let index = (i + 1) as i64;
+        let source_ref = if ctx.windows.len() > 1 { format!("{} §{}", ctx.base_ref, index) } else { ctx.base_ref.clone() };
+        (index, source_ref, w.clone())
+    }).collect();
+    let units = distill_all(&ctx.classifier, &jobs, ctx.classify_trusted, &ctx.data_dir, ctx.job_id).await?;
+    let max_units: usize = std::env::var("ANCHOR_DISTILL_MAX_UNITS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+    let item_id = ctx.item_id;
+    run_db(&ctx.data_dir, move |conn| {
         // delete old distilled chunks
         let _ = conn.execute("DELETE FROM chunks WHERE item_id=?1 AND kind='distilled'", [item_id]);
-        let max_units: usize = std::env::var("ANCHOR_DISTILL_MAX_UNITS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
-        for (idx, window) in windows.iter().enumerate() {
-            let units = crate::classifier::distill_rules(window);
-            let refs = if windows.len() > 1 { format!("{} §{}", base_ref, idx + 1) } else { base_ref.clone() };
-            for unit in units.into_iter().take(max_units) {
+        for ((_index, source_ref, _window), batch) in jobs.iter().zip(units) {
+            for unit in batch.into_iter().take(max_units) {
                 let content = distill_unit_content(&unit);
-                let _ = conn.execute("INSERT INTO chunks (item_id, kind, source_ref, content, created_at) VALUES (?1,'distilled',?2,?3,datetime('now'))", rusqlite::params![item_id, refs, content]);
+                let _ = conn.execute("INSERT INTO chunks (item_id, kind, source_ref, content, created_at) VALUES (?1,'distilled',?2,?3,datetime('now'))", rusqlite::params![item_id, source_ref, content]);
             }
         }
         let j = serde_json::to_string(&new_hashes).unwrap_or_else(|_| "{}".to_string());
         let _ = conn.execute("UPDATE ingested_items SET distill_hashes=?1 WHERE id=?2", rusqlite::params![j, item_id]);
         Ok(())
     }).await
+}
+
+/// Bounded-concurrency LLM distillation for all windows; results keep window
+/// order. Batches keep cancellation latency at one model call.
+async fn distill_all(
+    classifier: &Arc<Classifier>,
+    jobs: &[(i64, String, String)],
+    trusted: bool,
+    data_dir: &str,
+    job_id: i64,
+) -> Result<Vec<Vec<crate::classifier::DistilledUnit>>, String> {
+    let mut out: Vec<Vec<crate::classifier::DistilledUnit>> = vec![Vec::new(); jobs.len()];
+    let mut start = 0usize;
+    for batch in jobs.chunks(classify_concurrency()) {
+        if job_cancelled(data_dir, job_id).await? {
+            return Err("job cancelled".to_string());
+        }
+        let mut set = tokio::task::JoinSet::new();
+        for (offset, (_index, source_ref, window)) in batch.iter().enumerate() {
+            let classifier = classifier.clone();
+            let source_ref = source_ref.clone();
+            let window = window.clone();
+            set.spawn(async move {
+                let units = classifier.distill(&window, &source_ref, trusted).await;
+                (offset, units)
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok((offset, units)) => out[start + offset] = units,
+                Err(e) => tracing::warn!("distillation task failed: {}", e),
+            }
+        }
+        start += batch.len();
+    }
+    Ok(out)
 }
 
 async fn update_distill_hashes(ctx: &ClassifyCtx) -> Result<(), String> {
@@ -1146,10 +1255,13 @@ mod tests {
             source_ref: String::new(),
         };
         // rest connector never purges, even when the item is absent
-        let n = purge_missing_for_sync(&data_dir, sid, "rest", std::slice::from_ref(&doc)).await;
+        let n = purge_missing_for_sync(&data_dir, sid, "rest", std::slice::from_ref(&doc), &[]).await;
         assert_eq!(n, 0);
         // empty fetch purges nothing
-        let n = purge_missing_for_sync(&data_dir, sid, "folder", &[]).await;
+        let n = purge_missing_for_sync(&data_dir, sid, "folder", &[], &[]).await;
+        assert_eq!(n, 0);
+        // an unreadable-but-present file (skipped) is never purged
+        let n = purge_missing_for_sync(&data_dir, sid, "folder", &[], &["a.md".to_string()]).await;
         assert_eq!(n, 0);
         let conn = crate::db::open_db(&db_path).unwrap();
         let items: i64 = conn.query_row("SELECT COUNT(*) FROM ingested_items", [], |r| r.get(0)).unwrap();

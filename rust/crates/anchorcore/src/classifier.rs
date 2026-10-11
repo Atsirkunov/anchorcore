@@ -8,20 +8,24 @@ use std::sync::{Arc, OnceLock};
 use crate::settings::SettingsService;
 
 pub const KINDS: &[&str] = &["decision", "document", "action", "note"];
-pub const DOC_TYPES: &[&str] = &["standards", "runbook", "meeting", "decision_log", "prd", "general"];
+pub const DOC_TYPES: &[&str] = &["standards", "runbook", "documentation", "meeting", "decision_log", "prd", "general"];
+// B26: document types that describe how things work — the extraction prompt and
+// the rule fallback must never turn descriptions/procedures into decision/action.
+pub const NOTE_ONLY_DOC_TYPES: &[&str] = &["standards", "runbook", "documentation"];
 pub const DISTILL_DOC_TYPES: &[&str] = &["meeting", "decision_log", "general"];
 
-const TYPE_DETECT_PROMPT: &str = "You identify what kind of document a piece of text is.\nPick exactly one of: standards, runbook, meeting, decision_log, prd, general.\n- standards: regulatory/normative rules, requirements, procedures\n- runbook: operational steps, escalation rules, how-to guide\n- meeting: meeting notes, retros, planning notes\n- decision_log: a log of recorded decisions\n- prd: product requirements, specifications, scoping docs\n- general: anything else\nRespond ONLY with the single word, nothing else.\n";
+const TYPE_DETECT_PROMPT: &str = "You identify what kind of document a piece of text is.\nPick exactly one of: standards, runbook, documentation, meeting, decision_log, prd, general.\n- standards: regulatory/normative rules, requirements, procedures (\"shall\"/\"must\" language, articles/sections)\n- runbook: operational steps, escalation rules, how-to guide\n- documentation: internal process/policy documentation, SOPs, handbooks, descriptions of how things work\n- meeting: meeting notes, retros, planning notes\n- decision_log: a log of recorded decisions\n- prd: product requirements, specifications, scoping docs\n- general: anything else\nRespond ONLY with the single word, nothing else.\n";
 const DISTILL_PROMPT: &str = "You distill a conversation / chat-log excerpt into searchable Q&A units.\n\nA unit is a question someone asked AND its substantive answer. Normalize the\nexchange into a consistent format so it can be found later by either side.\n\nFor each distinct Q&A exchange in the text, output exactly one unit with:\n- question: the question, normalized to a standalone one-liner\n- answer: the substantive answer, normalized (no filler, greetings, or chit-chat)\n- terms: 1-5 searchable key terms / acronyms the unit is about\n- systems: any systems, teams, or components mentioned (empty if none)\n\nIgnore filler: greetings, small talk, acknowledgements (\"got it\", \"thanks\"),\nand messages with no information. If the text contains no real Q&A exchange,\nreturn {{\"units\": []}}.\n\nRespond ONLY with a JSON object:\n{{\"units\": [{{\"question\": str, \"answer\": str, \"terms\": [str], \"systems\": [str]}}]}}\n";
 
 fn prompts_for(doc_type: &str) -> &'static str {
     match doc_type {
         "standards" => "You extract knowledge items from a REGULATORY / STANDARDS document.\n\nThis document defines normative rules and procedures. Extract ONLY factual\nstatements worth remembering:\n- note: a rule, requirement, definition, or procedural fact\nDo NOT extract:\n- decision (standards don’t record organizational decisions)\n- action (procedural steps are rules, not assigned to-dos)\n- document (do not emit a summary for the document itself)\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": \"note\", \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": \"\"}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
         "runbook" => "You extract knowledge items from a RUNBOOK / OPERATIONAL GUIDE.\n\nExtract ONLY factual statements worth remembering:\n- note: a step, prerequisite, escalation rule, or operational fact\nDo NOT extract:\n- decision (runbooks don’t record organizational decisions)\n- action (steps are procedural notes, not assigned to-dos)\n- document (do not emit a summary for the document itself)\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": \"note\", \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": \"\"}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
+        "documentation" => "You extract knowledge items from internal PROCESS / POLICY DOCUMENTATION.\n\nThis document describes how things work (processes, procedures, policies, responsibilities). Extract ONLY factual statements worth remembering:\n- note: a process step, rule, definition, responsibility, or operational fact\nDo NOT extract:\n- decision (documentation describes how things work; it does not record organizational decisions)\n- action (procedural steps are rules, not assigned to-dos)\n- document (do not emit a summary for the document itself)\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": \"note\", \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": \"\"}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
         "meeting" => "You extract knowledge items from MEETING NOTES.\n\nClassify each item into exactly one of these kinds:\n- decision: a choice made in the meeting, with reasoning\n- action: something someone agreed to do (owner + due date if stated)\n- document: a status update / factual report\n- note: anything else worth remembering\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": str, \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": str}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
         "decision_log" => "You extract knowledge items from a DECISION LOG.\n\nClassify each item into exactly one of these kinds:\n- decision: a recorded choice, with reasoning\n- note: context, constraints, or revisit triggers\n- action: a follow-up someone owns\nDo NOT extract the document itself as an item.\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": str, \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": str}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
-        "prd" => "You extract knowledge items from a PRODUCT / REQUIREMENTS document.\n\nClassify each item into exactly one of these kinds:\n- decision: a scope or requirement choice, with reasoning\n- document: a factual description / requirement / spec fact\n- action: an explicitly assigned follow-up\n- note: anything else worth remembering\nDo NOT extract the document itself as an item.\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": str, \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": str}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
-        _ => "You extract knowledge items from organizational text.\n\nClassify each item into exactly one of these kinds:\n- decision: a choice made, with reasoning behind it\n- document: a factual reference / status update / description\n- action: something to be done, assigned, or tracked\n- note: anything else worth remembering\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": str, \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": str}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
+        "prd" => "You extract knowledge items from a PRODUCT / REQUIREMENTS document.\n\nClassify each item into exactly one of these kinds:\n- decision: ONLY an explicitly recorded scope choice (we decided / we agreed), never a requirement statement or description\n- document: a factual description / requirement / spec fact\n- action: an explicitly assigned follow-up\n- note: anything else worth remembering\nDo NOT extract the document itself as an item.\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": str, \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": str}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
+        _ => "You extract knowledge items from organizational text.\n\nClassify each item into exactly one of these kinds:\n- decision: ONLY a choice explicitly recorded as made (we decided / we agreed / chose), never a description, rule, or plan\n- document: a factual reference / status update / description\n- action: something explicitly assigned to a person, or a tracked follow-up\n- note: anything else worth remembering\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": str, \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": str}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
     }
 }
 
@@ -71,13 +75,13 @@ impl Classifier {
     pub async fn detect_document_type(&self, text: &str, cloud_trusted: bool) -> String {
         if !cloud_trusted && !self.provider_is_local() {
             tracing::info!("document-type gate: remote provider unconfirmed; using rules");
-            return "general".to_string();
+            return detect_rules(text);
         }
         match self.detect_llm(text).await {
             Ok(t) => t,
             Err(e) => {
-                tracing::warn!("document-type detection failed ({}); defaulting to general", e);
-                "general".to_string()
+                tracing::warn!("document-type detection failed ({}); using rules", e);
+                detect_rules(text)
             }
         }
     }
@@ -91,13 +95,13 @@ impl Classifier {
     ) -> Vec<ClassifiedItem> {
         if !cloud_trusted && !self.provider_is_local() {
             tracing::info!("classification gate: remote provider unconfirmed; using rules");
-            return classify_rules(text, source_ref);
+            return classify_rules_typed(text, source_ref, doc_type);
         }
         match self.classify_llm(text, source_ref, doc_type).await {
             Ok(items) => items,
             Err(e) => {
                 tracing::warn!("LLM classification failed ({}); falling back to rules", e);
-                classify_rules(text, source_ref)
+                classify_rules_typed(text, source_ref, doc_type)
             }
         }
     }
@@ -306,12 +310,51 @@ pub fn classify_rules(text: &str, source_ref: &str) -> Vec<ClassifiedItem> {
     normalize_items(items.into_iter().map(|i| serde_json::json!({"kind": i.kind, "summary": i.summary, "reasoning": i.reasoning, "confidence": i.confidence, "author": i.author})).collect(), source_ref)
 }
 
+/// B26: deterministic document-type fallback for when the LLM is unavailable
+/// or the provider is untrusted. Ordered heuristics over the document head —
+/// `general` only when nothing matches.
+pub fn detect_rules(text: &str) -> String {
+    let head: String = text.chars().take(12000).collect::<String>().to_lowercase();
+    if contains_any(&head, &["attendees", "agenda", "meeting notes", "minutes of", "retro"]) {
+        return "meeting".to_string();
+    }
+    if contains_any(&head, &["decision log", "decision:", "adr-", "status: accepted"]) {
+        return "decision_log".to_string();
+    }
+    if contains_any(&head, &["acceptance criteria", "user story", "requirements:", "product requirements"]) {
+        return "prd".to_string();
+    }
+    let normative = head.matches(" must ").count() + head.matches(" shall ").count();
+    if head.contains('§') || normative >= 5 {
+        return "standards".to_string();
+    }
+    if contains_any(&head, &["procedure", "process", "sop", "workflow", "handbook", "policy", "instructions"]) {
+        return "documentation".to_string();
+    }
+    "general".to_string()
+}
+
+fn contains_any(hay: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|n| hay.contains(n))
+}
+
+/// Rules fallback that respects the detected document type: note-only types
+/// (standards/runbook/documentation) emit no entities without the LLM — the
+/// per-type prompt is the extractor, and guessing notes from keywords both
+/// fabricates and perturbs retrieval. Document chunks still make them findable.
+pub fn classify_rules_typed(text: &str, source_ref: &str, doc_type: &str) -> Vec<ClassifiedItem> {
+    if NOTE_ONLY_DOC_TYPES.contains(&doc_type) {
+        return Vec::new();
+    }
+    classify_rules(text, source_ref)
+}
+
 fn rule_kind(sentence: &str) -> Option<String> {
     static RE_DECISION: OnceLock<Regex> = OnceLock::new();
     static RE_ACTION: OnceLock<Regex> = OnceLock::new();
     static RE_DOCUMENT: OnceLock<Regex> = OnceLock::new();
     let lower = sentence.to_lowercase();
-    if RE_DECISION.get_or_init(|| Regex::new(r"\b(we (should|will|must|need to|decided)|decision|decided to|approved|rejected|postpone)\b").unwrap()).is_match(&lower) {
+    if RE_DECISION.get_or_init(|| Regex::new(r"\b(we (decided|agreed|chose|approved|rejected|postponed)\b|decision\s*[:\-](\s|$)|(decided|agreed) (to|that|on)\b|(approved|rejected) the\b)").unwrap()).is_match(&lower) {
         return Some("decision".to_string());
     }
     if RE_ACTION.get_or_init(|| Regex::new(r"\b(action item|todo|to-do|next step|owner|assign|follow[- ]up|deadline|due)\b").unwrap()).is_match(&lower) {
@@ -371,5 +414,29 @@ mod tests {
         // default ollama is local -> trusted
         let c = Classifier::new(svc);
         assert!(c.provider_is_local());
+    }
+
+    #[test]
+    fn detect_rules_flags_documentation_and_standards() {
+        let process_doc = "This handbook describes the onboarding process step by step. The operator must file the request. The workflow continues to the next stage.";
+        assert_eq!(detect_rules(process_doc), "documentation");
+        let reg = "Article 12 shall apply. The institution must notify the authority. §434 defines the transfer rules.";
+        assert_eq!(detect_rules(reg), "standards");
+    }
+
+    #[test]
+    fn note_only_types_emit_nothing_without_llm() {
+        // No LLM → the per-type prompt can't run; keyword guessing is disabled
+        // for note-only types (it fabricated decisions and note-noise before).
+        let text = "We decided to approve the budget. The operator must record the approval in the register.";
+        assert!(classify_rules_typed(text, "ref", "documentation").is_empty());
+        assert!(classify_rules_typed(text, "ref", "standards").is_empty());
+        assert!(classify_rules_typed(text, "ref", "runbook").is_empty());
+    }
+
+    #[test]
+    fn decision_mentions_are_not_decisions() {
+        let items = classify_rules("The decision-making process is described below. What was decided about the transfer?", "ref");
+        assert!(items.iter().all(|i| i.kind != "decision"));
     }
 }

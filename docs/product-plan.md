@@ -227,8 +227,8 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** on first launch a new user is guided from "install Ollama" to a cited answer in a few clicks, no config file. — met (dev; frozen apps hide the sample button).
 
-### B9. Document type coverage (P1)
-**Scope:** add `.docx`/`.pptx`/`.odt` extraction (small deps); revisit after real tester file types are known — the watched folder currently only ingests a subset of formats.
+### B9. Document type coverage (P1) — DONE (R24.2, 2026-10-11)
+**Done:** all business formats extract through one shared module (`rust/crates/anchorcore/src/extract.rs`) used by both the folder connector and Google Drive: Word `.docx/.docm`, PowerPoint `.pptx/.pptm`, Excel `.xlsx/.xlsm/.xlsb/.xls` + OpenDocument `.ods` (calamine), OpenDocument `.odt/.odp`, RTF, `.eml` email, PDF, HTML, and text (UTF-8 / UTF-16 with-and-without-BOM / Windows-1252 fallback). Drive exports native Google types (Docs→text, Sheets→CSV, Slides→text, other native→PDF) and extracts uploaded Office files by MIME type; download/extract failures and empty files are `skipped`, never purged (B57). Legacy binary `.doc`/`.ppt` remain unsupported — save as `.docx`/`.pptx` or PDF.
 
 ### B11. Parallel classification throughput (P2 — discovered) — DONE
 **Problem:** windowed classification runs sequentially — a 237-page PDF took ~15 min (160+ serial LLM calls). Hardware is fine; the pipeline serializes.
@@ -1132,6 +1132,63 @@ frontend build green.
 
 **Progress (2026-10-10, R19.1):** implemented. `hosting/Dockerfile` is a multi-stage Rust build (node→cargo→debian-slim runtime, non-root, `/data` volume, healthcheck); `hosting/docker-compose.yml` is ONE service; `entrypoint.sh` deleted. The Team license gate is ported to Rust (`rust/crates/anchorcore/src/license.rs`, format-compatible with `scripts/make_license.py`, 9 unit tests incl. Python-issued fixtures) and enforced at boot when `ANCHOR_EDITION=team`; the server gained `--host`/`ANCHOR_HOST` so the container binds `0.0.0.0`. CI: new `docker-team` job builds + smokes the image (refuses without a license; `/health` with an edition override); `release.yml` publishes `ghcr.io/atsirkunov/anchorcore:<version>` + `:team`. Docs synced (hosting/README, README, docs/hosting, architecture, v2v3-scope, AGENTS). Remaining: first green CI image run; R18.5 (Team CTA/price on the website) stays separate.
 
+### B60. Document-aware classification never ran in the Rust pipeline (P0 — discovered 2026-10-11 from a 300-page process doc)
+
+**Problem:** the shipped Rust binary (1.0.10–1.0.14) never called the LLM
+classifier. `pipeline.rs` `classify_window` called `classify_rules` directly
+(comment: "classify via rules (no LLM for tests)") and `distill_item` called
+`distill_rules`; `Classifier::classify`/`distill` (the B26 per-doc-type prompts)
+had zero call sites. `detect_document_type` ran but its result only gated a
+rules-based distillation, so every document was classified by keyword rules:
+any sentence containing "decision"/"approved"/"notify"/"owner" became a
+`decision`/`action` entity, and rule confidences (0.78/0.72 ≥ 0.7) are stored
+`verified` — straight into Q&A with no review. B26's DoD ("standards → notes
+only, zero decision/action") was not met by the artifact.
+
+Evidence (owner's data dir): the 300-page SCoRE Direct Debits rulebook
+(a process/standards document) held 471 entities — 37 `decision` + 179 `action`
+("Account issuer must carry out reversal…" as a *decision*); a 3.6 KB
+description file synced the same day produced 3 `decision` entities, e.g. the
+section header "What each file exercises". A second latent bug surfaced while
+re-ingesting: the Rust folder connector stubbed PDF (`PDF not yet supported`)
+and `fetch` skipped unreadable files silently — B57 purge then *hard-deleted*
+both ingested PDFs on the next sync (`purged: 2`).
+
+**Scope (R22.1/R22.2, `rust/BACKLOG.md` Phase 22):**
+- `classify_windows` → per-window `Classifier::classify` (LLM + per-doc-type
+  prompt; rules fallback inside), hash-skip kept, bounded concurrency
+  `ANCHOR_CLASSIFIER_CONCURRENCY` (default 4); `distill_item` → `Classifier::distill`.
+- `ingested_items.doc_type` persisted and reused on resync; force reclassify
+  re-detects (bad labels are recoverable).
+- New `documentation` doc type (note-only): internal process/policy docs, SOPs,
+  handbooks, descriptions of how things work — the "normal document" bucket.
+- Rule fallback hardened: note-only types emit no entities without the LLM
+  (no keyword guessing); decisions require explicit records
+  ("we decided/agreed/chose", "Decision:"); deterministic `detect_rules` when
+  the LLM is unavailable.
+- PDF extraction (`pdf-extract`) + purge safety: unreadable-but-present files
+  are reported `skipped` and never purged.
+
+**DoD:** live reclassify of the rulebook → `documentation` with zero
+decision/action; `sample-dataset.md` → notes only; unchanged windows skipped;
+`cargo test` + conformance green. — met 2026-10-11.
+
+**Progress (2026-10-11):** implemented and verified live (debug build, gnu
+target via user-local MinGW; Ollama llama3.2:3b). Reclassify results: rulebook
+→ `documentation`, 106 notes, 0 decision/action (was 471 entities: 37
+decisions/179 actions); `sample-dataset.md` → 6 notes, 0 decisions (was 3); no
+purge `{"entities":112,"items":3,"purged":0}` and the 441k-char PDF re-ingests
+(was silently hard-deleted). `cargo test` 127 passed. Registration: `R22.1` +
+`R22.2` in `rust/BACKLOG.md`.
+
+### B61. Backup / export / device migration + encrypted device sync (P1 — plan 2026-10-11)
+
+**Problem:** there is no way to move AnchorCore to a new device or restore after data loss. `~/.anchorcore` holds the DB, but secrets live in the OS keychain (or a Fernet fallback whose key file sits next to the ciphertext), folder paths and source refs are machine-specific, and re-syncing cannot restore review work (verifications, disputes, merges, PII decisions). The future hosted tier promises sync between devices ("AI already knows"); without a design it becomes "upload your company memory to our servers".
+
+**Scope:** Phase A (local, shippable): UUIDv7 uids, portable `.anchorcore-backup` export/import (versioned JSONL schema, zip-slip/zip-bomb safe, transactional), optional passphrase-encrypted secrets bundle (Argon2id + XChaCha20-Poly1305), CLI + System-tab UI, docs + acceptance script — `rust/BACKLOG.md` Phase 25 (R25.1–R25.7). Phase B: the same op log synced through a user-chosen cloud folder (no server, no account). Phase C: zero-knowledge hosted/Team relay — account master key from passphrase, per-device envelopes + revocation, signed encrypted op log in R2; the server sees ciphertext + minimal metadata only. Full design, threat model, decisions and acceptance scripts A1–A5: `docs/plan-backup-sync.md`.
+
+**DoD:** from a release build, a Windows + macOS device migration restores answers and review state with only tokens re-entered (A1); exports never contain plaintext secrets (CI grep test); plan §8 decisions signed off before Phase B starts.
+
 ## Current execution priorities (agreed 2026-08-07 — updated after Aug review + the B48 pass, amended for no-UX constraint)
 
 Explicit order — v1 core, hardening, scale and the website are DONE (v1.0.10–1.0.12). Queue below is post-website launch prep.
@@ -1167,7 +1224,7 @@ Explicit order — v1 core, hardening, scale and the website are DONE (v1.0.10�
 | — | B43 Business-scale corpus | ✅ DONE (v1.0.11) | `scripts/build_business_corpus.py` `tech/finance/AI` `800→5k docs` (`data/business-scale` gitignored) + Rust `NOT NULL` fixes `sources/jobs/ingested_items/entities/chunks` |
 | 1 | **B14.2 MCP HTTP transport** | **P1** | stdio shipped + tested local without UI (R12.5); HTTP + tokens unblock share links |
 | 2 | B22 Jira/Linear live validation | **P1** | sandbox fixtures; both connectors exist, need real-instance proof |
-| 3 | B9 Document type coverage | **P1** | `.docx`/`.pptx`/`.odt` extraction |
+| — | B9 Document type coverage | ✅ DONE (R24.2) | `.docx`/`.pptx`/`.odt`/`.xls`/ODF/RTF/EML extraction shared by folder + Drive; legacy `.doc`/`.ppt` = export first |
 | 4 | B16 who_knows (full) | **P1** | expertise ranking + evidence (minimal `who_knows` tool shipped in B17) |
 | 5 | B29 remainder: CHANGELOG + hosted prep | **P1** | website shipped; changelog discipline + pilot prep open |
 | 6 | B28 Drive OAuth polish | **P2** | OAuth browser flow + `data/drive/<name>/` mirror |
@@ -1185,5 +1242,7 @@ Explicit order — v1 core, hardening, scale and the website are DONE (v1.0.10�
 | — | B57 deleted-file cleanup | ✅ DONE (cargo 118/118) | hard-delete on sync; `rest`/empty guarded; job result gains `purged` |
 | — | B58 degraded-answer honesty | ✅ DONE (cargo 118/118, vitest 22/22) | `mode`+`retrieval` flags; per-answer banner; strict query embed |
 | 20 | B59 single-container Team image | ✅ DONE (R19.1) | site promises "One Docker container" but `hosting/` is a two-service Python stack; ship the Rust single container (or reword) |
+| 21 | B60 classification wiring + PDF purge safety | ✅ DONE (live) | Rust never called the LLM classifier → keyword rules fabricated decisions from process docs; PDF stub + B57 purge then deleted the ingested PDFs |
+| 22 | B61 backup / export / device migration | **P1** | no way off the device; secrets make "copy the folder" unsafe; zero-knowledge sync is the hosted differentiator |
 
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md), [design-system.md](./design-system.md)*

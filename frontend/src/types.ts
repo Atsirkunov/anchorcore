@@ -135,6 +135,38 @@ export type LogFile = {
   modified: string;
 };
 
+export type McpInfo = {
+  mode: string;
+  command: string | null;
+  args: string[];
+  calls: number;
+  last_call_at: string | null;
+};
+
+export type McpClient = {
+  id: string;
+  name: string;
+  detected: boolean;
+  connected: boolean;
+  method: string;
+  config_path: string | null;
+};
+
+export type FolderEntry = {
+  name: string;
+  path: string;
+};
+
+/** GET /system/fs — one directory level for the folder picker. `path`/`parent`
+ * are null in the shortcut (home + drive roots) view. */
+export type FolderListing = {
+  path: string | null;
+  parent: string | null;
+  home: string | null;
+  dirs: FolderEntry[];
+  truncated: boolean;
+};
+
 export type Entity = {
   id: number;
   item_id: number;

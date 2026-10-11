@@ -10,7 +10,7 @@ and people — designed so you can try every part of the product in a minute.
 In the app → Sources tab → **Add source**:
 
 - Connector: **Local folder**
-- Path: the absolute path to the `sample/` directory (e.g.
+- Path: the absolute path to the `sample/` directory — click **Browse…** to navigate, or paste it (e.g.
   `C:\Users\you\anchorcore\sample`)
 - Name: anything, e.g. "Sample company"
 

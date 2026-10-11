@@ -33,10 +33,7 @@ mkdir -p "$ROOT/dist/AnchorCore.app/Contents/MacOS"
 mkdir -p "$ROOT/dist/AnchorCore.app/Contents/Resources"
 cp "$ROOT/rust/target/release/anchorcore" "$ROOT/dist/AnchorCore.app/Contents/MacOS/AnchorCore"
 chmod +x "$ROOT/dist/AnchorCore.app/Contents/MacOS/AnchorCore"
-# Also bundle the MCP sidecar next to it (optional, for completeness)
-if [ -f "$ROOT/rust/target/release/anchorcore-mcp" ]; then
-  cp "$ROOT/rust/target/release/anchorcore-mcp" "$ROOT/dist/AnchorCore.app/Contents/MacOS/anchorcore-mcp" 2>/dev/null || true
-fi
+# R20.8: `anchorcore mcp` is a mode of the same binary — nothing else to bundle.
 cat > "$ROOT/dist/AnchorCore.app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

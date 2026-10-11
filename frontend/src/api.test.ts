@@ -55,4 +55,19 @@ describe("api request plumbing", () => {
     );
     await expect(api.health()).rejects.toThrow(/internal server error text/);
   });
+
+  it("builds the folder-browse query string", async () => {
+    const { api } = await import("./api");
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ path: null, parent: null, home: null, dirs: [], truncated: false }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await api.browseFolders("C:\\Users\\Aleksandr");
+    expect(fetchMock.mock.calls[0][0]).toBe("/system/fs?path=C%3A%5CUsers%5CAleksandr");
+    await api.browseFolders();
+    expect(fetchMock.mock.calls[1][0]).toBe("/system/fs");
+    await api.browseFolders("  ");
+    expect(fetchMock.mock.calls[2][0]).toBe("/system/fs");
+  });
 });

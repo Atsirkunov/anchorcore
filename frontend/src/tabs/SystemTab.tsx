@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
+import { McpConnectCard } from "../McpConnect";
 import { useModelPull } from "../useModelPull";
 import { theme } from "../theme";
 import type { Job, LogFile, SystemEvent, SystemStatus } from "../types";
@@ -232,18 +233,7 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
         </div>
       )}
 
-      <div style={{ ...styles.card, marginBottom: 16 }}>
-        <div style={styles.cardTitle}>Agent access (MCP)</div>
-        <div style={{ fontSize: 13, marginBottom: 6 }}>
-          Claude Code, Codex, opencode, Cursor — same memory, same citations, no browser.
-        </div>
-        <code style={{ display: "block", fontSize: 12, background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: 6, padding: "0.5rem 0.75rem", marginBottom: 6, wordBreak: "break-all" }}>
-          ANCHOR_BACKEND_URL=http://127.0.0.1:8000 cargo run -p anchorcore --bin anchorcore-mcp
-        </code>
-        <div style={{ fontSize: 12, color: theme.textMuted }}>
-          Tools: ask + search (read-only) · respects PII gates · audited as component=mcp
-        </div>
-      </div>
+      <McpConnectCard />
 
       <h3 style={{ marginBottom: 8 }}>Errors & warnings</h3>
       {events.length === 0 ? (

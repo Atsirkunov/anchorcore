@@ -3,9 +3,9 @@
 > Goal: let any AI harness (Claude Code, Codex, opencode, Cursor, …) connect
 > to AnchorCore's memory — locally or against a shared instance — and
 > consume it with full provenance.
-> Status: **shipped** — Rust sidecar `anchorcore-mcp` (stdio, 6 read-only
-> tools, `public_only` gate, ask/search audit). HTTP transport and write-back
-> are planned (B14.2/B14.3).
+> Status: **shipped** — Rust MCP mode `anchorcore mcp` (single binary, R20.8;
+> stdio, 6 read-only tools, `public_only` gate, ask/search audit). HTTP
+> transport and write-back are planned (B14.2/B14.3).
 
 ---
 
@@ -56,20 +56,27 @@ sources labeled public are searched (the share-safe surface).
 
 ### 4.1 Local — stdio (shipped)
 
-The sidecar `anchorcore-mcp` ships with the app and is spawned by the harness.
-The app must be running — the sidecar talks to it over `127.0.0.1`
+The same `anchorcore` binary also runs as the stdio MCP server: the harness
+spawns `anchorcore mcp`, which talks to the running app over `127.0.0.1`
 (`ANCHOR_BACKEND_URL`, default `http://127.0.0.1:8000`). The app stays the
 single owner of the DB, exactly like with the browser UI.
 
 ```bash
 # macOS (app bundle)
-claude mcp add anchorcore -- /Applications/AnchorCore.app/Contents/MacOS/anchorcore-mcp
+claude mcp add anchorcore -- /Applications/AnchorCore.app/Contents/MacOS/AnchorCore mcp
 # Windows (unzipped folder)
-claude mcp add anchorcore -- C:\path\to\anchorcore-mcp.exe
+claude mcp add anchorcore -- C:\path\to\anchorcore.exe mcp
 # from a dev checkout
-(cd rust && cargo build --bin anchorcore-mcp)  # → rust/target/debug/anchorcore-mcp
-# opencode: "mcp" entry in opencode.json with local stdio command
+(cd rust && cargo build)  # → rust/target/debug/anchorcore mcp
+# opencode V2: mcp.servers entry — or `opencode mcp add anchorcore --global -- <exe> mcp`
 ```
+
+> End users: nothing to build — run the app, open the System tab, and click
+> Connect for your client (or copy the exact command it prints, `GET
+> /system/mcp`); the onboarding wizard offers the same step. Pre-R20.8
+> configs that point at a separate `anchorcore-mcp` file keep working if you
+> copy/rename `anchorcore` to `anchorcore-mcp`, or re-run Connect (= Repair).
+> Plan: [plan-mcp-zero-setup.md](./plan-mcp-zero-setup.md).
 
 Details: stdio JSON-RPC (`initialize`/`tools/list`/`tools/call`); every `ask`/`search` call
 is logged to `system_events` (`component='mcp'`, visible under
@@ -77,7 +84,7 @@ is logged to `system_events` (`component='mcp'`, visible under
 
 Legacy: the B14.1 Python sidecar (`backend/anchorcore_mcp.py` +
 `backend/app/mcp/`, same 6 tools) is archived on tag `archive/python-final` (the conformance suite fetches it frozen). New work
-is Rust (`rust/crates/anchorcore/src/bin/mcp.rs`).
+is Rust (`rust/crates/anchorcore/src/mcp.rs`).
 
 ### 4.2 Centralized — streamable HTTP (planned, B14.2)
 
@@ -116,8 +123,10 @@ producers, not just consumers. Risks to manage:
 
 ## 7. Where the code lives
 
-- `rust/crates/anchorcore/src/bin/mcp.rs` — the shipped sidecar: stdio
+- `rust/crates/anchorcore/src/mcp.rs` — the shipped MCP mode (R20.8): stdio
   server, the 6 tool definitions, HTTP calls into the app, audit logging.
+- `rust/crates/anchorcore/src/mcp_setup.rs` — R20.9: client connect/
+  disconnect (Claude Code/Desktop, Cursor, opencode, Codex).
 - `backend/app/mcp/` + `backend/anchorcore_mcp.py` — legacy Python sidecar on the archive tag.
 - Config: `ANCHOR_BACKEND_URL` (default `http://127.0.0.1:8000`),
   `ANCHOR_MCP_TOKEN` is optional — sent as `Bearer` to the backend when set (required for the planned HTTP transport).
@@ -131,7 +140,7 @@ SecretStore/env; masked in logs via existing redaction).
 
 **Claude Code (local stdio, works today):**
 ```bash
-claude mcp add anchorcore -- /Applications/AnchorCore.app/Contents/MacOS/anchorcore-mcp
+claude mcp add anchorcore -- /Applications/AnchorCore.app/Contents/MacOS/AnchorCore mcp
 ```
 
 **Claude Code (centralized, planned — needs B14.2):**
@@ -145,8 +154,10 @@ claude mcp add anchorcore --transport http https://your-host/mcp \
 codex mcp add anchorcore -- http https://your-host/mcp --auth-token <token>
 ```
 
-**opencode** — add an `mcp` entry in `opencode.json` (local command today,
-remote URL once B14.2 ships).
+**opencode** — run `opencode mcp add anchorcore --global -- <path-to-anchorcore> mcp`,
+or add `mcp.servers.anchorcore` (V2: `type: "local"`, `command` array) in
+`opencode.json`; remote URL once B14.2 ships. The System tab does this for you
+(R20.9).
 
 ## 9. Milestones
 
@@ -154,13 +165,14 @@ remote URL once B14.2 ships).
 |---|---|---|
 | B14.1 | Local stdio MCP, read-only (Python sidecar + 6 tools + `/qa/search`) | ✅ DONE (v1.0.9, legacy) |
 | R12.5 | Same surface as a Rust sidecar + `public_only` + audit | ✅ DONE (1.0.12, shipped) |
+| R20 | Zero-setup MCP UX — real-path card, `/system/mcp`, one-click client connect, runtime discovery, release smoke (plan: [plan-mcp-zero-setup.md](./plan-mcp-zero-setup.md)) | In progress — R20.1/R20.2/R20.3/R20.8/R20.9 landed 2026-10-11 |
 | B14.2 | HTTP transport + token auth + audit | Open |
 | B14.3 | Write-back `ingest` (unverified + review queue) | Open |
 | B14.4 | Registry publishing (Claude Code marketplace etc.) | Open |
 
 ## 10. Open Questions
 
-- [ ] Stdio sidecar vs always-on local HTTP as the default local path?
+- [x] Stdio `anchorcore mcp` is the local default (one binary, R20.8); the open part is B14.2 streamable HTTP for Team/remote — decided in R20.7.
 - [ ] Token scoping model for v2 (per-user vs per-team, read/write tiers)?
 - [ ] Do we cap `search` k and prompt budget to protect Ollama/context under agent load?
 - [ ] Should `ask` be exposed at all, or is `search` enough for agents (answers for humans)?

@@ -203,7 +203,7 @@ erDiagram
         string title
         text text "raw content"
         string content_hash
-        string doc_type "standards|runbook|meeting|decision_log|prd|general"
+        string doc_type "standards|runbook|documentation|meeting|decision_log|prd|general"
         text window_hashes "JSON {index: sha256} — cheap reclassify"
         text distill_hashes "JSON {index: sha256} — distillation"
         bool stale
@@ -407,7 +407,7 @@ erDiagram
 | `ModelClient` | Ollama + BYO OpenAI-compatible | Any provider |
 | `SecretStore` | Keychain | Cloud secret manager |
 | `Connector` | Folder, Drive, Jira, Linear, REST | Slack, Notion, Confluence |
-| `AgentAdapter` | MCP sidecar (stdio, read-only) — see [mcp.md](./mcp.md) | MCP HTTP transport / registry / write-back |
+| `AgentAdapter` | MCP mode (`anchorcore mcp`, stdio, read-only) — see [mcp.md](./mcp.md) | MCP HTTP transport / registry / write-back |
 | `SettingsService` | DB-backed overrides + keychain secrets | Cloud config service |
 | `DB` | SQLite — local app + Team container | Postgres for the hosted cloud tier (B49) |
 
@@ -417,7 +417,7 @@ erDiagram
 v1 (shipped, 1.0.13): local-first app — folder/Drive/Jira/Linear/REST connectors,
     document-aware classification + review queue, cited Q&A (hybrid RRF + vec0 +
     planner/executor + graph walk + distillation + projects + PII gate),
-    hierarchical sections, MCP sidecar, Team self-hosted (Docker + offline license),
+    hierarchical sections, MCP mode, Team self-hosted (Docker + offline license),
     Windows/macOS apps
   -> next: website + launch, Drive OAuth, Slack connector, hosted pilot
            (per-user ACL, contradictions, workspace export/delete)

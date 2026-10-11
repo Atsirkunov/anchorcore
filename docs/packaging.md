@@ -9,7 +9,7 @@
 
 | Piece | Form | Notes |
 |---|---|---|
-| API backend | **Rust Axum** + MCP sidecar | `cargo build --release` → `rust/target/release/anchorcore` + `anchorcore-mcp` (`frontend/dist` embedded; both ship in the zips) |
+| API backend | **Rust Axum** — app + `anchorcore mcp` mode in one binary (R20.8) | `cargo build --release` → `rust/target/release/anchorcore` (`frontend/dist` embedded; one file per OS zip) |
 | UI | Vite static build (`frontend/dist`) | Embedded via `rust/crates/anchorcore/src/frontend.rs:1` `include_dir!`; served at `127.0.0.1:8000` |
 | Classifier/embed model | External Ollama | Auto-started; models pulled via Settings/sync |
 | Data | SQLite + sqlite-vec `vec0` | Per-user: `~/.anchorcore` |
@@ -21,7 +21,7 @@ One command from the repo root:
 
 ```bash
 npm run build && cargo build --release
-# artifacts: rust/target/release/anchorcore + anchorcore-mcp (9.8M, frontend/dist embedded)
+# artifact: rust/target/release/anchorcore (9.8M, frontend/dist embedded; `anchorcore mcp` is a mode)
 # release zips: dist/AnchorCore-{windows,macos,linux}.zip via release.yml
 ```
 

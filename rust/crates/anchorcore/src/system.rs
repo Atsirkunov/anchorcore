@@ -204,6 +204,34 @@ pub async fn errors_handler(
     Json(result)
 }
 
+/// R20.2 + R20.8 — canonical way to run this app's stdio MCP mode
+/// (`<this exe> mcp`, one executable) + audit counters, so the UI shows a
+/// copy-paste client command instead of a `cargo run` line.
+pub async fn mcp_info_handler(State(state): State<AppState>) -> Json<Value> {
+    let command = std::env::current_exe().ok().map(|p| p.to_string_lossy().to_string());
+    let data_dir = state.data_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let calls: i64 = conn
+            .query_row("SELECT COUNT(*) FROM system_events WHERE component = 'mcp'", [], |r| r.get(0))
+            .unwrap_or(0);
+        let last_call_at: Option<String> = conn
+            .query_row("SELECT created_at FROM system_events WHERE component = 'mcp' ORDER BY created_at DESC LIMIT 1", [], |r| r.get(0))
+            .ok();
+        serde_json::json!({
+            "mode": "bundled",
+            "command": command,
+            "args": ["mcp"],
+            "calls": calls,
+            "last_call_at": last_call_at,
+        })
+    })
+    .await
+    .unwrap();
+    Json(result)
+}
+
 pub async fn onboarding_handler(State(state): State<AppState>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let settings = state.settings.clone();

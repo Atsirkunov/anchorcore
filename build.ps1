@@ -1,6 +1,6 @@
 # AnchorCore packaged build. Run from repo root:
 #   .\build.ps1
-# Produces dist/AnchorCore-windows.zip — anchorcore.exe + anchorcore-mcp.exe
+# Produces dist/AnchorCore-windows.zip — anchorcore.exe (app + `anchorcore mcp`)
 # (Rust release build, frontend/dist embedded) for non-developer testers.
 # Same layout as the CI asset (release.yml build-rust-windows).
 # Requires: Rust stable (cargo on PATH), Node deps installed.
@@ -47,16 +47,15 @@ try {
 }
 
 # 3. Zip the binaries for distribution
-Write-Host "==> Zipping anchorcore.exe + anchorcore-mcp.exe..."
+Write-Host "==> Zipping anchorcore.exe..."
 $DistDir = Join-Path $Root "dist"
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 $ZipPath = Join-Path $DistDir "AnchorCore-windows.zip"
 Remove-Item $ZipPath -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $Root "rust\target\release\anchorcore.exe") (Join-Path $DistDir "anchorcore.exe") -Force
-Copy-Item (Join-Path $Root "rust\target\release\anchorcore-mcp.exe") (Join-Path $DistDir "anchorcore-mcp.exe") -Force
 Push-Location $DistDir
 try {
-    Compress-Archive -Path anchorcore.exe,anchorcore-mcp.exe -DestinationPath AnchorCore-windows.zip -Force
+    Compress-Archive -Path anchorcore.exe -DestinationPath AnchorCore-windows.zip -Force
 } finally {
     Pop-Location
 }
