@@ -227,8 +227,8 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 
 **DoD:** on first launch a new user is guided from "install Ollama" to a cited answer in a few clicks, no config file. — met (dev; frozen apps hide the sample button).
 
-### B9. Document type coverage (P1) — DONE (R24.2, 2026-10-11)
-**Done:** all business formats extract through one shared module (`rust/crates/anchorcore/src/extract.rs`) used by both the folder connector and Google Drive: Word `.docx/.docm`, PowerPoint `.pptx/.pptm`, Excel `.xlsx/.xlsm/.xlsb/.xls` + OpenDocument `.ods` (calamine), OpenDocument `.odt/.odp`, RTF, `.eml` email, PDF, HTML, and text (UTF-8 / UTF-16 with-and-without-BOM / Windows-1252 fallback). Drive exports native Google types (Docs→text, Sheets→CSV, Slides→text, other native→PDF) and extracts uploaded Office files by MIME type; download/extract failures and empty files are `skipped`, never purged (B57). Legacy binary `.doc`/`.ppt` remain unsupported — save as `.docx`/`.pptx` or PDF.
+### B9. Document type coverage (P1) — DONE (R24.2 + R24.3, 2026-10-11)
+**Done:** all business formats extract through one shared module (`rust/crates/anchorcore/src/extract.rs`) used by both the folder connector and Google Drive: Word `.docx/.docm`, PowerPoint `.pptx/.pptm`, Excel `.xlsx/.xlsm/.xlsb/.xls` + OpenDocument `.ods` (calamine), OpenDocument `.odt/.odp`, RTF, `.eml` email, PDF, HTML, and text (UTF-8 / UTF-16 with-and-without-BOM / Windows-1252 fallback). **R24.3 adds code + repos:** the most popular language extensions (`.py .js .ts .tsx .java .cs .go .rs .rb .php .c/.h .cpp .kt .swift .sql .sh` …) plus well-known extensionless files (`Dockerfile`, `Makefile`, `justfile`, `.gitignore`) ingest as text, and folder walking is repo-aware — `.gitignore` is honored (even outside a checkout via the `ignore` crate) and `.git`/`node_modules`/`target`/`dist`/venvs are pruned, so cloning a repo and pointing a folder source at it works as expected. Drive exports native Google types (Docs→text, Sheets→CSV, Slides→text, other native→PDF) and extracts uploaded Office files by MIME type; download/extract failures and empty files are `skipped`, never purged (B57). Legacy binary `.doc`/`.ppt` remain unsupported — save as `.docx`/`.pptx` or PDF.
 
 ### B11. Parallel classification throughput (P2 — discovered) — DONE
 **Problem:** windowed classification runs sequentially — a 237-page PDF took ~15 min (160+ serial LLM calls). Hardware is fine; the pipeline serializes.
@@ -1224,7 +1224,7 @@ Explicit order — v1 core, hardening, scale and the website are DONE (v1.0.10�
 | — | B43 Business-scale corpus | ✅ DONE (v1.0.11) | `scripts/build_business_corpus.py` `tech/finance/AI` `800→5k docs` (`data/business-scale` gitignored) + Rust `NOT NULL` fixes `sources/jobs/ingested_items/entities/chunks` |
 | 1 | **B14.2 MCP HTTP transport** | **P1** | stdio shipped + tested local without UI (R12.5); HTTP + tokens unblock share links |
 | 2 | B22 Jira/Linear live validation | **P1** | sandbox fixtures; both connectors exist, need real-instance proof |
-| — | B9 Document type coverage | ✅ DONE (R24.2) | `.docx`/`.pptx`/`.odt`/`.xls`/ODF/RTF/EML extraction shared by folder + Drive; legacy `.doc`/`.ppt` = export first |
+| — | B9 Document type coverage | ✅ DONE (R24.2 + R24.3) | Business formats (Office/ODF/RTF/EML/PDF) shared by folder + Drive, plus code languages and `.gitignore`-aware repo walking; legacy `.doc`/`.ppt` = export first |
 | 4 | B16 who_knows (full) | **P1** | expertise ranking + evidence (minimal `who_knows` tool shipped in B17) |
 | 5 | B29 remainder: CHANGELOG + hosted prep | **P1** | website shipped; changelog discipline + pilot prep open |
 | 6 | B28 Drive OAuth polish | **P2** | OAuth browser flow + `data/drive/<name>/` mirror |
