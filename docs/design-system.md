@@ -30,7 +30,7 @@ App tokens live in `frontend/src/theme.ts` (`theme.*`); site tokens in
 | page bg | `bg #121416` | `--paper #F2F0EB` |
 | surface / card | `bgElevated #1A1E20`, `bgCard #23282B` | `--surface #ffffff` |
 | borders | `border #343a3e`, `borderSoft #2a2f33` | `--border #e2ddd6`, `--border2 #d4cfc6` |
-| text | `text #E8E6E1`, `textMuted #9aa0a8`, `textDim #7a828c` | `--ink #1a1d1a`, `--dim #6b7280`, `--faint #9aa0a8` |
+| text | `text #E8E6E1`, `textMuted #9aa0a8`, `textDim #7a828c` | `--ink #1a1d1a`, `--dim #5C6470`, `--faint #9aa0a8` |
 | accent (sage) | `accent #4A5A52`, `accentAlt #8FA99E` | `--sage #4A5A52`, `--sageH #3f4d46`, `--sageSoft #E2E8E3` |
 | stone | `amber #9A8B7A` | `--stone #9A8B7A` |
 | kinds | `purple #6E7D75`, `blue #7E9AB0`, `amber`, `green #7a9a8a` | (n/a — app only) |
