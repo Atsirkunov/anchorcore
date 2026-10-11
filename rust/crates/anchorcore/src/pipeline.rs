@@ -15,6 +15,11 @@ fn content_hash(text: &str) -> String {
     crate::hashing::content_hash(text)
 }
 
+/// IDF-gate threshold for embedding (env override like the Python engine).
+fn embed_min_signal() -> f64 {
+    std::env::var("ANCHOR_EMBED_MIN_SIGNAL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.15)
+}
+
 fn resolve_config(data_dir: &str, source_id: i64, mut config: serde_json::Value) -> serde_json::Value {
     let store = SecretStore::new(std::path::PathBuf::from(data_dir).join("secrets.enc"));
     if let Some(obj) = config.as_object_mut() {
@@ -256,6 +261,66 @@ impl Pipeline {
         let res = Box::pin(self.run_sync_inner(source_id, job_id, force_reclassify, &data_dir)).await;
         let conn = crate::common::open_data_db(&data_dir);
         self.finish_job(&conn, source_id, job_id, res);
+    }
+
+    /// R25.3: embed every chunk of a source that has no vector — imported
+    /// archives leave embeddings out by default, and retrieval honestly reports
+    /// keyword-only (B58) until this finishes. Walks the chunk ids in ascending
+    /// order so a gated batch can never spin the loop.
+    pub async fn embed_missing_for_source(&self, source_id: i64, job_id: i64) {
+        let data_dir = self.data_dir.clone();
+        if !self.wait_for_slot(&data_dir, job_id).await {
+            return;
+        }
+        let res = Box::pin(self.run_embed_missing(source_id, job_id, &data_dir)).await;
+        let conn = crate::common::open_data_db(&data_dir);
+        self.finish_job(&conn, source_id, job_id, res);
+    }
+
+    async fn run_embed_missing(&self, source_id: i64, job_id: i64, data_dir: &str) -> Result<(i64, i64, i64), String> {
+        let label: String = run_db(data_dir, move |conn| {
+            conn.query_row("SELECT label FROM sources WHERE id=?1", [source_id], |r| r.get(0))
+                .map_err(|e| e.to_string())
+        })
+        .await?;
+        let gated = sensitive_label(&label) && !cloud_trusted(&self.settings, "embed");
+        let mut processed = 0i64;
+        let mut last_id = 0i64;
+        loop {
+            if job_cancelled(data_dir, job_id).await? {
+                return Err("job cancelled".to_string());
+            }
+            let batch = fetch_embed_batch(data_dir, source_id, last_id).await?;
+            let Some(last) = batch.last().map(|(id, _, _)| *id) else {
+                break;
+            };
+            last_id = last;
+            processed += batch.len() as i64;
+            let count = processed;
+            let _ = run_db(data_dir, move |conn| {
+                conn.execute("UPDATE jobs SET processed=?1 WHERE id=?2", rusqlite::params![count, job_id])
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            })
+            .await;
+            let contents: Vec<String> = batch.iter().map(|(_, c, _)| c.clone()).collect();
+            let is_pii: Vec<bool> = batch.iter().map(|(_, _, p)| *p).collect();
+            let out = self
+                .embedder
+                .embed_gated(contents, is_pii, gated, embed_min_signal())
+                .await
+                .unwrap_or_else(|_| vec![None; batch.len()]);
+            let updates: Vec<(i64, Vec<u8>)> = batch
+                .iter()
+                .zip(out)
+                .filter_map(|((id, _, _), blob)| blob.map(|b| (*id, b)))
+                .collect();
+            if updates.is_empty() {
+                continue;
+            }
+            store_embeddings(data_dir, self.embedder.clone(), updates).await?;
+        }
+        Ok((processed, 0, 0))
     }
 
     /// R10.4: respect bounded concurrency — do NOT flip pending→running here.
@@ -1065,8 +1130,44 @@ async fn update_distill_hashes(ctx: &ClassifyCtx) -> Result<(), String> {
 }
 
 // embed (gated) — wire embedder.embed_gated + sync_vec (P0 3.2)
+/// One batch of chunks of `source_id` that still need a vector (ascending ids
+/// so iteration always advances, even when the IDF/PII gate embeds nothing).
+async fn fetch_embed_batch(data_dir: &str, source_id: i64, last_id: i64) -> Result<Vec<(i64, String, bool)>, String> {
+    run_db(data_dir, move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, content, is_pii FROM chunks \
+                 WHERE id > ?1 AND embedding IS NULL AND ( \
+                   item_id IN (SELECT id FROM ingested_items WHERE source_id = ?2) \
+                   OR entity_id IN (SELECT e.id FROM entities e JOIN ingested_items i ON i.id = e.item_id WHERE i.source_id = ?2)) \
+                 ORDER BY id LIMIT 64",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![last_id, source_id], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0))
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    })
+    .await
+}
+
+/// Write embeddings + keep the vec0 index in sync (R25.3 re-embed job).
+async fn store_embeddings(data_dir: &str, embedder: Arc<Embedder>, updates: Vec<(i64, Vec<u8>)>) -> Result<(), String> {
+    run_db(data_dir, move |conn| {
+        for (cid, blob) in &updates {
+            conn.execute("UPDATE chunks SET embedding=?1 WHERE id=?2", rusqlite::params![blob, cid])
+                .map_err(|e| e.to_string())?;
+            let _ = embedder.sync_vec(conn, *cid, blob);
+        }
+        Ok(())
+    })
+    .await
+}
+
 async fn embed_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
-    let embed_min_signal: f64 = std::env::var("ANCHOR_EMBED_MIN_SIGNAL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.15);
+    let embed_min_signal = embed_min_signal();
     let gated = sensitive_label(&ctx.label) && !(ctx.classify_trusted && ctx.embed_trusted);
     let item_id = ctx.item_id;
     let chunks: Vec<(i64, String, bool)> = run_db(&ctx.data_dir, move |conn| {

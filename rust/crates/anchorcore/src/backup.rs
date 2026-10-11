@@ -17,7 +17,8 @@
 //! straight into the zip entry, so nothing accumulates in memory and the record
 //! shape stays declarative (no 15-field row mappers).
 
-use std::io::{BufWriter, Write};
+use std::collections::BTreeMap;
+use std::io::{BufRead, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -890,6 +891,1065 @@ fn record_export_event(conn: &Connection, level: &str, detail: &str) {
 }
 
 // ---------------------------------------------------------------------------
+// R25.3 — import
+// ---------------------------------------------------------------------------
+
+const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_DATA_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_BUNDLE_BYTES: u64 = 64 * 1024 * 1024;
+/// A zip entry whose uncompressed size dwarfs its compressed size is a bomb.
+const MAX_COMPRESSION_RATIO: u64 = 2000;
+const MAX_CONFLICTS_REPORTED: usize = 50;
+/// The typed confirmation `replace` requires before it wipes local data.
+pub const REPLACE_CONFIRM: &str = "replace";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ImportMode {
+    #[default]
+    Merge,
+    Replace,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ImportOptions {
+    #[serde(default)]
+    pub mode: ImportMode,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub confirm: Option<String>,
+    #[serde(default)]
+    pub passphrase: Option<String>,
+    /// source uid → new folder path for this machine.
+    #[serde(default)]
+    pub remap: BTreeMap<String, String>,
+}
+
+impl ImportOptions {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.mode == ImportMode::Replace && !self.dry_run && self.confirm.as_deref() != Some(REPLACE_CONFIRM) {
+            return Err(format!(
+                "replace requires confirm=\"{}\" — it deletes local data (after an automatic safety backup)",
+                REPLACE_CONFIRM
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct ImportReport {
+    pub dry_run: bool,
+    pub mode: String,
+    pub format_version: u32,
+    pub app_version: String,
+    pub created_at: String,
+    /// Records counted in the archive, per type.
+    pub counts: BTreeMap<String, u64>,
+    /// Records written (insert + update) per type; on a dry run, would-write.
+    pub imported: BTreeMap<String, u64>,
+    /// Existing records kept (uid present, incoming not newer).
+    pub skipped: BTreeMap<String, u64>,
+    pub conflicts: Vec<Value>,
+    pub needs_secret: Vec<Value>,
+    pub folder_paths: Vec<Value>,
+    pub remap_applied: Vec<Value>,
+    pub secrets_imported: u64,
+    pub secrets_note: Option<String>,
+    pub safety_backup: Option<String>,
+    pub reembed_source_ids: Vec<i64>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Action {
+    Insert,
+    Update,
+    Skip,
+}
+
+fn decide(exists: bool, incoming: Option<&str>, existing: Option<&str>) -> Action {
+    if !exists {
+        return Action::Insert;
+    }
+    if is_newer(incoming, existing) {
+        Action::Update
+    } else {
+        Action::Skip
+    }
+}
+
+/// Timestamps are SQLite `datetime('now')` strings; lexicographic comparison is
+/// the Phase A LWW rule (Phase B replaces it with a hybrid logical clock).
+fn is_newer(incoming: Option<&str>, existing: Option<&str>) -> bool {
+    match (incoming, existing) {
+        (Some(i), Some(e)) => i > e,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+struct ImportCtx<'a> {
+    conn: &'a Connection,
+    write: bool,
+    caches: BTreeMap<&'static str, BTreeMap<String, i64>>,
+    imported: BTreeMap<String, u64>,
+    skipped: BTreeMap<String, u64>,
+    conflicts: Vec<Value>,
+    warnings: Vec<String>,
+    remap: BTreeMap<String, String>,
+    remapped: Vec<Value>,
+}
+
+impl<'a> ImportCtx<'a> {
+    fn new(conn: &'a Connection, write: bool, remap: BTreeMap<String, String>) -> Self {
+        Self {
+            conn,
+            write,
+            caches: BTreeMap::new(),
+            imported: BTreeMap::new(),
+            skipped: BTreeMap::new(),
+            conflicts: Vec::new(),
+            warnings: Vec::new(),
+            remap,
+            remapped: Vec::new(),
+        }
+    }
+
+    /// Local id for a uid, cached. `table` is an internal constant.
+    fn lookup(&mut self, table: &'static str, uid: &str) -> Result<Option<i64>, String> {
+        if uid.is_empty() {
+            return Ok(None);
+        }
+        if let Some(id) = self.caches.get(table).and_then(|m| m.get(uid)) {
+            return Ok(Some(*id));
+        }
+        let sql = format!("SELECT id FROM {} WHERE uid = ?1", table);
+        let found: Option<i64> = self.conn.query_row(&sql, [uid], |r| r.get(0)).ok();
+        if let Some(id) = found {
+            self.caches.entry(table).or_default().insert(uid.to_string(), id);
+        }
+        Ok(found)
+    }
+
+    fn require(&mut self, table: &'static str, uid: &str, kind: &str) -> Result<i64, String> {
+        self.lookup(table, uid)?
+            .ok_or_else(|| format!("archive references an unknown {kind} uid: {uid}"))
+    }
+
+    fn remember(&mut self, table: &'static str, uid: &str, id: i64) {
+        self.caches.entry(table).or_default().insert(uid.to_string(), id);
+    }
+
+    /// Count the record and, on a merge conflict, note how it was resolved.
+    fn record(&mut self, kind: &str, uid: &str, action: Action) {
+        match action {
+            Action::Skip => *self.skipped.entry(kind.to_string()).or_default() += 1,
+            _ => *self.imported.entry(kind.to_string()).or_default() += 1,
+        }
+        if action != Action::Insert && self.conflicts.len() < MAX_CONFLICTS_REPORTED {
+            self.conflicts.push(json!({
+                "type": kind,
+                "uid": uid,
+                "action": if action == Action::Skip { "kept-local" } else { "imported" },
+            }));
+        }
+    }
+
+    fn stamp_of(&self, sql: &str, id: i64) -> Option<String> {
+        self.conn
+            .query_row(sql, [id], |r| r.get::<_, Option<String>>(0))
+            .ok()
+            .flatten()
+    }
+
+    /// Apply a folder-path remap (plan §2: paths are machine-local).
+    fn remap_config(&mut self, uid: &str, mut config: Value) -> Value {
+        let Some(new_path) = self.remap.get(uid).cloned() else {
+            return config;
+        };
+        let Some(obj) = config.as_object_mut() else {
+            return config;
+        };
+        let old = obj.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        obj.insert("path".to_string(), json!(new_path));
+        self.remapped.push(json!({"source_uid": uid, "from": old, "to": new_path}));
+        config
+    }
+}
+
+fn str_field(rec: &Value, key: &str) -> String {
+    rec.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
+}
+
+fn opt_str_field(rec: &Value, key: &str) -> Option<String> {
+    rec.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+}
+
+fn bool_field(rec: &Value, key: &str) -> bool {
+    rec.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+fn bool_int(rec: &Value, key: &str) -> i64 {
+    if bool_field(rec, key) {
+        1
+    } else {
+        0
+    }
+}
+
+fn i64_field(rec: &Value, key: &str) -> Option<i64> {
+    rec.get(key).and_then(|v| v.as_i64())
+}
+
+fn f64_field(rec: &Value, key: &str) -> f64 {
+    rec.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0)
+}
+
+fn embed_dim_bytes() -> usize {
+    embed_dim() as usize * 4
+}
+
+/// Decode an `embedding_b64` field, dropping vectors from another embed model
+/// (they would silently poison the vec0 index — the manifest records
+/// `embed_model`/`embed_dim` so a mismatch is visible, not silent).
+fn embedding_field(ctx: &mut ImportCtx, rec: &Value, key: &str, kind: &str) -> Option<Vec<u8>> {
+    let encoded = rec.get(key).and_then(|v| v.as_str())?;
+    match b64_decode(encoded) {
+        Ok(blob) if blob.len() == embed_dim_bytes() => Some(blob),
+        Ok(blob) => {
+            ctx.warnings.push(format!(
+                "{kind} {}: embedding is {} bytes, this app uses {} — dropped, will be recomputed",
+                str_field(rec, "uid"),
+                blob.len(),
+                embed_dim_bytes()
+            ));
+            None
+        }
+        Err(_) => {
+            ctx.warnings.push(format!("{kind} {}: embedding_b64 is not valid base64 — dropped", str_field(rec, "uid")));
+            None
+        }
+    }
+}
+
+// --- per-record apply functions -------------------------------------------
+
+fn apply_source(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
+    let uid = str_field(rec, "uid");
+    let existing = ctx.lookup("sources", &uid)?;
+    let existing_stamp = existing.and_then(|id| ctx.stamp_of("SELECT created_at FROM sources WHERE id=?1", id));
+    let action = decide(existing.is_some(), opt_str_field(rec, "created_at").as_deref(), existing_stamp.as_deref());
+    ctx.record("source", &uid, action);
+    if !ctx.write || action == Action::Skip {
+        return Ok(());
+    }
+    let name = str_field(rec, "name");
+    let connector = str_field(rec, "connector");
+    let label = {
+        let l = str_field(rec, "label");
+        if l.is_empty() { "internal".to_string() } else { l }
+    };
+    let enabled = bool_int(rec, "enabled");
+    let config = ctx.remap_config(&uid, rec.get("config").cloned().unwrap_or_else(|| json!({})));
+    let config_str = serde_json::to_string(&config).map_err(|e| e.to_string())?;
+    if action == Action::Insert {
+        ctx.conn
+            .execute(
+                "INSERT INTO sources (name, connector, config, label, enabled, last_sync_cursor, error_count, uid, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, '', 0, ?6, COALESCE(?7, datetime('now')))",
+                rusqlite::params![name, connector, config_str, label, enabled, uid, opt_str_field(rec, "created_at")],
+            )
+            .map_err(|e| e.to_string())?;
+        let id = ctx.conn.last_insert_rowid();
+        ctx.remember("sources", &uid, id);
+        return Ok(());
+    }
+    let id = existing.unwrap();
+    ctx.conn
+        .execute(
+            "UPDATE sources SET name=?1, connector=?2, config=?3, label=?4, enabled=?5 WHERE id=?6",
+            rusqlite::params![name, connector, config_str, label, enabled, id],
+        )
+        .map_err(|e| e.to_string())?;
+    ctx.remember("sources", &uid, id);
+    Ok(())
+}
+
+fn apply_item(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
+    let uid = str_field(rec, "uid");
+    let source_id = ctx.require("sources", &str_field(rec, "source_uid"), "source")?;
+    let existing = ctx.lookup("ingested_items", &uid)?;
+    let existing_stamp = existing.and_then(|id| ctx.stamp_of("SELECT updated_at FROM ingested_items WHERE id=?1", id));
+    let stamp = opt_str_field(rec, "updated_at").or_else(|| opt_str_field(rec, "created_at"));
+    let action = decide(existing.is_some(), stamp.as_deref(), existing_stamp.as_deref());
+    ctx.record("item", &uid, action);
+    if !ctx.write || action == Action::Skip {
+        return Ok(());
+    }
+    let external_id = str_field(rec, "external_id");
+    let title = str_field(rec, "title");
+    let text = str_field(rec, "text");
+    let hash = str_field(rec, "content_hash");
+    let author = str_field(rec, "author");
+    let doc_type = str_field(rec, "doc_type");
+    let stale = bool_int(rec, "stale");
+    if action == Action::Insert {
+        ctx.conn
+            .execute(
+                "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, doc_type, stale, uid, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))",
+                rusqlite::params![source_id, external_id, title, text, hash, author, doc_type, stale, uid],
+            )
+            .map_err(|e| e.to_string())?;
+        let id = ctx.conn.last_insert_rowid();
+        ctx.remember("ingested_items", &uid, id);
+        return Ok(());
+    }
+    let id = existing.unwrap();
+    ctx.conn
+        .execute(
+            "UPDATE ingested_items SET external_id=?2, title=?3, text=?4, content_hash=?5, author=?6, doc_type=?7, stale=?8, updated_at=datetime('now') WHERE id=?1",
+            rusqlite::params![id, external_id, title, text, hash, author, doc_type, stale],
+        )
+        .map_err(|e| e.to_string())?;
+    ctx.remember("ingested_items", &uid, id);
+    Ok(())
+}
+
+fn apply_section(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
+    let uid = str_field(rec, "uid");
+    let item_id = ctx.require("ingested_items", &str_field(rec, "item_uid"), "item")?;
+    let parent_id = {
+        let parent_uid = str_field(rec, "parent_uid");
+        if parent_uid.is_empty() {
+            None
+        } else {
+            Some(ctx.require("sections", &parent_uid, "section")?)
+        }
+    };
+    let existing = ctx.lookup("sections", &uid)?;
+    let action = decide(existing.is_some(), opt_str_field(rec, "created_at").as_deref(), None);
+    ctx.record("section", &uid, action);
+    if !ctx.write || action == Action::Skip {
+        return Ok(());
+    }
+    let level = i64_field(rec, "level").unwrap_or(0);
+    let title = str_field(rec, "title");
+    let path = str_field(rec, "path");
+    let chunk_range = str_field(rec, "chunk_range");
+    let summary = str_field(rec, "summary");
+    let summary_hash = str_field(rec, "summary_hash");
+    if action == Action::Insert {
+        ctx.conn
+            .execute(
+                "INSERT INTO sections (item_id, parent_id, level, title, path, chunk_range, summary, summary_hash, uid, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))",
+                rusqlite::params![item_id, parent_id, level, title, path, chunk_range, summary, summary_hash, uid],
+            )
+            .map_err(|e| e.to_string())?;
+        let id = ctx.conn.last_insert_rowid();
+        ctx.remember("sections", &uid, id);
+        return Ok(());
+    }
+    let id = existing.unwrap();
+    ctx.conn
+        .execute(
+            "UPDATE sections SET parent_id=?2, level=?3, title=?4, path=?5, chunk_range=?6, summary=?7, summary_hash=?8 WHERE id=?1",
+            rusqlite::params![id, parent_id, level, title, path, chunk_range, summary, summary_hash],
+        )
+        .map_err(|e| e.to_string())?;
+    ctx.remember("sections", &uid, id);
+    Ok(())
+}
+
+fn apply_entity(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
+    let uid = str_field(rec, "uid");
+    let item_id = ctx.require("ingested_items", &str_field(rec, "item_uid"), "item")?;
+    let existing = ctx.lookup("entities", &uid)?;
+    let existing_stamp = existing.and_then(|id| ctx.stamp_of("SELECT updated_at FROM entities WHERE id=?1", id));
+    let stamp = opt_str_field(rec, "updated_at").or_else(|| opt_str_field(rec, "created_at"));
+    let action = decide(existing.is_some(), stamp.as_deref(), existing_stamp.as_deref());
+    ctx.record("entity", &uid, action);
+    if !ctx.write || action == Action::Skip {
+        return Ok(());
+    }
+    let kind = str_field(rec, "kind");
+    let summary = str_field(rec, "summary");
+    let reasoning = str_field(rec, "reasoning");
+    let confidence = f64_field(rec, "confidence");
+    let author = str_field(rec, "author");
+    let source_ref = str_field(rec, "source_ref");
+    let window_text = str_field(rec, "window_text");
+    let window_index = i64_field(rec, "window_index");
+    let status = {
+        let s = str_field(rec, "status");
+        if s.is_empty() { "unverified".to_string() } else { s }
+    };
+    let owner = str_field(rec, "owner");
+    let dispute_count = i64_field(rec, "dispute_count").unwrap_or(0);
+    if action == Action::Insert {
+        ctx.conn
+            .execute(
+                "INSERT INTO entities (item_id, kind, summary, reasoning, confidence, author, source_ref, window_text, window_index, status, owner, dispute_count, uid, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'), datetime('now'))",
+                rusqlite::params![item_id, kind, summary, reasoning, confidence, author, source_ref, window_text, window_index, status, owner, dispute_count, uid],
+            )
+            .map_err(|e| e.to_string())?;
+        let id = ctx.conn.last_insert_rowid();
+        ctx.remember("entities", &uid, id);
+        return Ok(());
+    }
+    let id = existing.unwrap();
+    ctx.conn
+        .execute(
+            "UPDATE entities SET kind=?2, summary=?3, reasoning=?4, confidence=?5, author=?6, source_ref=?7, window_text=?8, window_index=?9, status=?10, owner=?11, dispute_count=?12, updated_at=datetime('now') WHERE id=?1",
+            rusqlite::params![id, kind, summary, reasoning, confidence, author, source_ref, window_text, window_index, status, owner, dispute_count],
+        )
+        .map_err(|e| e.to_string())?;
+    ctx.remember("entities", &uid, id);
+    Ok(())
+}
+
+type ChunkRefs = (Option<i64>, Option<i64>, Option<i64>);
+
+fn chunk_refs(ctx: &mut ImportCtx, rec: &Value) -> Result<ChunkRefs, String> {
+    let item_uid = str_field(rec, "item_uid");
+    let entity_uid = str_field(rec, "entity_uid");
+    let section_uid = str_field(rec, "section_uid");
+    let item_id = if item_uid.is_empty() { None } else { ctx.lookup("ingested_items", &item_uid)? };
+    let entity_id = if entity_uid.is_empty() { None } else { ctx.lookup("entities", &entity_uid)? };
+    let section_id = if section_uid.is_empty() { None } else { ctx.lookup("sections", &section_uid)? };
+    Ok((item_id, entity_id, section_id))
+}
+
+fn apply_chunk(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
+    let uid = str_field(rec, "uid");
+    let (item_id, entity_id, section_id) = chunk_refs(ctx, rec)?;
+    let existing = ctx.lookup("chunks", &uid)?;
+    let action = decide(existing.is_some(), opt_str_field(rec, "created_at").as_deref(), None);
+    ctx.record("chunk", &uid, action);
+    if !ctx.write || action == Action::Skip {
+        return Ok(());
+    }
+    let kind = str_field(rec, "kind");
+    let source_ref = str_field(rec, "source_ref");
+    let content = str_field(rec, "content");
+    let level = i64_field(rec, "level").unwrap_or(0);
+    let path = str_field(rec, "path");
+    let is_pii = bool_int(rec, "is_pii");
+    let pii_categories = rec.get("pii_categories").map(|v| v.to_string()).unwrap_or_else(|| "[]".to_string());
+    let embedding = embedding_field(ctx, rec, "embedding_b64", "chunk");
+    if action == Action::Insert {
+        ctx.conn
+            .execute(
+                "INSERT INTO chunks (item_id, entity_id, section_id, kind, source_ref, content, level, path, is_pii, pii_categories, embedding, uid, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'))",
+                rusqlite::params![item_id, entity_id, section_id, kind, source_ref, content, level, path, is_pii, pii_categories, embedding, uid],
+            )
+            .map_err(|e| e.to_string())?;
+        let id = ctx.conn.last_insert_rowid();
+        ctx.remember("chunks", &uid, id);
+        return Ok(());
+    }
+    let id = existing.unwrap();
+    ctx.conn
+        .execute(
+            "UPDATE chunks SET item_id=?2, entity_id=?3, section_id=?4, kind=?5, source_ref=?6, content=?7, level=?8, path=?9, is_pii=?10, pii_categories=?11 WHERE id=?1",
+            rusqlite::params![id, item_id, entity_id, section_id, kind, source_ref, content, level, path, is_pii, pii_categories],
+        )
+        .map_err(|e| e.to_string())?;
+    if let Some(blob) = embedding {
+        ctx.conn
+            .execute("UPDATE chunks SET embedding=?1 WHERE id=?2", rusqlite::params![blob, id])
+            .map_err(|e| e.to_string())?;
+    }
+    ctx.remember("chunks", &uid, id);
+    Ok(())
+}
+
+fn apply_relationship(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
+    let from_uid = str_field(rec, "from_uid");
+    let to_uid = str_field(rec, "to_uid");
+    let kind = str_field(rec, "kind");
+    let existing: Option<i64> = ctx
+        .conn
+        .query_row(
+            "SELECT r.id FROM relationships r \
+             JOIN entities a ON a.id = r.from_entity_id \
+             JOIN entities b ON b.id = r.to_entity_id \
+             WHERE a.uid = ?1 AND b.uid = ?2 AND r.kind = ?3",
+            rusqlite::params![from_uid, to_uid, kind],
+            |r| r.get(0),
+        )
+        .ok();
+    let action = if existing.is_some() { Action::Skip } else { Action::Insert };
+    ctx.record("relationship", &format!("{from_uid}->{to_uid}"), action);
+    if !ctx.write || action == Action::Skip {
+        return Ok(());
+    }
+    let from_id = ctx.require("entities", &from_uid, "entity")?;
+    let to_id = ctx.require("entities", &to_uid, "entity")?;
+    ctx.conn
+        .execute(
+            "INSERT INTO relationships (from_entity_id, to_entity_id, kind, confidence, source_ref, created_at) VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
+            rusqlite::params![from_id, to_id, kind, f64_field(rec, "confidence"), str_field(rec, "source_ref")],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn apply_tag(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
+    let uid = str_field(rec, "uid");
+    let name = str_field(rec, "name");
+    if name.is_empty() {
+        return Err("tag record without a name".to_string());
+    }
+    // tags are global: merge by uid first, then by the unique name.
+    let mut existing = ctx.lookup("tags", &uid)?;
+    if existing.is_none() {
+        existing = ctx
+            .conn
+            .query_row("SELECT id FROM tags WHERE name = ?1", [&name], |r| r.get(0))
+            .ok();
+        if let Some(id) = existing {
+            ctx.remember("tags", &uid, id);
+        }
+    }
+    let action = if existing.is_some() { Action::Skip } else { Action::Insert };
+    ctx.record("tag", &uid, action);
+    if !ctx.write || action == Action::Skip {
+        return Ok(());
+    }
+    let embedding = embedding_field(ctx, rec, "embedding_b64", "tag");
+    ctx.conn
+        .execute(
+            "INSERT INTO tags (name, description, count, embedding, uid, created_at) VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
+            rusqlite::params![name, str_field(rec, "description"), i64_field(rec, "count").unwrap_or(0), embedding, uid],
+        )
+        .map_err(|e| e.to_string())?;
+    let id = ctx.conn.last_insert_rowid();
+    ctx.remember("tags", &uid, id);
+    Ok(())
+}
+
+fn apply_chunk_tag(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
+    let chunk_uid = str_field(rec, "chunk_uid");
+    let tag_uid = str_field(rec, "tag_uid");
+    let exists: Option<i64> = ctx
+        .conn
+        .query_row(
+            "SELECT ct.chunk_id FROM chunk_tags ct JOIN chunks c ON c.id = ct.chunk_id JOIN tags t ON t.id = ct.tag_id WHERE c.uid = ?1 AND t.uid = ?2",
+            rusqlite::params![chunk_uid, tag_uid],
+            |r| r.get(0),
+        )
+        .ok();
+    let action = if exists.is_some() { Action::Skip } else { Action::Insert };
+    ctx.record("chunk_tag", &format!("{chunk_uid}:{tag_uid}"), action);
+    if !ctx.write || action == Action::Skip {
+        return Ok(());
+    }
+    let chunk_id = ctx.require("chunks", &chunk_uid, "chunk")?;
+    let tag_id = ctx.require("tags", &tag_uid, "tag")?;
+    ctx.conn
+        .execute("INSERT OR IGNORE INTO chunk_tags (chunk_id, tag_id) VALUES (?1, ?2)", rusqlite::params![chunk_id, tag_id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn apply_project(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
+    let uid = str_field(rec, "uid");
+    let existing = ctx.lookup("projects", &uid)?;
+    let action = decide(existing.is_some(), opt_str_field(rec, "created_at").as_deref(), None);
+    ctx.record("project", &uid, action);
+    if !ctx.write || action == Action::Skip {
+        return Ok(());
+    }
+    let name = str_field(rec, "name");
+    let is_default = bool_int(rec, "is_default");
+    let id = if action == Action::Insert {
+        ctx.conn
+            .execute(
+                "INSERT INTO projects (name, is_default, uid, created_at) VALUES (?1, ?2, ?3, datetime('now'))",
+                rusqlite::params![name, is_default, uid],
+            )
+            .map_err(|e| e.to_string())?;
+        let id = ctx.conn.last_insert_rowid();
+        ctx.remember("projects", &uid, id);
+        id
+    } else {
+        let id = existing.unwrap();
+        ctx.conn
+            .execute("UPDATE projects SET name=?1, is_default=?2 WHERE id=?3", rusqlite::params![name, is_default, id])
+            .map_err(|e| e.to_string())?;
+        ctx.remember("projects", &uid, id);
+        id
+    };
+    let source_uids: Vec<String> = rec
+        .get("source_uids")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+    for source_uid in source_uids {
+        let Some(source_id) = ctx.lookup("sources", &source_uid)? else {
+            ctx.warnings.push(format!("project {name}: source {source_uid} not in archive — link skipped"));
+            continue;
+        };
+        ctx.conn
+            .execute("INSERT OR IGNORE INTO project_sources (project_id, source_id) VALUES (?1, ?2)", rusqlite::params![id, source_id])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn apply_dispute(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
+    let entity_uid = str_field(rec, "entity_uid");
+    let reason = str_field(rec, "reason");
+    let user = str_field(rec, "user");
+    let exists: Option<i64> = ctx
+        .conn
+        .query_row(
+            "SELECT d.id FROM disputes d JOIN entities e ON e.id = d.entity_id WHERE e.uid = ?1 AND d.reason = ?2 AND d.user = ?3",
+            rusqlite::params![entity_uid, reason, user],
+            |r| r.get(0),
+        )
+        .ok();
+    let action = if exists.is_some() { Action::Skip } else { Action::Insert };
+    ctx.record("dispute", &entity_uid, action);
+    if !ctx.write || action == Action::Skip {
+        return Ok(());
+    }
+    let entity_id = ctx.require("entities", &entity_uid, "entity")?;
+    ctx.conn
+        .execute(
+            "INSERT INTO disputes (entity_id, reason, user, created_at) VALUES (?1, ?2, ?3, datetime('now'))",
+            rusqlite::params![entity_id, reason, user],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn apply_merge_action(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
+    let a_uid = str_field(rec, "entity_a_uid");
+    let b_uid = str_field(rec, "entity_b_uid");
+    let status = str_field(rec, "status");
+    let reason = str_field(rec, "reason");
+    let exists: Option<i64> = ctx
+        .conn
+        .query_row(
+            "SELECT m.id FROM merge_actions m JOIN entities a ON a.id = m.entity_a_id WHERE a.uid = ?1 AND m.status = ?2 AND m.reason = ?3",
+            rusqlite::params![a_uid, status, reason],
+            |r| r.get(0),
+        )
+        .ok();
+    let action = if exists.is_some() { Action::Skip } else { Action::Insert };
+    ctx.record("merge_action", &a_uid, action);
+    if !ctx.write || action == Action::Skip {
+        return Ok(());
+    }
+    let a_id = ctx.require("entities", &a_uid, "entity")?;
+    let b_id = if b_uid.is_empty() { None } else { ctx.lookup("entities", &b_uid)? };
+    ctx.conn
+        .execute(
+            "INSERT INTO merge_actions (entity_a_id, entity_b_id, status, reason, user, created_at) VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
+            rusqlite::params![a_id, b_id, status, reason, str_field(rec, "user")],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Settings are machine-local (plan §2): a key that already exists locally wins.
+fn apply_setting(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
+    let key = str_field(rec, "key");
+    let value = str_field(rec, "value");
+    if key.is_empty() || crate::settings::SECRET_KEYS.contains(&key.as_str()) {
+        return Ok(());
+    }
+    let exists: Option<String> = ctx
+        .conn
+        .query_row("SELECT value FROM app_settings WHERE key = ?1", [&key], |r| r.get(0))
+        .ok();
+    let action = if exists.is_some() { Action::Skip } else { Action::Insert };
+    ctx.record("setting", &key, action);
+    if !ctx.write || action == Action::Skip {
+        return Ok(());
+    }
+    ctx.conn
+        .execute("INSERT INTO app_settings (key, value) VALUES (?1, ?2)", rusqlite::params![key, value])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn apply_embedding(ctx: &mut ImportCtx, rec: &Value, table: &'static str, column: &str, kind: &str) -> Result<(), String> {
+    let uid = str_field(rec, "uid");
+    let Some(existing) = ctx.lookup(table, &uid)? else {
+        ctx.warnings.push(format!("{kind}: no local {table} row for uid {uid} — skipped"));
+        return Ok(());
+    };
+    ctx.record(kind, &uid, Action::Update);
+    if !ctx.write {
+        return Ok(());
+    }
+    let Some(blob) = embedding_field(ctx, rec, "embedding_b64", kind) else {
+        return Ok(());
+    };
+    let sql = format!("UPDATE {} SET {} = ?1 WHERE id = ?2", table, column);
+    ctx.conn
+        .execute(&sql, rusqlite::params![blob, existing])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// --- dispatcher + stream ---------------------------------------------------
+
+fn is_state_record(kind: &str) -> bool {
+    matches!(
+        kind,
+        "dispute" | "merge_action" | "setting" | "chunk_embedding" | "section_embedding" | "tag_embedding"
+    )
+}
+
+fn apply_core_record(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
+    match str_field(rec, "type").as_str() {
+        "source" => apply_source(ctx, rec),
+        "item" => apply_item(ctx, rec),
+        "section" => apply_section(ctx, rec),
+        "entity" => apply_entity(ctx, rec),
+        "relationship" => apply_relationship(ctx, rec),
+        "chunk" => apply_chunk(ctx, rec),
+        "tag" => apply_tag(ctx, rec),
+        "chunk_tag" => apply_chunk_tag(ctx, rec),
+        "project" => apply_project(ctx, rec),
+        other => Err(format!("unknown record type: {other}")),
+    }
+}
+
+fn apply_state_record(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
+    match str_field(rec, "type").as_str() {
+        "dispute" => apply_dispute(ctx, rec),
+        "merge_action" => apply_merge_action(ctx, rec),
+        "setting" => apply_setting(ctx, rec),
+        "chunk_embedding" => apply_embedding(ctx, rec, "chunks", "embedding", "chunk_embedding"),
+        "section_embedding" => apply_embedding(ctx, rec, "sections", "summary_embedding", "section_embedding"),
+        _ => apply_embedding(ctx, rec, "tags", "embedding", "tag_embedding"),
+    }
+}
+
+fn apply_record(ctx: &mut ImportCtx, rec: &Value, counts: &mut BTreeMap<String, u64>) -> Result<(), String> {
+    let kind = str_field(rec, "type");
+    if kind.is_empty() {
+        return Err("record without a type".to_string());
+    }
+    *counts.entry(kind.clone()).or_default() += 1;
+    if kind.starts_with("ops_") {
+        // ops records are informational only (jobs/events/users stay local)
+        return Ok(());
+    }
+    if is_state_record(&kind) {
+        return apply_state_record(ctx, rec);
+    }
+    apply_core_record(ctx, rec)
+}
+
+/// Stream `data.jsonl`, validating and applying each record in file order (the
+/// exporter writes parents before children).
+fn import_stream<R: std::io::Read>(
+    reader: R,
+    ctx: &mut ImportCtx,
+    counts: &mut BTreeMap<String, u64>,
+) -> Result<(), String> {
+    for (idx, line) in std::io::BufReader::new(reader).lines().enumerate() {
+        let line = line.map_err(|e| format!("data.jsonl: {e}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let line_no = idx + 1;
+        let rec: Value = serde_json::from_str(&line).map_err(|e| format!("data.jsonl line {line_no}: {e}"))?;
+        apply_record(ctx, &rec, counts).map_err(|e| format!("data.jsonl line {line_no}: {e}"))?;
+    }
+    Ok(())
+}
+
+// --- archive plumbing ------------------------------------------------------
+
+fn entry_within_caps(size: u64, compressed: u64, max: u64, name: &str) -> Result<(), String> {
+    if size > max {
+        return Err(format!("{name} is too large ({} bytes)", size));
+    }
+    if compressed > 0 && size / compressed.max(1) > MAX_COMPRESSION_RATIO {
+        return Err(format!("{name} looks like a zip bomb (ratio {})", size / compressed.max(1)));
+    }
+    Ok(())
+}
+
+fn read_entry_bounded<R: std::io::Read>(entry: &mut R, max: u64, name: &str) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::new();
+    entry
+        .take(max + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("reading {name}: {e}"))?;
+    if buf.len() as u64 > max {
+        return Err(format!("{name} is too large"));
+    }
+    Ok(buf)
+}
+
+fn open_archive(path: &Path) -> Result<zip::ZipArchive<std::fs::File>, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("cannot open archive: {e}"))?;
+    let zip = zip::ZipArchive::new(file).map_err(|e| format!("not a valid .anchorcore-backup zip: {e}"))?;
+    // We never extract entries to disk, but reject unsafe names loudly anyway.
+    let names: Vec<String> = zip.file_names().filter_map(|n| n.ok()).map(|s| s.to_string()).collect();
+    for name in &names {
+        if name.contains("..") || name.starts_with('/') || name.starts_with('\\') || name.contains(':') {
+            return Err(format!("archive contains an unsafe entry name: {name}"));
+        }
+    }
+    if !names.iter().any(|n| n == "data.jsonl") {
+        return Err("archive has no data.jsonl".to_string());
+    }
+    Ok(zip)
+}
+
+fn read_manifest(zip: &mut zip::ZipArchive<std::fs::File>) -> Result<ImportReport, String> {
+    let mut entry = zip
+        .by_name("manifest.json")
+        .map_err(|_| "archive has no manifest.json".to_string())?;
+    entry_within_caps(entry.size(), entry.compressed_size(), MAX_MANIFEST_BYTES, "manifest.json")?;
+    let buf = read_entry_bounded(&mut entry, MAX_MANIFEST_BYTES, "manifest.json")?;
+    let manifest: Value = serde_json::from_slice(&buf).map_err(|e| format!("manifest.json: {e}"))?;
+    let version = manifest.get("format_version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    if version == 0 {
+        return Err("manifest.json has no format_version".to_string());
+    }
+    if version > FORMAT_VERSION {
+        return Err(format!(
+            "archive format version {version} is newer than this app supports ({FORMAT_VERSION}) — upgrade the app"
+        ));
+    }
+    Ok(ImportReport {
+        format_version: version,
+        app_version: str_field(&manifest, "app_version"),
+        created_at: str_field(&manifest, "created_at"),
+        needs_secret: manifest.get("needs_secret").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
+        folder_paths: manifest.get("folder_paths").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
+        ..Default::default()
+    })
+}
+
+/// `replace` wipes every data record (settings, ops and users stay local).
+fn clear_data(conn: &Connection) -> Result<(), String> {
+    let stmts = [
+        "DELETE FROM chunk_tags",
+        "DELETE FROM chunks",
+        "DELETE FROM sections",
+        "DELETE FROM disputes",
+        "DELETE FROM merge_actions",
+        "DELETE FROM relationships",
+        "DELETE FROM entities",
+        "DELETE FROM project_sources",
+        "DELETE FROM projects",
+        "DELETE FROM ingested_items",
+        "DELETE FROM sources",
+        "DELETE FROM tags",
+    ];
+    for sql in stmts {
+        conn.execute(sql, []).map_err(|e| format!("{sql}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// A pre-replace copy that is never swept (documents + review state, no secrets).
+fn safety_backup(data_dir: &Path) -> Result<String, String> {
+    let res = export_to_file(data_dir, &ExportOptions::default())?;
+    let name = res.filename.replacen("anchorcore-backup", "safety-backup", 1);
+    let path = res.path.with_file_name(&name);
+    std::fs::rename(&res.path, &path).map_err(|e| e.to_string())?;
+    Ok(path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(name))
+}
+
+fn parse_secret_key(key: &str) -> Option<(&str, &str)> {
+    let rest = key.strip_prefix("source:")?;
+    let (uid, field) = rest.rsplit_once(':')?;
+    if uid.is_empty() || field.is_empty() {
+        return None;
+    }
+    Some((uid, field))
+}
+
+fn apply_secrets_bundle(
+    zip: &mut zip::ZipArchive<std::fs::File>,
+    data_dir: &Path,
+    opts: &ImportOptions,
+    ctx: &mut ImportCtx,
+    report: &mut ImportReport,
+) -> Result<(), String> {
+    let Ok(mut entry) = zip.by_name("secrets.bundle") else {
+        return Ok(());
+    };
+    entry_within_caps(entry.size(), entry.compressed_size(), MAX_BUNDLE_BYTES, "secrets.bundle")?;
+    let buf = read_entry_bounded(&mut entry, MAX_BUNDLE_BYTES, "secrets.bundle")?;
+    drop(entry);
+    let passphrase = match opts.passphrase.as_deref().map(str::trim) {
+        Some(p) if !p.is_empty() => p.to_string(),
+        _ => {
+            report.secrets_note = Some(
+                "archive contains secrets.bundle — skipped (no passphrase given); re-enter credentials".to_string(),
+            );
+            return Ok(());
+        }
+    };
+    let entries = open_bundle(&passphrase, &buf)?;
+    if opts.dry_run {
+        report.secrets_imported = entries.len() as u64;
+        return Ok(());
+    }
+    let store = SecretStore::new(data_dir.join("secrets.enc"));
+    for (key, value) in entries {
+        let Some((uid, field)) = parse_secret_key(&key) else {
+            ctx.warnings.push(format!("secret {key} has an unexpected key shape — skipped"));
+            continue;
+        };
+        let uid = uid.to_string();
+        let field = field.to_string();
+        let Some(source_id) = ctx.lookup("sources", &uid)? else {
+            ctx.warnings.push(format!("secret {key}: source is not in this archive — skipped"));
+            continue;
+        };
+        store.set(&crate::secrets::source_secret_key(source_id, &field), &value);
+        report.secrets_imported += 1;
+    }
+    Ok(())
+}
+
+fn sources_missing_embeddings(conn: &Connection) -> Result<Vec<i64>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT s.id FROM sources s \
+             JOIN ingested_items i ON i.source_id = s.id \
+             JOIN chunks c ON c.item_id = i.id \
+             WHERE c.embedding IS NULL ORDER BY s.id",
+        )
+        .map_err(|e| e.to_string())?;
+    let ids = stmt
+        .query_map([], |r| r.get::<_, i64>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(ids)
+}
+
+fn import_data(
+    zip: &mut zip::ZipArchive<std::fs::File>,
+    conn: &Connection,
+    opts: &ImportOptions,
+    ctx: &mut ImportCtx,
+    counts: &mut BTreeMap<String, u64>,
+) -> Result<(), String> {
+    let mut entry = zip.by_name("data.jsonl").map_err(|_| "archive has no data.jsonl".to_string())?;
+    entry_within_caps(entry.size(), entry.compressed_size(), MAX_DATA_BYTES, "data.jsonl")?;
+    if opts.mode == ImportMode::Replace && ctx.write {
+        clear_data(conn)?;
+    }
+    import_stream(&mut entry, ctx, counts)}
+
+/// Always apply inside one transaction: a dry run is "apply, then roll back",
+/// which keeps conflict detection and counts identical to a real import while
+/// leaving nothing behind.
+fn apply_in_transaction(
+    conn: &Connection,
+    zip: &mut zip::ZipArchive<std::fs::File>,
+    opts: &ImportOptions,
+    ctx: &mut ImportCtx,
+    counts: &mut BTreeMap<String, u64>,
+) -> Result<(), String> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(|e| e.to_string())?;
+    let applied = import_data(zip, conn, opts, ctx, counts);
+    let _ = match (&applied, opts.dry_run) {
+        (Ok(_), false) => conn.execute_batch("COMMIT"),
+        _ => conn.execute_batch("ROLLBACK"),
+    };
+    applied
+}
+
+fn finalize_report(
+    conn: &Connection,
+    opts: &ImportOptions,
+    ctx: &mut ImportCtx,
+    counts: BTreeMap<String, u64>,
+    report: &mut ImportReport,
+) -> Result<(), String> {
+    report.counts = counts;
+    report.imported = std::mem::take(&mut ctx.imported);
+    report.skipped = std::mem::take(&mut ctx.skipped);
+    report.conflicts = std::mem::take(&mut ctx.conflicts);
+    report.warnings.extend(std::mem::take(&mut ctx.warnings));
+    report.remap_applied = std::mem::take(&mut ctx.remapped);
+    if opts.dry_run {
+        return Ok(());
+    }
+    // tag vectors are local; rebuild any that arrived without one (R25.3)
+    let _ = crate::tags::ensure_embeddings(conn);
+    report.reembed_source_ids = sources_missing_embeddings(conn)?;
+    Ok(())
+}
+
+/// Import an archive (merge or replace). Returns the dry-run report too, so the
+/// same call powers "show me what would happen" and the real import.
+pub fn import_archive(data_dir: &Path, archive_path: &Path, opts: &ImportOptions) -> Result<ImportReport, String> {
+    opts.validate()?;
+    let db_path = crate::db::resolve_db_path(&data_dir.to_string_lossy());
+    let conn = crate::db::init_db(&db_path).map_err(|e| e.to_string())?;
+    let _ = crate::db::backfill_uids(&conn);
+    let mut zip = open_archive(archive_path)?;
+    let mut report = read_manifest(&mut zip)?;
+    report.dry_run = opts.dry_run;
+    report.mode = if opts.dry_run {
+        "dry_run".to_string()
+    } else {
+        match opts.mode {
+            ImportMode::Merge => "merge".to_string(),
+            ImportMode::Replace => "replace".to_string(),
+        }
+    };
+    let mut counts = BTreeMap::new();
+    let mut ctx = ImportCtx::new(&conn, true, opts.remap.clone());
+
+    if opts.mode == ImportMode::Replace && !opts.dry_run {
+        let backup = safety_backup(data_dir)?;
+        report.safety_backup = Some(backup);
+    }
+    if let Err(e) = apply_in_transaction(&conn, &mut zip, opts, &mut ctx, &mut counts) {
+        record_export_event(&conn, "error", &format!("import failed: {e}"));
+        return Err(e);
+    }
+    apply_secrets_bundle(&mut zip, data_dir, opts, &mut ctx, &mut report)?;
+    if opts.dry_run {
+        return finalize_report(&conn, opts, &mut ctx, counts, &mut report).map(|_| report);
+    }
+    finalize_report(&conn, opts, &mut ctx, counts, &mut report)?;
+    record_export_event(
+        &conn,
+        "info",
+        &serde_json::to_string(&json!({
+            "mode": report.mode,
+            "dry_run": false,
+            "counts": report.counts,
+            "imported": report.imported,
+            "skipped": report.skipped,
+            "secrets_imported": report.secrets_imported,
+            "safety_backup": report.safety_backup,
+        }))
+        .unwrap_or_else(|_| "{}".to_string()),
+    );
+    Ok(report)
+}
+
+// ---------------------------------------------------------------------------
+// HTTP handlers
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // HTTP handler
 // ---------------------------------------------------------------------------
 
@@ -929,6 +1989,114 @@ pub async fn export_handler(
         .header("x-anchorcore-format-version", FORMAT_VERSION.to_string())
         .body(body)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": e.to_string()}))))
+}
+
+use axum::extract::Multipart;
+use tokio::io::AsyncWriteExt as _;
+
+fn bad_request(msg: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
+    (StatusCode::BAD_REQUEST, Json(json!({"detail": msg.to_string()})))
+}
+
+fn internal_error(msg: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": msg.to_string()})))
+}
+
+/// Queue an `embed` job per imported source that has chunks without vectors;
+/// the job embeds them and retrieval stops reporting keyword-only.
+fn enqueue_reembed(state: &AppState, source_ids: &[i64]) -> Vec<i64> {
+    let mut job_ids = Vec::new();
+    for &source_id in source_ids {
+        let conn = crate::common::open_data_db(&state.data_dir);
+        let Ok(job_id) = state.jobs.create_job(&conn, source_id, "embed") else {
+            continue;
+        };
+        drop(conn);
+        let settings = state.settings.clone();
+        let jobs = state.jobs.clone();
+        let embedder = state.embedder.clone();
+        let data_dir = state.data_dir.clone();
+        tokio::spawn(Box::pin(async move {
+            let classifier = std::sync::Arc::new(crate::classifier::Classifier::new(settings.clone()));
+            let pipeline = crate::pipeline::Pipeline::new(classifier, embedder, settings, data_dir, jobs);
+            Box::pin(pipeline.embed_missing_for_source(source_id, job_id)).await;
+        }));
+        job_ids.push(job_id);
+    }
+    job_ids
+}
+
+async fn parse_options_field(field: axum::extract::multipart::Field<'_>) -> Result<ImportOptions, (StatusCode, Json<Value>)> {
+    let text = field.text().await.map_err(bad_request)?;
+    if text.trim().is_empty() {
+        return Ok(ImportOptions::default());
+    }
+    serde_json::from_str(&text).map_err(|e| bad_request(format!("options: {e}")))
+}
+
+async fn save_upload(data_dir: &Path, mut field: axum::extract::multipart::Field<'_>) -> Result<PathBuf, (StatusCode, Json<Value>)> {
+    let path = data_dir
+        .join(EXPORT_DIR)
+        .join(format!("import-{:08x}{}", rand::random::<u32>(), ARCHIVE_SUFFIX));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(internal_error)?;
+    }
+    let mut file = tokio::fs::File::create(&path).await.map_err(internal_error)?;
+    while let Some(chunk) = field.chunk().await.map_err(bad_request)? {
+        file.write_all(&chunk).await.map_err(internal_error)?;
+    }
+    file.flush().await.map_err(internal_error)?;
+    Ok(path)
+}
+
+/// Read `options` (JSON, optional) and `file` (the archive) out of the request.
+async fn collect_import_parts(
+    data_dir: &Path,
+    mut multipart: Multipart,
+) -> Result<(ImportOptions, Option<PathBuf>), (StatusCode, Json<Value>)> {
+    let mut opts = ImportOptions::default();
+    let mut archive: Option<PathBuf> = None;
+    while let Some(field) = multipart.next_field().await.map_err(bad_request)? {
+        match field.name() {
+            Some("options") => opts = parse_options_field(field).await?,
+            Some("file") => archive = Some(save_upload(data_dir, field).await?),
+            _ => {}
+        }
+    }
+    Ok((opts, archive))
+}
+
+/// `POST /backup/import` — multipart `file` (the archive) + optional `options`
+/// (JSON `ImportOptions`; default is a merge dry-run). A dry run reports what
+/// would happen; a real import is transactional.
+pub async fn import_handler(
+    State(state): State<AppState>,
+    multipart: Multipart,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let data_dir = PathBuf::from(&state.data_dir);
+    let (opts, archive) = collect_import_parts(&data_dir, multipart).await?;
+    let Some(archive_path) = archive else {
+        return Err(bad_request("multipart field `file` is required"));
+    };
+    let data_dir_clone = data_dir.clone();
+    let path_for_task = archive_path.clone();
+    let result = tokio::task::spawn_blocking(move || import_archive(&data_dir_clone, &path_for_task, &opts)).await;
+    let _ = std::fs::remove_file(&archive_path);
+    let report = match result {
+        Ok(Ok(report)) => report,
+        Ok(Err(msg)) => return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": msg})))),
+        Err(e) => return Err(internal_error(e)),
+    };
+    let job_ids = if report.dry_run {
+        Vec::new()
+    } else {
+        enqueue_reembed(&state, &report.reembed_source_ids)
+    };
+    let mut value = serde_json::to_value(&report).map_err(internal_error)?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("reembed_job_ids".to_string(), json!(job_ids));
+    }
+    Ok(Json(value))
 }
 
 #[cfg(test)]
@@ -1210,5 +2378,273 @@ mod tests {
         assert!(sealed.starts_with(BUNDLE_MAGIC));
         assert_eq!(open_bundle("pw", &sealed).unwrap(), entries);
         assert!(open_bundle("", &sealed).is_err());
+    }
+
+    // --- R25.3 import ------------------------------------------------------
+
+    fn db(dir: &Path) -> rusqlite::Connection {
+        let db_path = crate::db::resolve_db_path(&dir.to_string_lossy());
+        crate::db::init_db(&db_path).unwrap()
+    }
+
+    fn one<T: rusqlite::types::FromSql>(conn: &rusqlite::Connection, sql: &str) -> T {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    fn exported(dir: &Path, opts: ExportOptions) -> ExportResult {
+        export_to_file(dir, &opts).unwrap()
+    }
+
+    fn rewrite_manifest_version(src: &Path, dst: &Path, version: u32) {
+        let raw = std::fs::read(src).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(raw)).unwrap();
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(dst).unwrap());
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).unwrap();
+            let name = entry.name().map(|n| n.to_string()).unwrap_or_default();
+            let mut buf = Vec::new();
+            entry.read_to_end(&mut buf).unwrap();
+            drop(entry);
+            if name == "manifest.json" {
+                let mut manifest: Value = serde_json::from_slice(&buf).unwrap();
+                manifest["format_version"] = json!(version);
+                buf = serde_json::to_vec(&manifest).unwrap();
+            }
+            writer.start_file(name, options).unwrap();
+            writer.write_all(&buf).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        for (name, content) in entries {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(content).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn import_round_trip_restores_memory_review_state_and_secrets() {
+        let _env = EnvGuard::file_only();
+        let src = tempdir().unwrap();
+        let sid = seed(src.path());
+        let archive = exported(
+            src.path(),
+            ExportOptions {
+                include_secrets: true,
+                passphrase: Some("correct horse battery".to_string()),
+                ..Default::default()
+            },
+        );
+        // the export backfills uids; read it after so the value is final
+        let uid = one::<String>(&db(src.path()), &format!("SELECT uid FROM sources WHERE id = {sid}"));
+
+        let dst = tempdir().unwrap();
+        let report = import_archive(
+            dst.path(),
+            &archive.path,
+            &ImportOptions {
+                passphrase: Some("correct horse battery".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.mode, "merge");
+        assert!(!report.dry_run);
+        assert_eq!(report.imported.get("source"), Some(&1u64));
+        assert_eq!(report.imported.get("item"), Some(&1u64));
+        assert_eq!(report.imported.get("entity"), Some(&1u64));
+        assert_eq!(report.imported.get("chunk"), Some(&2u64));
+        assert_eq!(report.imported.get("section"), Some(&1u64));
+        assert_eq!(report.imported.get("tag"), Some(&1u64));
+        assert_eq!(report.imported.get("chunk_tag"), Some(&1u64));
+        assert_eq!(report.imported.get("project"), Some(&1u64));
+        assert_eq!(report.imported.get("dispute"), Some(&1u64));
+        assert_eq!(report.imported.get("merge_action"), Some(&1u64));
+        assert_eq!(report.needs_secret.len(), 2, "manifest carries the credential list");
+        assert_eq!(report.secrets_imported, 2);
+
+        let conn = db(dst.path());
+        assert_eq!(one::<String>(&conn, "SELECT uid FROM sources"), uid, "uids survive a move");
+        assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM ingested_items"), 1);
+        assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM entities WHERE status='verified' AND owner='ops'"), 1);
+        assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM disputes"), 1);
+        assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM merge_actions"), 1);
+        assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM chunk_tags"), 1);
+        assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM project_sources"), 1);
+        assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM relationships"), 0);
+        // non-secret settings land on a fresh machine; secret ones never travel
+        assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM app_settings WHERE key='answer_model'"), 1);
+        assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM app_settings WHERE key='answer_api_key'"), 0);
+        // imported chunks have no vectors yet — the report asks for a re-embed job
+        let new_sid: i64 = one(&conn, "SELECT id FROM sources");
+        assert_eq!(report.reembed_source_ids, vec![new_sid]);
+        // the bundle landed in the local secret store
+        let store = SecretStore::new(dst.path().join("secrets.enc"));
+        assert_eq!(
+            store.get(&crate::secrets::source_secret_key(new_sid, "token")),
+            Some(MARKER_TOKEN.to_string())
+        );
+        assert_eq!(
+            store.get(&crate::secrets::source_secret_key(new_sid, "password")),
+            Some(MARKER_PHRASE.to_string())
+        );
+
+        // a second import is idempotent: nothing new, everything kept local
+        let again = import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
+        assert!(again.imported.get("source").is_none(), "{:?}", again.imported);
+        assert_eq!(again.skipped.get("entity"), Some(&1u64));
+        assert_eq!(one::<i64>(&db(dst.path()), "SELECT COUNT(*) FROM sources"), 1);
+    }
+
+    #[test]
+    fn import_dry_run_reports_without_writing() {
+        let _env = EnvGuard::file_only();
+        let src = tempdir().unwrap();
+        seed(src.path());
+        let archive = exported(src.path(), ExportOptions::default());
+        let dst = tempdir().unwrap();
+        let report = import_archive(
+            dst.path(),
+            &archive.path,
+            &ImportOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(report.dry_run);
+        assert_eq!(report.mode, "dry_run");
+        assert_eq!(report.imported.get("source"), Some(&1), "reports what would happen");
+        assert!(!report.folder_paths.is_empty(), "folder remap hints come from the manifest");
+        assert_eq!(one::<i64>(&db(dst.path()), "SELECT COUNT(*) FROM sources"), 0);
+    }
+
+    #[test]
+    fn import_replace_needs_confirmation_and_takes_safety_backup() {
+        let _env = EnvGuard::file_only();
+        let src = tempdir().unwrap();
+        seed(src.path());
+        let archive = exported(src.path(), ExportOptions::default());
+
+        // destination has its own, unrelated source
+        let dst = tempdir().unwrap();
+        let conn = db(dst.path());
+        conn.execute("INSERT INTO sources (name, connector) VALUES ('local','folder')", []).unwrap();
+
+        let opts = ImportOptions {
+            mode: ImportMode::Replace,
+            ..Default::default()
+        };
+        assert!(import_archive(dst.path(), &archive.path, &opts).is_err(), "replace without confirm");
+
+        let opts = ImportOptions {
+            mode: ImportMode::Replace,
+            confirm: Some(REPLACE_CONFIRM.to_string()),
+            ..Default::default()
+        };
+        let report = import_archive(dst.path(), &archive.path, &opts).unwrap();
+        assert_eq!(report.mode, "replace");
+        let backup = report.safety_backup.clone().expect("safety backup name");
+        assert!(dst.path().join(EXPORT_DIR).join(&backup).exists());
+        let names: Vec<String> = {
+            let conn = db(dst.path());
+            let mut stmt = conn.prepare("SELECT name FROM sources ORDER BY name").unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0)).unwrap().filter_map(|r| r.ok()).collect()
+        };
+        assert_eq!(names, vec!["payments".to_string()], "local source replaced");
+    }
+
+    #[test]
+    fn import_keeps_local_state_that_is_newer() {
+        let _env = EnvGuard::file_only();
+        let src = tempdir().unwrap();
+        seed(src.path());
+        let archive = exported(src.path(), ExportOptions::default());
+        let dst = tempdir().unwrap();
+        import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
+        // local review state moves forward after the export…
+        let conn = db(dst.path());
+        conn.execute("UPDATE entities SET status='disputed', owner='me', updated_at='2999-01-01 00:00:00'", []).unwrap();
+        // …and a re-import must not clobber it (LWW)
+        let report = import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
+        assert_eq!(report.skipped.get("entity"), Some(&1u64));
+        assert_eq!(one::<String>(&conn, "SELECT status FROM entities"), "disputed");
+        assert!(report
+            .conflicts
+            .iter()
+            .any(|c| c["type"] == "entity" && c["action"] == "kept-local"));
+    }
+
+    #[test]
+    fn import_refuses_newer_format_unsafe_names_and_bad_zips() {
+        let _env = EnvGuard::file_only();
+        let src = tempdir().unwrap();
+        seed(src.path());
+        let archive = exported(src.path(), ExportOptions::default());
+        let dst = tempdir().unwrap();
+
+        let newer = dst.path().join("newer.anchorcore-backup");
+        rewrite_manifest_version(&archive.path, &newer, FORMAT_VERSION + 1);
+        let err = import_archive(dst.path(), &newer, &ImportOptions::default()).unwrap_err();
+        assert!(err.contains("upgrade the app"), "{err}");
+
+        let slip = dst.path().join("slip.anchorcore-backup");
+        std::fs::write(&slip, zip_of(&[("../evil.txt", b"no".as_slice()), ("data.jsonl", b"".as_slice())])).unwrap();
+        assert!(import_archive(dst.path(), &slip, &ImportOptions::default()).unwrap_err().contains("unsafe entry name"));
+
+        let notzip = dst.path().join("notzip.anchorcore-backup");
+        std::fs::write(&notzip, b"definitely not a zip").unwrap();
+        assert!(import_archive(dst.path(), &notzip, &ImportOptions::default()).is_err());
+    }
+
+    #[test]
+    fn import_drops_foreign_embeddings_and_remaps_folder_paths() {
+        let _env = EnvGuard::file_only();
+        let src = tempdir().unwrap();
+        seed(src.path());
+        // a vector from another embed model (wrong dim) must not be trusted
+        db(src.path())
+            .execute("UPDATE chunks SET embedding = ?1 WHERE kind='document'", [vec![9u8; 8]])
+            .unwrap();
+        let archive = exported(
+            src.path(),
+            ExportOptions {
+                include_embeddings: true,
+                ..Default::default()
+            },
+        );
+        let dst = tempdir().unwrap();
+        let report = import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
+        assert!(
+            report.warnings.iter().any(|w| w.contains("this app uses")),
+            "{:?}",
+            report.warnings
+        );
+        assert_eq!(one::<i64>(&db(dst.path()), "SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL"), 0);
+
+        // folder remap: the dry run lists the old path, the import applies the new one
+        let report = import_archive(
+            dst.path(),
+            &archive.path,
+            &ImportOptions {
+                mode: ImportMode::Replace,
+                confirm: Some(REPLACE_CONFIRM.to_string()),
+                remap: BTreeMap::from([(
+                    one::<String>(&db(dst.path()), "SELECT uid FROM sources"),
+                    "D:\\Docs\\payments".to_string(),
+                )]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(report.remap_applied.len(), 1);
+        let cfg: String = one(&db(dst.path()), "SELECT config FROM sources");
+        assert!(cfg.contains("D:\\\\Docs\\\\payments"), "{cfg}");
     }
 }
