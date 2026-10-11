@@ -117,7 +117,7 @@ jobs:
           # ingest the repo's sample corpus so the search has something real to cite
           SRC=$(curl -sf -X POST $API/sources -H "content-type: application/json" \
             -d "{\"connector\":\"folder\",\"name\":\"sample\",\"label\":\"internal\",\"config\":{\"path\":\"$PWD/sample\"}}" \
-            | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])"))
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
           JOB=$(curl -sf -X POST $API/sources/$SRC/sync | python3 -c "import json,sys; print(json.load(sys.stdin).get('id'))")
           ST=""
           for i in $(seq 1 60); do
