@@ -229,13 +229,13 @@
         </div>
         <div class="code">npx skills add Atsirkunov/anchorcore --skill anchorcore-setup</div>
         <p class="small">Installs into your agent's skills folder — no <code>npx</code>? Copy it by hand instead:</p>
-        <div class="code">mkdir -p .claude/skills/anchorcore-setup && curl -sL https://raw.githubusercontent.com/Atsirkunov/anchorcore/main/.claude/skills/anchorcore-setup/SKILL.md -o .claude/skills/anchorcore-setup/SKILL.md</div>
+        <div class="code">mkdir -p .agents/skills/anchorcore-setup && curl -sL https://raw.githubusercontent.com/Atsirkunov/anchorcore/main/.agents/skills/anchorcore-setup/SKILL.md -o .agents/skills/anchorcore-setup/SKILL.md</div>
         <div class="fig termwrap">
           <div class="term-bar"><span>agent + anchorcore-setup skill · local REST</span><button id="skill-term-replay" class="btn small secondary" type="button">Replay</button></div>
           <div class="term-body" id="skill-term-body" aria-live="polite"></div>
           <p class="cap">Abbreviated session — the skill drives the local REST API (health → models → sources → sync → ask) and checks the honesty flags before reporting back.</p>
         </div>
-        <p class="small">Skill file: <a href="https://raw.githubusercontent.com/Atsirkunov/anchorcore/main/.claude/skills/anchorcore-setup/SKILL.md">anchorcore-setup (copy/download)</a> — the same file is mirrored for <code>.agents</code> and <code>agent</code> harnesses in the repo. Agent access protocol: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">Connect your agent (MCP)</a>.</p>
+        <p class="small">Skill file: <a href="https://raw.githubusercontent.com/Atsirkunov/anchorcore/main/.agents/skills/anchorcore-setup/SKILL.md">anchorcore-setup (copy/download)</a> — one canonical copy in the repo; the CLI writes it into whatever dir your agent reads (<code>.agents/skills/</code> for Cursor, Copilot, Gemini CLI, Codex, Droid…, <code>.claude/skills/</code> for Claude Code). Agent access protocol: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">Connect your agent (MCP)</a>.</p>
       </div>
     </section>
 
