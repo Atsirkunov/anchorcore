@@ -28,7 +28,7 @@ a{color:var(--sage);text-decoration:none}
 a:hover{text-decoration:underline}
 .wrap{max-width:var(--wrap);margin:0 auto;padding:0 32px}
 .wrap.narrow{max-width:var(--wrap-narrow)}
-.anchor{display:block;position:relative;top:-80px;visibility:hidden}
+.anchor{display:block;height:0;position:relative;top:-80px;visibility:hidden}
 .site-header{position:sticky;top:0;background:rgba(242,240,235,0.92);backdrop-filter:saturate(1.2) blur(8px);border-bottom:1px solid var(--border);z-index:10}
 .site-header .wrap{display:flex;align-items:center;gap:16px;padding:14px 24px;max-width:var(--wrap)}
 .site-header::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:linear-gradient(90deg,var(--sage) 0%,var(--stone) 50%,transparent 100%);opacity:0.35}
@@ -126,7 +126,6 @@ section{padding:var(--pad-sec) 0}
 #how{padding:var(--pad-sec) 0}
 #demo{padding:var(--pad-sec) 0}
 #roadmap{padding:var(--pad-sec) 0}
-#guidebook{padding:var(--pad-sec) 0;background:var(--paper)}
 .faq{display:grid;gap:32px;margin-top:32px;max-width:640px}
 .qa{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px 22px}
 footer{border-top:1px solid var(--border);padding:32px 0;background:var(--paper2)}
@@ -238,7 +237,8 @@ code{background:var(--paper2);border:1px solid var(--border);border-radius:6px;p
 .term-body .t-in{color:var(--ink)}
 .term-body .caret{display:inline-block;width:8px;height:14px;background:var(--sage);vertical-align:-2px;animation:blink 1s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
-/* Guidebook tabs — one guide visible at a time */
+/* Guide reader (R18.7) — one guide visible at a time, inside #guides */
+.guide-reader{margin:32px auto 0;max-width:var(--wrap-narrow)}
 .guide-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0 8px}
 .guide-tab{border:1px solid var(--border);background:var(--surface);color:var(--dim);border-radius:999px;padding:8px 16px;font-weight:700;font-size:13px;cursor:pointer;transition:transform 0.15s ease,background 0.15s ease}
 .guide-tab:hover{transform:translateY(-1px)}

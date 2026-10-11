@@ -232,48 +232,46 @@
     </section>
 
     <!-- Guides -->
-    <section id="guides" class="alt">
+        <!-- Guides — entry cards + the guide reader (R18.7 merged the old Guidebook section) -->
+    <section id="guides">
       <div class="wrap">
         <h2>Guides</h2>
+        <p class="sub">Three paths — each card opens its walkthrough below.</p>
         <div class="cols">
-          <div class="col"><h3>Quick start — folder</h3><p>Download the app → open it → grab the <code>sample/</code> folder from the repo → Sources → Local folder → Sync → Ask. Your data lives on your machine. No Docker, no account.</p><small>10 files → about 40 entities · <a href="#guide-quickstart">sample guide</a></small></div>
+          <div class="col"><h3>Your Obsidian vault</h3><p>Already have a vault? Keep it. Point AnchorCore at the folder → <code>Sync</code> → <code>Ask</code>. Same notes — answers quote the exact passages instead of dumping whole files into the AI. Nothing to migrate, nothing to leave.</p><small><a href="#guide-obsidian">Open the vault guide</a></small></div>
+          <div class="col"><h3>Quick start — the sample company</h3><p>Download the app → open it → grab the <code>sample/</code> folder from the repo → Sources → Local folder → Sync → Ask. Your data lives on your machine. No Docker, no account.</p><small>10 files → about 40 entities · <a href="#guide-quickstart">Open the sample guide</a></small></div>
+          <div class="col"><h3>Any JSON API</h3><p>Tickets, issues, CMS, your own backend — point at the API, map its fields, preview 5 records, sync. Passwords and tokens stay in your OS keychain.</p><small><a href="#guide-rest">Open the REST guide</a></small></div>
+        </div>
+        <div class="cols two">
           <div class="col"><h3>Projects — scoped search</h3><p>Group sources into projects — Client X, Research, Team. Pick one to scope every question to just those sources, or search everything.</p><small>Projects in the header · public-only toggle for sharing</small></div>
           <div class="col"><h3>PII gate</h3><p>Label each source Public, Internal, Sensitive, or PII. Sensitive ones are never sent to cloud AI you haven't approved — matched locally only, every refusal logged. Review flagged items in the PII tab.</p><small>per-source labels · PII review tab</small></div>
-          <div class="col"><h3>Any JSON API</h3><p>Tickets, issues, CMS, your own backend — point at the API, map its fields, preview 5 records, sync. Passwords and tokens stay in your OS keychain.</p><small><a href="#guide-rest">REST API guide</a></small></div>
         </div>
-        <div class="spotlight"><h3>Already have an Obsidian vault? Keep it.</h3><p>Point AnchorCore at the folder → <code>Sync</code> → <code>Ask</code>. Same notes — answers quote the exact passages instead of dumping whole files into the AI. Faster, cheaper, every claim sourced. Nothing to migrate, nothing to leave.</p><small><a href="#guide-obsidian">vault guide</a></small></div>
+        <div class="guide-reader" id="guide-reader">
+          <!-- legacy anchors keep old links working; each opens its panel via the hash router (R18.7) -->
+          <span id="guide-obsidian" class="anchor"></span>
+          <span id="guide-quickstart" class="anchor"></span>
+          <span id="guide-rest" class="anchor"></span>
+          <div class="guide-tabs" role="tablist" aria-label="Guides">
+            <button class="guide-tab active" data-guide="guide-obsidian-body" role="tab" aria-selected="true">Obsidian vault</button>
+            <button class="guide-tab" data-guide="guide-quickstart-body" role="tab" aria-selected="false">Sample company</button>
+            <button class="guide-tab" data-guide="guide-rest-body" role="tab" aria-selected="false">JSON API</button>
+          </div>
+          <div class="guide-panels">
+            <article class="guide-panel active" id="panel-obsidian" role="tabpanel">
+              <h3>Use your Obsidian vault</h3>
+              <div class="guide-body" id="guide-obsidian-body"></div>
+            </article>
+            <article class="guide-panel" id="panel-quickstart" role="tabpanel" hidden>
+              <h3>Try the sample company</h3>
+              <div class="guide-body" id="guide-quickstart-body"></div>
+            </article>
+            <article class="guide-panel" id="panel-rest" role="tabpanel" hidden>
+              <h3>Connect any JSON API</h3>
+              <div class="guide-body" id="guide-rest-body"></div>
+            </article>
+          </div>
+        </div>
         <p class="docs-strip">Internals &amp; integrations: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/guides/hierarchical-toc.md">Sections &amp; citations</a> · <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/architecture.md">How search works</a> · <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">Agent access (MCP)</a></p>
-      </div>
-    </section>
-
-    <!-- Guidebook — one guide at a time, not three stacked walls of text -->
-    <section id="guidebook">
-      <div class="wrap narrow">
-        <h2>Guidebook</h2>
-        <p class="sub">Pick one path — each guide opens on its own.</p>
-        <div class="guide-tabs" role="tablist" aria-label="Guides">
-          <button class="guide-tab active" data-guide="guide-obsidian-body" role="tab" aria-selected="true">Obsidian vault</button>
-          <button class="guide-tab" data-guide="guide-quickstart-body" role="tab" aria-selected="false">Sample company</button>
-          <button class="guide-tab" data-guide="guide-rest-body" role="tab" aria-selected="false">JSON API</button>
-        </div>
-        <div class="guide-panels">
-          <article class="guide-panel active" id="panel-obsidian" role="tabpanel">
-            <h3>Use your Obsidian vault</h3>
-            <div class="guide-body" id="guide-obsidian-body"></div>
-          </article>
-          <article class="guide-panel" id="panel-quickstart" role="tabpanel" hidden>
-            <h3>Try the sample company</h3>
-            <div class="guide-body" id="guide-quickstart-body"></div>
-          </article>
-          <article class="guide-panel" id="panel-rest" role="tabpanel" hidden>
-            <h3>Connect any JSON API</h3>
-            <div class="guide-body" id="guide-rest-body"></div>
-          </article>
-        </div>
-        <!-- legacy anchors keep old links working -->
-        <span id="guide-obsidian" class="anchor"></span>
-        <span id="guide-quickstart" class="anchor"></span>
-        <span id="guide-rest" class="anchor"></span>
       </div>
     </section>
 

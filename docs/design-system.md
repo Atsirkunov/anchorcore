@@ -123,7 +123,7 @@ app URL, not shared storage.
 2. **Problem → Solution** — 3 columns: *Fragmented knowledge* → *Lost reasoning* → *AnchorCore: every answer shows its source*.
 3. **How it works** — 3 steps with icons + plain pipeline line (`connect → read → file → ask → cited answer`), sections visual, relationship visual, sealed-by-design privacy strip.
 4. **Live demo** — connect `sample/`, 4 questions answered (scripts in `docs/sample-dataset.md`); browser + MCP columns; abbreviated agent-session replay.
-5. **Guides + Guidebook** — folder/projects/PII/REST cards, Obsidian spotlight, one-at-a-time guide panels rendered from repo markdown.
+5. **Guides** — one section (R18.7): folder/sample/REST entry cards that deep-link into one-at-a-time guide panels rendered from repo markdown, plus projects/PII cards.
 6. **FAQ, Pricing, Roadmap** — 7 FAQs, 3 tiers without prices, download + waitlist capture.
 7. **Privacy notice + Footer** — GDPR notice section; `v1 local · free for personal use · Team self-hosted licensed · Hosted soon.`
 
