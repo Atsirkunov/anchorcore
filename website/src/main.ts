@@ -410,6 +410,38 @@ function initNavMenu(): void {
   window.matchMedia("(min-width: 761px)").addEventListener("change", close);
 }
 
+// Hero agent-skill card: copy the install command (R18.19). No JS: the code stays
+// visible and selectable, only the one-click copy is lost.
+function selectText(el: HTMLElement): void {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+}
+
+function initSkillCopy(): void {
+  const btn = document.getElementById("skill-copy");
+  const cmd = document.getElementById("skill-cmd");
+  if (!btn || !cmd) return;
+  const label = btn.textContent ?? "Copy";
+  const flash = (text: string): void => {
+    btn.textContent = text;
+    setTimeout(() => { btn.textContent = label; }, 1800);
+  };
+  btn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(cmd.textContent ?? "");
+      flash("Copied");
+      return;
+    } catch { /* insecure context or clipboard permission denied */ }
+    // fallback: select the command and try the legacy path, so Ctrl+C always works
+    selectText(cmd);
+    const legacy = (() => { try { return document.execCommand("copy"); } catch { return false; } })();
+    flash(legacy ? "Copied" : (isMacOs() ? "Press ⌘C" : "Press Ctrl+C"));
+  });
+}
+
 // Airy scroll reveal — one observer, no deps
 function initReveal(): void {
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
@@ -437,6 +469,7 @@ initTrack();
 initDownloadLinks();
 initHashNav();
 initNavMenu();
+initSkillCopy();
 void initGuides();
 initGuideTabs();
 initCorpus();

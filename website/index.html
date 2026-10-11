@@ -84,7 +84,13 @@
           </div>
           <div id="cta-note" class="cta-note">macOS & Windows • one download, no Docker • data stays on your machine</div>
 
-          <div class="cta-note">Ask in the browser — or from your coding agent (<a href="#demo">MCP</a>: Claude Code, Codex, opencode, Cursor). Same memory, same citations.</div>
+          <div class="agent-cta">
+            <div class="agent-cta-head">Or let your coding agent do the setup
+              <button class="btn small secondary" id="skill-copy" type="button">Copy</button>
+            </div>
+            <code class="agent-cta-cmd" id="skill-cmd">npx skills add Atsirkunov/anchorcore --skill anchorcore-setup</code>
+            <div class="agent-cta-note">Claude Code, Codex, opencode, Cursor — it installs and launches the app if needed, picks your model, connects folders, and proves a cited answer. <a href="#agent-skill">Agent skill</a> · <a href="#demo">MCP</a></div>
+          </div>
         </div>
 
         <div class="shot">
@@ -221,6 +227,8 @@
           <div class="col"><h3>Setup from your agent</h3><p>Copy the <code>anchorcore-setup</code> skill into your agent's skills folder, then ask: “set up AnchorCore”. It probes the app, pulls the models, connects your folders, and proves the first cited answer — asking you only for secrets and approvals.</p><code>copy skill → ask → verified</code></div>
           <div class="col"><h3>What the skill does</h3><p>Health check → answer-model choice (your agent's own model, local Ollama, or your OpenAI-compatible endpoint) → sources with trust labels → agent connection → end-to-end verification. It reads the honesty flags (<code>mode</code>, <code>retrieval</code>) and says so when answers are degraded.</p><code>setup → verify → report</code></div>
         </div>
+        <div class="code">npx skills add Atsirkunov/anchorcore --skill anchorcore-setup</div>
+        <p class="small">Installs into your agent's skills folder — no <code>npx</code>? Copy it by hand instead:</p>
         <div class="code">mkdir -p .claude/skills/anchorcore-setup && curl -sL https://raw.githubusercontent.com/Atsirkunov/anchorcore/main/.claude/skills/anchorcore-setup/SKILL.md -o .claude/skills/anchorcore-setup/SKILL.md</div>
         <div class="fig termwrap">
           <div class="term-bar"><span>agent + anchorcore-setup skill · local REST</span><button id="skill-term-replay" class="btn small secondary" type="button">Replay</button></div>

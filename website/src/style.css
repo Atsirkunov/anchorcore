@@ -58,6 +58,13 @@ h1{font-family:Georgia,serif;letter-spacing:-0.03em;line-height:1.04;font-size:v
 .btn.secondary{background:var(--surface);color:var(--ink);border-color:var(--border)}
 .btn.small{padding:8px 12px;font-size:13px}
 .cta-note{font-size:clamp(12px,0.85vw,13.5px);color:var(--dim)}
+/* Hero agent-skill entry point (R18.19) — the other main way in, next to Download */
+.agent-cta{margin:16px 0 0;padding:12px 14px;border:1px solid var(--border);border-left:3px solid var(--sage);border-radius:10px;background:var(--surface);max-width:540px}
+.agent-cta-head{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px;font-weight:700;letter-spacing:-0.01em}
+.agent-cta-cmd{display:block;margin:9px 0 7px;overflow-x:auto;white-space:nowrap;font-size:12px;padding:6px 8px}
+.agent-cta-head .btn{min-width:92px;white-space:nowrap;flex-shrink:0}
+.agent-cta-note{font-size:12px;color:var(--dim);line-height:1.5}
+@media(max-width:420px){.agent-cta-cmd{white-space:normal;word-break:break-word}}
 .capture{display:flex;gap:8px;margin:10px 0}
 .capture input{flex:1;min-width:180px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);font-size:14px}
 .capture-msg{font-size:12px;color:var(--sage);min-height:16px}
