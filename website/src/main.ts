@@ -3,6 +3,7 @@ import { marked } from "marked";
 import obsidianMd from "../../docs/guides/obsidian-vault.md?raw";
 import quickstartMd from "../../docs/sample-dataset.md?raw";
 import restMd from "../../docs/guides/rest-api.md?raw";
+import aiMd from "../../docs/sample-ai.md?raw";
 
 // tweakable copy — single source, no CMS
 const copy = {
@@ -169,6 +170,7 @@ async function initGuides(): Promise<void> {
     ["guide-obsidian-body", obsidianMd],
     ["guide-quickstart-body", quickstartMd],
     ["guide-rest-body", restMd],
+    ["guide-ai-body", aiMd],
   ];
   for (const [id, md] of pairs) {
     const el = document.getElementById(id);
@@ -324,15 +326,49 @@ function initTerminal(bodyId: string, replayId: string, lines: TermLine[]): void
   }
 }
 
+
+// Second corpus (R18.15): ?corpus=ai swaps the landing examples. The payments
+// examples stay in the markup as the default, so this is progressive
+// enhancement on top of static HTML rather than the source of truth. The task
+// text said ?track=, but that has been the Personal/Team/Hosted switch since
+// R18.1, so the corpus gets its own parameter (see website/README.md).
+const AI_SHOT = {
+  q: "What did we decide about model routing, and why?",
+  a: "Tiered routing (router v2) — short lookups stay on small-local, multi-step reasoning can reach frontier-api only when the tenant's egress policy allows it. 62% less spend on the lookup slice at the same answer quality, owned by Noor.",
+  cites: [
+    ["sage", "Model router v2 (tiered routing)", "decision · approved", "“Frontier spend grew 3.1x while answer quality on the reasoning slice was flat.”", "d1-model-router-v2.md · decision"],
+    ["stone", "Postmortem — prompts reached the cloud provider", "incident · owner: Noor", "“The router now derives the tier server-side and ignores client hints for anything policy-relevant.”", "m2-incident-postmortem.md · meeting notes"],
+  ],
+  foot: "2 citations · answered on your machine",
+};
+const AI_DEMO = [
+  "<b>Connect</b> the <code>sample-ai/</code> demo folder — a fictional AI company's routing, eval and pricing decisions.",
+  "Ask: <code>What did we decide about model routing, and why?</code> → the tiered-routing decision, cited.",
+  "Follow-up: <code>what did we change after the incident?</code> → three changes, each with an owner.",
+  "Ask: <code>What is our citation accuracy?</code> → <code>0.89</code> on the rebuilt holdout set, with the correction explained.",
+];
+
+function initCorpus(): void {
+  if (new URL(location.href).searchParams.get("corpus") !== "ai") return;
+  const shot = document.querySelector(".shot-body");
+  if (shot) {
+    shot.innerHTML = `<div class="q">${AI_SHOT.q}</div><div class="a">${AI_SHOT.a}</div><div class="cites">` +
+      AI_SHOT.cites.map(([tone, title, meta, quote, src]) =>
+        `<div class="cite"><span class="bar ${tone}"></span><div><b>${title}</b> <small>${meta}</small><p>${quote}</p><small>${src}</small></div></div>`).join("") +
+      `</div>`;
+    const foot = document.querySelector(".shot-foot");
+    if (foot) foot.textContent = AI_SHOT.foot;
+  }
+  const demo = document.querySelector("ol.demo");
+  if (demo) demo.innerHTML = AI_DEMO.map(li => `<li>${li}</li>`).join("");
+}
+
 function initGuideTabs(): void {
   const tabs = [...document.querySelectorAll<HTMLButtonElement>(".guide-tab")];
-  const panels = [
-    document.getElementById("panel-obsidian"),
-    document.getElementById("panel-quickstart"),
-    document.getElementById("panel-rest"),
-  ];
-  const bodies = ["guide-obsidian-body", "guide-quickstart-body", "guide-rest-body"];
   if (tabs.length === 0) return;
+  // derive the pairings from the markup so a new tab needs no change here (R18.15)
+  const bodies = tabs.map(t => t.dataset.guide ?? "");
+  const panels = tabs.map(t => document.getElementById(t.getAttribute("aria-controls") ?? ""));
   function show(index: number): void {
     tabs.forEach((t, i) => {
       const on = i === index;
@@ -401,6 +437,7 @@ initHashNav();
 initNavMenu();
 void initGuides();
 initGuideTabs();
+initCorpus();
 initReveal();
 initTerminal("term-body", "term-replay", TERM_LINES);
 initTerminal("skill-term-body", "skill-term-replay", SKILL_LINES);
