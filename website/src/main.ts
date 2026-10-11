@@ -286,7 +286,7 @@ function initTerminal(bodyId: string, replayId: string, lines: TermLine[]): void
   }
 }
 
-function initGuidebook(): void {
+function initGuideTabs(): void {
   const tabs = [...document.querySelectorAll<HTMLButtonElement>(".guide-tab")];
   const panels = [
     document.getElementById("panel-obsidian"),
@@ -310,7 +310,7 @@ function initGuidebook(): void {
     });
   }
   tabs.forEach((t, i) => t.addEventListener("click", () => show(i)));
-  // deep links (#guide-obsidian etc.) open the right panel first
+  // deep links (#guide-obsidian etc.) open the right panel first (R18.7: one section)
   const hash = location.hash;
   const legacy = bodies.indexOf(hash.slice(1) + "-body");
   if (legacy >= 0) show(legacy);
@@ -318,7 +318,7 @@ function initGuidebook(): void {
     const i = bodies.indexOf(location.hash.slice(1) + "-body");
     if (i >= 0) {
       show(i);
-      document.getElementById("guidebook")?.scrollIntoView({ behavior: "smooth" });
+      document.getElementById("guide-reader")?.scrollIntoView({ behavior: "smooth" });
     }
   });
 }
@@ -362,7 +362,7 @@ initDownloadLinks();
 initHashNav();
 initNavMenu();
 void initGuides();
-initGuidebook();
+initGuideTabs();
 initReveal();
 initTerminal("term-body", "term-replay", TERM_LINES);
 initTerminal("skill-term-body", "skill-term-replay", SKILL_LINES);
