@@ -56,35 +56,40 @@ sources labeled public are searched (the share-safe surface).
 
 ### 4.1 Local — stdio (shipped)
 
-The same `anchorcore` binary also runs as the stdio MCP server: the harness
-spawns `anchorcore mcp`, which talks to the running app over `127.0.0.1`
-(`ANCHOR_BACKEND_URL`, default `http://127.0.0.1:8000`). The app stays the
-single owner of the DB, exactly like with the browser UI.
+**Setup is in the app — nothing to build.** Run AnchorCore, open the **System
+tab → MCP**, and click **Connect** for your client: it writes that app's config
+(backed up first) and prints the exact command. The onboarding wizard's last step
+offers the same card, and `GET /system/mcp` returns the command and args for
+harness setups that have no UI.
+
+Under the hood: the same `anchorcore` binary also runs as the stdio MCP server —
+the harness spawns `anchorcore mcp`, which talks to the running app over
+`127.0.0.1` (`ANCHOR_BACKEND_URL`, default `http://127.0.0.1:8000`). The app stays
+the single owner of the DB, exactly like with the browser UI.
+
+Manual configuration (equivalent to what Connect writes):
 
 ```bash
 # macOS (app bundle)
 claude mcp add anchorcore -- /Applications/AnchorCore.app/Contents/MacOS/AnchorCore mcp
 # Windows (unzipped folder)
 claude mcp add anchorcore -- C:\path\to\anchorcore.exe mcp
-# from a dev checkout
-(cd rust && cargo build)  # → rust/target/debug/anchorcore mcp
 # opencode V2: mcp.servers entry — or `opencode mcp add anchorcore --global -- <exe> mcp`
+# from a repo checkout: see "For contributors" at the end of this document
 ```
 
-> End users: nothing to build — run the app, open the System tab, and click
-> Connect for your client (or copy the exact command it prints, `GET
-> /system/mcp`); the onboarding wizard offers the same step. Pre-R20.8
-> configs that point at a separate `anchorcore-mcp` file keep working if you
-> copy/rename `anchorcore` to `anchorcore-mcp`, or re-run Connect (= Repair).
+> Pre-R20.8 configs that point at a separate `anchorcore-mcp` file keep working if
+> you copy/rename `anchorcore` to `anchorcore-mcp`, or re-run Connect (= Repair).
 > Plan: [plan-mcp-zero-setup.md](./plan-mcp-zero-setup.md).
 
-Details: stdio JSON-RPC (`initialize`/`tools/list`/`tools/call`); every `ask`/`search` call
-is logged to `system_events` (`component='mcp'`, visible under
+Details: stdio JSON-RPC (`initialize`/`tools/list`/`tools/call`); every `ask`/`search`
+call is logged to `system_events` (`component='mcp'`, visible under
 `GET /system/errors?component=mcp`).
 
 Legacy: the B14.1 Python sidecar (`backend/anchorcore_mcp.py` +
-`backend/app/mcp/`, same 6 tools) is archived on tag `archive/python-final` (the conformance suite fetches it frozen). New work
-is Rust (`rust/crates/anchorcore/src/mcp.rs`).
+`backend/app/mcp/`, same 6 tools) is archived on tag `archive/python-final` (the
+conformance suite fetches it frozen). New work is Rust
+(`rust/crates/anchorcore/src/mcp.rs`).
 
 ### 4.2 Centralized — streamable HTTP (planned, B14.2)
 
@@ -181,3 +186,37 @@ or add `mcp.servers.anchorcore` (V2: `type: "local"`, `command` array) in
 ---
 
 *Companion docs: [product-plan.md](./product-plan.md), [architecture.md](./architecture.md), [packaging.md](./packaging.md)*
+
+## 11. For contributors (dev checkout)
+
+From a repo checkout, build the same binary the release ships and point your
+client at it:
+
+```bash
+cd rust && cargo build            # → rust/target/debug/anchorcore
+./target/debug/anchorcore mcp     # exactly what the harness spawns
+cargo test -p anchorcore          # MCP surface tests
+```
+
+`rust/crates/anchorcore/src/mcp.rs` is the implementation, `AGENTS.md` has the
+full dev and release workflow, and `docs/plan-mcp-zero-setup.md` is the plan
+behind §4.1 (including the `runtime.json` discovery work, R20.4).
+
+---
+
+*Companion docs: [product-plan.md](./product-plan.md), [architecture.md](./architecture.md), [packaging.md](./packaging.md)*
+
+## 11. For contributors (dev checkout)
+
+From a repo checkout, build the same binary the release ships and point your
+client at it:
+
+```bash
+cd rust && cargo build            # → rust/target/debug/anchorcore
+./target/debug/anchorcore mcp     # exactly what the harness spawns
+cargo test -p anchorcore          # MCP surface tests
+```
+
+`rust/crates/anchorcore/src/mcp.rs` is the implementation, `AGENTS.md` has the
+full dev and release workflow, and `docs/plan-mcp-zero-setup.md` is the plan
+behind §4.1 (including the `runtime.json` discovery work, R20.4).
