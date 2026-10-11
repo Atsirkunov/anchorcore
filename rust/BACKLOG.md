@@ -57,9 +57,9 @@ Status: `todo` | `doing` | `done` (✅). Update this file when you pick/complete
 
 > Order: R25.1 + R25.6 (parallel) → R25.2 → R25.3 → R25.4 + R25.5 → R25.7 (~5d). Phases B/C (encrypted folder packs → zero-knowledge hosted/Team relay) stay in `docs/plan-backup-sync.md` §9 until Phase A ships and decisions §8 are signed off.
 
-### Phase 18 — Landing-page audit + example content (`website/`) — 17 shipped / 1 partial (deferred)
+### Phase 18 — Landing-page audit + example content (`website/`) — 18 shipped / 1 partial (deferred)
 
-> Shipped: R18.1, R18.2, R18.16-R18.18 (see shipped log). R18.6 and R18.14 are partial — their notes say what is left. Acceptance per task: `npm run build` green in `website/`, no new hex outside `:root`, deploy via `cd website && npm run build && npx wrangler deploy`; `git grep -i acme` clean.
+> Shipped: R18.1, R18.2, R18.16-R18.19 (see shipped log). R18.6 and R18.14 are partial — their notes say what is left. Acceptance per task: `npm run build` green in `website/`, no new hex outside `:root`, deploy via `cd website && npm run build && npx wrangler deploy`; `git grep -i acme` clean.
 
 | ID | Title | Priority | Est | Dependencies | DoD | Files |
 |---|---|---|---|---|---|---|
@@ -104,6 +104,7 @@ Status: `todo` | `doing` | `done` (✅). Update this file when you pick/complete
 | 2026-10-11 | R20.2 | `GET /system/mcp` (command/args + audit counters) |
 | 2026-10-11 | R20.1 | MCP card: real path + per-client command, no `cargo run` lie |
 | 2026-10-10 | R19.1 | Team image: Rust single container + offline license gate |
+| 2026-10-11 | R18.19 | Hero agent-skill entry point next to Download: copy-paste `npx skills add Atsirkunov/anchorcore --skill anchorcore-setup`, main CTA row + card, `#agent-skill` keeps the manual curl fallback; copy button with select-text fallback (verified live `6b5c2324`) |
 | 2026-10-10 | R18.1 / R18.2 / R18.16-R18.18 | Mobile nav, sample-corpus examples, widescreen canvas, GraphMini fix, source-as-evidence |
 
 ---
