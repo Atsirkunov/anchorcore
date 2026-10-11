@@ -18,7 +18,7 @@ npm run build && npx wrangler deploy  # https://anchorcore.dev
 * `src/main.ts` `copy.personal` / `copy.team` — hero title/sub/proof + `?track=personal|team` + `localStorage["anchorcore.track"]` (track-aware app copy is designed but not wired — `design-system.md` §5.1b)
 * `index.html` sections (`Hero`, `Problem→Solution`, `How it works`, `Demo`, `Agent skill`, `Guides`, `Guidebook`, `FAQ`, `Pricing`, `Roadmap`, `Privacy`, `Footer`) — all in one file, no component abstraction
 * `src/style.css` `:root` tokens — change `--sage` or `--paper` once
-* Header nav exists twice on purpose — `.nav` (desktop, ≥761px) and the `.navmenu` `<details>` disclosure (≤760px, works without JS); edit both when adding a section link (R18.1)
+* Header nav exists twice on purpose — `.nav` (desktop, ≥1081px) and the `.navmenu` `<details>` disclosure (≤1080px, works without JS); edit both when adding a section link (R18.1/R18.3)
 * The widescreen scale lives in `:root` clamps — `--wrap`, `--wrap-narrow`, `--fs-h1`, `--fs-h2`, `--fs-body`, `--fs-h3`, `--pad-sec` are the identity value up to ~1500px and grow on 2K/4K (R18.16); change the clamp, not the rule
 * Examples (hero mock, terminal, graph, `public/*.svg`) come from the repo's `sample/` payments corpus — keep quotes matching those files; never reuse `business-scale` corpus terms (e.g. `ACME`) in user-facing copy
 
