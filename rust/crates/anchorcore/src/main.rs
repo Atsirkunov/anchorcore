@@ -10,6 +10,7 @@
 
 mod answer;
 mod auth;
+mod backup;
 mod chunking;
 mod classifier;
 mod common;
@@ -323,6 +324,8 @@ fn build_router(state: health::AppState) -> Router {
         .route("/auth/me", get(auth::me_handler))
         // R7.1: CSRF token endpoint (public, used by SPA to fetch per-session token)
         .route("/csrf", get(security::csrf_handler))
+        // backup export (R25.2)
+        .route("/backup/export", post(backup::export_handler))
         // frontend (R5.1) — must be last, SPA fallback to index.html
         .fallback(frontend::handler)
         // Layers: outermost -> innermost: Host/Origin -> CORS -> CSRF -> Auth
