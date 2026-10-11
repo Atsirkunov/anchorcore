@@ -49,6 +49,16 @@ jobs:
           mkdir -p dist
           cp rust/target/release/anchorcore dist/anchorcore
           cd dist && zip -r AnchorCore-linux.zip anchorcore
+      - name: Assert the MCP-capable binary (R20.5)
+        run: |
+          set -e
+          unzip -l dist/AnchorCore-linux.zip | grep -qE ' anchorcore$' || { echo "FAULT: anchorcore missing from AnchorCore-linux.zip"; exit 1; }
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | ./dist/anchorcore mcp > /tmp/mcp.json || echo "note: mcp exited $? after stdin closed (output is what is asserted)"
+          grep -q '"search"' /tmp/mcp.json || { echo "FAULT: search tool missing"; cat /tmp/mcp.json; exit 1; }
+          count=$(grep -o '"name": "[a-z_]*"' /tmp/mcp.json | sort -u | wc -l)
+          [ "$count" -eq 6 ] || { echo "FAULT: expected 6 MCP tools, saw $count"; cat /tmp/mcp.json; exit 1; }
+          echo "ok (linux): the shipped binary runs the stdio MCP server with 6 tools incl. search"
+
       - name: Upload Rust Linux
         uses: actions/upload-artifact@v4
         with:
@@ -112,6 +122,16 @@ jobs:
           cd dist
           rm -f AnchorCore-macos.zip
           zip -rq AnchorCore-macos.zip AnchorCore.app
+      - name: Assert the MCP-capable binary (R20.5)
+        run: |
+          set -e
+          unzip -l dist/AnchorCore-macos.zip | grep -q 'AnchorCore.app/Contents/MacOS/AnchorCore' || { echo "FAULT: app binary missing from AnchorCore-macos.zip"; exit 1; }
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | ./dist/AnchorCore.app/Contents/MacOS/AnchorCore mcp > /tmp/mcp.json || echo "note: mcp exited $? after stdin closed (output is what is asserted)"
+          grep -q '"search"' /tmp/mcp.json || { echo "FAULT: search tool missing"; cat /tmp/mcp.json; exit 1; }
+          count=$(grep -o '"name": "[a-z_]*"' /tmp/mcp.json | sort -u | wc -l)
+          [ "$count" -eq 6 ] || { echo "FAULT: expected 6 MCP tools, saw $count"; cat /tmp/mcp.json; exit 1; }
+          echo "ok (macos): the shipped binary runs the stdio MCP server with 6 tools incl. search"
+
       - name: Upload macOS app
         uses: actions/upload-artifact@v4
         with:
@@ -144,6 +164,22 @@ jobs:
           Push-Location dist
           Compress-Archive -Path anchorcore.exe -DestinationPath AnchorCore-windows.zip -Force
           Pop-Location
+      - name: Assert the MCP-capable binary (R20.5)
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not (Test-Path dist/anchorcore.exe)) { throw "FAULT: dist/anchorcore.exe missing" }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path dist/AnchorCore-windows.zip))
+          $names = @($zip.Entries | ForEach-Object { $_.FullName })
+          $zip.Dispose()
+          if ($names -notcontains "anchorcore.exe") { throw "FAULT: anchorcore.exe is not in AnchorCore-windows.zip" }
+          $req = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' + "`n" + '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' + "`n"
+          $resp = ($req | & dist/anchorcore.exe mcp | Out-String)
+          if ($resp -notmatch '"search"') { throw "FAULT: search tool missing`n$resp" }
+          $count = @([regex]::Matches($resp, '"name": "[a-z_]*"') | ForEach-Object { $_.Value } | Sort-Object -Unique).Count
+          if ($count -ne 6) { throw "FAULT: expected 6 MCP tools, saw $count`n$resp" }
+          Write-Host "ok (windows): the shipped exe runs the stdio MCP server with 6 tools incl. search"
+
       - name: Upload Rust Windows
         uses: actions/upload-artifact@v4
         with:
