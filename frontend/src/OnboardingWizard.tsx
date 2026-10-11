@@ -341,7 +341,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
         {step === 2 && (
           <div style={styles.body}>
             <div style={styles.note}>
-              AnchorCore ingests a folder of notes and business docs (Markdown, text, Office, OpenDocument, RTF, email, PDF). You can also use the bundled sample corpus to try it.
+              AnchorCore ingests a folder of notes, code and business docs (Markdown, source code, Office, OpenDocument, RTF, email, PDF) — cloned git repos work like any folder, honoring .gitignore. You can also use the bundled sample corpus to try it.
             </div>
             {state?.sample.available && (
               <button style={{ ...styles.button, background: theme.blueBg, color: theme.accentAlt }} disabled={busy} onClick={connectSample}>

@@ -38,7 +38,7 @@ hmac = "0.12"
 rand = "0.8"
 dotenvy = "0.15"
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
-walkdir = "2"
+ignore = "0.4"
 pdf-extract = "0.12"
 notify = "6"
 include_dir = "0.7"

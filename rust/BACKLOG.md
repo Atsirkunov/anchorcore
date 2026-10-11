@@ -90,6 +90,7 @@ Status: `todo` | `doing` | `done` (✅). Update this file when you pick/complete
 |---|---|---|
 | 2026-10-11 | R24.1 | Folder picker: `GET /system/fs` (`fsbrowse.rs`) + `FolderPicker` in the Sources form and wizard step 2 |
 | 2026-10-11 | R24.2 | Business formats: one shared extractor (`extract.rs`) for folder + Drive (B9) - Word/PowerPoint/Excel/ODF/RTF/EML, encodings; Drive exports native Google types + extracts uploads; purge-safe `skipped`; 14 scratch tests; deps `zip`/`quick-xml`/`calamine`/`mailparse` |
+| 2026-10-11 | R24.3 | Code + repo support: popular language extensions + Dockerfile/Makefile/.gitignore as text; folder walking honors .gitignore and skips vendor/build dirs (`ignore` crate); 12 extractor tests + repo-walk test |
 | 2026-10-11 | R23.1 | `anchorcore-setup` skill (`.agents` / `.claude` / `agent` mirrors) — configure the whole tool via an agent |
 | 2026-10-11 | R22.2 | PDF ingestion (`pdf-extract`) + purge keeps unreadable-but-present files |
 | 2026-10-11 | R22.1 | LLM classify/distill wired into the pipeline (B26 regression) + `documentation` type + note-only suppression; 138 tests |

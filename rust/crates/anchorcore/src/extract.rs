@@ -1,6 +1,6 @@
 //! Document text extraction — one place for every format the connectors can
-//! ingest (folder + Drive): notes/text, HTML, PDF, Word, PowerPoint, Excel
-//! (modern + legacy), OpenDocument, RTF and email.
+//! ingest (folder + Drive): notes, source code and config, HTML, PDF, Word,
+//! PowerPoint, Excel (modern + legacy), OpenDocument, RTF and email.
 //!
 //! Pure functions over bytes: `extract_file` for the folder connector,
 //! `extract_bytes` for the Drive connector (exports/downloads arrive as bytes
@@ -10,16 +10,27 @@
 use std::io::{Cursor, Read};
 use std::path::Path;
 
-/// Extensions that `extract_bytes` can handle (lower-case, no dots).
-pub const SUPPORTED_EXTS: &[&str] = &[
-    // plain text (encoding-aware: UTF-8 / UTF-16 BOM, Windows-1252 fallback)
-    "txt", "text", "md", "markdown", "csv", "tsv", "json", "log", "yaml", "yml", "toml",
-    "html", // tag-stripped
-    "htm", "pdf", "docx", "docm", // Word (OOXML)
-    "pptx", "pptm", // PowerPoint (OOXML)
-    "xlsx", "xlsm", "xlsb", "xls", "ods", // spreadsheets
-    "odt", "odp", // OpenDocument
-    "rtf", "eml",
+/// Plain-text kinds — decoded, not parsed: notes, docs, source code, config.
+const TEXT_EXTS: &[&str] = &[
+    // notes & docs
+    "txt", "text", "md", "markdown", "mdx", "rst", "adoc", "org", "tex", "bib",
+    // data & config
+    "csv", "tsv", "json", "jsonc", "log", "yaml", "yml", "toml", "ini", "cfg", "conf", "properties", "xml",
+    // source code — the most popular languages (repos are cloned and watched like any folder)
+    "py", "pyi", "js", "jsx", "mjs", "cjs", "ts", "tsx", "vue", "svelte", "astro", "java", "kt", "kts", "scala",
+    "groovy", "gradle", "cs", "fs", "fsx", "vb", "go", "rs", "rb", "php", "pl", "pm", "lua", "r", "jl", "swift",
+    "m", "mm", "dart", "ex", "exs", "erl", "hrl", "hs", "clj", "cljs", "cljc", "c", "h", "cpp", "cc", "cxx",
+    "hpp", "hh", "hxx", "sh", "bash", "zsh", "fish", "ps1", "psm1", "bat", "cmd", "sql", "css", "scss", "sass",
+    "less", "cmake", "mk",
+];
+
+/// Extensionless repo files with well-known names — treated as text.
+const TEXT_NAMES: &[&str] = &["dockerfile", "makefile", "justfile", "gemfile", "rakefile", ".gitignore", ".dockerignore"];
+
+/// Extensions that need a real extractor (not plain text).
+const FORMAT_EXTS: &[&str] = &[
+    "html", "htm", "pdf", "docx", "docm", "pptx", "pptm", "xlsx", "xlsm", "xlsb", "xls", "ods", "odt", "odp", "rtf",
+    "eml",
 ];
 
 /// Cap for a single decompressed archive part (docx/pptx/odt content XML).
@@ -30,34 +41,39 @@ const MAX_SHEET_COLS: usize = 64;
 
 pub fn is_supported_ext(ext: &str) -> bool {
     let e = ext.trim_start_matches('.').to_ascii_lowercase();
-    SUPPORTED_EXTS.contains(&e.as_str())
+    TEXT_EXTS.contains(&e.as_str()) || FORMAT_EXTS.contains(&e.as_str())
 }
 
 pub fn is_supported_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(is_supported_ext)
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        return is_supported_ext(ext);
+    }
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| TEXT_NAMES.contains(&n.to_ascii_lowercase().as_str()))
         .unwrap_or(false)
 }
 
 /// Extract text from a file on disk (folder connector).
 pub fn extract_file(path: &Path) -> Result<String, String> {
-    let ext = path
+    let kind = path
         .extension()
         .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_else(|| path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase());
     let bytes = std::fs::read(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
-    extract_bytes(&ext, &bytes)
+    extract_bytes(&kind, &bytes)
 }
 
-/// Extract text from bytes given a kind (lower-case extension) — the Drive
-/// connector resolves a MIME type to a kind first (see `kind_for`).
+/// Extract text from bytes given a kind (extension, or a well-known file name)
+/// — the Drive connector resolves a MIME type to a kind first (`kind_for`).
 pub fn extract_bytes(kind: &str, bytes: &[u8]) -> Result<String, String> {
-    let k = kind.trim_start_matches('.').to_ascii_lowercase();
-    match k.as_str() {
-        "txt" | "text" | "md" | "markdown" | "csv" | "tsv" | "json" | "log" | "yaml" | "yml"
-        | "toml" => decode_text(bytes),
+    let raw = kind.to_ascii_lowercase();
+    let k = raw.trim_start_matches('.');
+    if TEXT_NAMES.contains(&raw.as_str()) || TEXT_EXTS.contains(&k) {
+        return decode_text(bytes);
+    }
+    match k {
         "html" | "htm" => Ok(strip_html(&decode_text(bytes)?)),
         "pdf" => extract_pdf(bytes),
         "docx" | "docm" => extract_docx(bytes),
@@ -125,10 +141,14 @@ pub fn kind_for(mime: &str, name: &str) -> Option<String> {
     if m.starts_with("text/") {
         return Some("txt".to_string());
     }
-    // Drive often reports octet-stream - fall back to the filename extension.
+    // Drive often reports octet-stream - fall back to the filename.
     let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     if !ext.is_empty() && ext != name.to_ascii_lowercase() && is_supported_ext(&ext) {
         return Some(ext);
+    }
+    let base = name.rsplit('/').next().unwrap_or(name).to_ascii_lowercase();
+    if TEXT_NAMES.contains(&base.as_str()) {
+        return Some(base);
     }
     None
 }
@@ -1041,11 +1061,28 @@ Hello \b bold\b0  and \'93quoted\'94.\par Second \u8364? paragraph.\par}";
         );
         assert_eq!(kind_for("application/vnd.google-apps.folder", "x"), None);
         assert_eq!(kind_for("image/png", "x"), None);
+        assert_eq!(kind_for("application/octet-stream", "Dockerfile").as_deref(), Some("dockerfile"));
+        assert_eq!(kind_for("application/octet-stream", ".gitignore").as_deref(), Some(".gitignore"));
+    }
+
+    #[test]
+    fn code_and_named_files_are_plain_text() {
+        for ext in ["rs", "py", "ts", "tsx", "go", "java", "kt", "cs", "cpp", "h", "sh", "ps1", "sql", "css", "vue"] {
+            assert!(is_supported_ext(ext), "{ext} should be supported");
+            assert_eq!(extract_bytes(ext, b"fn main() { /* code */ }").unwrap(), "fn main() { /* code */ }");
+        }
+        assert!(is_supported_path(Path::new("src/main.rs")));
+        assert!(is_supported_path(Path::new("Dockerfile")));
+        assert!(is_supported_path(Path::new("Makefile")));
+        assert!(is_supported_path(Path::new(".gitignore")));
+        assert!(!is_supported_path(Path::new("logo.png")));
+        assert_eq!(extract_bytes("dockerfile", b"FROM scratch\n").unwrap(), "FROM scratch\n");
+        assert_eq!(extract_bytes(".gitignore", b"node_modules/\n").unwrap(), "node_modules/\n");
     }
 
     #[test]
     fn supported_matrix() {
-        for ok in ["md", "DOCX", ".pdf", "xls", "eml", "rtf", "tsv"] {
+        for ok in ["md", "DOCX", ".pdf", "xls", "eml", "rtf", "tsv", "jsonc", "yml", "tex"] {
             assert!(is_supported_ext(ok), "{ok} should be supported");
         }
         for no in ["doc", "ppt", "exe", "zip", ""] {
