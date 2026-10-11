@@ -108,6 +108,36 @@ jobs:
           PYTHONPATH=backend ANCHOR_DATA_DIR=/tmp/ac-ci-data ANCHOR_DATABASE_URL=sqlite:////tmp/ac-ci-test.db \
             ANCHOR_SECRETS_NO_KEYRING=1 ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 \
             python -m pytest backend/tests -q --ignore=backend/tests/test_mcp.py --deselect backend/tests/test_system.py::test_version_is_single_source_of_truth --deselect backend/tests/test_system.py::test_onboarding_state
+      - name: MCP smoke — 6 tools + a search on sample/ (R20.5)
+        run: |
+          set -e
+          API=http://127.0.0.1:8123
+          BIN=rust/target/debug/anchorcore
+          curl -sf $API/health >/dev/null
+          # ingest the repo's sample corpus so the search has something real to cite
+          SRC=$(curl -sf -X POST $API/sources -H "content-type: application/json" \
+            -d "{\"connector\":\"folder\",\"name\":\"sample\",\"label\":\"internal\",\"config\":{\"path\":\"$PWD/sample\"}}" \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])"))
+          JOB=$(curl -sf -X POST $API/sources/$SRC/sync | python3 -c "import json,sys; print(json.load(sys.stdin).get('id'))")
+          ST=""
+          for i in $(seq 1 60); do
+            ST=$(curl -sf $API/sources/jobs/$JOB | python3 -c "import json,sys; print(json.load(sys.stdin).get('status'))")
+            if [ "$ST" = "succeeded" ] || [ "$ST" = "failed" ]; then break; fi
+            sleep 2
+          done
+          echo "sync job $JOB: $ST"
+          [ "$ST" = "succeeded" ] || { echo "FAULT: sample sync did not succeed"; exit 1; }
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search","arguments":{"query":"billing provider migration"}}}' \
+            | ANCHOR_BACKEND_URL=$API $BIN mcp > /tmp/mcp.json || echo "note: mcp exited $? after stdin closed (output is what is asserted)"
+          grep -q '"search"' /tmp/mcp.json || { echo "FAULT: search tool missing"; cat /tmp/mcp.json; exit 1; }
+          count=$(grep -o '"name": "[a-z_]*"' /tmp/mcp.json | sort -u | wc -l)
+          [ "$count" -eq 6 ] || { echo "FAULT: expected 6 MCP tools, saw $count"; cat /tmp/mcp.json; exit 1; }
+          grep -qi "billing" /tmp/mcp.json || { echo "FAULT: search over sample/ returned nothing about billing"; cat /tmp/mcp.json; exit 1; }
+          echo "ok: 6 tools, and a search over sample/ returned the billing material"
+
       - name: Stop Rust
         if: always()
         run: kill $(cat /tmp/ac-ci.pid) || true; sleep 1; cat /tmp/ac-ci-data/anchorcore.log || true
