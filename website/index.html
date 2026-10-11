@@ -251,13 +251,14 @@
           <span id="guide-obsidian" class="anchor"></span>
           <span id="guide-quickstart" class="anchor"></span>
           <span id="guide-rest" class="anchor"></span>
+          <p class="small">Pick a guide — it opens right here.</p>
           <div class="guide-tabs" role="tablist" aria-label="Guides">
-            <button class="guide-tab active" data-guide="guide-obsidian-body" role="tab" aria-selected="true">Obsidian vault</button>
+            <button class="guide-tab" data-guide="guide-obsidian-body" role="tab" aria-selected="false">Obsidian vault</button>
             <button class="guide-tab" data-guide="guide-quickstart-body" role="tab" aria-selected="false">Sample company</button>
             <button class="guide-tab" data-guide="guide-rest-body" role="tab" aria-selected="false">JSON API</button>
           </div>
           <div class="guide-panels">
-            <article class="guide-panel active" id="panel-obsidian" role="tabpanel">
+            <article class="guide-panel" id="panel-obsidian" role="tabpanel" hidden>
               <h3>Use your Obsidian vault</h3>
               <div class="guide-body" id="guide-obsidian-body"></div>
             </article>
@@ -319,30 +320,24 @@
           <button class="btn small" type="submit">Join waitlist</button>
         </form>
         <div id="capture2-msg" class="capture-msg"></div>
-        <p class="small">By joining, you agree to receive AnchorCore updates by email — unsubscribe anytime. See <a href="#privacy">Privacy notice</a>.</p>
+        <p class="small">By joining, you agree to receive AnchorCore updates by email — unsubscribe anytime. See <a href="/privacy">Privacy notice</a>.</p>
       </div>
     </section>
 
     <!-- Privacy notice (GDPR Art. 13) — keep in sync with the actual data flows in src/main.ts -->
-    <section id="privacy" class="alt">
+    <!-- Privacy notice — the full GDPR Art. 13 text is its own page (R18.11) -->
+<section id="privacy" class="alt">
       <div class="wrap">
         <h2>Privacy notice</h2>
         <p class="sub">Short version: this site doesn't track you. The only personal data we receive is your email if you join the waitlist.</p>
-        <div class="faq">
-          <div class="qa"><h4>Who is responsible?</h4><p>Aleksandr Tsirkunov — <a href="mailto:alex@anchorcore.dev">alex@anchorcore.dev</a>.</p></div>
-          <div class="qa"><h4>Visiting this site</h4><p>No cookies, no analytics, no fingerprinting, no third-party content. Your browser only talks to this server (and to GitHub if you click a download or docs link — then GitHub's privacy policy applies). Your hero-tab choice (Personal / Team / Hosted) is remembered in your browser's local storage on your own device; it is never sent anywhere and you can clear it anytime.</p></div>
-          <div class="qa"><h4>Waitlist signup</h4><p>If you join the waitlist we receive your email address plus which list you picked (Personal / Team / Hosted). Legal basis is your consent (Art. 6(1)(a) GDPR), given by submitting the form. We use it only to email you product updates. To unsubscribe, reply to any update email or write to <a href="mailto:alex@anchorcore.dev">alex@anchorcore.dev</a> — your address is then deleted.</p></div>
-          <div class="qa"><h4>Who processes the data?</h4><p>Form submissions are handled by Formspree Inc. (Austin, TX, USA) as our processor under a data-processing agreement; transfers to the US rely on standard contractual clauses. Nobody else receives your data.</p></div>
-          <div class="qa"><h4>Your rights</h4><p>Access, correction, deletion, restriction, portability, and objection (Art. 15–21 GDPR), plus the right to complain to your supervisory authority. Just email <a href="mailto:alex@anchorcore.dev">alex@anchorcore.dev</a>.</p></div>
-        </div>
-        <p class="small">Last updated: 8 October 2026.</p>
+        <p class="small">No cookies, no analytics, no third-party content. Your waitlist email is stored by Formspree under a data-processing agreement, and you can unsubscribe anytime. <a href="/privacy">Read the full privacy notice</a>.</p>
       </div>
     </section>
   </main>
 
   <footer>
     <div class="wrap foot">
-      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg><b>AnchorCore</b> v1 local · free for personal use · Team self-hosted licensed · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="#privacy">Privacy</a></div>
+      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg><b>AnchorCore</b> v1 local · free for personal use · Team self-hosted licensed · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="/privacy">Privacy notice</a></div>
       <div class="mono">Private by default · cited by design</div>
     </div>
   </footer>
