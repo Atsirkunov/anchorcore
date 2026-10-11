@@ -13,9 +13,9 @@
 1. Builds the frontend (`npm run build`)
 2. Builds Rust `AnchorCore-{windows,macos,linux}.zip` (`cargo build --release`, `frontend/dist` embedded via `include_dir!`, `codesign` on macOS)
 3. Attaches the three zips to the GitHub Release for that tag (website Download buttons link straight at the windows/macos ones — keep those file names stable)
-4. Deploys `website/` to `anchorcore.dev` via wrangler — but only when `website/` changed since the previous tag (`deploy-website` job diffs `$PREV_TAG..$TAG`). Needs repo secrets `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`, else the job fails on website releases until they're set
+4. Deploys `website/` to `anchorcore.dev` via wrangler — but only when `website/` changed since the previous tag (`deploy-website` job diffs `$PREV_TAG..$TAG`). Uses repo secrets `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` (set 2026-10-11; token = Account → Workers Scripts: Edit + Zone `anchorcore.dev` → Workers Routes: Edit — no Client IP filtering, GitHub runners have no stable IPs). If the job fails: rotate the token, re-set the secret, then `gh run rerun <run-id> --failed --repo Atsirkunov/anchorcore` — no re-tag needed
 
-## Release checklist (Rust — shipped 1.0.16)
+## Release checklist (Rust — shipped 1.0.17)
 
 1. **Verify locally:**
    - [ ] `cargo test -p anchorcore` + `cargo check` clean — Rust green
@@ -26,8 +26,8 @@
 3. **Update docs** — backlog items marked `DONE`; handover `docs/handover-*.md`; stale-claim sweep: `git grep -n "shipped 1\.0\." docs README.md website` (old versions) + `git grep -n "bundled sample"` (B50) — fix or confirm historical
 4. **Tag and push:**
    ```
-   git tag v1.0.16
-   git push origin v1.0.16
+   git tag v1.0.17
+   git push origin v1.0.17
    ```
 5. **Verify the Release** (github.com → Releases): `AnchorCore-windows.zip` + `AnchorCore-macos.zip` (+linux) present; download on clean machines, unzip, run, smoke `curl /health`
 6. **Hand off** — testers get the GitHub Release URL, not a repo checkout
