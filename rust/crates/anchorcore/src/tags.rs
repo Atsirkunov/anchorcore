@@ -128,8 +128,8 @@ pub fn ensure_tag(conn: &Connection, name: &str) -> Result<i64, String> {
     // create new
     let emb = crate::embedder::pack_single(&new_vec);
     conn.execute(
-        "INSERT INTO tags (name, description, embedding, count) VALUES (?1,'',?2,1)",
-        rusqlite::params![norm, emb],
+        "INSERT INTO tags (name, description, embedding, count, uid) VALUES (?1,'',?2,1,?3)",
+        rusqlite::params![norm, emb, crate::db::new_uid()],
     )
     .map_err(|e| e.to_string())?;
     Ok(conn.last_insert_rowid())

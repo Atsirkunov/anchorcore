@@ -391,7 +391,7 @@ impl Pipeline {
                 let _ = conn.execute("UPDATE ingested_items SET content_hash=?1, title=?2, author=?3, text=?4, stale=0 WHERE id=?5", rusqlite::params![digest, doc.title, doc.author, doc.text, id]);
                 Ok(true)
             } else {
-                conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale, created_at) VALUES (?1,?2,?3,?4,?5,?6, 0, datetime('now'))", rusqlite::params![source_id, doc.external_id, doc.title, doc.text, digest, doc.author]).map_err(|e| e.to_string())?;
+                conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale, created_at, uid) VALUES (?1,?2,?3,?4,?5,?6, 0, datetime('now'),?7)", rusqlite::params![source_id, doc.external_id, doc.title, doc.text, digest, doc.author, crate::db::new_uid()]).map_err(|e| e.to_string())?;
                 Ok(true)
             }
         }).await
@@ -680,8 +680,8 @@ fn create_summaries_inner(
             format!("{} summary: {}", base_ref, title)
         };
         conn.execute(
-            "INSERT INTO chunks (item_id, section_id, kind, source_ref, content, level, path, created_at) VALUES (?1,?2,'section_summary',?3,?4,?5,?6,datetime('now'))",
-            rusqlite::params![item_id, sec_id, src_ref, summary, level, path],
+            "INSERT INTO chunks (item_id, section_id, kind, source_ref, content, level, path, created_at, uid) VALUES (?1,?2,'section_summary',?3,?4,?5,?6,datetime('now'),?7)",
+            rusqlite::params![item_id, sec_id, src_ref, summary, level, path, crate::db::new_uid()],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -714,8 +714,8 @@ fn create_summaries_inner(
     )
     .map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO chunks (item_id, kind, source_ref, content, level, path, created_at) VALUES (?1,'doc_summary',?2,?3,0,'',datetime('now'))",
-        rusqlite::params![item_id, format!("{} summary", base_ref), doc_summary],
+        "INSERT INTO chunks (item_id, kind, source_ref, content, level, path, created_at, uid) VALUES (?1,'doc_summary',?2,?3,0,'',datetime('now'),?4)",
+        rusqlite::params![item_id, format!("{} summary", base_ref), doc_summary, crate::db::new_uid()],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -876,10 +876,10 @@ async fn store_batch(ctx: &ClassifyCtx, items: Vec<crate::classifier::Classified
     run_db(&ctx.data_dir, move |conn| {
         for it in items {
             let status = if it.confidence >= 0.7 { "verified" } else { "unverified" };
-            conn.execute("INSERT INTO entities (item_id, kind, summary, reasoning, confidence, author, source_ref, window_text, window_index, status, owner, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'',datetime('now'),datetime('now'))", rusqlite::params![item_id, it.kind, it.summary, it.reasoning, it.confidence, it.author, it.source_ref, it.window_text, it.window_index, status]).unwrap();
+            conn.execute("INSERT INTO entities (item_id, kind, summary, reasoning, confidence, author, source_ref, window_text, window_index, status, owner, created_at, updated_at, uid) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'',datetime('now'),datetime('now'),?11)", rusqlite::params![item_id, it.kind, it.summary, it.reasoning, it.confidence, it.author, it.source_ref, it.window_text, it.window_index, status, crate::db::new_uid()]).unwrap();
             let eid = conn.last_insert_rowid();
             for chunk_content in crate::chunking::chunk_text(&it.summary) {
-                let _ = conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content, created_at) VALUES (?1,'entity',?2,?3,datetime('now'))", rusqlite::params![eid, it.source_ref, chunk_content]);
+                let _ = conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content, created_at, uid) VALUES (?1,'entity',?2,?3,datetime('now'),?4)", rusqlite::params![eid, it.source_ref, chunk_content, crate::db::new_uid()]);
             }
         }
         Ok(())
@@ -914,8 +914,8 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
         for meta in &metas {
             let parent_db = meta.parent.and_then(|p| section_ids.get(p).copied());
             conn.execute(
-                "INSERT INTO sections (item_id, parent_id, level, title, path, created_at) VALUES (?1,?2,?3,?4,?5,datetime('now'))",
-                rusqlite::params![item_id, parent_db, meta.level, meta.title, meta.path],
+                "INSERT INTO sections (item_id, parent_id, level, title, path, created_at, uid) VALUES (?1,?2,?3,?4,?5,datetime('now'),?6)",
+                rusqlite::params![item_id, parent_db, meta.level, meta.title, meta.path, crate::db::new_uid()],
             )
             .map_err(|e| e.to_string())?;
             section_ids.push(conn.last_insert_rowid());
@@ -930,8 +930,8 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
                 base_ref.clone()
             };
             conn.execute(
-                "INSERT INTO chunks (item_id, kind, source_ref, content, section_id, level, path, created_at) VALUES (?1,'document',?2,?3,?4,?5,?6,datetime('now'))",
-                rusqlite::params![item_id, r, cm.content, sec_db, cm.level, cm.path],
+                "INSERT INTO chunks (item_id, kind, source_ref, content, section_id, level, path, created_at, uid) VALUES (?1,'document',?2,?3,?4,?5,?6,datetime('now'),?7)",
+                rusqlite::params![item_id, r, cm.content, sec_db, cm.level, cm.path, crate::db::new_uid()],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -1007,7 +1007,7 @@ async fn distill_item(ctx: &ClassifyCtx) -> Result<(), String> {
         for ((_index, source_ref, _window), batch) in jobs.iter().zip(units) {
             for unit in batch.into_iter().take(max_units) {
                 let content = distill_unit_content(&unit);
-                let _ = conn.execute("INSERT INTO chunks (item_id, kind, source_ref, content, created_at) VALUES (?1,'distilled',?2,?3,datetime('now'))", rusqlite::params![item_id, source_ref, content]);
+                let _ = conn.execute("INSERT INTO chunks (item_id, kind, source_ref, content, created_at, uid) VALUES (?1,'distilled',?2,?3,datetime('now'),?4)", rusqlite::params![item_id, source_ref, content, crate::db::new_uid()]);
             }
         }
         let j = serde_json::to_string(&new_hashes).unwrap_or_else(|_| "{}".to_string());

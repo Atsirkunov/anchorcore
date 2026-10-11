@@ -84,6 +84,9 @@ pub fn init_db(path: &Path) -> Result<Connection> {
 
     // Idempotent column adds for incremental schema (b39, b30, b26, etc.)
     ensure_columns(&conn)?;
+    // R25.1: rows created before the uid columns existed (or by insert paths
+    // that don't set one) get their stable id here — SQL cannot make UUIDv7.
+    let _ = backfill_uids(&conn);
     ensure_vec(&conn);
 
     // Ensure PRAGMAs after migrations (some migrations may reset)
@@ -159,7 +162,61 @@ fn ensure_columns(conn: &Connection) -> Result<()> {
             PRIMARY KEY (chunk_id, tag_id)
         )", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_chunk_tags_tag_id ON chunk_tags(tag_id)", []);
+    ensure_uid_columns(conn);
     Ok(())
+}
+
+/// R25.1: tables that carry a stable UUIDv7 `uid` (plan §6.1). `disputes` and
+/// `merge_actions` stay keyed by entity uid refs instead of owning a uid.
+pub const UID_TABLES: &[&str] = &[
+    "sources",
+    "ingested_items",
+    "entities",
+    "chunks",
+    "sections",
+    "tags",
+    "projects",
+];
+
+/// Generate a stable record id — UUIDv7 (time-ordered, sortable).
+pub fn new_uid() -> String {
+    uuid::Uuid::now_v7().to_string()
+}
+
+/// Idempotent uid columns + unique indexes; mirrors `14_uids.sql` for DBs whose
+/// migration version already advanced past it (same pattern as the ALTERs above).
+fn ensure_uid_columns(conn: &Connection) {
+    for table in UID_TABLES {
+        try_add_column(conn, &format!("ALTER TABLE {} ADD COLUMN uid TEXT", table));
+        let idx = format!("CREATE UNIQUE INDEX IF NOT EXISTS ix_{}_uid ON {}(uid)", table, table);
+        let _ = conn.execute(&idx, []);
+    }
+}
+
+/// Assign a UUIDv7 to every row that has none. Called at boot and before an
+/// export/import snapshot so no record is ever serialized without a stable id.
+pub fn backfill_uids(conn: &Connection) -> Result<usize, rusqlite::Error> {
+    let tx = conn.unchecked_transaction()?;
+    let mut filled = 0usize;
+    for table in UID_TABLES {
+        let select = format!("SELECT id FROM {} WHERE uid IS NULL OR uid = ''", table);
+        let ids: Vec<i64> = {
+            let mut stmt = tx.prepare(&select)?;
+            let rows = stmt.query_map([], |r| r.get(0))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        if ids.is_empty() {
+            continue;
+        }
+        let update = format!("UPDATE {} SET uid = ?1 WHERE id = ?2", table);
+        let mut stmt = tx.prepare(&update)?;
+        for id in ids {
+            stmt.execute(rusqlite::params![new_uid(), id])?;
+            filled += 1;
+        }
+    }
+    tx.commit()?;
+    Ok(filled)
 }
 
 fn ensure_vec(conn: &Connection) {
@@ -274,6 +331,8 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/12_tags.sql")),
         // Backfill created_at default on system_events (older chains lack it -> audit writes fail)
         M::up(include_str!("../migrations/13_system_events_default.sql")),
+        // R25.1: stable uids (UUIDv7) for backup/export + device migration
+        M::up(include_str!("../migrations/14_uids.sql")),
     ])
 }
 
@@ -319,6 +378,17 @@ mod tests {
         // the schema entry directly — exactly what RENAME chokes on.
         {
             let conn = open_db(&path).unwrap();
+            // A real v10 DB predates R25.1 — drop the uid columns/indexes so
+            // migration 14 has real work to do (re-running it on a DB that
+            // already has them hits "duplicate column name" by design).
+            // Do this before removing vec_chunks: DROP COLUMN re-validates every
+            // trigger, and the vec triggers need their table to exist.
+            for table in UID_TABLES {
+                conn.execute(&format!("DROP INDEX IF EXISTS ix_{}_uid", table), [])
+                    .unwrap_or_else(|e| panic!("drop index {table}: {e}"));
+                conn.execute(&format!("ALTER TABLE {} DROP COLUMN uid", table), [])
+                    .unwrap_or_else(|e| panic!("drop column {table}: {e}"));
+            }
             conn.execute("DROP TABLE vec_chunks", []).unwrap();
             conn.pragma_update(None, "writable_schema", "ON").unwrap();
             conn.execute(
@@ -336,11 +406,53 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         run_migrations(&mut conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 13);
+        assert_eq!(v, 14);
         assert_eq!(vec_trigger_sql(&conn), before);
         let sys_sql: String = conn
             .query_row("SELECT sql FROM sqlite_master WHERE name = 'system_events'", [], |r| r.get(0))
             .unwrap();
         assert!(sys_sql.contains("DEFAULT CURRENT_TIMESTAMP"), "migration 13 must apply: {sys_sql}");
+    }
+
+    #[test]
+    fn uids_backfill_and_stay_stable() {
+        // R25.1: rows written without a uid (older builds, Python backend, raw
+        // SQL in tests) get a UUIDv7 on the first boot/export and keep it.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("uids.db");
+        let conn = init_db(&path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector) VALUES ('s1','folder')", []).unwrap();
+        conn.execute("INSERT INTO sources (name, connector) VALUES ('s2','folder')", []).unwrap();
+        let sid: i64 = conn.query_row("SELECT id FROM sources WHERE name='s1'", [], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO ingested_items (source_id, content_hash) VALUES (?1,'h')", [sid]).unwrap();
+        let iid = conn.last_insert_rowid();
+        conn.execute("INSERT INTO entities (item_id, kind) VALUES (?1,'note')", [iid]).unwrap();
+        conn.execute("INSERT INTO chunks (item_id, content) VALUES (?1,'body')", [iid]).unwrap();
+        conn.execute("INSERT INTO sections (item_id, level, title, path) VALUES (?1,1,'S','S')", [iid]).unwrap();
+        conn.execute("INSERT INTO tags (name) VALUES ('t')", []).unwrap();
+        conn.execute("INSERT INTO projects (name) VALUES ('p')", []).unwrap();
+
+        assert_eq!(backfill_uids(&conn).unwrap(), 8, "2 sources + 1 row in each other table");
+        for table in UID_TABLES {
+            let (rows, distinct, invalid): (i64, i64, i64) = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*), COUNT(DISTINCT uid), SUM(uid IS NULL OR uid = '' OR length(uid) != 36) FROM {}",
+                        table
+                    ),
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+            assert!(rows > 0, "{table} must have test rows");
+            assert_eq!(distinct, rows, "{table} uids must be unique");
+            assert_eq!(invalid, 0, "{table} uids must be filled UUID strings");
+        }
+        // second pass is a no-op: uids are stable
+        assert_eq!(backfill_uids(&conn).unwrap(), 0);
+        // the unique index enforces uniqueness for direct writes too
+        let other: String = conn.query_row("SELECT uid FROM sources WHERE name='s2'", [], |r| r.get(0)).unwrap();
+        let dup = conn.execute("UPDATE sources SET uid = ?1 WHERE name='s1'", [other]);
+        assert!(dup.is_err(), "duplicate uid must be rejected");
     }
 }

@@ -149,10 +149,10 @@ mod tests {
         let cfg = serde_json::json!({"path": dir.path().to_string_lossy()});
         let c = FolderConnector::new(&cfg).unwrap();
         let (docs, _skipped, _) = c.fetch_with_skipped().unwrap();
-        let ids: Vec<&str> = docs.iter().map(|d| d.external_id.as_str()).collect();
-        assert!(ids.contains(&"src/main.rs"), "{ids:?}");
-        assert!(ids.contains(&".github/workflows/ci.yml"), "{ids:?}");
-        assert!(ids.contains(&".gitignore"), "{ids:?}");
+        let ids: Vec<String> = docs.iter().map(|d| d.external_id.replace('\\', "/")).collect();
+        assert!(ids.iter().any(|i| i == "src/main.rs"), "{ids:?}");
+        assert!(ids.iter().any(|i| i == ".github/workflows/ci.yml"), "{ids:?}");
+        assert!(ids.iter().any(|i| i == ".gitignore"), "{ids:?}");
         assert!(!ids.iter().any(|i| i.contains("ignored")), "{ids:?}");
         assert!(!ids.iter().any(|i| i.ends_with("scratch.tmp.md")), "{ids:?}");
         assert!(!ids.iter().any(|i| i.contains("node_modules")), "{ids:?}");
