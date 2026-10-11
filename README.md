@@ -25,6 +25,9 @@ on your machine — nothing leaves it unless you configure a cloud model.
 2. Sources → Local folder → point at the repo's `sample/` demo corpus (grab the
    folder from GitHub; release zips ship the app only — or use your own) → Sync.
 3. Ask: "What was decided about instant payments, and why?" → cited answer.
+4. Optional: **System tab → MCP** connects Claude Code, Codex, opencode, Cursor or
+   Claude Desktop to the same memory — the app writes the client config for you, so
+   there is nothing to build. The onboarding wizard's last step offers the same card.
 
 Tip: install [Ollama](https://ollama.com) and pull `llama3.2:3b` +
 `nomic-embed-text` for full hybrid search — without it, keyword search still works.
