@@ -183,10 +183,13 @@ document.getElementById("capture-form-2")?.addEventListener("submit", (e) => {
   void captureEmail("email2", "capture2-msg", "roadmap");
 });
 
-// Terminal animation — abbreviated MCP stdio session (demo section).
-// Shapes mirror rust/crates/anchorcore/src/mcp.rs (tools/call with
-// name + arguments.question); the on-page caption notes it is abbreviated.
-const TERM_LINES: { cls: string; text: string; type?: boolean; pause?: number }[] = [
+// Terminal animations — abbreviated sessions (demo + agent-skill sections).
+// MCP shapes mirror rust/crates/anchorcore/src/mcp.rs (tools/call with
+// name + arguments.question); skill shapes mirror the anchorcore-setup skill
+// (local REST: health → models → sources → sync → ask + honesty flags).
+// The on-page captions note both are abbreviated.
+type TermLine = { cls: string; text: string; type?: boolean; pause?: number };
+const TERM_LINES: TermLine[] = [
   { cls: "t-dim", text: "$ anchorcore mcp", type: true },
   { cls: "t-dim", text: "# stdio MCP mode — spawned by your harness, no browser", pause: 350 },
   { cls: "t-out", text: '→ tools/call {"name": "ask", "arguments": {"question": "Who owns the billing provider migration?"}}', type: true },
@@ -197,6 +200,19 @@ const TERM_LINES: { cls: string; text: string; type?: boolean; pause?: number }[
   { cls: "t-dim", text: "← done: 1 answer · 2 citations · logged" },
 ];
 
+const SKILL_LINES: TermLine[] = [
+  { cls: "t-dim", text: "$ GET /health → {\"status\": \"ok\"}", type: true },
+  { cls: "t-out", text: "→ GET /system/status · answer_ready: false · missing: embed_model" },
+  { cls: "t-dim", text: "$ POST /system/ollama/pull {\"models\": [\"llama3.2:3b\", \"nomic-embed-text\"]}", pause: 350 },
+  { cls: "t-dim", text: "··· pulling models · two free downloads, then local forever", pause: 650 },
+  { cls: "t-dim", text: "$ POST /sources {\"connector\": \"folder\", \"name\": \"Sample\"} → id 3" },
+  { cls: "t-dim", text: "$ POST /sources/3/sync → done · about 40 entities filed", pause: 400 },
+  { cls: "t-out", text: "→ POST /qa {\"question\": \"Who owns the billing provider migration?\"}", type: true },
+  { cls: "t-in", text: "← Sarah owns the billing provider migration — parallel run starts Monday.", pause: 300 },
+  { cls: "t-in", text: "← [decision] d2-billing-provider-approval · 87% · mode=composed" },
+  { cls: "t-dim", text: "← done: cited answer · 2 citations · local-only" },
+];
+
 function termLine(el: HTMLElement, cls: string, text: string): void {
   const div = document.createElement("div");
   div.className = cls;
@@ -204,9 +220,9 @@ function termLine(el: HTMLElement, cls: string, text: string): void {
   el.appendChild(div);
 }
 
-function initTerminal(): void {
-  const body = document.getElementById("term-body");
-  const replay = document.getElementById("term-replay");
+function initTerminal(bodyId: string, replayId: string, lines: TermLine[]): void {
+  const body = document.getElementById(bodyId);
+  const replay = document.getElementById(replayId);
   if (!body) return;
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   let started = false;
@@ -214,7 +230,7 @@ function initTerminal(): void {
 
   function renderAll(): void {
     body!.innerHTML = "";
-    for (const line of TERM_LINES) termLine(body!, line.cls, line.text);
+    for (const line of lines) termLine(body!, line.cls, line.text);
   }
 
   async function play(): Promise<void> {
@@ -222,7 +238,7 @@ function initTerminal(): void {
     body!.innerHTML = "";
     const caret = document.createElement("span");
     caret.className = "caret";
-    for (const line of TERM_LINES) {
+    for (const line of lines) {
       if (line.pause) await new Promise((r) => setTimeout(r, line.pause));
       if (my !== run) return;
       if (line.type && !reduced) {
@@ -345,7 +361,8 @@ initNavMenu();
 void initGuides();
 initGuidebook();
 initReveal();
-initTerminal();
+initTerminal("term-body", "term-replay", TERM_LINES);
+initTerminal("skill-term-body", "skill-term-replay", SKILL_LINES);
 // render after DOM ready (hero-toc.svg is static public asset, GraphMini is JS)
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", () => renderGraphMini("graph-mini"));

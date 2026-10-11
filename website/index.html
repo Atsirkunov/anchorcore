@@ -39,6 +39,7 @@
         <a href="#faq">FAQ</a>
         <a href="#pricing">Pricing</a>
         <a href="#demo">Demo</a>
+        <a href="#agent-skill">Agent skill</a>
         <a href="#roadmap">Roadmap</a>
         <a href="#privacy">Privacy</a>
       </nav>
@@ -52,6 +53,7 @@
           <a href="#faq">FAQ</a>
           <a href="#pricing">Pricing</a>
           <a href="#demo">Demo</a>
+          <a href="#agent-skill">Agent skill</a>
           <a href="#roadmap">Roadmap</a>
           <a href="#privacy">Privacy</a>
         </nav>
@@ -190,6 +192,25 @@
           <div id="graph-mini-2"></div>
           <p class="cap">One question, linked answers — <code>Who owns the billing provider migration?</code> walks owner → decision → risk. Irrelevant branches are pruned before answering.</p>
         </div>
+      </div>
+    </section>
+
+    <!-- Agent skill -->
+    <section id="agent-skill">
+      <div class="wrap">
+        <h2>Agent skill</h2>
+        <p class="sub">Your coding agent sets AnchorCore up for you — install, models, sources, verification — by driving the local API. Claude Code, Codex, opencode, Cursor.</p>
+        <div class="cols two">
+          <div class="col"><h3>Setup from your agent</h3><p>Copy the <code>anchorcore-setup</code> skill into your agent's skills folder, then ask: “set up AnchorCore”. It probes the app, pulls the models, connects your folders, and proves the first cited answer — asking you only for secrets and approvals.</p><code>copy skill → ask → verified</code></div>
+          <div class="col"><h3>What the skill does</h3><p>Health check → answer-model choice (your agent's own model, local Ollama, or your OpenAI-compatible endpoint) → sources with trust labels → agent connection → end-to-end verification. It reads the honesty flags (<code>mode</code>, <code>retrieval</code>) and says so when answers are degraded.</p><code>setup → verify → report</code></div>
+        </div>
+        <div class="code">mkdir -p .claude/skills/anchorcore-setup && curl -sL https://raw.githubusercontent.com/Atsirkunov/anchorcore/main/.claude/skills/anchorcore-setup/SKILL.md -o .claude/skills/anchorcore-setup/SKILL.md</div>
+        <div class="fig termwrap">
+          <div class="term-bar"><span>agent + anchorcore-setup skill · local REST</span><button id="skill-term-replay" class="btn small secondary" type="button">Replay</button></div>
+          <div class="term-body" id="skill-term-body" aria-live="polite"></div>
+          <p class="cap">Abbreviated session — the skill drives the local REST API (health → models → sources → sync → ask) and checks the honesty flags before reporting back.</p>
+        </div>
+        <p class="small">Skill file: <a href="https://raw.githubusercontent.com/Atsirkunov/anchorcore/main/.claude/skills/anchorcore-setup/SKILL.md">anchorcore-setup (copy/download)</a> — the same file is mirrored for <code>.agents</code> and <code>agent</code> harnesses in the repo. Agent access protocol: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">Connect your agent (MCP)</a>.</p>
       </div>
     </section>
 
