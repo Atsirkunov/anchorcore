@@ -113,19 +113,40 @@ jobs:
           set -e
           API=http://127.0.0.1:8123
           BIN=rust/target/debug/anchorcore
-          curl -sf $API/health >/dev/null
+          
+          # Every API call goes through this helper: on any non-2xx it prints the method,
+          # path, status and body, so a failure names itself instead of surfacing as a
+          # Python traceback three lines later.
+          api() {
+            method="$1"; path="$2"; data="${3:-}"
+            if [ -n "$data" ]; then
+              raw=$(curl -sS -w "\n%{http_code}" -X "$method" "$API$path" -H "content-type: application/json" -d "$data")
+            else
+              raw=$(curl -sS -w "\n%{http_code}" -X "$method" "$API$path")
+            fi
+            status=$(printf "%s" "$raw" | tail -n1)
+            payload=$(printf "%s" "$raw" | sed "$d")
+            case "$status" in
+              2*) printf "%s" "$payload" ;;
+              *) echo "FAULT: $method $path -> HTTP $status"; echo "$payload"; exit 1 ;;
+            esac
+          }
+          field() { python3 -c "import json,sys; print(json.load(sys.stdin).get('$1'))"; }
+          
+          api GET /health >/dev/null
           # ingest the repo's sample corpus so the search has something real to cite
-          SRC=$(curl -sf -X POST $API/sources -H "content-type: application/json" \
-            -d "{\"connector\":\"folder\",\"name\":\"sample\",\"label\":\"internal\",\"config\":{\"path\":\"$PWD/sample\"}}" \
-            | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
-          JOB=$(curl -sf -X POST $API/sources/$SRC/sync | python3 -c "import json,sys; print(json.load(sys.stdin).get('id'))")
+          SRC=$(api POST /sources "{\"connector\":\"folder\",\"name\":\"sample\",\"label\":\"internal\",\"config\":{\"path\":\"$PWD/sample\"}}" | field id)
+          echo "created source: $SRC"
+          JOB_JSON=$(api POST "/sources/$SRC/sync")
+          echo "sync job: $JOB_JSON"
+          JOB=$(printf "%s" "$JOB_JSON" | field id)
           ST=""
           for i in $(seq 1 60); do
-            ST=$(curl -sf $API/sources/jobs/$JOB | python3 -c "import json,sys; print(json.load(sys.stdin).get('status'))")
+            ST=$(api GET "/sources/jobs/$JOB" | field status)
             if [ "$ST" = "succeeded" ] || [ "$ST" = "failed" ]; then break; fi
             sleep 2
           done
-          echo "sync job $JOB: $ST"
+          echo "sync job $JOB finished: $ST"
           [ "$ST" = "succeeded" ] || { echo "FAULT: sample sync did not succeed"; exit 1; }
           printf '%s\n' \
             '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' \
@@ -137,7 +158,6 @@ jobs:
           [ "$count" -eq 6 ] || { echo "FAULT: expected 6 MCP tools, saw $count"; cat /tmp/mcp.json; exit 1; }
           grep -qi "billing" /tmp/mcp.json || { echo "FAULT: search over sample/ returned nothing about billing"; cat /tmp/mcp.json; exit 1; }
           echo "ok: 6 tools, and a search over sample/ returned the billing material"
-
       - name: Stop Rust
         if: always()
         run: kill $(cat /tmp/ac-ci.pid) || true; sleep 1; cat /tmp/ac-ci-data/anchorcore.log || true
