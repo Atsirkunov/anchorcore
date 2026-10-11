@@ -366,10 +366,13 @@ initGuidebook();
 initReveal();
 initTerminal("term-body", "term-replay", TERM_LINES);
 initTerminal("skill-term-body", "skill-term-replay", SKILL_LINES);
-// render after DOM ready (hero-toc.svg is static public asset, GraphMini is JS)
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", () => renderGraphMini("graph-mini"));
-} else {
+// render after DOM ready (both graphs are JS-built; R18.6 keeps them in sync)
+const renderGraphs = () => {
   renderGraphMini("graph-mini");
-renderGraphMini("graph-mini-2");
+  renderGraphMini("graph-mini-2");
+};
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", renderGraphs);
+} else {
+  renderGraphs();
 }

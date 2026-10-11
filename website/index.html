@@ -130,7 +130,23 @@
         <div class="code">connect → read → file → ask → cited answer</div>
         <div class="duo">
           <div class="fig">
-            <img src="/hero-toc.svg" alt="Document headings become a sections tree, so answers cite the exact section" loading="lazy" />
+            <div class="toc">
+              <p class="toc-head"><span>TOC — sections tree</span><span>§3 · §4 · 4.2</span></p>
+              <ul class="toc-tree">
+                <li><span class="toc-tag">section</span><b>§3 Billing migration</b><small>§3 Billing — 3 passages · webhooks</small></li>
+                <li><span class="toc-tag">section</span><b>§4 Instant payments</b><small>§4 Transfers — 2 passages · payout</small></li>
+                <li class="child"><span class="toc-tag">under §3</span><b>4.2 Parallel-run plan</b><small>path: §3 Billing › 4.2 Parallel-run plan — breadcrumb</small></li>
+              </ul>
+              <div class="toc-side">
+                <p class="toc-side-h">TAGS — auto topics</p>
+                <p class="toc-chips"><span class="toc-chip sage">billing</span><span class="toc-chip">webhooks</span><span class="toc-chip">rollout</span></p>
+                <p class="toc-side-p">similar topics merge automatically<br />count: billing×3, rollout×2</p>
+                <p class="toc-hr"></p>
+                <p class="toc-side-h">HOW A SEARCH RUNS</p>
+                <p class="toc-side-p ink">topics → summaries → passages</p>
+                <p class="toc-side-p">5,000 docs searched in milliseconds</p>
+              </div>
+            </div>
             <p class="cap">Headings become a sections tree — answers cite §4.2, not “somewhere in the PDF”.</p>
           </div>
           <div class="fig">
