@@ -43,6 +43,31 @@ fn tag_vec(name: &str) -> Vec<f32> {
     crate::embedder::deterministic_embed(name)
 }
 
+/// R25.3: tag vectors are computed locally (`deterministic_embed`) — rebuild
+/// any that came from an import (or an older build) without one, so cosine
+/// reuse keeps working.
+pub fn ensure_embeddings(conn: &Connection) -> Result<usize, String> {
+    let rows: Vec<(i64, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, name FROM tags WHERE embedding IS NULL")
+            .map_err(|e| e.to_string())?;
+        let mapped: Vec<(i64, String)> = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        mapped
+    };
+    let mut n = 0usize;
+    for (id, name) in rows {
+        let blob = crate::embedder::pack_single(&tag_vec(&name));
+        conn.execute("UPDATE tags SET embedding=?1 WHERE id=?2", rusqlite::params![blob, id])
+            .map_err(|e| e.to_string())?;
+        n += 1;
+    }
+    Ok(n)
+}
+
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
     crate::embedder::cosine_similarity(a, b)
 }

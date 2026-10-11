@@ -326,6 +326,8 @@ fn build_router(state: health::AppState) -> Router {
         .route("/csrf", get(security::csrf_handler))
         // backup export (R25.2)
         .route("/backup/export", post(backup::export_handler))
+        // backup import (R25.3)
+        .route("/backup/import", post(backup::import_handler))
         // frontend (R5.1) — must be last, SPA fallback to index.html
         .fallback(frontend::handler)
         // Layers: outermost -> innermost: Host/Origin -> CORS -> CSRF -> Auth

@@ -69,18 +69,47 @@ needs them; older files are swept on the next export.
 
 ## Importing
 
-`POST /backup/import` (multipart) with a `mode` (`merge` or `replace`), a
-`dry_run` flag, and the archive. `dry_run` returns the report without writing:
+`POST /backup/import` is multipart: `file` (the archive) plus an optional
+`options` JSON field. Without `options` the call is a merge **dry run**.
 
-- record counts, `format_version` gate, archive options
-- per-source `needs_secret` — "enter credentials for 3 sources"
-- folder paths that need remapping to this machine
-- conflicts (a record with the same uid already exists and differs)
+| option | default | meaning |
+|---|---|---|
+| `mode` | `merge` | `merge` (uid upsert, last-writer-wins per record) or `replace` |
+| `dry_run` | `false` | report what would happen; nothing is written |
+| `confirm` | — | `replace` requires the exact string `replace` |
+| `passphrase` | — | opens `secrets.bundle` when present; without one the bundle is skipped with a note |
+| `remap` | — | `{source_uid: new folder path}` applied to folder sources |
 
-`merge` imports with last-writer-wins per record; `replace` requires a typed
-confirmation and takes an automatic safety backup first. Imports are
-transactional, reject zip-slip paths and oversized entries, and refuse a newer
-`format_version` than the running app ("upgrade the app").
+The report contains: per-type counts, imported/skipped per type, conflicts (up
+to 50, each marked `imported` or `kept-local`), `needs_secret` and folder paths
+from the manifest, applied remaps, `secrets_imported`, `safety_backup` (replace
+only), `reembed_source_ids`/`reembed_job_ids`, and warnings.
+
+Semantics:
+
+- **merge** matches records by uid. An existing record is updated only when the
+  incoming `updated_at`/`created_at` is newer (lexicographic timestamp LWW;
+  Phase B replaces this with a hybrid logical clock) — otherwise the local copy
+  wins and the record is reported as a conflict.
+- **replace** needs the typed confirmation, takes an automatic safety backup
+  (`exports/safety-backup-*.anchorcore-backup`, which the sweep never deletes),
+  then deletes all data records inside the same transaction. Settings, ops data
+  and users stay local.
+- **settings** that already exist on this machine win (provider config is
+  machine-local, plan §2); secrets never travel through settings.
+- **embeddings** from another model (dimension mismatch) are dropped with a
+  warning and recomputed, never silently indexed.
+- **re-embed**: sources whose chunks still lack vectors are queued as `embed`
+  jobs (`jobs.kind='embed'`) that run through the same gated embedder as
+  ingestion; retrieval reports keyword-only until they finish. Tag vectors are
+  local and rebuilt inline.
+- The whole import is **one transaction** — an error rolls everything back.
+- Validation: `format_version` gate ("upgrade the app"), entry-name checks
+  (zip-slip), decompression caps plus a compression-ratio bomb guard, and the
+  bundle's KDF caps.
+
+A dry run applies the records inside the transaction and rolls back, so its
+conflict report is exactly what a real import would do.
 
 After import, chunks without vectors are queued for embedding; until that
 finishes, retrieval honestly reports keyword-only.
