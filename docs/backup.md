@@ -59,6 +59,10 @@ The response streams the archive with
 `Content-Disposition: attachment`. The same options drive the System tab card
 and `anchorcore export` (CLI), so all three callers produce the same file.
 
+In the app: **System → Backup & restore → Export archive**. The passphrase
+field only appears when you tick "Include source credentials", and the button
+stays disabled until you provide one.
+
 ## CLI (headless / Team)
 
 ```bash
@@ -134,6 +138,12 @@ Semantics:
 
 A dry run applies the records inside the transaction and rolls back, so its
 conflict report is exactly what a real import would do.
+
+In the app: **System → Backup & restore → Import**. Pick the archive, run
+**Preview (dry run)** to see the counts, the credentials to re-enter and the
+folder paths to confirm, then **Import (merge)**. Replacing everything needs
+the typed `replace` confirmation; the safety backup name is shown in the
+result.
 
 After import, chunks without vectors are queued for embedding; until that
 finishes, retrieval honestly reports keyword-only.

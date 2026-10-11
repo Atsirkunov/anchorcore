@@ -1,4 +1,4 @@
-import type { AppSettings, AskResponse, AskTurn, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, PiiChunk, PiiConfig, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
+import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, PiiChunk, PiiConfig, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
 
 export class RequestAbortedError extends Error {
   constructor(message = "Request cancelled") {
@@ -231,6 +231,34 @@ export const api = {
       body: JSON.stringify({ client }),
     }),
   logDownloadUrl: (name: string) => `/system/logs/${encodeURIComponent(name)}`,
+
+  // R25.5: backup & restore. These bypass request() — an archive is a blob
+  // download and an import is a multipart upload that may run for minutes.
+  backupExport: async (payload: BackupExportOptions): Promise<{ blob: Blob; filename: string }> => {
+    const token = await getCsrfToken();
+    const res = await fetch("/backup/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { "X-CSRF-Token": token } : {}) },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(await errorMessage(res));
+    const disposition = res.headers.get("content-disposition") ?? "";
+    const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? "anchorcore-backup.anchorcore-backup";
+    return { blob: await res.blob(), filename };
+  },
+  backupImport: async (file: File, options: BackupImportOptions): Promise<BackupImportReport> => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("options", JSON.stringify(options));
+    const token = await getCsrfToken();
+    const res = await fetch("/backup/import", {
+      method: "POST",
+      headers: token ? { "X-CSRF-Token": token } : {},
+      body: form,
+    });
+    if (!res.ok) throw new Error(await errorMessage(res));
+    return res.json();
+  },
 
   startOllama: () => request<{ ok: boolean; already_running?: boolean; launched?: boolean; error?: string }>("/system/ollama/start", { method: "POST" }),
   pullModels: (models: string[]) =>

@@ -269,7 +269,7 @@ export type MergeProposal = {
 export type Job = {
   id: number;
   source_id: number;
-  kind: "sync" | "reclassify";
+  kind: "sync" | "reclassify" | "embed";
   status: "running" | "pending" | "done" | "failed" | "cancelled";
   total: number;
   processed: number;
@@ -311,4 +311,47 @@ export type PiiChunk = {
   snippet: string;
   is_pii: boolean;
   categories: PiiMatch[];
+};
+
+// R25.5 — backup / restore (Phase A of docs/plan-backup-sync.md)
+export type BackupExportOptions = {
+  include_secrets?: boolean;
+  passphrase?: string;
+  include_embeddings?: boolean;
+  include_ops?: boolean;
+  project_id?: number | null;
+};
+
+export type BackupImportOptions = {
+  mode?: "merge" | "replace";
+  dry_run?: boolean;
+  confirm?: string;
+  passphrase?: string;
+  remap?: Record<string, string>;
+};
+
+export type BackupSecretAsk = { source_uid: string; source_name?: string; field: string };
+export type BackupFolderPath = { source_uid: string; name: string; path: string };
+export type BackupConflict = { type: string; uid: string; action: "imported" | "kept-local" };
+export type BackupRemap = { source_uid: string; from: string; to: string };
+
+export type BackupImportReport = {
+  dry_run: boolean;
+  mode: string;
+  format_version: number;
+  app_version: string;
+  created_at: string;
+  counts: Record<string, number>;
+  imported: Record<string, number>;
+  skipped: Record<string, number>;
+  conflicts: BackupConflict[];
+  needs_secret: BackupSecretAsk[];
+  folder_paths: BackupFolderPath[];
+  remap_applied: BackupRemap[];
+  secrets_imported: number;
+  secrets_note: string | null;
+  safety_backup: string | null;
+  reembed_source_ids: number[];
+  reembed_job_ids?: number[];
+  warnings: string[];
 };

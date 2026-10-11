@@ -255,7 +255,7 @@ pub struct ExportResult {
 struct ExportSummary {
     counts: Counts,
     /// (local source id, source uid, field) for `include_secrets`.
-    secret_refs: Vec<(i64, String, String)>,
+    secret_refs: Vec<SecretRef>,
     /// `{source_uid, name, path}` for folder sources — remap hints on import.
     folder_paths: Vec<Value>,
     embed_model: Option<String>,
@@ -310,7 +310,13 @@ fn table_exists(conn: &Connection, name: &str) -> bool {
 }
 
 /// A secret to carry into the bundle: (local source id, source uid, field).
-type SecretRef = (i64, String, String);
+#[derive(Clone)]
+struct SecretRef {
+    id: i64,
+    uid: String,
+    name: String,
+    field: String,
+}
 
 struct SourceExport {
     count: u64,
@@ -366,7 +372,7 @@ fn source_record(store: &SecretStore, raw: RawSource) -> SourceRecord {
     for &field in SECRET_SOURCE_FIELDS {
         if store.get(&crate::secrets::source_secret_key(id, field)).is_some() {
             fields.push(field);
-            secret_refs.push((id, uid.clone(), field.to_string()));
+            secret_refs.push(SecretRef { id, uid: uid.clone(), name: name.clone(), field: field.to_string() });
         }
     }
     let folder_path = if connector == "folder" {
@@ -709,10 +715,10 @@ fn write_secrets_bundle(
     let passphrase = opts.passphrase.as_deref().unwrap_or("");
     let entries: Vec<(String, String)> = secret_refs
         .iter()
-        .filter_map(|(id, uid, field)| {
+        .filter_map(|s| {
             store
-                .get(&crate::secrets::source_secret_key(*id, field))
-                .map(|value| (format!("source:{}:{}", uid, field), value))
+                .get(&crate::secrets::source_secret_key(s.id, &s.field))
+                .map(|value| (format!("source:{}:{}", s.uid, s.field), value))
         })
         .collect();
     if entries.is_empty() {
@@ -771,7 +777,7 @@ fn write_archive_tail(zip: &mut ArchiveWriter, opts: &ExportOptions, summary: &E
             "project_id": opts.project_id,
         },
         "needs_secret": summary.secret_refs.iter()
-            .map(|(_, uid, field)| json!({"source_uid": uid, "field": field}))
+            .map(|s| json!({"source_uid": s.uid, "source_name": s.name, "field": s.field}))
             .collect::<Vec<_>>(),
         "folder_paths": summary.folder_paths,
     });
@@ -813,6 +819,10 @@ fn sweep_old_exports(data_dir: &Path) {
     };
     let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(EXPORT_TTL_SECS);
     for entry in entries.flatten() {
+        // A pre-replace safety backup is never swept — it is the undo button.
+        if entry.file_name().to_string_lossy().starts_with("safety-backup") {
+            continue;
+        }
         let Ok(meta) = entry.metadata() else { continue };
         let Ok(modified) = meta.modified() else { continue };
         if modified < cutoff {
@@ -1181,7 +1191,7 @@ fn apply_item(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let uid = str_field(rec, "uid");
     let source_id = ctx.require("sources", &str_field(rec, "source_uid"), "source")?;
     let existing = ctx.lookup("ingested_items", &uid)?;
-    let existing_stamp = existing.and_then(|id| ctx.stamp_of("SELECT updated_at FROM ingested_items WHERE id=?1", id));
+    let existing_stamp = existing.and_then(|id| ctx.stamp_of("SELECT COALESCE(updated_at, created_at) FROM ingested_items WHERE id=?1", id));
     let stamp = opt_str_field(rec, "updated_at").or_else(|| opt_str_field(rec, "created_at"));
     let action = decide(existing.is_some(), stamp.as_deref(), existing_stamp.as_deref());
     ctx.record("item", &uid, action);
@@ -1230,7 +1240,8 @@ fn apply_section(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
         }
     };
     let existing = ctx.lookup("sections", &uid)?;
-    let action = decide(existing.is_some(), opt_str_field(rec, "created_at").as_deref(), None);
+    let existing_stamp = existing.and_then(|id| ctx.stamp_of("SELECT created_at FROM sections WHERE id=?1", id));
+    let action = decide(existing.is_some(), opt_str_field(rec, "created_at").as_deref(), existing_stamp.as_deref());
     ctx.record("section", &uid, action);
     if !ctx.write || action == Action::Skip {
         return Ok(());
@@ -1268,7 +1279,7 @@ fn apply_entity(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let uid = str_field(rec, "uid");
     let item_id = ctx.require("ingested_items", &str_field(rec, "item_uid"), "item")?;
     let existing = ctx.lookup("entities", &uid)?;
-    let existing_stamp = existing.and_then(|id| ctx.stamp_of("SELECT updated_at FROM entities WHERE id=?1", id));
+    let existing_stamp = existing.and_then(|id| ctx.stamp_of("SELECT COALESCE(updated_at, created_at) FROM entities WHERE id=?1", id));
     let stamp = opt_str_field(rec, "updated_at").or_else(|| opt_str_field(rec, "created_at"));
     let action = decide(existing.is_some(), stamp.as_deref(), existing_stamp.as_deref());
     ctx.record("entity", &uid, action);
@@ -1328,7 +1339,8 @@ fn apply_chunk(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let uid = str_field(rec, "uid");
     let (item_id, entity_id, section_id) = chunk_refs(ctx, rec)?;
     let existing = ctx.lookup("chunks", &uid)?;
-    let action = decide(existing.is_some(), opt_str_field(rec, "created_at").as_deref(), None);
+    let existing_stamp = existing.and_then(|id| ctx.stamp_of("SELECT created_at FROM chunks WHERE id=?1", id));
+    let action = decide(existing.is_some(), opt_str_field(rec, "created_at").as_deref(), existing_stamp.as_deref());
     ctx.record("chunk", &uid, action);
     if !ctx.write || action == Action::Skip {
         return Ok(());
@@ -1461,7 +1473,8 @@ fn apply_chunk_tag(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
 fn apply_project(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let uid = str_field(rec, "uid");
     let existing = ctx.lookup("projects", &uid)?;
-    let action = decide(existing.is_some(), opt_str_field(rec, "created_at").as_deref(), None);
+    let existing_stamp = existing.and_then(|id| ctx.stamp_of("SELECT created_at FROM projects WHERE id=?1", id));
+    let action = decide(existing.is_some(), opt_str_field(rec, "created_at").as_deref(), existing_stamp.as_deref());
     ctx.record("project", &uid, action);
     if !ctx.write || action == Action::Skip {
         return Ok(());
@@ -2249,6 +2262,7 @@ mod tests {
         assert_eq!(manifest["counts"]["merge_actions"], 1);
         let needs: Vec<Value> = manifest["needs_secret"].as_array().unwrap().clone();
         assert_eq!(needs.len(), 2, "{manifest}");
+        assert!(needs.iter().all(|n| n["source_name"] == "payments"), "{needs:?}");
         assert_eq!(manifest["folder_paths"][0]["path"], "C:\\Docs\\payments");
         assert_eq!(manifest["options"]["include_secrets"], false);
         assert!(!entries.contains_key("secrets.bundle"));
