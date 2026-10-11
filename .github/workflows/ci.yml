@@ -118,7 +118,7 @@ jobs:
           printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci-smoke","version":"0"}}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | $BIN mcp > /tmp/mcp.json || echo "note: mcp exited $? after stdin closed (its output is what is asserted)"
           cat /tmp/mcp.json
           grep -q '"search"' /tmp/mcp.json || { echo "FAULT: the search tool is missing from tools/list"; exit 1; }
-          count=$(grep -o '"name": "[a-z_]*"' /tmp/mcp.json | sort -u | wc -l)
+          count=$(grep -o '"name":"[a-z_]*"' /tmp/mcp.json | sort -u | wc -l)
           [ "$count" -eq 6 ] || { echo "FAULT: expected 6 MCP tools, saw $count"; exit 1; }
           echo "ok: the built binary answers tools/list over stdio with 6 tools incl. search"
 
