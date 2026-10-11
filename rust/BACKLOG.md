@@ -283,6 +283,16 @@ Status: `todo` | `doing` | `done`. Update this file when you pick/complete a tas
 
 ---
 
+## Phase 21 — Dogfood bugfix (settings empty-value resolution, shipped v1.0.14)
+
+> From a real first-run walkthrough of the shipped Windows build: "Settings says all models green, but Ask says keyword-only." Root cause was `SettingsService` empty-value resolution (inherited from Python `_cached_get`: cache hit `or None`, cache miss `''`) — not the models, not Ollama. Cold-cache `/qa/search` flapped `keyword_only` ↔ `hybrid` depending on whether another settings read had warmed the 3s cache; `POST /settings/test-connection {"provider":"embedder"}` failed with "API key required for a cloud embedding provider"; `/system/status` reported provider `cloud` with `base_url: ""`.
+
+| ID | Title | Priority | Est | Dependencies | DoD | Files |
+|---|---|---|---|---|---|---|
+| R21.1 | Empty `app_settings` values must read as unset (flaky hybrid/keyword-only on first run) | P0 | 0.5d | — | `SettingsService`: `non_empty()` on every read path (cache hit, DB/cache miss, explicit conn) + `set("")` deletes the override row; regression tests `empty_setting_reads_as_unset_in_all_paths` + `storing_empty_clears_the_override_row`; live 1.0.14 evidence: deleting the two empty rows made cold-cache `/qa/search` consistently `hybrid` (3/3, was `keyword_only`), embedder test ok, `/system/status` provider `local`. | done 2026-10-11 — root cause ported verbatim from Python `_cached_get`; fix + tests in `settings.rs`; `cargo test` runs in CI (this box has no C toolchain — AGENTS.md). Workaround for shipped 1.0.14 installs: `DELETE FROM app_settings WHERE key IN ('classifier_base_url','embed_base_url') AND trim(value)=''` until a fixed build ships. | `rust/crates/anchorcore/src/settings.rs`, `AGENTS.md` |
+
+---
+
 ## How to pick a task (agents)
 
 1. Claim `R*.*` by setting `doing` + branch `rust/R2.1`, etc.
