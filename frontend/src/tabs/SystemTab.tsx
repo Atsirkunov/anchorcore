@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
+import { BackupCard } from "../BackupCard";
 import { McpConnectCard } from "../McpConnect";
 import { useModelPull } from "../useModelPull";
 import { theme } from "../theme";
@@ -234,6 +235,7 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
       )}
 
       <McpConnectCard />
+      <BackupCard />
 
       <h3 style={{ marginBottom: 8 }}>Errors & warnings</h3>
       {events.length === 0 ? (
