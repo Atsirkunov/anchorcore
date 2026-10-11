@@ -113,36 +113,35 @@ jobs:
           set -e
           API=http://127.0.0.1:8123
           BIN=rust/target/debug/anchorcore
+          BODY=/tmp/api.json
           
-          # Every API call goes through this helper: on any non-2xx it prints the method,
-          # path, status and body, so a failure names itself instead of surfacing as a
-          # Python traceback three lines later.
+          # Each call writes its body to $BODY and prints the HTTP status. A non-2xx
+          # prints method, path, status and body, so a failure names itself.
           api() {
-            method="$1"; path="$2"; data="${3:-}"
-            if [ -n "$data" ]; then
-              raw=$(curl -sS -w "\n%{http_code}" -X "$method" "$API$path" -H "content-type: application/json" -d "$data")
+            m="$1"; p="$2"; d="${3:-}"
+            if [ -n "$d" ]; then
+              code=$(curl -sS -o "$BODY" -w '%{http_code}' -X "$m" "$API$p" -H 'content-type: application/json' -d "$d")
             else
-              raw=$(curl -sS -w "\n%{http_code}" -X "$method" "$API$path")
+              code=$(curl -sS -o "$BODY" -w '%{http_code}' -X "$m" "$API$p")
             fi
-            status=$(printf "%s" "$raw" | tail -n1)
-            payload=$(printf "%s" "$raw" | sed "$d")
-            case "$status" in
-              2*) printf "%s" "$payload" ;;
-              *) echo "FAULT: $method $path -> HTTP $status"; echo "$payload"; exit 1 ;;
+            case "$code" in
+              2*) ;;
+              *) echo "FAULT: $m $p -> HTTP $code"; cat "$BODY"; exit 1 ;;
             esac
           }
-          field() { python3 -c "import json,sys; print(json.load(sys.stdin).get('$1'))"; }
+          field() { python3 -c "import json;print(json.load(open('$BODY')).get('$1'))"; }
           
-          api GET /health >/dev/null
+          api GET /health
           # ingest the repo's sample corpus so the search has something real to cite
-          SRC=$(api POST /sources "{\"connector\":\"folder\",\"name\":\"sample\",\"label\":\"internal\",\"config\":{\"path\":\"$PWD/sample\"}}" | field id)
+          SRC=$(api POST /sources "{\"connector\":\"folder\",\"name\":\"sample\",\"label\":\"internal\",\"config\":{\"path\":\"$PWD/sample\"}}"; field id)
           echo "created source: $SRC"
-          JOB_JSON=$(api POST "/sources/$SRC/sync")
-          echo "sync job: $JOB_JSON"
-          JOB=$(printf "%s" "$JOB_JSON" | field id)
+          api POST "/sources/$SRC/sync"
+          JOB=$(field id)
+          echo "sync job: $JOB — $(cat "$BODY")"
           ST=""
           for i in $(seq 1 60); do
-            ST=$(api GET "/sources/jobs/$JOB" | field status)
+            api GET "/sources/jobs/$JOB"
+            ST=$(field status)
             if [ "$ST" = "succeeded" ] || [ "$ST" = "failed" ]; then break; fi
             sleep 2
           done
