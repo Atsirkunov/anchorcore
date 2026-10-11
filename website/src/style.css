@@ -283,6 +283,13 @@ code{background:var(--paper2);border:1px solid var(--border);border-radius:6px;p
   .nav-mobile a:last-child{border-bottom:0}
 }
 /* Phone gutters + condensed header (R18.14 partial, R18.1) */
+/* Phone type scale (R18.14) — the desktop clamps deliberately keep their low
+   end, so narrow viewports get their own floors: the headline fits in <= 3
+   lines at 390px and h2 keeps proportion with it. Meets the desktop scale at
+   ~542px, so there is no jump at the breakpoint. */
+@media(max-width:600px){
+  :root{--fs-h1:clamp(32px,9.6vw,52px);--fs-h2:clamp(22px,5.2vw,28px)}
+}
 @media(max-width:420px){
   .wrap{padding:0 18px}
   .site-header .wrap{padding:12px 18px;gap:10px}
