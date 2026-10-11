@@ -170,14 +170,14 @@ or add `mcp.servers.anchorcore` (V2: `type: "local"`, `command` array) in
 |---|---|---|
 | B14.1 | Local stdio MCP, read-only (Python sidecar + 6 tools + `/qa/search`) | ✅ DONE (v1.0.9, legacy) |
 | R12.5 | Same surface as a Rust sidecar + `public_only` + audit | ✅ DONE (1.0.12, shipped) |
-| R20 | Zero-setup MCP UX — real-path card, `/system/mcp`, one-click client connect, runtime discovery, release smoke (plan: [plan-mcp-zero-setup.md](./plan-mcp-zero-setup.md)) | In progress — R20.1/R20.2/R20.3/R20.8/R20.9 landed 2026-10-11 |
-| B14.2 | HTTP transport + token auth + audit | Open |
+| R20 | Zero-setup MCP UX — real-path card, `/system/mcp`, one-click client connect, runtime discovery, release smoke (plan: [plan-mcp-zero-setup.md](./plan-mcp-zero-setup.md)) | R20.1–R20.3, R20.6–R20.9 landed 2026-10-11; **R20.4** (runtime discovery) and **R20.5** (release smoke) open |
+| B14.2 | HTTP transport + token auth + audit — **re-ranked 2026-10-11 (R20.7): this is the Team/remote path.** It removes the binary-path problem entirely (one URL instead of a host path for every harness) and leaves the local stdio default untouched | Next, after R20.4/R20.5 |
 | B14.3 | Write-back `ingest` (unverified + review queue) | Open |
-| B14.4 | Registry publishing (Claude Code marketplace etc.) | Open |
+| B14.4 | Registry publishing (Claude Code marketplace etc.) — **re-ranked below B14.2**: a one-click convenience for Claude users, not the Team unblocker | Later |
 
 ## 10. Open Questions
 
-- [x] Stdio `anchorcore mcp` is the local default (one binary, R20.8); the open part is B14.2 streamable HTTP for Team/remote — decided in R20.7.
+- [x] **Decided (R20.7, 2026-10-11): local stays stdio + `runtime.json` discovery (R20.4), and streamable HTTP (B14.2) is the Team/remote answer, re-ranked ahead of the registry (B14.4).** Rationale: a local harness must own the stdio process (stdin/stdout *are* the transport), while HTTP removes the path entirely for a shared instance — one URL, bearer token, no host paths to discover. The registry is still worth doing, but as a convenience rather than as the thing that unblocks Team. Details in the plan's "Decisions recorded".
 - [ ] Token scoping model for v2 (per-user vs per-team, read/write tiers)?
 - [ ] Do we cap `search` k and prompt budget to protect Ollama/context under agent load?
 - [ ] Should `ask` be exposed at all, or is `search` enough for agents (answers for humans)?
@@ -185,8 +185,6 @@ or add `mcp.servers.anchorcore` (V2: `type: "local"`, `command` array) in
 
 ---
 
-*Companion docs: [product-plan.md](./product-plan.md), [architecture.md](./architecture.md), [packaging.md](./packaging.md)*
-
 ## 11. For contributors (dev checkout)
 
 From a repo checkout, build the same binary the release ships and point your
@@ -205,18 +203,3 @@ behind §4.1 (including the `runtime.json` discovery work, R20.4).
 ---
 
 *Companion docs: [product-plan.md](./product-plan.md), [architecture.md](./architecture.md), [packaging.md](./packaging.md)*
-
-## 11. For contributors (dev checkout)
-
-From a repo checkout, build the same binary the release ships and point your
-client at it:
-
-```bash
-cd rust && cargo build            # → rust/target/debug/anchorcore
-./target/debug/anchorcore mcp     # exactly what the harness spawns
-cargo test -p anchorcore          # MCP surface tests
-```
-
-`rust/crates/anchorcore/src/mcp.rs` is the implementation, `AGENTS.md` has the
-full dev and release workflow, and `docs/plan-mcp-zero-setup.md` is the plan
-behind §4.1 (including the `runtime.json` discovery work, R20.4).
