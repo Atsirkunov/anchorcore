@@ -66,8 +66,11 @@ function setTrack(t: Track) {
   if (roadmap) roadmap.textContent = c.roadmap;
   if (cta) {
     if (t === "team") {
-      cta.textContent = "Deploy via Docker — Self-hosted";
-      cta.href = "https://github.com/Atsirkunov/anchorcore/blob/main/hosting/README.md";
+      // Mirror the Team pricing card action (R18.5) - one target for the hero
+      // CTA and the card, single source is the card link in index.html.
+      const card = document.getElementById("cta-team") as HTMLAnchorElement | null;
+      cta.textContent = card?.textContent?.trim() ?? "Talk to us — Team license";
+      cta.href = card?.getAttribute("href") ?? "#pricing";
     } else if (t === "hosted") {
       cta.textContent = "Join waitlist — Hosted (soon)";
       cta.href = "#roadmap";
