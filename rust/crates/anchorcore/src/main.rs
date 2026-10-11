@@ -391,6 +391,10 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
+    // Parse first so `--help`/`--version` work on the Team image without a
+    // license; clap exits before the gate below runs.
+    let args = Args::parse();
+
     // Team edition (Docker image sets ANCHOR_EDITION=team): refuse to boot
     // without a valid license; lapsed maintenance only warns (perpetual).
     if std::env::var("ANCHOR_EDITION").as_deref() == Ok(license::TEAM_EDITION) {
@@ -401,7 +405,6 @@ async fn main() {
         }
     }
 
-    let args = Args::parse();
     let data_dir = resolve_data_dir(&args.data_dir);
     std::fs::create_dir_all(&data_dir).ok();
     install_panic_hook(&data_dir);

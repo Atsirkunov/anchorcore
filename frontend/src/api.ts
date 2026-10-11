@@ -234,7 +234,7 @@ export const api = {
 
   startOllama: () => request<{ ok: boolean; already_running?: boolean; launched?: boolean; error?: string }>("/system/ollama/start", { method: "POST" }),
   pullModels: (models: string[]) =>
-    request<{ started: string[] }>("/system/ollama/pull", {
+    request<{ started: string[]; already_running?: string[] }>("/system/ollama/pull", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ models }),

@@ -491,3 +491,152 @@ pub async fn disconnect_handler(Json(req): Json<ClientRequest>) -> Json<Value> {
     .unwrap();
     Json(finish(result))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_file(dir: &std::path::Path, name: &str) -> PathBuf {
+        dir.join(name)
+    }
+
+    #[test]
+    fn toml_escape_quotes_backslashes() {
+        assert_eq!(toml_escape("C:\\app\\anchorcore.exe"), "C:\\\\app\\\\anchorcore.exe");
+        assert_eq!(toml_escape("a\"b"), "a\\\"b");
+        assert_eq!(toml_escape("/usr/bin/anchorcore"), "/usr/bin/anchorcore");
+    }
+
+    #[test]
+    fn codex_connected_matches_section_and_command() {
+        let exe = "/usr/bin/anchorcore";
+        let good = "[mcp_servers.anchorcore]\ncommand = \"/usr/bin/anchorcore\"\nargs = [\"mcp\"]\n";
+        assert!(codex_connected(good, exe));
+        assert!(!codex_connected("[mcp_servers.other]\ncommand = \"/usr/bin/anchorcore\"\n", exe));
+        assert!(!codex_connected("[mcp_servers.anchorcore]\ncommand = \"/other/bin\"\n", exe));
+        assert!(!codex_connected("", exe));
+    }
+
+    #[test]
+    fn set_codex_appends_section_and_refuses_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = tmp_file(dir.path(), "config.toml");
+        std::fs::write(&path, "[other]\nkey = 1\n").unwrap();
+        set_codex_server(&path, "/usr/bin/anchorcore").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[other]"), "existing content kept: {text}");
+        assert!(text.contains("[mcp_servers.anchorcore]"), "{text}");
+        assert!(text.contains("command = \"/usr/bin/anchorcore\""), "{text}");
+        assert!(codex_connected(&text, "/usr/bin/anchorcore"));
+        let err = set_codex_server(&path, "/usr/bin/anchorcore").unwrap_err();
+        assert!(err.contains("already has"), "{err}");
+    }
+
+    #[test]
+    fn remove_codex_section_keeps_neighbors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = tmp_file(dir.path(), "config.toml");
+        std::fs::write(
+            &path,
+            "[before]\na = 1\n[mcp_servers.anchorcore]\ncommand = \"/x\"\nargs = [\"mcp\"]\n[after]\nb = 2\n",
+        )
+        .unwrap();
+        assert!(remove_codex_section(&path).unwrap());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("mcp_servers.anchorcore"), "{text}");
+        assert!(text.contains("[before]") && text.contains("[after]"), "{text}");
+        assert!(!remove_codex_section(&path).unwrap(), "second removal is a no-op");
+        assert!(!remove_codex_section(&tmp_file(dir.path(), "missing.toml")).unwrap());
+    }
+
+    #[test]
+    fn mcp_servers_json_merges_and_backs_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = tmp_file(dir.path(), "mcp.json");
+        std::fs::write(&path, r#"{"mcpServers": {"other": {"command": "x"}}, "theme": "dark"}"#).unwrap();
+        let backup = set_mcp_server(&path, "/exe/anchorcore").unwrap();
+        assert_eq!(backup, Some(backup_path(&path)));
+        assert!(backup.unwrap().exists(), "backup must exist");
+        assert!(json_server_connected(&path, "/exe/anchorcore"));
+        assert!(!json_server_connected(&path, "/other/exe"));
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["theme"], "dark", "unrelated keys preserved");
+        assert_eq!(doc["mcpServers"]["other"]["command"], "x");
+        assert_eq!(doc["mcpServers"]["anchorcore"]["args"], json!(["mcp"]));
+        assert!(remove_mcp_server(&path).unwrap());
+        assert!(!json_server_connected(&path, "/exe/anchorcore"));
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(doc["mcpServers"].get("other").is_some(), "neighbor server kept");
+        assert!(!remove_mcp_server(&path).unwrap());
+    }
+
+    #[test]
+    fn mcp_servers_json_rejects_non_json_and_non_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = tmp_file(dir.path(), "bad.json");
+        std::fs::write(&bad, "{ not json // hand-edited").unwrap();
+        let err = set_mcp_server(&bad, "/exe").unwrap_err();
+        assert!(err.contains("manually"), "{err}");
+        let arr = tmp_file(dir.path(), "arr.json");
+        std::fs::write(&arr, "[1, 2]").unwrap();
+        assert!(set_mcp_server(&arr, "/exe").is_err());
+        // missing file starts from an empty doc, no backup
+        let fresh = tmp_file(dir.path(), "fresh.json");
+        assert_eq!(set_mcp_server(&fresh, "/exe").unwrap(), None);
+        assert!(json_server_connected(&fresh, "/exe"));
+    }
+
+    #[test]
+    fn opencode_nests_under_mcp_servers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = tmp_file(dir.path(), "opencode.json");
+        set_opencode_server(&path, "/exe/anchorcore").unwrap();
+        assert!(opencode_server_connected(&path, "/exe/anchorcore"));
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["mcp"]["servers"]["anchorcore"]["type"], "local");
+        assert_eq!(doc["mcp"]["servers"]["anchorcore"]["command"], json!(["/exe/anchorcore", "mcp"]));
+        assert!(remove_opencode_server(&path).unwrap());
+        assert!(!opencode_server_connected(&path, "/exe/anchorcore"));
+    }
+
+    #[test]
+    fn jsonc_guard_blocks_jsonc_only() {
+        assert!(jsonc_guard(Path::new("/x/opencode.jsonc")).is_err());
+        assert!(jsonc_guard(Path::new("/x/opencode.json")).is_ok());
+        assert!(jsonc_guard(Path::new("/x/config.toml")).is_ok());
+    }
+
+    #[test]
+    fn backup_naming_and_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = tmp_file(dir.path(), "c.json");
+        assert_eq!(backup_existing(&path).unwrap(), None);
+        std::fs::write(&path, "{}").unwrap();
+        let b = backup_existing(&path).unwrap().unwrap();
+        assert!(b.to_string_lossy().ends_with("c.json.anchorcore.bak"));
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "{}");
+    }
+
+    #[test]
+    fn client_spec_names_and_unknown_ids() {
+        assert_eq!(client_spec("claude-code").unwrap().0, "Claude Code");
+        assert_eq!(client_spec("claude-desktop").unwrap().0, "Claude Desktop");
+        assert_eq!(client_spec("cursor").unwrap().0, "Cursor");
+        assert_eq!(client_spec("opencode").unwrap().0, "opencode");
+        assert_eq!(client_spec("codex").unwrap().0, "Codex");
+        assert!(client_spec("vscode").is_none());
+        assert!(client_spec("").is_none());
+        assert!(connect_client("vscode", "/exe").is_err());
+        assert!(disconnect_client("vscode", "/exe").is_err());
+    }
+
+    #[test]
+    fn finish_wraps_ok_and_err_for_ui() {
+        let ok = finish(Ok(json!({"method": "cli"})));
+        assert_eq!(ok["ok"], true);
+        assert_eq!(ok["method"], "cli");
+        let err = finish(Err("nope".to_string()));
+        assert_eq!(err["ok"], false);
+        assert_eq!(err["error"], "nope");
+    }
+}

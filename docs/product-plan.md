@@ -228,7 +228,7 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 **DoD:** on first launch a new user is guided from "install Ollama" to a cited answer in a few clicks, no config file. — met (dev; frozen apps hide the sample button).
 
 ### B9. Document type coverage (P1) — DONE (R24.2 + R24.3, 2026-10-11)
-**Done:** all business formats extract through one shared module (`rust/crates/anchorcore/src/extract.rs`) used by both the folder connector and Google Drive: Word `.docx/.docm`, PowerPoint `.pptx/.pptm`, Excel `.xlsx/.xlsm/.xlsb/.xls` + OpenDocument `.ods` (calamine), OpenDocument `.odt/.odp`, RTF, `.eml` email, PDF, HTML, and text (UTF-8 / UTF-16 with-and-without-BOM / Windows-1252 fallback). **R24.3 adds code + repos:** the most popular language extensions (`.py .js .ts .tsx .java .cs .go .rs .rb .php .c/.h .cpp .kt .swift .sql .sh` …) plus well-known extensionless files (`Dockerfile`, `Makefile`, `justfile`, `.gitignore`) ingest as text, and folder walking is repo-aware — `.gitignore` is honored (even outside a checkout via the `ignore` crate) and `.git`/`node_modules`/`target`/`dist`/venvs are pruned, so cloning a repo and pointing a folder source at it works as expected. Drive exports native Google types (Docs→text, Sheets→CSV, Slides→text, other native→PDF) and extracts uploaded Office files by MIME type; download/extract failures and empty files are `skipped`, never purged (B57). Legacy binary `.doc`/`.ppt` remain unsupported — save as `.docx`/`.pptx` or PDF.
+**Done:** all business formats extract through one shared module (`rust/crates/anchorcore/src/extract.rs`) used by both the folder connector and Google Drive: Word `.docx/.docm`, PowerPoint `.pptx/.pptm`, Excel `.xlsx/.xlsm/.xlsb/.xls` + OpenDocument `.ods` (calamine), OpenDocument `.odt/.odp`, RTF, `.eml` email, PDF, HTML, and text (UTF-8 / UTF-16 with-and-without-BOM / Windows-1252 fallback). **R24.3 adds code + repos:** the most popular language extensions (`.py .js .ts .tsx .java .cs .go .rs .rb .php .c/.h .cpp .kt .swift .sql .sh` …) plus well-known extensionless files (`Dockerfile`, `Makefile`, `justfile`, `.gitignore`) ingest as text, and folder walking is repo-aware — `.gitignore` is honored (even outside a checkout via the `ignore` crate) and `.git`/`node_modules`/`target`/`dist`/venvs are pruned, so cloning a repo and pointing a folder source at it works as expected. Caveat: a user folder that happens to share one of those names is skipped as well (only the watched root is exempt — rename it to ingest it). Drive exports native Google types (Docs→text, Sheets→CSV, Slides→text, other native→PDF) and extracts uploaded Office files by MIME type; download/extract failures and empty files are `skipped`, never purged (B57). Legacy binary `.doc`/`.ppt` remain unsupported — save as `.docx`/`.pptx` or PDF.
 
 ### B11. Parallel classification throughput (P2 — discovered) — DONE
 **Problem:** windowed classification runs sequentially — a 237-page PDF took ~15 min (160+ serial LLM calls). Hardware is fine; the pipeline serializes.
@@ -724,8 +724,10 @@ waitlist verified in production.
 exported (1200x630), tags absolute. Verified: home 200, both zips 200 with
 release-matching sizes, no remote http fetches, Formspree form exists
 (405 on GET). Local upstream resolver negative-cached at verify time —
-authoritative + 1.1.1.1 correct. Real signup test left to owner. CI deploy
-(stored token) still open.
+authoritative + 1.1.1.1 correct. Real signup test left to owner.
+CI deploy closed 2026-10-11: `release.yml deploy-website` deploys on `v*`
+tags when `website/` changed since the previous tag (stored
+`CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` secrets).
 
 ### B48. End-to-end test on clean machines (P1)
 
@@ -867,9 +869,10 @@ permanently dismissible.
   `/health`, `/system/status`, `/system/onboarding` (all additive fields).
 - Backend: `POST /system/ollama/pull` (validates 1–5 names, local-base only,
   502 when Ollama down; pulls sequentially via Ollama `/api/pull` streaming
-  into a process-global progress map — no AppState change) +
-  `GET /system/ollama/pulls` for polling. 12 unit tests (matching, validation,
-  NDJSON chunk parsing).
+  into a process-global progress map — no AppState change; in-flight models
+  are deduped and reported as `already_running`) +
+  `GET /system/ollama/pulls` for polling. 15 unit tests (matching, validation,
+  NDJSON chunk parsing, pull claiming).
 - Wizard step 0: Start-Ollama button + install instructions when down;
   Install-models button with progress bar + per-model MB + terminal fallback
   when models are missing; "Use Ollama for answers" one-click (sets
