@@ -79,7 +79,7 @@ pub async fn create_handler(State(state): State<AppState>, Json(payload): Json<P
                 return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"detail": format!("unknown source ids: {:?}", missing)}))));
             }
         }
-        conn.execute("INSERT INTO projects (name) VALUES (?1)", rusqlite::params![name]).unwrap();
+        conn.execute("INSERT INTO projects (name, uid) VALUES (?1, ?2)", rusqlite::params![name, crate::db::new_uid()]).unwrap();
         let pid = conn.last_insert_rowid();
         for sid in &source_ids {
             let _ = conn.execute("INSERT INTO project_sources (project_id, source_id) VALUES (?1, ?2)", rusqlite::params![pid, sid]);
