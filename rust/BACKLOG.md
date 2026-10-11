@@ -76,6 +76,7 @@ Status: `todo` | `doing` | `done` (✅). Update this file when you pick/complete
 | Date | Task | Shipped |
 |---|---|---|
 | 2026-10-11 | R18.3 | Nav IA truth: every nav label now matches its section heading verbatim ("Roadmap" -> "Get started", section h2 renamed, #roadmap kept as the legacy anchor; "Demo" -> "60-second demo"; "Privacy" -> "Privacy notice"); demo moved to nav slot 2; burger breakpoint 760px -> 1080px (the longer labels need ~1000px; a headless render showed only ~10px slack at 900px before); README + index.html sync comments updated; verified by script + render |
+| 2026-10-11 | R26.2 | --stone text contrast fixed in .matrix .n (3.31 -> 5.98:1 on the white card; text moves to --dim, --stone keeps its 9 stroke/fill uses). Survived R18.4 (scoped to --dim) and R18.8 (Lighthouse passes short cells). Verified with a precise grep for real color:var(--stone) -> 0 hits; build + typecheck + lint green |
 | 2026-10-11 | R26.1 | Type-check + lint gate for website/: tsconfig.json (strict, vite/client types so ?raw imports resolve), eslint.config.js (flat + typescript-eslint), typecheck/lint scripts, allowScripts entries for esbuild/workerd, and a CI website job (node 22) between frontend and docker-team. Found and fixed three real issues on the first run: TS2551 navigator.userAgentData, TS7006 a Formspree callback param, eslint no-empty on a deliberate catch. DoD verified: a deliberate type error fails typecheck (exit 2), build still green |
 | 2026-10-11 | R18.15 | Second sample corpus: sample-ai/ (10 files — a fictional AI startup: tiered model routing, eval gates, usage-tier pricing, a postmortem, and a stale 0.94 vs corrected 0.89 metric for the dispute demo), its own guide tab + #guide-ai anchor + docs/sample-ai.md, and ?corpus=ai to swap the landing examples (payments stays the static default; the task text called it ?track=, but that is the Personal/Team/Hosted switch since R18.1, so the corpus got its own param). initGuideTabs now derives tab/panel pairs from the markup. Verified: 4 tabs, deep link opens its panel with aria-expanded, corpus swaps both ways, no heading skips across 52 headings |
 | 2026-10-11 | R18.13 (partial) | Removed the empty "wall of love" placeholder plus its 4 dead CSS rules, and linked the FAQ latency claim to the 30k-chunk benchmark (rust/scripts/bench_retrieval.py). The trust-signal half stays open: 17 downloads all-time, 0 stars - a real quote is needed |
@@ -136,9 +137,8 @@ Full tables + verification evidence: [`BACKLOG-archive.md`](./BACKLOG-archive.md
 * Archive: `rust/BACKLOG-archive.md`
 
 
-### Phase 26 — Website tooling follow-ups (from the Phase 18 audit, 2026-10-11) — 1 shipped / 1 open
+### Phase 26 — Website tooling follow-ups (from the Phase 18 audit, 2026-10-11) — 2 shipped
 
 | ID | Title | Priority | Est | Dependencies | DoD | Files |
 |---|---|---|---|---|---|---|
-| R26.2 | Fix `--stone` text contrast | P2 | 0.25d | — | `--stone` (#9A8B7A) sits at 2.71-3.31:1 on the page surfaces and is used as text in `.matrix .n` (`✗ refused, audited`). R18.4 scoped itself to `--dim` and Lighthouse's a11y pass scores the short cell as passable, so neither closed it. DoD: `.matrix .n` reaches >= 4.5:1 (use `--dim`/`--sageH` for the text and keep `--stone` for strokes), and `git grep -n "color:var(--stone)" website/src/style.css` returns nothing that renders text. | `website/src/style.css` |
 

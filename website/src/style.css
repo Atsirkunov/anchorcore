@@ -215,7 +215,7 @@ footer{border-top:1px solid var(--border);padding:32px 0;background:var(--paper2
 .matrix tr:first-child th{font-family:ui-monospace,Menlo,monospace;font-size:12px;font-weight:400;color:var(--dim)}
 .matrix tr th:first-child{font-family:ui-monospace,Menlo,monospace;font-size:12px;font-weight:400;color:var(--dim)}
 .matrix .y{color:var(--sage);font-weight:800}
-.matrix .n{color:var(--stone);font-weight:800}
+.matrix .n{color:var(--dim);font-weight:800}
 .mono{font-family:ui-monospace,Menlo,monospace}
 h2{font-family:Georgia,serif;letter-spacing:-0.02em;margin:0 0 16px;font-size:var(--fs-h2)}
 code{background:var(--paper2);border:1px solid var(--border);border-radius:6px;padding:1px 6px;font-family:ui-monospace,Menlo,monospace}
