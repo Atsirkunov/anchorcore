@@ -5,6 +5,11 @@ use std::path::{Path, PathBuf};
 pub const SECRET_SOURCE_FIELDS: &[&str] = &["token", "api_key", "password", "client_secret"];
 const SERVICE: &str = "AnchorCore";
 
+/// Serializes `ANCHOR_SECRETS_NO_KEYRING` mutation between test modules that
+/// construct a `SecretStore` (backup.rs holds it for a whole export).
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub struct SecretStore {
     fallback_path: PathBuf,
     use_keyring: bool,
@@ -187,6 +192,7 @@ mod tests {
     #[test]
     fn placeholder_keeps_secret() {
         let dir = tempdir().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _store = SecretStore::new(dir.path().join("secrets.enc"));
         // set via env force fallback
         std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", "1");
