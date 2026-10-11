@@ -211,7 +211,7 @@ code{background:var(--paper2);border:1px solid var(--border);border-radius:6px;p
 .navmenu-btn::marker{content:""}
 .burger{position:absolute;left:50%;top:50%;width:16px;height:2px;margin:-1px 0 0 -8px;background:var(--ink);box-shadow:0 5px 0 var(--ink),0 -5px 0 var(--ink)}
 .navmenu[open] .navmenu-btn{background:var(--sageSoft);border-color:var(--sage)}
-@media(max-width:760px){
+@media(max-width:1080px){
   .site-header .wrap{gap:12px}
   .nav{display:none}
   .nav-cta{margin-left:auto;padding:6px 12px;font-size:13px;white-space:nowrap}
