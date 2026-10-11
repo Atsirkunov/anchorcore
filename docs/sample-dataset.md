@@ -5,6 +5,9 @@
 A fictional payments company ("the payments team"): decisions, meetings, specs,
 and people — designed so you can try every part of the product in a minute.
 
+> Prefer a software company as the example? The repo ships a second corpus in
+> `sample-ai/` — see the AI startup guide (`docs/sample-ai.md`).
+
 ## Connect it
 
 In the app → Sources tab → **Add source**:
