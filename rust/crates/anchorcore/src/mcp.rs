@@ -109,7 +109,7 @@ fn audit_mcp(tool: &str, detail: &str) {
     }
 }
 
-async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool) -> Result<Value, String> {
+async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool, include_content: bool) -> Result<Value, String> {
     if question.trim().is_empty() {
         return Err("question must be a non-empty string".to_string());
     }
@@ -120,6 +120,9 @@ async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool) ->
     if public_only {
         payload["public_only"] = json!(true);
     }
+    if include_content {
+        payload["include_content"] = json!(true);
+    }
     let path = if public_only { "/qa/public" } else { "/qa" };
     let result = http_call("POST", path, Some(payload)).await?;
     audit_mcp("ask", &format!("q={} public_only={} hits={}", question.chars().take(80).collect::<String>(), public_only, result.get("citations").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0)));
@@ -128,16 +131,24 @@ async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool) ->
     // B58: pass degradation flags through ("unknown" against an older backend).
     let mode = result.get("mode").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
     let retrieval = result.get("retrieval").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-    let citations: Vec<Value> = result.get("citations").and_then(|v| v.as_array()).cloned().unwrap_or_default().into_iter().map(|c| json!({
+    let citations: Vec<Value> = result.get("citations").and_then(|v| v.as_array()).cloned().unwrap_or_default().into_iter().map(|c| {
+        // Mirror search: cap citation bytes but say so ("unknown" backends
+        // have no content key — empty string, never truncated).
+        let content = c.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let content_truncated = content.chars().count() > 4000;
+        json!({
         "entity_id": c.get("entity_id"),
         "kind": c.get("kind").and_then(|v| v.as_str()).unwrap_or("document"),
         "summary": c.get("summary").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>(),
+        "content": content.chars().take(4000).collect::<String>(),
+        "content_truncated": content_truncated,
         "source_ref": c.get("source_ref").and_then(|v| v.as_str()).unwrap_or(""),
         "doc_type": c.get("doc_type").and_then(|v| v.as_str()).unwrap_or(""),
         "conflicts_with": c.get("conflicts_with").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
         "score": c.get("score"),
         "snippet": c.get("snippet").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>()
-    })).collect();
+        })
+    }).collect();
     Ok(json!({"answer": answer, "citations": citations, "refusal": refusal, "mode": mode, "retrieval": retrieval}))
 }
 
@@ -262,7 +273,8 @@ fn tool_defs() -> Value {
                 "properties": {
                     "question": {"type": "string", "description": "Question to answer"},
                     "project_id": {"type": "integer", "description": "Optional project id to scope retrieval"},
-                    "public_only": {"type": "boolean", "description": "If true, only public sources are searched — share-safe"}
+                    "public_only": {"type": "boolean", "description": "If true, only public sources are searched — share-safe"},
+                    "include_content": {"type": "boolean", "description": "If true, citations carry full chunk bytes (capped at 4000 chars; content_truncated says so)"}
                 },
                 "required": ["question"]
             }
@@ -349,7 +361,8 @@ async fn handle_request(req: Request) -> Option<Response> {
                     let q = args.get("question").and_then(|v| v.as_str()).unwrap_or("");
                     let pid = args.get("project_id").and_then(|v| v.as_i64());
                     let pub_only = args.get("public_only").and_then(|v| v.as_bool()).unwrap_or(false);
-                    tool_ask(q, pid, pub_only).await
+                    let want_content = args.get("include_content").and_then(|v| v.as_bool()).unwrap_or(false);
+                    tool_ask(q, pid, pub_only, want_content).await
                 }
                 "search" => {
                     let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
