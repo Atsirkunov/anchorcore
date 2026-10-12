@@ -178,9 +178,19 @@ pub fn vector_search_filtered(
     qa_exclude_disputed: bool,
 ) -> Vec<Hit> {
     if let Some(hits) = vector_search_vec0_filtered(conn, query_emb, source_ids, section_ids, top_k, qa_exclude_disputed) {
-        return hits;
+        if !hits.is_empty() || vec_chunk_count(conn) > 0 {
+            return hits;
+        }
+        // else: the index holds no rows (desync) — fall through to the scan
+        // instead of reporting "no vector match" for an embedded corpus.
     }
     vector_search_scan_filtered(conn, query_emb, source_ids, section_ids, top_k, qa_exclude_disputed)
+}
+
+/// Row count of the vec0 index; 1 on error (a working index that cannot
+/// be counted must not trigger a full-table scan).
+fn vec_chunk_count(conn: &Connection) -> i64 {
+    conn.query_row("SELECT COUNT(*) FROM vec_chunks", [], |r| r.get(0)).unwrap_or(1)
 }
 
 // --- R15.1: shared search helpers (single implementation for every scope) ---
@@ -1511,5 +1521,29 @@ mod tests {
         if !hits_auth.is_empty() {
             assert!(hits_auth.iter().any(|h| h.chunk_id == leaf_auth));
         }
+    }
+
+    #[test]
+    fn vector_search_falls_through_when_vec_index_empty() {
+        // Desync simulation: the chunk carries an embedding but vec_chunks
+        // holds no rows (triggers missed it) — the scan fallback must still
+        // find it instead of reporting "no vector match".
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s1", "internal");
+        let iid = insert_item(&conn, sid, "doc1");
+        let cid = insert_chunk(&conn, Some(iid), None, "direction config raised bed alpha");
+        // 768 dims = default ANCHOR_EMBED_DIM (no env games in parallel tests)
+        let mut v = vec![0.0f32; 768];
+        v[0] = 1.0;
+        let blob = crate::embedder::pack_single(&v);
+        conn.execute("UPDATE chunks SET embedding=?1 WHERE id=?2", rusqlite::params![blob, cid]).unwrap();
+        // Wipe whatever the triggers synced, then prove the desync is real
+        // (on boxes without vec0 this passes via the scan path instead).
+        let _ = conn.execute("DELETE FROM vec_chunks", []);
+        let vec_rows: i64 = conn.query_row("SELECT COUNT(*) FROM vec_chunks", [], |r| r.get(0)).unwrap();
+        assert_eq!(vec_rows, 0);
+        let hits = vector_search_filtered(&conn, &v, None, None, 8, false);
+        assert_eq!(hits.len(), 1, "empty vec0 must not shadow the populated scan");
+        assert!(hits[0].score > 0.99);
     }
 }

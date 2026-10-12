@@ -230,13 +230,31 @@ mod cli_tests {
     fn version_flag_matches_package_version() {
         assert_eq!(Args::command().get_version(), Some(env!("CARGO_PKG_VERSION")));
     }
+
+    /// The boot banner must reflect the running binary: write-if-absent
+    /// left a 1.0.21 banner at the head of the log after upgrading to 1.0.22.
+    #[test]
+    fn log_banner_appends_fresh_version_each_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("anchorcore.log");
+        std::fs::write(&log, "AnchorCore Rust 0.0.0 started\n").unwrap();
+        super::ensure_log_file(dir.path());
+        super::ensure_log_file(dir.path());
+        let body = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 3, "each boot appends one banner");
+        assert!(lines[2].contains(env!("CARGO_PKG_VERSION")), "banner: {}", lines[2]);
+    }
 }
 
 fn ensure_log_file(data_dir: &std::path::Path) {
-    // R6.2: ensure log file exists so GET /system/logs finds anchorcore.log (Python creates via RotatingFileHandler)
+    // R6.2: ensure log file exists so GET /system/logs finds anchorcore.log (Python creates via RotatingFileHandler).
+    // Always append a fresh banner: write-if-absent kept the very first
+    // boot's banner (e.g. 1.0.21) at the head forever, disagreeing with /system/status.
     let log_path = data_dir.join("anchorcore.log");
-    if !log_path.exists() {
-        let _ = std::fs::write(&log_path, format!("AnchorCore Rust {} started\n", env!("CARGO_PKG_VERSION")));
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+        use std::io::Write as _;
+        let _ = writeln!(f, "AnchorCore Rust {} started", env!("CARGO_PKG_VERSION"));
     }
 }
 

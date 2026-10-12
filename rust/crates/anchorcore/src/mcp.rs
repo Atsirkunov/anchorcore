@@ -143,6 +143,8 @@ async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool, in
         "content": content.chars().take(4000).collect::<String>(),
         "content_truncated": content_truncated,
         "source_ref": c.get("source_ref").and_then(|v| v.as_str()).unwrap_or(""),
+        "path": c.get("path").and_then(|v| v.as_str()).unwrap_or(""),
+        "item_title": c.get("item_title").and_then(|v| v.as_str()).unwrap_or(""),
         "doc_type": c.get("doc_type").and_then(|v| v.as_str()).unwrap_or(""),
         "conflicts_with": c.get("conflicts_with").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
         "score": c.get("score"),
