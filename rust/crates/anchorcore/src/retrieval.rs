@@ -88,6 +88,9 @@ pub struct Hit {
     pub source_ref: String,
     pub is_pii: bool,
     pub status: Option<String>,
+    /// True when section expansion dropped siblings (byte cap / window) —
+    /// `content` is not the whole section. Full bytes via the item endpoint.
+    pub content_truncated: bool,
 }
 
 impl Hit {
@@ -328,6 +331,7 @@ fn make_hit(
         source_ref,
         is_pii: is_pii != 0,
         status,
+        content_truncated: false,
     })
 }
 
@@ -897,7 +901,7 @@ pub fn who_knows_search(
         let created_dt = created.and_then(|s| DateTime::parse_from_rfc3339(&s).ok()).map(|d| d.with_timezone(&Utc));
         let decay = age_decay(created_dt, halflife, now);
         let score = conf * (1.0 + 0.5 * (overlap.min(4) as f64)) * decay;
-        out.push(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, section_id: None, path: String::new(), score, content, source_ref, is_pii: is_pii!=0, status });
+        out.push(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, section_id: None, path: String::new(), score, content, source_ref, is_pii: is_pii!=0, status, content_truncated: false });
     }
     sort_hits(&mut out);
     out.truncate(top_k*2);
@@ -972,7 +976,7 @@ pub fn graph_expand(
             if !status_ok(status.as_deref(), qa_exclude_disputed) { continue; }
             // need source_id via item
             let sid: Option<i64> = if let Some(iid)=item { conn.query_row("SELECT source_id FROM ingested_items WHERE id=?1", [*iid], |r| r.get(0)).ok() } else { None };
-            out.push(Hit { chunk_id: cid.unwrap_or(eid), entity_id: Some(eid), item_id: *item, source_id: sid, section_id: None, path: String::new(), score, content: content.clone().unwrap_or_else(|| summary.clone()), source_ref: src_ref.clone().unwrap_or_else(|| summary.clone()), is_pii: false, status: status.clone() });
+            out.push(Hit { chunk_id: cid.unwrap_or(eid), entity_id: Some(eid), item_id: *item, source_id: sid, section_id: None, path: String::new(), score, content: content.clone().unwrap_or_else(|| summary.clone()), source_ref: src_ref.clone().unwrap_or_else(|| summary.clone()), is_pii: false, status: status.clone(), content_truncated: false });
         }
     }
     out
@@ -1076,6 +1080,17 @@ fn append_continuation(hit: &mut Hit, extra: Vec<String>) {
     }
 }
 
+/// Section expansion stays local: a contiguous ±`EXPAND_NEIGHBORS` window
+/// around the matched chunk, capped at `ANCHOR_EXPAND_MAX_CHARS` (default
+/// 8000). Appending the whole section turned a root-only 68 KB YAML file
+/// into one ~17k-token hit; small sections still expand fully.
+const EXPAND_NEIGHBORS: usize = 2;
+const EXPAND_MAX_CHARS: usize = 8000;
+
+fn expand_max_chars() -> usize {
+    std::env::var("ANCHOR_EXPAND_MAX_CHARS").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(EXPAND_MAX_CHARS)
+}
+
 fn expand_by_section(conn: &Connection, hit: &mut Hit, hit_ids: &HashSet<i64>) {
     let sec = match hit.section_id {
         Some(id) => id,
@@ -1085,14 +1100,33 @@ fn expand_by_section(conn: &Connection, hit: &mut Hit, hit_ids: &HashSet<i64>) {
     if siblings.is_empty() {
         return;
     }
+    // Contiguous window around the match, file-ordered; unknown position
+    // keeps the head (bounded by the cap below either way).
+    let window: &[(i64, String)] = match siblings.iter().position(|(id, _)| *id == hit.chunk_id) {
+        Some(i) => {
+            let start = i.saturating_sub(EXPAND_NEIGHBORS);
+            let end = (i + EXPAND_NEIGHBORS + 1).min(siblings.len());
+            &siblings[start..end]
+        }
+        None => &siblings,
+    };
+    let cap = expand_max_chars();
+    let mut used = hit.content.chars().count();
     let mut extra = Vec::new();
-    for (cid, content) in &siblings {
+    let mut truncated = window.len() < siblings.len();
+    for (cid, content) in window {
         if *cid == hit.chunk_id || hit_ids.contains(cid) {
             continue;
+        }
+        used += content.chars().count() + 4;
+        if used > cap {
+            truncated = true;
+            break;
         }
         extra.push(content.clone());
     }
     append_continuation(hit, extra);
+    hit.content_truncated = truncated;
 }
 
 fn expand_by_item(conn: &Connection, hit: &mut Hit, window: usize, hit_ids: &HashSet<i64>) {
@@ -1133,6 +1167,134 @@ pub fn expand_context(conn: &Connection, hits: &mut [Hit], window: usize) {
     }
 }
 
+/// Test-env markers matched as whole path segments — a substring match
+/// would demote "latest" or "contest" for containing "test".
+const TEST_ENV_MARKERS: &[&str] = &["test", "tests", "sandbox", "staging", "mock", "mocks", "fixture", "fixtures", "example", "examples", "sample", "samples", "dev"];
+
+fn test_env_factor() -> f64 {
+    std::env::var("ANCHOR_TEST_ENV_DEMOTE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.5)
+}
+
+fn has_env_marker(text: &str) -> bool {
+    text.split(|c: char| !c.is_alphanumeric()).any(|seg| {
+        let s = seg.to_lowercase();
+        TEST_ENV_MARKERS.contains(&s.as_str())
+    })
+}
+
+/// Chunk → item file path, batched (entity chunks resolve via their entity).
+fn chunk_item_paths(conn: &Connection, chunk_ids: &[i64]) -> HashMap<i64, String> {
+    let mut out = HashMap::new();
+    if chunk_ids.is_empty() {
+        return out;
+    }
+    let sql = format!(
+        "SELECT c.id, COALESCE(i1.external_id, i2.external_id, '') FROM chunks c LEFT JOIN ingested_items i1 ON i1.id=c.item_id LEFT JOIN entities e ON e.id=c.entity_id LEFT JOIN ingested_items i2 ON i2.id=e.item_id WHERE c.id IN ({})",
+        placeholders(chunk_ids.len())
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(chunk_ids.iter()), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    }) {
+        for (id, path) in rows.flatten() {
+            out.insert(id, path);
+        }
+    }
+    out
+}
+
+/// Demote test-env files (`.test.yml`, `/sandbox/`, …) when the query does
+/// not ask about them: without this, short entity rows from test fixtures
+/// outrank the live documents on BM25 length norm and the live file never
+/// surfaces. Multiplicative and uniform (`ANCHOR_TEST_ENV_DEMOTE`, default
+/// 0.5, 1.0 disables) so ordering within each env class is preserved.
+pub fn demote_test_envs(conn: &Connection, hits: &mut [Hit], query: &str) {
+    if hits.is_empty() || has_env_marker(query) {
+        return;
+    }
+    let factor = test_env_factor();
+    if !(0.0..1.0).contains(&factor) {
+        return;
+    }
+    let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+    let paths = chunk_item_paths(conn, &ids);
+    for h in hits.iter_mut() {
+        if let Some(p) = paths.get(&h.chunk_id) {
+            if has_env_marker(p) {
+                h.score *= factor;
+            }
+        }
+    }
+}
+
+/// Tokens that look like filenames (`routing-config.yml`, `service.go`):
+/// contain a dot, carry a letter (excludes `1.0.23`), long enough to matter.
+fn filename_tokens(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(|t| t.trim_matches(|c: char| !(c.is_alphanumeric() || c == '.' || c == '-' || c == '_')).to_string())
+        .filter(|t| t.contains('.') && t.len() >= 4 && t.chars().any(|c| c.is_alphabetic()))
+        .collect()
+}
+
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
+/// Explicit filename mentions surface their file: FTS indexes chunk
+/// content, not filenames, so without this a filename in the query matches
+/// entity text instead of the file. Appends up to 3 first-chunks of matched
+/// items (with local expansion), ranked above fused hits — an explicit
+/// mention is the strongest intent signal. No-op when nothing matches.
+pub fn filename_boost(conn: &Connection, hits: &mut Vec<Hit>, query: &str) {
+    let names = filename_tokens(query);
+    if names.is_empty() {
+        return;
+    }
+    let mut cids: Vec<i64> = Vec::new();
+    for name in names.iter().take(3) {
+        let pat = format!("%{}%", escape_like(name));
+        let mut stmt = match conn.prepare(
+            "SELECT c.id FROM chunks c JOIN ingested_items i ON i.id = c.item_id WHERE i.external_id LIKE ? ESCAPE '\\' OR i.title LIKE ? ESCAPE '\\' ORDER BY c.id LIMIT 1",
+        ) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let rows: Vec<i64> = stmt
+            .query_map(rusqlite::params![pat, pat], |r| r.get(0))
+            .map(|rows| rows.flatten().collect())
+            .unwrap_or_default();
+        cids.extend(rows);
+        if cids.len() >= 3 {
+            break;
+        }
+    }
+    if cids.is_empty() {
+        return;
+    }
+    let present: HashSet<i64> = hits.iter().map(|h| h.chunk_id).collect();
+    let fresh: Vec<i64> = cids.into_iter().filter(|id| !present.contains(id)).take(3).collect();
+    if fresh.is_empty() {
+        return;
+    }
+    let top = hits.iter().map(|h| h.score).fold(0.0f64, f64::max);
+    let mut boosted = load_hits_filtered(conn, &fresh, None, None, false);
+    let all_ids: HashSet<i64> = present.into_iter().chain(fresh.iter().copied()).collect();
+    for h in boosted.iter_mut() {
+        h.score = top + 1.0;
+        if h.section_id.is_some() {
+            expand_by_section(conn, h, &all_ids);
+        } else {
+            expand_by_item(conn, h, 1, &all_ids);
+        }
+    }
+    hits.extend(boosted);
+    sort_hits(hits);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1146,8 +1308,8 @@ mod tests {
 
     #[test]
     fn rrf() {
-        let h1 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, section_id: None, path: String::new(), score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None }];
-        let h2 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, section_id: None, path: String::new(), score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None }];
+        let h1 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, section_id: None, path: String::new(), score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None, content_truncated: false }];
+        let h2 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, section_id: None, path: String::new(), score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None, content_truncated: false }];
         let fused = rrf_fuse_multi(vec![h1, h2], vec![1.0, 1.0]);
         assert_eq!(fused.len(), 1);
         assert!(fused[0].score > 0.0);
@@ -1211,7 +1373,7 @@ mod tests {
         let _ = conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?2,'related')", rusqlite::params![e1, e3]).unwrap();
         let _ = conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?2,'owns')", rusqlite::params![e1, e4]).unwrap();
         assert_eq!(rel1, 1);
-        let seed = vec![Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "seed".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()) }];
+        let seed = vec![Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "seed".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false }];
         // with qa_exclude_disputed=true, disputed should be filtered
         let out = graph_expand(&conn, &seed, None, 2, 5, true);
         let ids: Vec<i64> = out.iter().filter_map(|h| h.entity_id).collect();
@@ -1235,7 +1397,7 @@ mod tests {
         let c1 = insert_chunk(&conn, Some(iid), Some(e1), "prose decision details");
         let _ = conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?2,'conflicts_with')", rusqlite::params![e1, e2]).unwrap();
         let _ = conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?2,'related')", rusqlite::params![e1, e3]).unwrap();
-        let seed = vec![Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "seed".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()) }];
+        let seed = vec![Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "seed".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false }];
         let out = graph_expand(&conn, &seed, None, 2, 5, true);
         let ids: Vec<i64> = out.iter().filter_map(|h| h.entity_id).collect();
         assert!(!ids.contains(&e2), "conflicting e2 must never expand as supporting evidence");
@@ -1265,8 +1427,8 @@ mod tests {
         let c1 = insert_chunk(&conn, Some(iid), Some(e1), "content Phoenix decision");
         let c2 = insert_chunk(&conn, Some(iid), None, "document chunk Phoenix billing is stable");
         // need created_at for age decay; ensure chunks have timestamps via init_db
-        let h1 = Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "c1".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()) };
-        let h2 = Hit { chunk_id: c2, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 0.5, content: "c2".into(), source_ref: "ref".into(), is_pii: false, status: None };
+        let h1 = Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "c1".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false };
+        let h2 = Hit { chunk_id: c2, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 0.5, content: "c2".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false };
         let fused = fuse_and_rank(&conn, Some(vec![h1]), Some(vec![h2]), 1.0, 365.0, 3, 5, true);
         assert!(!fused.is_empty());
         // RRF should have merged both; diversity cap per item should keep both since distinct chunk_ids
@@ -1332,6 +1494,7 @@ mod tests {
             source_ref: "ref".into(),
             is_pii: false,
             status: None,
+            content_truncated: false,
         }];
         // sibling c2 should be included via expand_by_section (whole subsection)
         let _ = c2; // silence unused
@@ -1372,6 +1535,7 @@ mod tests {
             source_ref: "ref".into(),
             is_pii: false,
             status: None,
+            content_truncated: false,
         }];
         let _ = ca;
         expand_context(&conn, &mut hits2, 1);
@@ -1545,5 +1709,95 @@ mod tests {
         let hits = vector_search_filtered(&conn, &v, None, None, 8, false);
         assert_eq!(hits.len(), 1, "empty vec0 must not shadow the populated scan");
         assert!(hits[0].score > 0.99);
+    }
+
+    #[test]
+    fn expand_by_section_bounds_giant_sections() {
+        // 10-chunk section (a root-only YAML file): the hit keeps a ±2
+        // window around the match, drops the rest, and flags truncation —
+        // instead of one ~17k-token whole-file hit.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_big", "internal");
+        let iid = insert_item(&conn, sid, "big");
+        conn.execute(
+            "INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,0,'','')",
+            rusqlite::params![iid],
+        )
+        .unwrap();
+        let sec = conn.last_insert_rowid();
+        let mut cids = Vec::new();
+        for i in 0..10 {
+            conn.execute(
+                "INSERT INTO chunks (item_id, section_id, level, path, content, source_ref, created_at) VALUES (?1,?2,0,'',?3,'ref',datetime('now'))",
+                rusqlite::params![iid, sec, format!("segment{:02} body text", i)],
+            )
+            .unwrap();
+            cids.push(conn.last_insert_rowid());
+        }
+        let mut hits = vec![Hit { chunk_id: cids[5], entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: Some(sec), path: String::new(), score: 1.0, content: "segment05 body text".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false }];
+        expand_context(&conn, &mut hits, 1);
+        assert!(hits[0].content_truncated, "dropped siblings must be flagged");
+        for i in [3, 4, 5, 6, 7] {
+            assert!(hits[0].content.contains(&format!("segment{:02}", i)), "window must hold segment{:02}", i);
+        }
+        for i in [0, 1, 2, 8, 9] {
+            assert!(!hits[0].content.contains(&format!("segment{:02}", i)), "segment{:02} must be cut", i);
+        }
+    }
+
+    #[test]
+    fn demote_test_envs_ranking_exemption_and_knob() {
+        // Single test owns ANCHOR_TEST_ENV_DEMOTE end-to-end (no parallel race).
+        std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_env", "internal");
+        let live = insert_item(&conn, sid, "live");
+        let tst = insert_item(&conn, sid, "tst");
+        conn.execute("UPDATE ingested_items SET external_id='cfg/routing-config.yml' WHERE id=?1", [live]).unwrap();
+        conn.execute("UPDATE ingested_items SET external_id='cfg/payment-directions.test.yml' WHERE id=?1", [tst]).unwrap();
+        let c_live = insert_chunk(&conn, Some(live), None, "live treasury directions content");
+        let c_test = insert_chunk(&conn, Some(tst), None, "test treasury directions content");
+        let mk = |cid: i64, iid: i64| Hit { chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 10.0, content: "x".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false };
+        // Default: the test file is demoted, the live file untouched.
+        let mut hits = vec![mk(c_test, tst), mk(c_live, live)];
+        demote_test_envs(&conn, &mut hits, "which treasury directions are supported");
+        assert_eq!(hits[0].score, 5.0);
+        assert_eq!(hits[1].score, 10.0);
+        // Exemption: a query about test files demotes nothing.
+        let mut hits2 = vec![mk(c_test, tst)];
+        demote_test_envs(&conn, &mut hits2, "what is in the test file");
+        assert_eq!(hits2[0].score, 10.0);
+        // Knob off: nothing moves.
+        std::env::set_var("ANCHOR_TEST_ENV_DEMOTE", "1.0");
+        let mut hits3 = vec![mk(c_test, tst)];
+        demote_test_envs(&conn, &mut hits3, "which treasury directions are supported");
+        assert_eq!(hits3[0].score, 10.0);
+        std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
+        // Segment matching, not substring: "latest" and "contest" survive.
+        assert!(!has_env_marker("reports/latest.yml"));
+        assert!(!has_env_marker("notes/contest.md"));
+        assert!(has_env_marker("cfg/app.test.yml"));
+        assert!(has_env_marker("sandbox/vars.yml"));
+    }
+
+    #[test]
+    fn filename_boost_surfaces_named_file() {
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_fn", "internal");
+        let iid = insert_item(&conn, sid, "cfg");
+        conn.execute("UPDATE ingested_items SET external_id='cfg/routing-config.yml', title='routing-config.yml' WHERE id=?1", [iid]).unwrap();
+        let cid = insert_chunk(&conn, Some(iid), None, "ACME_FEE routing table content here");
+        let other = insert_item(&conn, sid, "other");
+        let c_other = insert_chunk(&conn, Some(other), None, "unrelated notes");
+        let mk_other = || Hit { chunk_id: c_other, entity_id: None, item_id: Some(other), source_id: Some(sid), section_id: None, path: String::new(), score: 15.0, content: "unrelated".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false };
+        let mut hits = vec![mk_other()];
+        filename_boost(&conn, &mut hits, "what is in routing-config.yml?");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].chunk_id, cid, "named file must rank first");
+        assert!(hits[0].score > 15.0);
+        // No filename in the query → untouched.
+        let mut hits2 = vec![mk_other()];
+        filename_boost(&conn, &mut hits2, "treasury directions?");
+        assert_eq!(hits2.len(), 1);
     }
 }

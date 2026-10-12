@@ -227,6 +227,7 @@ export type Citation = {
   snippet: string;
   content: string;
   item_title: string;
+  content_truncated: boolean;
 };
 
 export type Section = {
