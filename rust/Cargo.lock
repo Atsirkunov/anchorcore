@@ -61,7 +61,7 @@ dependencies = [
 
 [[package]]
 name = "anchorcore"
-version = "1.0.19"
+version = "1.0.20"
 dependencies = [
  "aes",
  "argon2",
