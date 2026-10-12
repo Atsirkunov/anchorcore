@@ -8,13 +8,13 @@ use std::sync::{Arc, OnceLock};
 use crate::settings::SettingsService;
 
 pub const KINDS: &[&str] = &["decision", "document", "action", "note"];
-pub const DOC_TYPES: &[&str] = &["standards", "runbook", "documentation", "meeting", "decision_log", "prd", "general"];
+pub const DOC_TYPES: &[&str] = &["standards", "runbook", "documentation", "meeting", "decision_log", "prd", "code", "general"];
 // B26: document types that describe how things work — the extraction prompt and
 // the rule fallback must never turn descriptions/procedures into decision/action.
 pub const NOTE_ONLY_DOC_TYPES: &[&str] = &["standards", "runbook", "documentation"];
 pub const DISTILL_DOC_TYPES: &[&str] = &["meeting", "decision_log", "general"];
 
-const TYPE_DETECT_PROMPT: &str = "You identify what kind of document a piece of text is.\nPick exactly one of: standards, runbook, documentation, meeting, decision_log, prd, general.\n- standards: regulatory/normative rules, requirements, procedures (\"shall\"/\"must\" language, articles/sections)\n- runbook: operational steps, escalation rules, how-to guide\n- documentation: internal process/policy documentation, SOPs, handbooks, descriptions of how things work\n- meeting: meeting notes, retros, planning notes\n- decision_log: a log of recorded decisions\n- prd: product requirements, specifications, scoping docs\n- general: anything else\nRespond ONLY with the single word, nothing else.\n";
+const TYPE_DETECT_PROMPT: &str = "You identify what kind of document a piece of text is.\nPick exactly one of: standards, runbook, documentation, meeting, decision_log, prd, code, general.\n- standards: regulatory/normative rules, requirements, procedures (\"shall\"/\"must\" language, articles/sections)\n- runbook: operational steps, escalation rules, how-to guide\n- documentation: internal process/policy documentation, SOPs, handbooks, descriptions of how things work\n- meeting: meeting notes, retros, planning notes\n- decision_log: a log of recorded decisions\n- prd: product requirements, specifications, scoping docs\n- code: source code or build scripts (functions, imports, types, config-as-code)\n- general: anything else\nRespond ONLY with the single word, nothing else.\n";
 const DISTILL_PROMPT: &str = "You distill a conversation / chat-log excerpt into searchable Q&A units.\n\nA unit is a question someone asked AND its substantive answer. Normalize the\nexchange into a consistent format so it can be found later by either side.\n\nFor each distinct Q&A exchange in the text, output exactly one unit with:\n- question: the question, normalized to a standalone one-liner\n- answer: the substantive answer, normalized (no filler, greetings, or chit-chat)\n- terms: 1-5 searchable key terms / acronyms the unit is about\n- systems: any systems, teams, or components mentioned (empty if none)\n\nIgnore filler: greetings, small talk, acknowledgements (\"got it\", \"thanks\"),\nand messages with no information. If the text contains no real Q&A exchange,\nreturn {{\"units\": []}}.\n\nRespond ONLY with a JSON object:\n{{\"units\": [{{\"question\": str, \"answer\": str, \"terms\": [str], \"systems\": [str]}}]}}\n";
 
 fn prompts_for(doc_type: &str) -> &'static str {
@@ -25,6 +25,7 @@ fn prompts_for(doc_type: &str) -> &'static str {
         "meeting" => "You extract knowledge items from MEETING NOTES.\n\nClassify each item into exactly one of these kinds:\n- decision: a choice made in the meeting, with reasoning\n- action: something someone agreed to do (owner + due date if stated)\n- document: a status update / factual report\n- note: anything else worth remembering\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": str, \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": str}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
         "decision_log" => "You extract knowledge items from a DECISION LOG.\n\nClassify each item into exactly one of these kinds:\n- decision: a recorded choice, with reasoning\n- note: context, constraints, or revisit triggers\n- action: a follow-up someone owns\nDo NOT extract the document itself as an item.\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": str, \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": str}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
         "prd" => "You extract knowledge items from a PRODUCT / REQUIREMENTS document.\n\nClassify each item into exactly one of these kinds:\n- decision: ONLY an explicitly recorded scope choice (we decided / we agreed), never a requirement statement or description\n- document: a factual description / requirement / spec fact\n- action: an explicitly assigned follow-up\n- note: anything else worth remembering\nDo NOT extract the document itself as an item.\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": str, \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": str}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
+        "code" => "You extract knowledge items from SOURCE CODE.\n\nCode embodies implementation choices. Classify each item into exactly one of these kinds:\n- decision: an implementation choice evident in the code (library, framework, pattern, API, data model) — cite the file/symbol as reasoning, never invent rationale beyond what comments and code show\n- document: what a module, function, or type does (a factual description)\n- action: an explicit TODO/FIXME/XXX with an owner or tracked follow-up (a bare TODO with no context is a note)\n- note: constraints, traps, invariants, or conventions worth remembering\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": str, \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": str}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
         _ => "You extract knowledge items from organizational text.\n\nClassify each item into exactly one of these kinds:\n- decision: ONLY a choice explicitly recorded as made (we decided / we agreed / chose), never a description, rule, or plan\n- document: a factual reference / status update / description\n- action: something explicitly assigned to a person, or a tracked follow-up\n- note: anything else worth remembering\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": str, \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": str}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
     }
 }
@@ -324,6 +325,12 @@ pub fn detect_rules(text: &str) -> String {
     if contains_any(&head, &["acceptance criteria", "user story", "requirements:", "product requirements"]) {
         return "prd".to_string();
     }
+    // source code: distinctive syntax markers (checked before prose types —
+    // comments may mention processes or policies without being documentation)
+    let code_markers = ["fn ", "def ", "class ", "import ", "function ", "=>", "->", "#include", "package ", "export "];
+    if code_markers.iter().filter(|m| head.contains(*m)).count() >= 3 {
+        return "code".to_string();
+    }
     let normative = head.matches(" must ").count() + head.matches(" shall ").count();
     if head.contains('§') || normative >= 5 {
         return "standards".to_string();
@@ -422,6 +429,22 @@ mod tests {
         assert_eq!(detect_rules(process_doc), "documentation");
         let reg = "Article 12 shall apply. The institution must notify the authority. §434 defines the transfer rules.";
         assert_eq!(detect_rules(reg), "standards");
+    }
+
+    #[test]
+    fn detect_rules_flags_source_code() {
+        let code = "use std::sync::Arc;\n\npub fn classify(text: &str) -> Vec<Item> {\n    match text.len() {\n        0 => Vec::new(),\n        _ => text.split_whitespace().map(|w| w.to_string()).collect(),\n    }\n}\n";
+        assert_eq!(detect_rules(code), "code");
+    }
+
+    #[test]
+    fn code_type_stays_extractable_without_llm() {
+        // code is deliberately NOT note-only: implementation choices must
+        // surface as decisions even when the LLM is unavailable
+        assert!(DOC_TYPES.contains(&"code"));
+        assert!(!NOTE_ONLY_DOC_TYPES.contains(&"code"));
+        let items = classify_rules_typed("We decided to use sqlite-vec for vectors.", "main.rs", "code");
+        assert!(items.iter().any(|i| i.kind == "decision"));
     }
 
     #[test]

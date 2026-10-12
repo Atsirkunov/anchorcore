@@ -53,7 +53,8 @@ fn low_conf_row(r: &rusqlite::Row) -> rusqlite::Result<Value> {
         "window_text": r.get::<_, String>(10)?,
         "dispute_count": r.get::<_, i64>(11)?,
         "created_at": r.get::<_, Option<String>>(12)?.unwrap_or_default(),
-        "updated_at": r.get::<_, Option<String>>(13)?.unwrap_or_default()
+        "updated_at": r.get::<_, Option<String>>(13)?.unwrap_or_default(),
+        "doc_type": r.get::<_, String>(14).unwrap_or_default()
     }))
 }
 
@@ -63,7 +64,7 @@ pub async fn low_confidence_handler(State(state): State<AppState>) -> Json<Value
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities WHERE confidence < ?1 AND status = 'unverified' ORDER BY confidence ASC LIMIT 100").unwrap();
+        let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at, (SELECT doc_type FROM ingested_items WHERE ingested_items.id = entities.item_id) FROM entities WHERE confidence < ?1 AND status = 'unverified' ORDER BY confidence ASC LIMIT 100").unwrap();
         let rows = stmt.query_map([threshold], low_conf_row).unwrap();
         let out: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
         Value::Array(out)

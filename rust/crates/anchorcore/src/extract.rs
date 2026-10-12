@@ -27,6 +27,20 @@ const TEXT_EXTS: &[&str] = &[
 /// Extensionless repo files with well-known names — treated as text.
 const TEXT_NAMES: &[&str] = &["dockerfile", "makefile", "justfile", "gemfile", "rakefile", ".gitignore", ".dockerignore"];
 
+/// Source-code extensions (subset of `TEXT_EXTS`) — files typed as `code`
+/// rather than prose, whatever the content looks like.
+const CODE_EXTS: &[&str] = &[
+    "py", "pyi", "js", "jsx", "mjs", "cjs", "ts", "tsx", "vue", "svelte", "astro", "java", "kt", "kts", "scala",
+    "groovy", "gradle", "cs", "fs", "fsx", "vb", "go", "rs", "rb", "php", "pl", "pm", "lua", "r", "jl", "swift",
+    "m", "mm", "dart", "ex", "exs", "erl", "hrl", "hs", "clj", "cljs", "cljc", "c", "h", "cpp", "cc", "cxx",
+    "hpp", "hh", "hxx", "sh", "bash", "zsh", "fish", "ps1", "psm1", "bat", "cmd", "sql", "css", "scss", "sass",
+    "less", "cmake", "mk",
+];
+
+/// Extensionless build files that are code, not config (`.gitignore` and
+/// `.dockerignore` stay non-code).
+const CODE_NAMES: &[&str] = &["dockerfile", "makefile", "justfile", "gemfile", "rakefile", "cmakelists.txt"];
+
 /// Extensions that need a real extractor (not plain text).
 const FORMAT_EXTS: &[&str] = &[
     "html", "htm", "pdf", "docx", "docm", "pptx", "pptm", "xlsx", "xlsm", "xlsb", "xls", "ods", "odt", "odp", "rtf",
@@ -52,6 +66,23 @@ pub fn is_supported_path(path: &Path) -> bool {
         .and_then(|n| n.to_str())
         .map(|n| TEXT_NAMES.contains(&n.to_ascii_lowercase().as_str()))
         .unwrap_or(false)
+}
+
+/// True when a filename (absolute/relative path or bare name) is source
+/// code — drives the `code` doc_type fast path in the pipeline.
+pub fn is_code_filename(name: &str) -> bool {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name).to_ascii_lowercase();
+    if CODE_NAMES.contains(&base.as_str()) {
+        return true;
+    }
+    match base.rsplit('.').next() {
+        Some(ext) if ext != base.as_str() => CODE_EXTS.contains(&ext),
+        _ => false,
+    }
+}
+
+pub fn is_code_path(path: &Path) -> bool {
+    path.file_name().and_then(|n| n.to_str()).map(is_code_filename).unwrap_or(false)
 }
 
 /// Extract text from a file on disk (folder connector).
@@ -1090,6 +1121,18 @@ Hello \b bold\b0  and \'93quoted\'94.\par Second \u8364? paragraph.\par}";
         }
         assert!(is_supported_path(Path::new("a/b/report.PDF")));
         assert!(!is_supported_path(Path::new("a/b/archive.zip")));
+    }
+
+    #[test]
+    fn code_filename_matrix() {
+        for yes in ["main.rs", "src/lib.rs", "C:\\repo\\app\\index.ts", "/home/u/repo/a.py", "Dockerfile", "Makefile", "CMakeLists.txt", "deploy.sh", "schema.sql", "Jira:IGNORED.rs"] {
+            assert!(is_code_filename(yes), "{yes} should be code");
+        }
+        for no in ["notes.md", "report.pdf", "data.json", "config.yaml", ".gitignore", ".dockerignore", "Jira:KEY-1", "gdrive:abc123", "logo.png", "README"] {
+            assert!(!is_code_filename(no), "{no} should not be code");
+        }
+        assert!(is_code_path(Path::new("a/b/main.go")));
+        assert!(!is_code_path(Path::new("a/b/notes.md")));
     }
 
     #[test]

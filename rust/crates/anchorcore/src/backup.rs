@@ -470,7 +470,7 @@ fn export_relationships(conn: &Connection, zip: &mut ArchiveWriter, opts: &Expor
     let scope = source_scope(opts.project_id, "i.source_id");
     let sql = format!(
         "SELECT json_object('type','relationship','from_uid',fr.uid,'to_uid',to_e.uid,'kind',r.kind, \
-            'confidence',r.confidence,'source_ref',r.source_ref,'created_at',r.created_at) \
+            'confidence',r.confidence,'source_ref',r.source_ref,'note',r.note,'created_at',r.created_at) \
          FROM relationships r \
          JOIN entities fr ON fr.id = r.from_entity_id \
          JOIN entities to_e ON to_e.id = r.to_entity_id \
@@ -1405,8 +1405,8 @@ fn apply_relationship(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let to_id = ctx.require("entities", &to_uid, "entity")?;
     ctx.conn
         .execute(
-            "INSERT INTO relationships (from_entity_id, to_entity_id, kind, confidence, source_ref, created_at) VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
-            rusqlite::params![from_id, to_id, kind, f64_field(rec, "confidence"), str_field(rec, "source_ref")],
+            "INSERT INTO relationships (from_entity_id, to_entity_id, kind, confidence, source_ref, note, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))",
+            rusqlite::params![from_id, to_id, kind, f64_field(rec, "confidence"), str_field(rec, "source_ref"), str_field(rec, "note")],
         )
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -2534,6 +2534,25 @@ mod tests {
         assert!(again.imported.get("source").is_none(), "{:?}", again.imported);
         assert_eq!(again.skipped.get("entity"), Some(&1u64));
         assert_eq!(one::<i64>(&db(dst.path()), "SELECT COUNT(*) FROM sources"), 1);
+    }
+
+    #[test]
+    fn conflict_note_survives_export_import() {
+        let _env = EnvGuard::file_only();
+        let src = tempdir().unwrap();
+        let sid = seed(src.path());
+        let conn = db(src.path());
+        let iid: i64 = one(&conn, &format!("SELECT id FROM ingested_items WHERE source_id = {sid}"));
+        let a: i64 = one(&conn, "SELECT id FROM entities");
+        conn.execute("INSERT INTO entities (item_id, kind, summary) VALUES (?1,'decision','code choice')", [iid]).unwrap();
+        let b = conn.last_insert_rowid();
+        conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind, note) VALUES (?1,?2,'conflicts_with','doc says JWT, code uses sessions')", rusqlite::params![a, b]).unwrap();
+        drop(conn);
+        let archive = exported(src.path(), ExportOptions::default());
+        let dst = tempdir().unwrap();
+        import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
+        let conn = db(dst.path());
+        assert_eq!(one::<String>(&conn, "SELECT note FROM relationships WHERE kind='conflicts_with'"), "doc says JWT, code uses sessions");
     }
 
     #[test]

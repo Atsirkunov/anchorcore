@@ -180,8 +180,15 @@ export type Entity = {
   owner: string;
   window_text: string;
   dispute_count: number;
+  doc_type?: string;
   created_at: string;
   updated_at: string;
+};
+
+export type ConflictLink = {
+  other_entity_id: number;
+  note: string;
+  created_at: string;
 };
 
 export type Dispute = {
@@ -199,7 +206,9 @@ export type Citation = {
   source_ref: string;
   path?: string;
   tags?: string[];
+  doc_type?: string;
   score: number;
+  conflicts_with?: number[];
   snippet: string;
 };
 

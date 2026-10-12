@@ -558,7 +558,16 @@ impl ClassifyCtx {
         }
         let trusted = self.classify_trusted;
         // Box LLM future to bound stack (large classifier future previously blew 8 MB)
-        let doc_type = Box::pin(self.classifier.detect_document_type(&self.full_text, trusted)).await;
+        // Extension fast path: source files are `code` whatever the content
+        // looks like (comments may read like prose) — no LLM call needed.
+        let doc_type = if crate::extract::is_code_filename(&self.external_id)
+            || crate::extract::is_code_filename(&self.base_ref)
+        {
+            "code".to_string()
+        } else {
+            // Box LLM future to bound stack (large classifier future previously blew 8 MB)
+            Box::pin(self.classifier.detect_document_type(&self.full_text, trusted)).await
+        };
         self.doc_type = doc_type.clone();
         let item_id = self.item_id;
         run_db(&self.data_dir, move |conn| {
@@ -963,6 +972,10 @@ async fn update_window_hashes(ctx: &ClassifyCtx) -> Result<(), String> {
 
 // full-document chunks + hierarchical sections (R14.1)
 async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
+    let doc_type = ctx.doc_type.clone();
+    // symbol families dispatch on the filename; opaque external ids (Drive)
+    // degrade to root-only sections, never to an error
+    let filename = ctx.external_id.clone();
     let item_id = ctx.item_id;
     let full_text = ctx.full_text.clone();
     let base_ref = ctx.base_ref.clone();
@@ -973,7 +986,7 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
         );
         let _ = conn.execute("DELETE FROM sections WHERE item_id=?1", [item_id]);
         let cleaned = full_text.clone();
-        let (metas, chunk_metas) = crate::chunking::chunk_document_with_sections(&cleaned);
+        let (metas, chunk_metas) = crate::chunking::chunk_for_doc_type(&doc_type, &filename, &cleaned);
         // insert sections in order so parent idx maps correctly
         let mut section_ids: Vec<i64> = Vec::with_capacity(metas.len());
         for meta in &metas {
@@ -1335,6 +1348,43 @@ mod tests {
         assert_eq!(keep_chunks, 1);
         let keep_e_left: i64 = conn.query_row("SELECT COUNT(*) FROM entities WHERE id=?1", [keep_e], |r| r.get(0)).unwrap();
         assert_eq!(keep_e_left, 1);
+    }
+
+    #[tokio::test]
+    async fn store_doc_chunks_sections_code_by_symbols() {
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('s','folder','{}',1,'',0)", []).unwrap();
+        let sid = conn.last_insert_rowid();
+        conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale) VALUES (?1,'lib.rs','lib.rs','t','h','',0)", [sid]).unwrap();
+        let iid = conn.last_insert_rowid();
+        drop(conn);
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let settings = Arc::new(crate::settings::SettingsService::new(store));
+        settings.set_data_dir(dir.path());
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let doc = IngestionDoc {
+            external_id: "lib.rs".to_string(),
+            title: "lib.rs".to_string(),
+            text: "pub fn alpha() {\n}\n\npub fn beta() {\n}\n".to_string(),
+            author: String::new(),
+            updated_at: None,
+            source_ref: "lib.rs".to_string(),
+        };
+        let mut ctx = ClassifyCtx::new(&data_dir, sid, 0, &doc, false, settings, classifier, embedder);
+        ctx.item_id = iid;
+        ctx.doc_type = "code".to_string();
+        store_doc_chunks(&ctx).await.unwrap();
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let mut stmt = conn.prepare("SELECT title FROM sections WHERE item_id=?1 ORDER BY id").unwrap();
+        let titles: Vec<String> = stmt.query_map([iid], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
+        assert!(titles.contains(&"fn alpha".to_string()), "titles: {titles:?}");
+        assert!(titles.contains(&"fn beta".to_string()), "titles: {titles:?}");
+        let sec_chunks: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE item_id=?1 AND section_id IS NOT NULL", [iid], |r| r.get(0)).unwrap();
+        assert!(sec_chunks >= 2, "each symbol keeps its chunks");
     }
 
     #[tokio::test]

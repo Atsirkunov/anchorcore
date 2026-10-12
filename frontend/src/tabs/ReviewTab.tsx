@@ -100,7 +100,7 @@ export function ReviewTab() {
         {low.map((e) => (
           <article key={e.id} style={{ background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: 8, padding: "0.75rem 1rem" }}>
             <div style={{ fontSize: 12, color: theme.textMuted }}>
-              [{e.kind}] conf {(e.confidence * 100).toFixed(0)}% · {e.source_ref}
+              [{e.kind}]{e.doc_type === "code" && <span style={{ color: theme.blue }}> [code]</span>} conf {(e.confidence * 100).toFixed(0)}% · {e.source_ref}
               {ctx[e.id]?.item_title && <span> · {ctx[e.id].item_title}</span>}
               {ctx[e.id]?.source_name && <span style={{ color: theme.accentAlt }}> · {ctx[e.id].source_name}</span>}
               {e.dispute_count > 0 && (
