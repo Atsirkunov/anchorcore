@@ -33,3 +33,12 @@ rust/data/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Agent skills — installed by the `skills` CLI (restore: `npx skills experimental_install`).
+# Our own skills are tracked ONCE, in .agents/skills/ (the dir every agent reads).
+# Vendored third-party skills and the per-agent copies are generated state — never commit them.
+.claude/skills/
+agent/skills/
+.agents/skills/*
+!.agents/skills/anchorcore-setup/
+!.agents/skills/aida-landing-page/
