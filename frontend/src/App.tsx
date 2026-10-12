@@ -6,6 +6,7 @@ import { modelIssues } from "./modelHealth";
 import { useProjects } from "./useProjects";
 import { theme } from "./theme";
 import { OnboardingWizard } from "./OnboardingWizard";
+import { UpdateBanner } from "./Updates";
 import { AskTab } from "./tabs/AskTab";
 import { EntitiesTab } from "./tabs/EntitiesTab";
 import { PiiTab } from "./tabs/PiiTab";
@@ -135,7 +136,7 @@ export default function App() {
           value={effectiveProject ?? ""}
           onChange={(e) => setSelectedProject(e.target.value ? Number(e.target.value) : null)}
           style={styles.projectPicker}
-          title="Scope questions to a project (B15)"
+          title="Scope questions to a project"
         >
           <option value="">All sources</option>
           {projects.map((p) => (
@@ -149,6 +150,7 @@ export default function App() {
           {online === false ? "API offline" : online ? "API online" : "checking…"}
         </span>
       </header>
+      <UpdateBanner onOpen={() => setTab("system")} />
       {bannerVisible && (
         <div style={styles.banner}>
           <div style={{ flex: 1 }}>

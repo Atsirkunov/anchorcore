@@ -57,6 +57,7 @@ use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
+#[command(version)]
 struct Args {
     #[arg(long, global = true, default_value = "8000")]
     port: u16,
@@ -157,6 +158,39 @@ fn install_panic_hook(data_dir: &std::path::Path) {
 }
 
 #[cfg(test)]
+mod logging_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn rotates_backups_and_drops_oldest() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("anchorcore.log");
+        std::fs::write(&path, vec![b'a'; 100]).unwrap();
+        rotate_log(&path, 50, 3);
+        assert!(dir.path().join("anchorcore.log.1").exists());
+        assert!(!path.exists());
+        std::fs::write(&path, vec![b'b'; 100]).unwrap();
+        rotate_log(&path, 50, 3);
+        assert!(dir.path().join("anchorcore.log.2").exists());
+        std::fs::write(&path, vec![b'c'; 10]).unwrap();
+        rotate_log(&path, 50, 3);
+        assert!(path.exists(), "under the cap must not rotate");
+    }
+
+    #[test]
+    fn writer_appends_lines() {
+        use std::io::Write;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("anchorcore.log");
+        let mut w = RotatingLogWriter::new(path.clone());
+        w.write_all(b"hello\n").unwrap();
+        w.write_all(b"world\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello\nworld\n");
+    }
+}
+
+#[cfg(test)]
 mod panic_hook_tests {
     use super::format_panic_message;
 
@@ -185,12 +219,92 @@ mod panic_hook_tests {
     }
 }
 
+#[cfg(test)]
+mod cli_tests {
+    use super::Args;
+    use clap::CommandFactory;
+
+    /// R29.1: the setup skill checks an on-disk binary with `--version` before
+    /// replacing it — keep the flag wired to the package version.
+    #[test]
+    fn version_flag_matches_package_version() {
+        assert_eq!(Args::command().get_version(), Some(env!("CARGO_PKG_VERSION")));
+    }
+}
+
 fn ensure_log_file(data_dir: &std::path::Path) {
     // R6.2: ensure log file exists so GET /system/logs finds anchorcore.log (Python creates via RotatingFileHandler)
     let log_path = data_dir.join("anchorcore.log");
     if !log_path.exists() {
         let _ = std::fs::write(&log_path, format!("AnchorCore Rust {} started\n", env!("CARGO_PKG_VERSION")));
     }
+}
+
+/// R28.3: size-rotating log file — `anchorcore.log` (+ `.1`..`.3` backups),
+/// 10 MB per file, mirroring the Python `RotatingFileHandler`.
+const LOG_MAX_BYTES: u64 = 10_000_000;
+const LOG_BACKUPS: usize = 3;
+
+struct RotatingLogWriter {
+    path: PathBuf,
+}
+
+impl RotatingLogWriter {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl std::io::Write for RotatingLogWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&self.path)?;
+        // rotate before writing the line that would cross the cap
+        if f.metadata().map(|m| m.len() >= LOG_MAX_BYTES).unwrap_or(false) {
+            drop(f);
+            rotate_log(&self.path, LOG_MAX_BYTES, LOG_BACKUPS);
+            f = std::fs::OpenOptions::new().create(true).append(true).open(&self.path)?;
+        }
+        std::io::Write::write_all(&mut f, buf)?;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn rotate_log(path: &std::path::Path, max_bytes: u64, backups: usize) {
+    if std::fs::metadata(path).map(|m| m.len() < max_bytes).unwrap_or(true) {
+        return;
+    }
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return };
+    // .2 -> .3, .1 -> .2, base -> .1 (the oldest backup is dropped)
+    for i in (1..backups).rev() {
+        let from = path.with_file_name(format!("{}.{}", name, i));
+        let to = path.with_file_name(format!("{}.{}", name, i + 1));
+        if from.exists() {
+            let _ = std::fs::rename(&from, &to);
+        }
+    }
+    let _ = std::fs::rename(path, path.with_file_name(format!("{}.1", name)));
+}
+
+/// R28.3: stdout + `{data_dir}/anchorcore.log`, INFO by default (Python
+/// parity; RUST_LOG still wins). Release builds are windowed so stdout is
+/// invisible — without the file layer the app logged nothing but panics.
+fn init_logging(data_dir: &std::path::Path) {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let stdout_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stdout);
+    let log_path = data_dir.join("anchorcore.log");
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(move || RotatingLogWriter::new(log_path.clone()));
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(stdout_layer)
+        .with(file_layer)
+        .try_init();
 }
 
 fn sweep_orphan_jobs(db_path: &std::path::Path) {
@@ -227,6 +341,7 @@ fn wire_scheduler(state: &health::AppState, db_path: &std::path::Path) {
     if let Ok(conn) = db::init_db(db_path) {
         scheduler.reload_sources(&conn);
     }
+    scheduler.spawn_backfill();
     tracing::info!("scheduler wired (poll intervals from settings)");
 }
 
@@ -320,6 +435,7 @@ fn build_router(state: health::AppState) -> Router {
         // system (R6.2 + R11 manual ollama start)
         .route("/system/status", get(system::status_handler))
         .route("/system/onboarding", get(system::onboarding_handler))
+        .route("/system/update", get(system::update_handler))
         .route("/system/errors", get(system::errors_handler))
         .route("/system/fs", get(fsbrowse::fs_browse_handler))
         .route("/system/mcp", get(system::mcp_info_handler))
@@ -406,13 +522,12 @@ async fn main() {
         mcp::run().await;
         return;
     }
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
-
-    // Parse first so `--help`/`--version` work on the Team image without a
-    // license; clap exits before the gate below runs.
+    // Parse first so `--help`/`--version` work (clap exits before logging;
+    // the Team image license gate below logs to the file too).
     let args = Args::parse();
+    let data_dir = resolve_data_dir(&args.data_dir);
+    std::fs::create_dir_all(&data_dir).ok();
+    init_logging(&data_dir);
 
     // Team edition (Docker image sets ANCHOR_EDITION=team): refuse to boot
     // without a valid license; lapsed maintenance only warns (perpetual).
@@ -423,9 +538,6 @@ async fn main() {
             std::process::exit(2);
         }
     }
-
-    let data_dir = resolve_data_dir(&args.data_dir);
-    std::fs::create_dir_all(&data_dir).ok();
     // R25.4: CLI subcommands run the backup engine and exit — no server, no
     // watcher, no scheduler.
     if let Some(command) = args.command {
@@ -445,6 +557,8 @@ async fn main() {
 
     let state = build_state(&data_dir);
     tracing::info!("CSRF token generated (per-session)");
+    // R29.1: opt-in startup update check (`update_check_enabled`); no-op when off.
+    system::spawn_update_check(state.clone());
     wire_scheduler(&state, &db_path);
     // Folder watcher: extracted to `watcher::service` (P0 3.3) — gated for `cargo test`
     // Keeps FolderWatcher (mpsc::Receiver !Sync) + HashMap future off test thread stack (8 MB).

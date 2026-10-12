@@ -4,6 +4,24 @@ ADR log. Append newest first.
 
 ---
 
+## 2026-10-12 — R28: Agent-native read path + ops fixes (owner bug report)
+
+* **Decision:** Fix the owner-reported defects at the root: (1) `/qa/search` fills `item_title` and `path` (section breadcrumb, else the item's relative path via `external_id`) and accepts `include_content: true` as the alias for `fields: content` — content is served verbatim on opt-in, the summary preview grew 200→500 chars; (2) the Python embedding backfill (`scheduler.py:_backfill_loop` + startup one-shot) is ported as `scheduler.rs` `spawn_backfill`/`backfill_once` (startup + every 15 min), deliberately **without** the IDF/PII ingest gates — its job is to drain `pending_embeddings` (IDF-skipped low-signal chunks like `"The"` would otherwise stay NULL forever) and to log + record a `system_events` warning when the embedder is down; (3) tracing writes a rotating `{data_dir}/anchorcore.log` (10 MB × 3, Python parity) in addition to stdout; (4) `finish_job` no longer overwrites `total`/`processed` with the changed-items count — `total` stays the docs scanned, the result JSON's `items` stays the changed/new subset.
+* **Context:** Owner session 2026-10-12: `/qa/search` hits were unusable for agents (`content`/`path`/`item_title` empty, `include_content` silently ignored — serde drops unknown fields), `pending_embeddings` sat stuck with no job or log, `anchorcore.log` held only the startup line, and sync job counts read low. Root causes: `item_title: String::new()` left in the search mapper, the Rust port dropped the backfill loop, tracing was stdout-only (invisible in windowed release builds), and the final job update wrote `total = processed = items`.
+* **Alternatives considered:** (A) flip `/qa/search` to include content by default — rejected, `docs/gated-access-spec.md` A3 defines compact-by-default for context budgets; the alias makes the opt-in discoverable instead. (B) run the backfill through the ingest gates — rejected, gating is exactly what leaves the chunks stuck; `Pipeline::embed_missing_for_source` (backup import) stays gated. (C) add `tracing-appender` — rejected in favor of a small in-tree rotating writer (no new dependency, same policy as Python's handler).
+* **Consequences:** Search-hit provenance is part of the contract (root `AGENTS.md` bullets); the backfill is a first-class scheduler task — do not gate or remove it; MCP `search` caps chunk bytes at 4000 chars and flags `content_truncated`, so "verbatim" is never silently truncated; user/agent surfaces no longer leak backlog ids (Projects heading, App/Ask tooltips, MCP `public_only` description). Evidence: cargo test 203/203 (5 new + the existing search compact/full test extended), `-D warnings` check clean, lizard no new warnings, `npm run build` green; live smoke on the release binary: seeded DB `pending 1→0` + `embedding backfill: embedded 1 chunks`, `include_content:true` → `item_title=m1-sprint12-retro.md`, `path=meetings\m1-sprint12-retro.md`, 3-file sync `3/3` and resync `3/3` with `items: 0`, log 1.2 KB.
+
+---
+
+## 2026-10-12 — R29.1: Update check is manual-first — no background pings
+
+* **Decision:** The app never contacts the network for updates on its own: `GET /system/update` serves a cache, and performs a GitHub `releases/latest` fetch only with `?refresh=1` (60s floor). A startup check exists solely as an explicit opt-in (`update_check_enabled` / `ANCHOR_UPDATE_CHECK_ENABLED`, default off; explicit `0` beats env). No self-replace — the UI links the platform zip, and the `anchorcore-setup` skill performs the swap (Windows file-locks the running `.exe`; macOS expects a signed bundle).
+* **Context:** Owner request (the setup skill must check the installer on the PC is newest) plus the trust position: an unasked-for ping to github.com would undercut "local-first". The Rust test `plain_update_get_never_checks_network` pins the contract, so merely opening the app can never phone home.
+* **Alternatives considered:** (A) auto-check at boot without consent — rejected as a trust smell; (B) manual-only forever — rejected as too little notification; (C) full self-update — rejected for file-lock/signing/risk reasons (revisit if notarization ever lands).
+* **Consequences:** `update_check_enabled` is a normal `app_settings` key (DB wins over env, like every other setting); the banner is per-version dismissible; `anchorcore --version` (clap `command(version)`) lets the setup skill check an on-disk binary without booting it; docs live in `docs/updates.md`.
+
+---
+
 ## 2026-08-29 — Phase 13: Cyclomatic complexity ≤ 15 CCN as a standing design rule
 
 * **Decision:** Every function in `rust/crates/anchorcore/src` must stay ≤ 15 CCN (lizard, `-C 15`); `is_public_path` (`auth.rs:216`, CCN 22) is the single accepted decision table and is explicitly do-not-touch. This is now a standing design rule, not a one-off cleanup — see `rust/AGENTS.md` "Cyclomatic complexity" + root `AGENTS.md` workflow step 0.

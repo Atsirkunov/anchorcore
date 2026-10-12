@@ -431,6 +431,207 @@ pub async fn ollama_start_handler(State(state): State<AppState>) -> Json<Value> 
     Json(serde_json::json!({"ok": false, "error": "ollama launched but not reachable at ".to_string() + &base, "launched": true}))
 }
 
+// ── In-app update check (R29.1) ─────────────────────────────────────────────
+//
+// Local-first rules encoded here:
+// - a plain `GET /system/update` NEVER touches the network — it only returns
+//   the cached result (or "not checked yet"), so opening the UI cannot phone
+//   home;
+// - the GitHub request happens only when the user asked (`?refresh=1`, the
+//   Check button) or when startup checks were explicitly opted into
+//   (`update_check_enabled` / `ANCHOR_UPDATE_CHECK_ENABLED`);
+// - the request carries nothing but the fetch itself (fixed URL, our own
+//   User-Agent) and failures are reported, never retried behind the user's back.
+const GITHUB_LATEST_RELEASE: &str = "https://api.github.com/repos/Atsirkunov/anchorcore/releases/latest";
+const RELEASES_PAGE: &str = "https://github.com/Atsirkunov/anchorcore/releases/latest";
+/// Rapid-click floor: never hit GitHub more than once a minute even if the
+/// button is mashed (unauthenticated GitHub allows 60 requests/hour/IP).
+const UPDATE_MIN_INTERVAL_SECS: u64 = 60;
+
+#[derive(Serialize, Clone, Debug)]
+pub struct UpdateStatus {
+    pub current: String,
+    pub latest: Option<String>,
+    pub update_available: bool,
+    pub release_url: Option<String>,
+    pub published_at: Option<String>,
+    pub asset_url: Option<String>,
+    pub checked_at: Option<String>,
+    pub check_enabled: bool,
+    pub error: Option<String>,
+}
+
+struct CachedUpdate {
+    status: UpdateStatus,
+    at: std::time::Instant,
+}
+
+static UPDATE_CACHE: std::sync::OnceLock<std::sync::Mutex<Option<CachedUpdate>>> = std::sync::OnceLock::new();
+
+fn update_cache() -> &'static std::sync::Mutex<Option<CachedUpdate>> {
+    UPDATE_CACHE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// `1` / `true` / `yes` / `on` are on; everything else (incl. `0`, empty,
+/// unset) is off. Mirrors the Settings `''`-means-unset semantics.
+fn truthy_setting(v: Option<String>) -> bool {
+    matches!(v.as_deref().map(|s| s.trim().to_ascii_lowercase()).as_deref(), Some("1" | "true" | "yes" | "on"))
+}
+
+fn update_check_enabled(settings: &crate::settings::SettingsService) -> bool {
+    truthy_setting(settings.get("update_check_enabled", None))
+}
+
+/// `1.2.3` / `v1.2.3` / `1.2.3-rc1` → `(1, 2, 3)` — numeric compare, so
+/// `1.0.9` is older than `1.0.20` (string compare gets that wrong).
+fn parse_version(v: &str) -> (u64, u64, u64) {
+    let core = v.trim().trim_start_matches('v');
+    let core = core.split(['-', '+']).next().unwrap_or(core);
+    let mut parts = core.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
+    (parts.next().unwrap_or(0), parts.next().unwrap_or(0), parts.next().unwrap_or(0))
+}
+
+fn is_newer(latest: &str, current: &str) -> bool {
+    parse_version(latest) > parse_version(current)
+}
+
+fn update_asset_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "AnchorCore-windows.zip"
+    } else if cfg!(target_os = "macos") {
+        "AnchorCore-macos.zip"
+    } else {
+        "AnchorCore-linux.zip"
+    }
+}
+
+fn update_url() -> String {
+    // Tests/mirrors can point this at a stub; never a user-facing setting.
+    std::env::var("ANCHOR_UPDATE_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| GITHUB_LATEST_RELEASE.to_string())
+}
+
+fn idle_update_status(current: &str, enabled: bool) -> UpdateStatus {
+    UpdateStatus {
+        current: current.to_string(),
+        latest: None,
+        update_available: false,
+        release_url: Some(RELEASES_PAGE.to_string()),
+        published_at: None,
+        asset_url: None,
+        checked_at: None,
+        check_enabled: enabled,
+        error: None,
+    }
+}
+
+async fn fetch_latest_release() -> Result<(String, Option<String>, Option<String>), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .user_agent(format!("anchorcore/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+    let resp = client
+        .get(update_url())
+        .header("accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|_| "couldn't reach github.com (offline?)".to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("github.com returned HTTP {}", resp.status().as_u16()));
+    }
+    let body: Value = resp.json().await.map_err(|_| "unexpected response from github.com".to_string())?;
+    let tag = body.get("tag_name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if tag.is_empty() {
+        return Err("github.com response carried no tag_name".to_string());
+    }
+    let html = body.get("html_url").and_then(|v| v.as_str()).map(str::to_string);
+    let published = body.get("published_at").and_then(|v| v.as_str()).map(str::to_string);
+    Ok((tag, html, published))
+}
+
+async fn check_for_update(enabled: bool, current: &str) -> UpdateStatus {
+    let checked_at = chrono::Utc::now().to_rfc3339();
+    match fetch_latest_release().await {
+        Ok((tag, html, published)) => {
+            let latest = tag.trim_start_matches('v').to_string();
+            UpdateStatus {
+                current: current.to_string(),
+                update_available: is_newer(&latest, current),
+                release_url: Some(html.unwrap_or_else(|| RELEASES_PAGE.to_string())),
+                published_at: published,
+                asset_url: Some(format!("{RELEASES_PAGE}/download/{}", update_asset_name())),
+                latest: Some(latest),
+                checked_at: Some(checked_at),
+                check_enabled: enabled,
+                error: None,
+            }
+        }
+        Err(e) => UpdateStatus {
+            error: Some(e),
+            checked_at: Some(checked_at),
+            ..idle_update_status(current, enabled)
+        },
+    }
+}
+
+fn cached_update_clone(enabled: bool) -> Option<UpdateStatus> {
+    let guard = update_cache().lock().unwrap();
+    guard.as_ref().map(|c| {
+        let mut s = c.status.clone();
+        s.check_enabled = enabled;
+        s
+    })
+}
+
+#[derive(Deserialize)]
+pub struct UpdateQuery {
+    /// `refresh=1` performs the GitHub request; anything else reads the cache.
+    pub refresh: Option<String>,
+}
+
+/// `GET /system/update` — cached result only unless `refresh=1`. The opt-in
+/// startup check (`spawn_update_check`) fills the same cache.
+pub async fn update_handler(State(state): State<AppState>, Query(q): Query<UpdateQuery>) -> Json<UpdateStatus> {
+    let enabled = update_check_enabled(&state.settings);
+    let current = env!("CARGO_PKG_VERSION");
+    if !truthy_setting(q.refresh) {
+        return Json(cached_update_clone(enabled).unwrap_or_else(|| idle_update_status(current, enabled)));
+    }
+    let recent = {
+        let guard = update_cache().lock().unwrap();
+        guard.as_ref().map(|c| c.at.elapsed() < std::time::Duration::from_secs(UPDATE_MIN_INTERVAL_SECS)).unwrap_or(false)
+    };
+    if recent {
+        if let Some(s) = cached_update_clone(enabled) {
+            return Json(s);
+        }
+    }
+    let status = check_for_update(enabled, current).await;
+    *update_cache().lock().unwrap() = Some(CachedUpdate { status: status.clone(), at: std::time::Instant::now() });
+    Json(status)
+}
+
+/// Startup check — only runs when `update_check_enabled` was opted in. One
+/// background request per launch; the result lands in the cache the UI reads.
+/// Never blocks boot, never retries; failures only log.
+pub fn spawn_update_check(state: AppState) {
+    if !update_check_enabled(&state.settings) {
+        return;
+    }
+    tokio::spawn(async move {
+        let status = check_for_update(true, env!("CARGO_PKG_VERSION")).await;
+        if let Some(err) = &status.error {
+            tracing::warn!("startup update check failed: {}", err);
+        } else if status.update_available {
+            tracing::info!("newer release available: {} (current {})", status.latest.as_deref().unwrap_or("?"), status.current);
+        }
+        *update_cache().lock().unwrap() = Some(CachedUpdate { status, at: std::time::Instant::now() });
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,5 +678,50 @@ mod tests {
         assert_eq!(v["needs_wizard"], true);
         assert_eq!(v["sources_count"], 0);
         assert!(v["answer_ready"].is_boolean(), "answer_ready must be a bool: {v}");
+    }
+
+    #[test]
+    fn version_compare_is_numeric_not_lexicographic() {
+        assert!(is_newer("1.0.20", "1.0.9"));
+        assert!(is_newer("v1.0.21", "1.0.20"));
+        assert!(is_newer("2.0.0", "1.9.9"));
+        assert!(is_newer("1.1", "1.0.99"));
+        assert!(!is_newer("1.0.21", "1.0.21"));
+        assert!(!is_newer("1.0.20", "1.0.21"));
+        assert_eq!(parse_version("v1.0.21-rc1"), (1, 0, 21));
+    }
+
+    #[test]
+    fn truthy_setting_accepts_common_spellings() {
+        for on in ["1", "true", "YES", " on "] {
+            assert!(truthy_setting(Some(on.to_string())), "{on} should be on");
+        }
+        for off in [None, Some(String::new()), Some("0".to_string()), Some("false".to_string())] {
+            assert!(!truthy_setting(off.clone()), "{off:?} should be off");
+        }
+    }
+
+    /// The trust contract: a plain GET must never perform the GitHub request.
+    #[tokio::test]
+    async fn plain_update_get_never_checks_network() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let store = SecretStore::new(dir.path().join("secrets.enc"));
+        let settings = Arc::new(SettingsService::new(store));
+        settings.set_data_dir(&data_dir);
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        let state = AppState {
+            data_dir: data_dir.to_string_lossy().to_string(),
+            settings,
+            jobs: JobManager::new(),
+            csrf_token: "test".to_string(),
+            embedder,
+        };
+        let res = update_handler(State(state), Query(UpdateQuery { refresh: None })).await;
+        let v = res.0;
+        assert!(v.checked_at.is_none(), "plain GET must not perform a check: {v:?}");
+        assert!(v.latest.is_none());
+        assert!(!v.update_available);
     }
 }

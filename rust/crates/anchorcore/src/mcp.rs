@@ -159,20 +159,28 @@ async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only
     }
     let result = http_call("POST", "/qa/search", Some(payload)).await?;
     audit_mcp("search", &format!("q={} k={} public_only={} hits={}", query.chars().take(80).collect::<String>(), k, public_only, result.get("hits").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0)));
-    let hits: Vec<Value> = result.get("hits").and_then(|v| v.as_array()).cloned().unwrap_or_default().into_iter().map(|h| json!({
+    let hits: Vec<Value> = result.get("hits").and_then(|v| v.as_array()).cloned().unwrap_or_default().into_iter().map(|h| {
+        // Context budget: cap chunk bytes but say so ("verbatim" must not
+        // silently lose the tail — content_truncated lets the agent re-fetch
+        // the entity for the rest).
+        let content = h.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let content_truncated = content.chars().count() > 4000;
+        json!({
         "chunk_id": h.get("chunk_id"),
         "entity_id": h.get("entity_id"),
         "kind": h.get("kind").and_then(|v| v.as_str()).unwrap_or("document"),
         "summary": h.get("summary").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>(),
-        "content": h.get("content").and_then(|v| v.as_str()).unwrap_or("").chars().take(4000).collect::<String>(),
+        "content": content.chars().take(4000).collect::<String>(),
+        "content_truncated": content_truncated,
         "source_ref": h.get("source_ref").and_then(|v| v.as_str()).unwrap_or(""),
+        "path": h.get("path").and_then(|v| v.as_str()).unwrap_or(""),
         "doc_type": h.get("doc_type").and_then(|v| v.as_str()).unwrap_or(""),
         "conflicts_with": h.get("conflicts_with").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
         "source_id": h.get("source_id"),
         "item_id": h.get("item_id"),
         "item_title": h.get("item_title").and_then(|v| v.as_str()).unwrap_or(""),
         "score": h.get("score")
-    })).collect();
+    })}).collect();
     let refusal = result.get("refusal").and_then(|v| v.as_str()).map(|s| s.to_string());
     let blocked = result.get("blocked").and_then(|v| v.as_u64()).unwrap_or(0);
     let retrieval = result.get("retrieval").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
@@ -254,14 +262,14 @@ fn tool_defs() -> Value {
                 "properties": {
                     "question": {"type": "string", "description": "Question to answer"},
                     "project_id": {"type": "integer", "description": "Optional project id to scope retrieval"},
-                    "public_only": {"type": "boolean", "description": "If true, only public sources (B30) are searched — share-safe"}
+                    "public_only": {"type": "boolean", "description": "If true, only public sources are searched — share-safe"}
                 },
                 "required": ["question"]
             }
         },
         {
             "name": "search",
-            "description": "Default extraction: gated, verbatim, cited chunks (with provenance + scores) for a query. Prefer this — your model composes the answer from the returned bytes. A \"refusal\" field carries \"gated_provider\" when sensitive content was withheld; \"blocked\" counts withheld hits.",
+            "description": "Default extraction: gated, cited chunks (with provenance, item title/path and scores) for a query. Prefer this — your model composes the answer from the returned bytes. Long chunks are capped at 4000 chars and set content_truncated=true. A \"refusal\" field carries \"gated_provider\" when sensitive content was withheld; \"blocked\" counts withheld hits.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

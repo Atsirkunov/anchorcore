@@ -1,4 +1,4 @@
-import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, ConflictLink, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, PiiChunk, PiiConfig, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
+import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, ConflictLink, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, PiiChunk, PiiConfig, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult, UpdateStatus } from "./types";
 
 export class RequestAbortedError extends Error {
   constructor(message = "Request cancelled") {
@@ -198,6 +198,8 @@ export const api = {
     }),
 
   systemStatus: () => request<SystemStatus>("/system/status"),
+  /** R29.1: `refresh` performs the GitHub request; without it this only reads the cache. */
+  updateStatus: (refresh = false) => request<UpdateStatus>(`/system/update${refresh ? "?refresh=1" : ""}`),
   onboarding: () => request<OnboardingState>("/system/onboarding"),
   getSettings: () => request<AppSettings>("/settings"),
   updateSettings: (payload: Partial<AppSettings>) =>

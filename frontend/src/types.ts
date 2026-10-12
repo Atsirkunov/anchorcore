@@ -13,6 +13,7 @@ export type AppSettings = {
   classifier_api_key: string; // masked as "***set***" when stored
   embed_api_key: string; // masked as "***set***" when stored
   tag_reuse_threshold?: string;
+  update_check_enabled?: string; // "1" on, "0"/"" off (startup update check)
 };
 
 export type TestConnectionResult = {
@@ -116,6 +117,20 @@ export type SystemStatus = {
   tasks: Record<string, string>;
   pending_embeddings: number;
   failing_sources: { id: number; name: string; error: string | null; count: number }[];
+};
+
+/** R29.1: `GET /system/update` — the cached release check. A plain GET never
+ * contacts github.com; `error` is a plain-language reason when a check failed. */
+export type UpdateStatus = {
+  current: string;
+  latest: string | null;
+  update_available: boolean;
+  release_url: string | null;
+  published_at: string | null;
+  asset_url: string | null;
+  checked_at: string | null;
+  check_enabled: boolean;
+  error: string | null;
 };
 
 export type SystemEvent = {

@@ -56,6 +56,9 @@ request access, escalate) deterministically:
 - `search`: compact-by-default (`fields=` selector: `summary,source_ref,score`
   vs full `content`), `k` cap stays, add cursor pagination (`cursor`/`limit`)
   so harnesses can walk result sets completely and deterministically.
+  `include_content: true` is accepted as an alias for `fields: content`, and
+  every hit carries `item_title` plus `path` (section breadcrumb when the
+  chunk lives in one, else the item's path within its source).
 - `get_entity` / chunk fetch: verbatim drill-down by stable ID — the "everything
   as-is" path, one entity at a time, exact bytes.
 - No bulk-dump endpoint in phase 1; ranked retrieval + drill-down covers Q&A.

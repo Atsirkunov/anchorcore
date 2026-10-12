@@ -53,6 +53,7 @@ Team and commercial use requires a paid license.
 - [Releasing](./docs/releasing.md) — release checklist: tag → CI builds all platform zips
 - [Agent connectivity (MCP)](./docs/mcp.md) - how harnesses (Claude Code, Codex, opencode, Cursor) use the memory
 - [Backup, export & device migration](./docs/backup.md) - portable `.anchorcore-backup` archives, secrets model, CLI + UI walkthrough
+- [Updates](./docs/updates.md) - manual release check (no background pings), the startup-check opt-in, what updating does to your data
 - [Agent setup skill](./.agents/skills/anchorcore-setup/SKILL.md) — hand it to your agent: install, configure models and sources, connect MCP, verify answers
 - [v2/v3 business scoping](./docs/v2v3-scope.md) — website, hosting, sharing, pricing, free tier
 - [Design system](./docs/design-system.md) — color tokens, typography, messaging, website approach (single source for app + site)

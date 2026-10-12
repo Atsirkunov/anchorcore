@@ -76,7 +76,7 @@ fn with_db<T>(data_dir: &str, f: impl FnOnce(&Connection) -> T) -> T {
     f(&conn)
 }
 
-async fn run_db<T, F>(data_dir: &str, f: F) -> Result<T, String>
+pub(crate) async fn run_db<T, F>(data_dir: &str, f: F) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce(&Connection) -> Result<T, String> + Send + 'static,
@@ -320,6 +320,14 @@ impl Pipeline {
             }
             store_embeddings(data_dir, self.embedder.clone(), updates).await?;
         }
+        // Embed jobs gained no `total` while walking; close it so the UI shows
+        // processed/total instead of N/0 (finish_job no longer back-fills it).
+        let total = processed;
+        let _ = run_db(data_dir, move |conn| {
+            let _ = conn.execute("UPDATE jobs SET total=?1 WHERE id=?2", rusqlite::params![total, job_id]);
+            Ok(())
+        })
+        .await;
         Ok((processed, 0, 0))
     }
 
@@ -376,8 +384,10 @@ impl Pipeline {
                     let result = serde_json::json!({"items": items, "entities": entities, "purged": purged}).to_string();
                     let _ = conn.execute("UPDATE jobs SET status='done', finished_at=datetime('now'), result=?1, error=NULL WHERE id=?2", rusqlite::params![result, job_id]);
                     record_sync_success(conn, source_id);
-                    // update job total/processed
-                    let _ = conn.execute("UPDATE jobs SET total=?1, processed=?1 WHERE id=?2", rusqlite::params![items, job_id]);
+                    // R28.1: keep the totals set by the run phase (total = docs
+                    // scanned, processed = docs walked) — `items` is only the
+                    // changed/new subset and used to overwrite both, making a
+                    // 10-file resync with 3 changed files read as 3/3.
                     // promote next pending
                     self.jobs.maybe_promote(conn);
                 }
@@ -410,7 +420,9 @@ impl Pipeline {
         let mut config: serde_json::Value = serde_json::from_str(&config_str).unwrap_or(serde_json::json!({}));
         config = resolve_config(data_dir, source_id, config);
         // fetch docs — R10.2: Jira/GDrive/Linear must not silently succeed with 0 items
+        let t_fetch = std::time::Instant::now();
         let (docs, skipped) = fetch_docs(&connector_type, &config, source_id).await?;
+        tracing::debug!(target: "anchorcore::perf", docs = docs.len(), ms = t_fetch.elapsed().as_millis(), "fetch");
         // B57: purge stored items that disappeared remotely (hard-delete).
         let purged_items =
             purge_missing_for_sync(data_dir, source_id, &connector_type, &docs, &skipped).await;
@@ -463,20 +475,56 @@ impl Pipeline {
     }
 
     async fn classify_and_store(&self, data_dir: &str, source_id: i64, job_id: i64, doc: &IngestionDoc, force_reclassify: bool) -> Result<usize, String> {
+        let mut perf = PhaseTimes::new();
         let mut ctx = ClassifyCtx::new(data_dir, source_id, job_id, doc, force_reclassify, self.settings.clone(), self.classifier.clone(), self.embedder.clone());
         ctx.load_item_meta().await?;
+        perf.mark("meta");
         ctx.detect_doc_type().await?;
+        perf.mark("detect");
         // If force, delete all entities for item
         if force_reclassify {
             delete_stale_entities(&ctx, None).await?;
         }
+        perf.mark("stale");
         // R9.1: abort early if cancelled before windowing
         if job_cancelled(&ctx.data_dir, job_id).await? {
             return Err("job cancelled".to_string());
         }
         let total_entities = ctx.classify_windows().await?;
-        ctx.finalize().await?;
+        perf.mark("classify");
+        ctx.finalize(&mut perf).await?;
+        perf.mark("done");
+        tracing::debug!(
+            target: "anchorcore::perf",
+            file = %ctx.external_id,
+            doc_type = %ctx.doc_type,
+            chars = ctx.full_text.len(),
+            windows = ctx.windows.len(),
+            entities = total_entities,
+            text = %perf.render(),
+            "doc ingest"
+        );
         Ok(total_entities)
+    }
+}
+
+/// R30.2 perf: per-phase ingest timings, debug-logged (RUST_LOG=anchorcore::perf=debug).
+struct PhaseTimes {
+    rows: Vec<(&'static str, u128)>,
+    last: std::time::Instant,
+}
+
+impl PhaseTimes {
+    fn new() -> Self {
+        Self { rows: Vec::new(), last: std::time::Instant::now() }
+    }
+    fn mark(&mut self, name: &'static str) {
+        let now = std::time::Instant::now();
+        self.rows.push((name, self.last.elapsed().as_millis()));
+        self.last = now;
+    }
+    fn render(&self) -> String {
+        self.rows.iter().map(|(n, ms)| format!("{}={}ms", n, ms)).collect::<Vec<_>>().join(" ")
     }
 }
 
@@ -617,14 +665,22 @@ impl ClassifyCtx {
         Ok(total)
     }
 
-    async fn finalize(&self) -> Result<(), String> {
+    async fn finalize(&self, perf: &mut PhaseTimes) -> Result<(), String> {
         update_window_hashes(self).await?;
+        perf.mark("hashes");
         store_doc_chunks(self).await?;
+        perf.mark("chunks");
         create_summaries(self).await?;
+        perf.mark("summaries");
         create_tags(self).await?;
+        perf.mark("tags");
         flag_pii(self).await?;
+        perf.mark("pii");
         distill_item(self).await?;
-        embed_chunks(self).await
+        perf.mark("distill");
+        embed_chunks(self).await?;
+        perf.mark("embed");
+        Ok(())
     }
 }
 
@@ -802,6 +858,12 @@ async fn create_tags(ctx: &ClassifyCtx) -> Result<(), String> {
 }
 
 fn create_tags_inner(conn: &Connection, item_id: i64, full_text: &str) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    let t_all = std::time::Instant::now();
+    let calls0 = crate::tags::ENSURE_CALLS.load(Ordering::Relaxed);
+    let exact0 = crate::tags::ENSURE_EXACT.load(Ordering::Relaxed);
+    let scans0 = crate::tags::ENSURE_SCANS.load(Ordering::Relaxed);
+    let micros0 = crate::tags::ENSURE_MICROS.load(Ordering::Relaxed);
     let mut stmt = conn
         .prepare("SELECT id, title, path FROM sections WHERE item_id=?1 ORDER BY id")
         .map_err(|e| e.to_string())?;
@@ -856,6 +918,16 @@ fn create_tags_inner(conn: &Connection, item_id: i64, full_text: &str) -> Result
             }
         }
     }
+    tracing::debug!(
+        target: "anchorcore::perf",
+        item = item_id,
+        total_ms = t_all.elapsed().as_millis(),
+        calls = crate::tags::ENSURE_CALLS.load(Ordering::Relaxed) - calls0,
+        exact = crate::tags::ENSURE_EXACT.load(Ordering::Relaxed) - exact0,
+        scans = crate::tags::ENSURE_SCANS.load(Ordering::Relaxed) - scans0,
+        ensure_ms = (crate::tags::ENSURE_MICROS.load(Ordering::Relaxed) - micros0) / 1000,
+        "tags"
+    );
     Ok(())
 }
 
@@ -1266,6 +1338,32 @@ mod tests {
         create_summaries_inner(&conn, iid, full_text, base, false).unwrap();
         let cnt2: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE kind='section_summary'", [], |r| r.get(0)).unwrap();
         assert_eq!(cnt2, 3);
+    }
+
+    #[test]
+    fn finish_job_keeps_sync_totals() {
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let path = dir.path().join("test.db");
+        let conn = crate::db::init_db(&path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('s','folder','{}',1,'',0)", []).unwrap();
+        let sid = conn.last_insert_rowid();
+        conn.execute("INSERT INTO jobs (source_id, kind, status, total, processed, result, created_at) VALUES (?1,'sync','running',10,10,'{}',datetime('now'))", [sid]).unwrap();
+        let job_id = conn.last_insert_rowid();
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let settings = Arc::new(SettingsService::new(store));
+        let classifier = Arc::new(Classifier::new(settings.clone()));
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        let pipeline = Pipeline::new(classifier, embedder, settings, data_dir, crate::jobs::JobManager::new());
+        pipeline.finish_job(&conn, sid, job_id, Ok((3, 5, 0)));
+        let (status, total, processed, result): (String, i64, i64, String) = conn
+            .query_row("SELECT status, total, processed, result FROM jobs WHERE id=?1", [job_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .unwrap();
+        assert_eq!(status, "done");
+        assert_eq!((total, processed), (10, 10), "changed items must not clobber scanned totals");
+        assert!(result.contains("\"items\":3"), "result: {}", result);
     }
 
     #[test]
