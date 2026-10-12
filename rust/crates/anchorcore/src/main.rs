@@ -26,6 +26,7 @@ mod frontend;
 mod fsbrowse;
 mod hashing;
 mod health;
+mod items;
 mod jobs;
 mod license;
 mod mcp;
@@ -423,6 +424,7 @@ fn build_router(state: health::AppState) -> Router {
         .route("/entities/:id/disputes", get(entities::disputes_handler))
         .route("/entities/:id/conflicts", get(entities::conflicts_list_handler).post(entities::conflict_create_handler))
         .route("/entities/:id/conflicts/:other_id", delete(entities::conflict_delete_handler))
+        .route("/items/:id", get(items::get_handler))
         .route("/entities/:id/context", get(entities::context_handler))
         .route("/review/low-confidence", get(review::low_confidence_handler))
         .route("/review/duplicates", get(review::duplicates_handler))

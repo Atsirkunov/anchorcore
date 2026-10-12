@@ -56,6 +56,7 @@ pub struct Citation {
     pub conflicts_with: Vec<i64>,
     pub content: String,
     pub item_title: String,
+    pub content_truncated: bool,
 }
 
 #[derive(Deserialize)]
@@ -94,6 +95,7 @@ pub struct SearchHit {
     pub doc_type: String,
     pub conflicts_with: Vec<i64>,
     pub score: f64,
+    pub content_truncated: bool,
 }
 
 #[derive(Serialize)]
@@ -398,6 +400,7 @@ fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content:
             score: rounded_score(h.score),
             snippet: take_chars(&h.content, 500),
             content: if want_content { h.content.clone() } else { String::new() },
+            content_truncated: h.content_truncated,
         }
     }).collect()
 }
@@ -553,7 +556,8 @@ fn orchestrate(
         let toc = retrieval::toc_search(conn, query, emb_opt, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed);
         if toc.is_empty() { None } else { Some(toc) }
     };
-    if let Some(toc) = toc_opt {
+    if let Some(mut toc) = toc_opt {
+        retrieval::demote_test_envs(conn, &mut toc, query);
         let hits = retrieval::fuse_and_rank(
             conn,
             Some(toc),
@@ -564,10 +568,12 @@ fn orchestrate(
             cfg.top_k,
             cfg.qa_exclude_disputed,
         );
-        return apply_graph(conn, hits, scope.as_ref(), cfg);
+        let mut hits = apply_graph(conn, hits, scope.as_ref(), cfg);
+        retrieval::filename_boost(conn, &mut hits, query);
+        return hits;
     }
     // R8.1: hybrid search — vector + keyword
-    let vector_hits = query_embedding.as_ref().and_then(|emb| {
+    let mut vector_hits = query_embedding.as_ref().and_then(|emb| {
         let hits = retrieval::vector_search(conn, emb, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed);
         if hits.is_empty() { None } else { Some(hits) }
     });
@@ -581,7 +587,13 @@ fn orchestrate(
     } else {
         keyword_hits
     };
-    let keyword_opt = if evidence.is_empty() { None } else { Some(evidence) };
+    let mut keyword_opt = if evidence.is_empty() { None } else { Some(evidence) };
+    if let Some(v) = vector_hits.as_mut() {
+        retrieval::demote_test_envs(conn, v, query);
+    }
+    if let Some(k) = keyword_opt.as_mut() {
+        retrieval::demote_test_envs(conn, k, query);
+    }
     let hits = retrieval::fuse_and_rank(
         conn,
         vector_hits,
@@ -592,7 +604,9 @@ fn orchestrate(
         cfg.top_k,
         cfg.qa_exclude_disputed,
     );
-    apply_graph(conn, hits, scope.as_ref(), cfg)
+    let mut hits = apply_graph(conn, hits, scope.as_ref(), cfg);
+    retrieval::filename_boost(conn, &mut hits, query);
+    hits
 }
 
 fn retrieve_sync(
@@ -671,6 +685,32 @@ pub(crate) fn gate_entity_content(conn: &Connection, entity_id: i64) -> Option<S
         Some(format!(
             "entity {} blocked: source {} label '{}'{}, untrusted answer provider",
             entity_id,
+            source_id,
+            label,
+            if pii > 0 { " + PII-flagged chunks" } else { "" }
+        ))
+    } else {
+        None
+    }
+}
+
+/// Item-level twin of `gate_entity_content`: same rule (sensitive/pii
+/// source label or PII-flagged chunks), keyed by item for `GET /items/:id`.
+pub(crate) fn gate_item_content(conn: &Connection, item_id: i64) -> Option<String> {
+    let (source_id, label): (i64, String) = conn
+        .query_row(
+            "SELECT s.id, s.label FROM sources s JOIN ingested_items i ON i.source_id = s.id WHERE i.id = ?1",
+            [item_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()?;
+    let pii: i64 = conn
+        .query_row("SELECT COUNT(*) FROM chunks WHERE item_id = ?1 AND is_pii = 1", [item_id], |r| r.get(0))
+        .unwrap_or(0);
+    if label == "sensitive" || label == "pii" || pii > 0 {
+        Some(format!(
+            "item {} blocked: source {} label '{}'{}, untrusted answer provider",
+            item_id,
             source_id,
             label,
             if pii > 0 { " + PII-flagged chunks" } else { "" }
@@ -761,6 +801,7 @@ pub async fn search(
             kind: hit_kind(&h),
             summary: take_chars(&h.content, 500),
             content: if want_content { h.content.clone() } else { String::new() },
+            content_truncated: h.content_truncated,
             source_ref: display_source_ref(&h),
             path: if h.path.is_empty() { item_path } else { h.path.clone() },
             tags: tag_map.get(&h.chunk_id).cloned().unwrap_or_default(),
@@ -965,6 +1006,7 @@ mod tests {
             source_ref: "f.md".to_string(),
             is_pii: pii,
             status: None,
+            content_truncated: false,
         }
     }
 
@@ -1039,6 +1081,17 @@ mod tests {
         let reason = gate_entity_content(&conn, eid_sen).expect("sensitive entity must be gated");
         assert!(reason.contains("sensitive"), "reason: {}", reason);
         assert!(gate_entity_content(&conn, 999999).is_none(), "missing entity must not gate (404 path owns it)");
+    }
+
+    #[test]
+    fn gate_item_content_blocks_sensitive_source() {
+        let (_dir, conn, _settings) = seed_gate_db();
+        let iid_ord: i64 = conn.query_row("SELECT id FROM ingested_items WHERE text LIKE 'quarterly sunshine%'", [], |r| r.get(0)).unwrap();
+        let iid_sen: i64 = conn.query_row("SELECT id FROM ingested_items WHERE text LIKE 'quarterly moonvault%'", [], |r| r.get(0)).unwrap();
+        assert!(gate_item_content(&conn, iid_ord).is_none());
+        let reason = gate_item_content(&conn, iid_sen).expect("sensitive item must be gated");
+        assert!(reason.contains("sensitive"), "reason: {}", reason);
+        assert!(gate_item_content(&conn, 999999).is_none(), "missing item must not gate (404 path owns it)");
     }
 
     #[tokio::test]
