@@ -1,5 +1,5 @@
 //! Ingestion pipeline — port of `backend/app/pipeline.py:1`.
-//! Folder → chunk → classify (LLM + per-doc-type prompt, rules fallback) → distill → pii → embed.
+//! Folder → chunk → classify (LLM + per-doc-type prompt, rules fallback) → distill → embed.
 
 use std::sync::Arc;
 
@@ -291,7 +291,7 @@ impl Pipeline {
                 return Err("job cancelled".to_string());
             }
             let batch = fetch_embed_batch(data_dir, source_id, last_id).await?;
-            let Some(last) = batch.last().map(|(id, _, _)| *id) else {
+            let Some(last) = batch.last().map(|(id, _)| *id) else {
                 break;
             };
             last_id = last;
@@ -303,17 +303,16 @@ impl Pipeline {
                 Ok(())
             })
             .await;
-            let contents: Vec<String> = batch.iter().map(|(_, c, _)| c.clone()).collect();
-            let is_pii: Vec<bool> = batch.iter().map(|(_, _, p)| *p).collect();
+            let contents: Vec<String> = batch.iter().map(|(_, c)| c.clone()).collect();
             let out = self
                 .embedder
-                .embed_gated(contents, is_pii, gated, embed_min_signal())
+                .embed_gated(contents, gated, embed_min_signal())
                 .await
                 .unwrap_or_else(|_| vec![None; batch.len()]);
             let updates: Vec<(i64, Vec<u8>)> = batch
                 .iter()
                 .zip(out)
-                .filter_map(|((id, _, _), blob)| blob.map(|b| (*id, b)))
+                .filter_map(|((id, _), blob)| blob.map(|b| (*id, b)))
                 .collect();
             if updates.is_empty() {
                 continue;
@@ -481,8 +480,11 @@ impl Pipeline {
         perf.mark("meta");
         ctx.detect_doc_type().await?;
         perf.mark("detect");
-        // If force, delete all entities for item
-        if force_reclassify {
+        // If force, delete all entities for item. Structured files always
+        // purge: R33.2/R33.4 skip extraction for code + configs, so a re-sync
+        // removes legacy entities (and their chunks via FK cascade) with no
+        // data migration.
+        if force_reclassify || ctx.skips_extraction() {
             delete_stale_entities(&ctx, None).await?;
         }
         perf.mark("stale");
@@ -490,7 +492,14 @@ impl Pipeline {
         if job_cancelled(&ctx.data_dir, job_id).await? {
             return Err("job cancelled".to_string());
         }
-        let total_entities = ctx.classify_windows().await?;
+        // R33.2/R33.4: structured files skip extraction; chunk + embed only.
+        // Windows exist solely for classification, so drop them for a truthful log.
+        let total_entities = if ctx.skips_extraction() {
+            ctx.windows.clear();
+            0
+        } else {
+            ctx.classify_windows().await?
+        };
         perf.mark("classify");
         ctx.finalize(&mut perf).await?;
         perf.mark("done");
@@ -624,6 +633,16 @@ impl ClassifyCtx {
         }).await
     }
 
+    /// R33.2/R33.4: structured files (source + hierarchical config) are never
+    /// entity-extracted — the content itself is the retrievable unit. Configs
+    /// keep their detected prose doc_type (truthful badge); only the filename
+    /// decides the skip.
+    fn skips_extraction(&self) -> bool {
+        self.doc_type == "code"
+            || crate::extract::is_config_filename(&self.external_id)
+            || crate::extract::is_config_filename(&self.base_ref)
+    }
+
     async fn classify_windows(&mut self) -> Result<usize, String> {
         // B26/R22.1: per-window LLM extraction (rules fallback inside
         // `Classifier::classify`), hash-skipped and bounded-concurrency.
@@ -674,8 +693,6 @@ impl ClassifyCtx {
         perf.mark("summaries");
         create_tags(self).await?;
         perf.mark("tags");
-        flag_pii(self).await?;
-        perf.mark("pii");
         distill_item(self).await?;
         perf.mark("distill");
         embed_chunks(self).await?;
@@ -1090,14 +1107,6 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
     .await
 }
 
-async fn flag_pii(ctx: &ClassifyCtx) -> Result<(), String> {
-    let item_id = ctx.item_id;
-    run_db(&ctx.data_dir, move |conn| {
-        let _ = crate::pii::flag_pii_for_item(conn, item_id);
-        Ok(())
-    }).await
-}
-
 // hash skip check: if all window hashes equal prev and not force, skip entirely.
 // R15.4: compares already-computed `ClassifyCtx.new_hashes` (was re-hashing
 // every window even though `classify_windows` had just hashed them).
@@ -1128,7 +1137,11 @@ fn distill_unit_content(unit: &crate::classifier::DistilledUnit) -> String {
 // R22.1: uses the LLM distiller (rules fallback inside `Classifier::distill`).
 async fn distill_item(ctx: &ClassifyCtx) -> Result<(), String> {
     let distill_enabled = ctx.settings.get("distill_enabled", None).map(|v| v == "true" || v == "1" || v == "True").unwrap_or(true);
-    if !(crate::distill::DISTILL_DOC_TYPES.contains(&ctx.doc_type.as_str()) && distill_enabled) {
+    // R33.4: structured files skip distillation too — paraphrase chunks are
+    // the same noise class as extracted entities (and burn an LLM call).
+    if ctx.skips_extraction()
+        || !(crate::distill::DISTILL_DOC_TYPES.contains(&ctx.doc_type.as_str()) && distill_enabled)
+    {
         // still need to update distill_hashes to current window hashes to avoid re-distilling later if type changes
         return update_distill_hashes(ctx).await;
     }
@@ -1216,12 +1229,12 @@ async fn update_distill_hashes(ctx: &ClassifyCtx) -> Result<(), String> {
 
 // embed (gated) — wire embedder.embed_gated + sync_vec (P0 3.2)
 /// One batch of chunks of `source_id` that still need a vector (ascending ids
-/// so iteration always advances, even when the IDF/PII gate embeds nothing).
-async fn fetch_embed_batch(data_dir: &str, source_id: i64, last_id: i64) -> Result<Vec<(i64, String, bool)>, String> {
+/// so iteration always advances, even when the IDF gate embeds nothing).
+async fn fetch_embed_batch(data_dir: &str, source_id: i64, last_id: i64) -> Result<Vec<(i64, String)>, String> {
     run_db(data_dir, move |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, content, is_pii FROM chunks \
+                "SELECT id, content FROM chunks \
                  WHERE id > ?1 AND embedding IS NULL AND ( \
                    item_id IN (SELECT id FROM ingested_items WHERE source_id = ?2) \
                    OR entity_id IN (SELECT e.id FROM entities e JOIN ingested_items i ON i.id = e.item_id WHERE i.source_id = ?2)) \
@@ -1230,7 +1243,7 @@ async fn fetch_embed_batch(data_dir: &str, source_id: i64, last_id: i64) -> Resu
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(rusqlite::params![last_id, source_id], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0))
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
             })
             .map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -1255,19 +1268,18 @@ async fn embed_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
     let embed_min_signal = embed_min_signal();
     let gated = sensitive_label(&ctx.label) && !(ctx.classify_trusted && ctx.embed_trusted);
     let item_id = ctx.item_id;
-    let chunks: Vec<(i64, String, bool)> = run_db(&ctx.data_dir, move |conn| {
-        let mut stmt = conn.prepare("SELECT id, content, is_pii FROM chunks WHERE (item_id=?1 OR entity_id IN (SELECT id FROM entities WHERE item_id=?1)) AND embedding IS NULL").unwrap();
-        let rows = stmt.query_map([item_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0))).unwrap().filter_map(|r| r.ok()).collect();
+    let chunks: Vec<(i64, String)> = run_db(&ctx.data_dir, move |conn| {
+        let mut stmt = conn.prepare("SELECT id, content FROM chunks WHERE (item_id=?1 OR entity_id IN (SELECT id FROM entities WHERE item_id=?1)) AND embedding IS NULL").unwrap();
+        let rows = stmt.query_map([item_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).unwrap().filter_map(|r| r.ok()).collect();
         Ok(rows)
     }).await?;
     if chunks.is_empty() {
         return Ok(());
     }
-    let pending_ids: Vec<i64> = chunks.iter().map(|(id, _, _)| *id).collect();
-    let contents: Vec<String> = chunks.iter().map(|(_, c, _)| c.clone()).collect();
-    let is_pii_flags: Vec<bool> = chunks.iter().map(|(_, _, p)| *p).collect();
+    let pending_ids: Vec<i64> = chunks.iter().map(|(id, _)| *id).collect();
+    let contents: Vec<String> = chunks.iter().map(|(_, c)| c.clone()).collect();
     // call embedder (graceful fallback inside embed_gated on remote failure)
-    let out = ctx.embedder.embed_gated(contents, is_pii_flags, gated, embed_min_signal).await.unwrap_or_else(|_| vec![None; pending_ids.len()]);
+    let out = ctx.embedder.embed_gated(contents, gated, embed_min_signal).await.unwrap_or_else(|_| vec![None; pending_ids.len()]);
     let updates: Vec<(i64, Vec<u8>)> = out
         .into_iter()
         .enumerate()
@@ -1483,6 +1495,99 @@ mod tests {
         assert!(titles.contains(&"fn beta".to_string()), "titles: {titles:?}");
         let sec_chunks: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE item_id=?1 AND section_id IS NOT NULL", [iid], |r| r.get(0)).unwrap();
         assert!(sec_chunks >= 2, "each symbol keeps its chunks");
+    }
+
+    #[tokio::test]
+    async fn code_items_skip_extraction_and_purge_legacy() {
+        // R33.2: a code file yields zero entities (even with decision-like
+        // text), keeps symbol chunks, and a re-sync deletes legacy entities
+        // plus their entity chunks. Runs degraded — no models needed.
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('s','folder','{}',1,'',0)", []).unwrap();
+        let sid = conn.last_insert_rowid();
+        let text = "pub fn alpha() {\n    // we decided to use sqlite-vec for vectors\n}\n";
+        let hash = crate::hashing::content_hash(text);
+        conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale) VALUES (?1,'lib.rs','lib.rs',?2,?3,'',0)", rusqlite::params![sid, text, hash]).unwrap();
+        let iid = conn.last_insert_rowid();
+        // legacy code entity + chunk from before R33.2
+        conn.execute("INSERT INTO entities (item_id, kind, summary, source_ref, status) VALUES (?1,'decision','legacy code decision','lib.rs','unverified')", [iid]).unwrap();
+        let eid = conn.last_insert_rowid();
+        conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content) VALUES (?1,'entity','lib.rs','legacy code decision')", [eid]).unwrap();
+        conn.execute("INSERT INTO jobs (source_id, kind, status, total, processed, result, created_at) VALUES (?1,'sync','running',1,0,'{}',datetime('now'))", [sid]).unwrap();
+        let jid = conn.last_insert_rowid();
+        drop(conn);
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let settings = Arc::new(crate::settings::SettingsService::new(store));
+        settings.set_data_dir(dir.path());
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
+        let doc = IngestionDoc {
+            external_id: "lib.rs".to_string(),
+            title: "lib.rs".to_string(),
+            text: text.to_string(),
+            author: String::new(),
+            updated_at: None,
+            source_ref: "lib.rs".to_string(),
+        };
+        let n = pipe.classify_and_store(&data_dir, sid, jid, &doc, false).await.unwrap();
+        assert_eq!(n, 0);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let entities: i64 = conn.query_row("SELECT COUNT(*) FROM entities WHERE item_id=?1", [iid], |r| r.get(0)).unwrap();
+        assert_eq!(entities, 0, "legacy code entities purged on re-sync");
+        let entity_chunks: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE kind='entity'", [], |r| r.get(0)).unwrap();
+        assert_eq!(entity_chunks, 0, "legacy entity chunks cascade-purged");
+        let chunks: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE item_id=?1 AND kind='document' AND section_id IS NOT NULL", [iid], |r| r.get(0)).unwrap();
+        assert!(chunks >= 1, "symbol chunks still stored");
+        let doc_type: String = conn.query_row("SELECT doc_type FROM ingested_items WHERE id=?1", [iid], |r| r.get(0)).unwrap();
+        assert_eq!(doc_type, "code");
+    }
+
+    #[tokio::test]
+    async fn config_files_skip_extraction_and_chunk_by_key() {
+        // R33.4: a YAML file yields zero entities and key sections — same
+        // harness as the code-skip test. The doc_type stays a detected prose
+        // type (not asserted: live Ollama would answer the detect call).
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('s','folder','{}',1,'',0)", []).unwrap();
+        let sid = conn.last_insert_rowid();
+        let text = "server:\n  host: example.com\n  tls:\n    cert_file: /etc/cert.pem\n";
+        let hash = crate::hashing::content_hash(text);
+        conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale) VALUES (?1,'values.yaml','values.yaml',?2,?3,'',0)", rusqlite::params![sid, text, hash]).unwrap();
+        let iid = conn.last_insert_rowid();
+        conn.execute("INSERT INTO jobs (source_id, kind, status, total, processed, result, created_at) VALUES (?1,'sync','running',1,0,'{}',datetime('now'))", [sid]).unwrap();
+        let jid = conn.last_insert_rowid();
+        drop(conn);
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let settings = Arc::new(crate::settings::SettingsService::new(store));
+        settings.set_data_dir(dir.path());
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
+        let doc = IngestionDoc {
+            external_id: "values.yaml".to_string(),
+            title: "values.yaml".to_string(),
+            text: text.to_string(),
+            author: String::new(),
+            updated_at: None,
+            source_ref: "values.yaml".to_string(),
+        };
+        let n = pipe.classify_and_store(&data_dir, sid, jid, &doc, false).await.unwrap();
+        assert_eq!(n, 0);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let entities: i64 = conn.query_row("SELECT COUNT(*) FROM entities WHERE item_id=?1", [iid], |r| r.get(0)).unwrap();
+        assert_eq!(entities, 0, "configs yield no entities");
+        let distilled: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE item_id=?1 AND kind='distilled'", [iid], |r| r.get(0)).unwrap();
+        assert_eq!(distilled, 0, "configs are not distilled");
+        let mut stmt = conn.prepare("SELECT path FROM sections WHERE item_id=?1").unwrap();
+        let paths: Vec<String> = stmt.query_map([iid], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
+        assert!(paths.iter().any(|p| p == "server > tls > cert_file"), "key breadcrumb stored: {paths:?}");
     }
 
     #[tokio::test]

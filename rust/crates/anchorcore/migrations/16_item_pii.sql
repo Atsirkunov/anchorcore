@@ -1,0 +1,2 @@
+-- R35.1 manual PII mark (ingested_items.is_pii) — marker, ALTER handled in Rust
+-- (db.rs ensure_columns via try_add_column, idempotent like 07/09).

@@ -9,13 +9,12 @@ import { OnboardingWizard } from "./OnboardingWizard";
 import { UpdateBanner } from "./Updates";
 import { AskTab } from "./tabs/AskTab";
 import { EntitiesTab } from "./tabs/EntitiesTab";
-import { PiiTab } from "./tabs/PiiTab";
 import { ReviewTab } from "./tabs/ReviewTab";
 import { SettingsTab } from "./tabs/SettingsTab";
 import { SourcesTab } from "./tabs/SourcesTab";
 import { SystemTab } from "./tabs/SystemTab";
 
-type Tab = "ask" | "sources" | "entities" | "review" | "settings" | "system" | "pii";
+type Tab = "ask" | "sources" | "entities" | "review" | "settings" | "system";
 
 // Primary = everyday flow; secondary = configure & inspect (airy grouped nav)
 const PRIMARY_TABS: { id: Tab; label: string }[] = [
@@ -23,7 +22,6 @@ const PRIMARY_TABS: { id: Tab; label: string }[] = [
   { id: "sources", label: "Sources" },
   { id: "entities", label: "Entities" },
   { id: "review", label: "Review" },
-  { id: "pii", label: "PII" },
 ];
 const SECONDARY_TABS: { id: Tab; label: string }[] = [
   { id: "settings", label: "Settings" },
@@ -198,9 +196,6 @@ export default function App() {
         </ErrorBoundary>
         <ErrorBoundary label="Review">
           {tab === "review" && <ReviewTab />}
-        </ErrorBoundary>
-        <ErrorBoundary label="PII">
-          {tab === "pii" && <PiiTab />}
         </ErrorBoundary>
         <ErrorBoundary label="Settings">
           {tab === "settings" && <SettingsTab />}

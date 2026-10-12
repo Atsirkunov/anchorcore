@@ -132,6 +132,7 @@ export function EntitiesTab() {
   const [statusFilter, setStatusFilter] = useState<string>("needs_review");
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [piiBusy, setPiiBusy] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [ctx, setCtx] = useState<Record<number, { source_name: string | null; source_ref: string; window_text: string; expanded_before: string[]; expanded_after: string[]; highlight: string; item_title: string; full_text?: string }>>({});
   // grouped view: Map<item_id, Entity[]> — zero backend change, client-side only
@@ -139,8 +140,6 @@ export function EntitiesTab() {
   const isGrouped = groupedPref ?? entities.length > 200;
   const [expandedDocs, setExpandedDocs] = useState<Set<number>>(new Set());
   const [docCtx, setDocCtx] = useState<Record<number, { item_title: string; source_ref: string; full_text: string; source_name: string | null }>>({});
-  const [piiByItem, setPiiByItem] = useState<Record<number, { is_pii: boolean; flagged: number; categories: string[]; matches: { category: string; label: string; match: string }[] }>>({});
-  const [revealedDocs, setRevealedDocs] = useState<Set<number>>(new Set());
   const [verifiedDocs, setVerifiedDocs] = useState<Set<number>>(new Set());
   const [sectionsByItem, setSectionsByItem] = useState<Record<number, Section[]>>({});
   const [allTags, setAllTags] = useState<Tag[]>([]);
@@ -167,6 +166,19 @@ export function EntitiesTab() {
         const c = await api.entityContext(e.id);
         setCtx((m) => ({ ...m, [e.id]: c }));
       } catch { void 0; }
+    }
+  }
+
+  async function toggleItemPii(itemId: number, next: boolean) {
+    setPiiBusy(itemId);
+    setError(null);
+    try {
+      await api.setItemPii(itemId, next);
+      refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPiiBusy(null);
     }
   }
 
@@ -209,14 +221,9 @@ export function EntitiesTab() {
     });
   }, [filtered]);
 
-  // eagerly fetch PII badge for first 30 docs (avoids 200+ requests)
+  // prefetch sections for grouped TOC chips (first 30 docs)
   useEffect(() => {
     if (groups.length === 0) return;
-    const toFetch = groups.slice(0, 30).filter(([id]) => piiByItem[id] == null);
-    for (const [itemId] of toFetch) {
-      api.itemPii(itemId).then((p) => setPiiByItem((m) => ({ ...m, [itemId]: p }))).catch(() => {});
-    }
-    // also prefetch sections for grouped TOC chips
     const secFetch = groups.slice(0, 30).filter(([id]) => sectionsByItem[id] == null);
     for (const [itemId] of secFetch) {
       api.sections({ item_id: itemId }).then((secs) => setSectionsByItem((m) => ({ ...m, [itemId]: secs }))).catch(() => {});
@@ -236,19 +243,6 @@ export function EntitiesTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtered, isGrouped]);
 
-  function maskPII(text: string, matches: { match: string }[]): string {
-    let out = text;
-    for (const m of matches) {
-      if (!m.match) continue;
-      const esc = m.match.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      try {
-        const re = new RegExp(esc, "gi");
-        out = out.replace(re, "••••");
-      } catch { void 0; }
-    }
-    return out;
-  }
-
   async function toggleDoc(itemId: number, firstEntityId: number) {
     const next = new Set(expandedDocs);
     const isOpen = next.has(itemId);
@@ -260,12 +254,6 @@ export function EntitiesTab() {
         try {
           const c = await api.entityContext(firstEntityId);
           setDocCtx((m) => ({ ...m, [itemId]: { item_title: c.item_title, source_ref: c.source_ref, full_text: (c as unknown as { full_text?: string }).full_text ?? c.window_text, source_name: c.source_name } }));
-        } catch { void 0; }
-      }
-      if (piiByItem[itemId] == null) {
-        try {
-          const p = await api.itemPii(itemId);
-          setPiiByItem((m) => ({ ...m, [itemId]: p }));
         } catch { void 0; }
       }
       if (sectionsByItem[itemId] == null) {
@@ -340,10 +328,8 @@ export function EntitiesTab() {
             const isOpen = expandedDocs.has(itemId);
             const docTitle = docCtx[itemId]?.item_title || first.source_ref.split("/").pop() || `Doc #${itemId}`;
             const docRef = docCtx[itemId]?.source_ref || first.source_ref;
-            const pii = piiByItem[itemId];
-            const isPii = !!pii?.is_pii;
-            const isRevealed = revealedDocs.has(itemId);
             const isDocVerified = verifiedDocs.has(itemId) || list.every((e) => e.status === "verified");
+            const docMarked = list[0].item_is_pii ?? false;
             return (
               <section key={itemId} style={{ ...styles.docCard, borderLeft: `4px solid ${isDocVerified ? theme.greenBg : theme.accent}` }}>
                 <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -373,34 +359,22 @@ export function EntitiesTab() {
                       <span key={k} title={k} style={{ width: 8, height: 8, borderRadius: 999, background: KIND_COLORS[k as string] ?? theme.textDim, display: "inline-block", border: `1px solid ${theme.border}` }} />
                     ))}
                   </span>
-                  {isPii && (
-                    <span title={(pii?.categories ?? []).join(", ")} style={styles.piiBadge}>
-                      PII ● {pii?.flagged ?? pii?.categories.length}
-                    </span>
-                  )}
                   {isDocVerified && <span style={{ fontSize: 10, background: theme.greenBg, color: theme.greenText, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 700 }}>✓ Verified</span>}
+                  <button
+                    onClick={() => toggleItemPii(itemId, !docMarked)}
+                    disabled={piiBusy === itemId}
+                    title={docMarked ? "Clear the PII mark on this document" : "Mark this document as PII"}
+                    style={{ ...styles.docToggle, ...(docMarked ? { borderColor: theme.amber, color: theme.amber, fontWeight: 700 } : {}), ...(piiBusy === itemId ? styles.disabled : {}) }}
+                  >
+                    {piiBusy === itemId ? "…" : docMarked ? "PII ●" : "Mark PII"}
+                  </button>
                   <button onClick={() => toggleDoc(itemId, first.id)} style={styles.docToggle}>
                     {isOpen ? "Hide doc ▲" : isDocVerified ? "Open doc ▶" : "Show doc ▼"}
                   </button>
                 </div>
                 {isOpen && docCtx[itemId]?.full_text && (
                   <div style={{ marginTop: 8, padding: "0.6rem 0.75rem", background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: 6, maxHeight: 320, overflowY: "auto" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                      <div style={{ fontSize: 11, color: theme.textDim, textTransform: "uppercase" }}>Whole doc — {docTitle}</div>
-                      {isPii && (
-                        <button
-                          onClick={() => {
-                            const next = new Set(revealedDocs);
-                            if (isRevealed) next.delete(itemId);
-                            else next.add(itemId);
-                            setRevealedDocs(next);
-                          }}
-                          style={{ ...styles.docToggle, borderColor: theme.amber, color: theme.amber }}
-                        >
-                          {isRevealed ? "Hide PII" : "Reveal PII"}
-                        </button>
-                      )}
-                    </div>
+                    <div style={{ fontSize: 11, color: theme.textDim, textTransform: "uppercase", marginBottom: 4 }}>Whole doc — {docTitle}</div>
                     {sectionsByItem[itemId] && sectionsByItem[itemId].length > 0 && (
                       <div style={{ marginBottom: 8, display: "grid", gap: 3, padding: "0.4rem 0.5rem", background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: 6 }}>
                         <div style={{ fontSize: 10, color: theme.textDim, textTransform: "uppercase" }}>Sections — TOC</div>
@@ -412,11 +386,8 @@ export function EntitiesTab() {
                         ))}
                       </div>
                     )}
-                    {isPii && !isRevealed && <div style={{ fontSize: 11, color: theme.amber, marginBottom: 6 }}>PII hidden — {pii?.categories.join(", ")} · click Reveal to show</div>}
                     <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontSize: 12, color: theme.textMuted, lineHeight: 1.5 }}>
-                      {isPii && !isRevealed
-                        ? maskPII(docCtx[itemId].full_text.slice(0, 16000), pii?.matches ?? [])
-                        : docCtx[itemId].full_text.slice(0, 16000)}
+                      {docCtx[itemId].full_text.slice(0, 16000)}
                     </pre>
                   </div>
                 )}
@@ -541,6 +512,14 @@ export function EntitiesTab() {
               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                 <button style={{ ...styles.button, ...(busyId === e.id ? styles.disabled : {}) }} disabled={busyId === e.id} onClick={() => update(e, { status: "verified" })}>{busyId === e.id ? "…" : "Verify"}</button>
                 <button style={{ ...styles.button, ...(busyId === e.id ? styles.disabled : {}) }} disabled={busyId === e.id} onClick={() => update(e, { status: "disputed" })}>{busyId === e.id ? "…" : "Dispute"}</button>
+                <button
+                  style={{ ...styles.button, ...(piiBusy === e.item_id ? styles.disabled : {}) }}
+                  disabled={piiBusy === e.item_id}
+                  onClick={() => toggleItemPii(e.item_id, !(e.item_is_pii ?? false))}
+                  title={(e.item_is_pii ? "Clear the PII mark on this document" : "Mark this document as PII") + " — the mark lives on the whole document, not this row"}
+                >
+                  {piiBusy === e.item_id ? "…" : e.item_is_pii ? "PII ●" : "Mark PII"}
+                </button>
                 <select value={e.kind} onChange={(ev) => update(e, { kind: ev.target.value as Entity["kind"] })} style={styles.input}>
                   <option value="decision">decision</option>
                   <option value="document">document</option>
@@ -564,7 +543,6 @@ const styles: Record<string, React.CSSProperties> = {
   docCount: { fontSize: 11, background: theme.bgHover, color: theme.textMuted, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 600 },
   needBadge: { fontSize: 10, background: theme.amberBg, color: theme.amber, border: `1px solid ${theme.amber}`, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 700 },
   docToggle: { background: "none", border: `1px solid ${theme.border}`, color: theme.accentAlt, borderRadius: 6, padding: "0.2rem 0.5rem", cursor: "pointer", fontSize: 11 },
-  piiBadge: { fontSize: 10, background: theme.amberBg, color: theme.amber, border: `1px solid ${theme.amber}`, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 700 },
   codeBadge: { fontSize: 10, background: theme.blueBg, color: theme.blue, border: `1px solid ${theme.blue}`, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 700 },
   badge: { fontSize: 11, color: theme.bg, padding: "0.1rem 0.5rem", borderRadius: 999, fontWeight: 700, textTransform: "uppercase" },
   button: { padding: "0.3rem 0.7rem", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bgHover, color: theme.text, cursor: "pointer", fontSize: 12 },

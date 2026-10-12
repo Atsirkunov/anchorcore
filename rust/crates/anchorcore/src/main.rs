@@ -32,7 +32,6 @@ mod license;
 mod mcp;
 mod mcp_setup;
 mod ollama;
-mod pii;
 mod pipeline;
 mod projects;
 mod retrieval;
@@ -46,6 +45,7 @@ mod sources;
 mod stubs;
 mod system;
 mod tags;
+mod tray;
 mod watcher;
 
 use axum::{
@@ -66,6 +66,9 @@ struct Args {
     data_dir: String,
     #[arg(long, global = true, default_value = "")]
     host: String,
+    /// Disable the system tray icon (Windows/macOS) — headless/CI/Team
+    #[arg(long, global = true)]
+    no_tray: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -217,6 +220,22 @@ mod panic_hook_tests {
         let payload = 42i32;
         let line = format_panic_message(&payload, None);
         assert!(line.contains("unknown panic payload"));
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    /// R34.1: tray Quit fires this Notify — the server must stop, not hang.
+    #[tokio::test]
+    async fn shutdown_signal_returns_on_notify() {
+        let notify = std::sync::Arc::new(tokio::sync::Notify::new());
+        let waiter = tokio::spawn(super::shutdown_signal(notify.clone()));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        notify.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+            .await
+            .expect("shutdown_signal must return after notify")
+            .unwrap();
     }
 }
 
@@ -424,17 +443,12 @@ fn build_router(state: health::AppState) -> Router {
         .route("/entities/:id/disputes", get(entities::disputes_handler))
         .route("/entities/:id/conflicts", get(entities::conflicts_list_handler).post(entities::conflict_create_handler))
         .route("/entities/:id/conflicts/:other_id", delete(entities::conflict_delete_handler))
-        .route("/items/:id", get(items::get_handler))
+        .route("/items", get(items::list_handler))
+        .route("/items/:id", get(items::get_handler).patch(items::patch_handler))
         .route("/entities/:id/context", get(entities::context_handler))
         .route("/review/low-confidence", get(review::low_confidence_handler))
         .route("/review/duplicates", get(review::duplicates_handler))
         .route("/review/merge", post(review::merge_handler))
-        // pii (R4.3)
-        .route("/pii/config", get(pii::get_config_handler).put(pii::put_config_handler))
-        .route("/pii/review", get(pii::review_handler))
-        .route("/pii/review/:id", post(pii::decide_handler))
-        .route("/pii/scan/:id", post(pii::scan_handler))
-        .route("/pii/item/:id", get(pii::item_pii_handler))
         // projects (R4.4)
         .route("/projects", get(projects::list_handler).post(projects::create_handler))
         .route("/projects/default", get(projects::default_handler))
@@ -499,23 +513,50 @@ fn maybe_open_browser(addr: &str) {
     let addr_clone = addr.to_string();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-        // Use /usr/bin/open on macOS (Finder launch has minimal PATH), fallback to `open` crate elsewhere
-        let res = if cfg!(target_os = "macos") {
-            std::process::Command::new("/usr/bin/open")
-                .arg(&url_clone)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        } else {
-            open::that(&url_clone).map_err(|e| e.to_string())
-        };
+        let res = crate::tray::open_url(&url_clone);
         match res {
             Ok(_) => tracing::info!("opened browser at {}", url_clone),
             Err(e) => tracing::warn!("failed to open browser at {}: {} (try open http://{} manually)", url_clone, e, addr_clone),
         }
     });
+}
+
+/// R34.1: graceful shutdown — tray Quit, Ctrl+C, or SIGTERM (unix), whichever first.
+async fn shutdown_signal(notify: std::sync::Arc<tokio::sync::Notify>) {
+    wait_for_shutdown(notify).await;
+    tracing::info!("shutdown requested");
+}
+
+async fn wait_for_quit_or_ctrl_c(notify: &tokio::sync::Notify) {
+    tokio::select! {
+        _ = notify.notified() => {},
+        _ = tokio::signal::ctrl_c() => {},
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown(notify: std::sync::Arc<tokio::sync::Notify>) {
+    wait_for_quit_or_ctrl_c(&notify).await;
+}
+
+#[cfg(unix)]
+async fn wait_for_shutdown(notify: std::sync::Arc<tokio::sync::Notify>) {
+    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        Ok(mut sig) => {
+            tokio::select! {
+                _ = notify.notified() => {},
+                _ = tokio::signal::ctrl_c() => {},
+                _ = sig.recv() => {},
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                "SIGTERM handler unavailable ({}), Ctrl+C + tray Quit only",
+                e
+            );
+            wait_for_quit_or_ctrl_c(&notify).await;
+        }
+    }
 }
 
 fn mcp_mode_requested() -> bool {
@@ -594,8 +635,17 @@ async fn main() {
     let addr = format!("{}:{}", resolve_host(&args.host), args.port);
     tracing::info!("listening on {}", addr);
     maybe_open_browser(&addr);
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    // Bind via std first: a second instance fails here before it can plant a
+    // tray icon, and tray creation below stays on the main thread (macOS).
+    let std_listener = std::net::TcpListener::bind(&addr).unwrap();
+    std_listener.set_nonblocking(true).unwrap();
+    let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
+    let _tray = tray::spawn_if_enabled(&addr, args.no_tray, shutdown.clone());
+    let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(shutdown))
+        .await
+        .unwrap();
 }
 
 async fn qa_handler(

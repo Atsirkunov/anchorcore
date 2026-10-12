@@ -113,6 +113,8 @@ fn ensure_columns(conn: &Connection) -> Result<()> {
     try_add_column(conn, "ALTER TABLE ingested_items ADD COLUMN doc_type VARCHAR(50) NOT NULL DEFAULT ''");
     try_add_column(conn, "ALTER TABLE ingested_items ADD COLUMN window_hashes TEXT NOT NULL DEFAULT '{}'");
     try_add_column(conn, "ALTER TABLE ingested_items ADD COLUMN distill_hashes TEXT NOT NULL DEFAULT '{}'");
+    // R35.1: manual PII mark (whole document)
+    try_add_column(conn, "ALTER TABLE ingested_items ADD COLUMN is_pii INTEGER NOT NULL DEFAULT 0");
     // entities.window_text/window_index/dispute_count (b26 + B3)
     try_add_column(conn, "ALTER TABLE entities ADD COLUMN window_text TEXT NOT NULL DEFAULT ''");
     try_add_column(conn, "ALTER TABLE entities ADD COLUMN window_index INTEGER");
@@ -337,6 +339,8 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/14_uids.sql")),
         // R27.4: free-text reason on conflict links
         M::up(include_str!("../migrations/15_conflict_note.sql")),
+        // R35.1: manual PII mark at whole-document level
+        M::up(include_str!("../migrations/16_item_pii.sql")),
     ])
 }
 
@@ -414,7 +418,7 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         run_migrations(&mut conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 15);
+        assert_eq!(v, 16);
         assert_eq!(vec_trigger_sql(&conn), before);
         let sys_sql: String = conn
             .query_row("SELECT sql FROM sqlite_master WHERE name = 'system_events'", [], |r| r.get(0))

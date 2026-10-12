@@ -37,9 +37,9 @@ needs custom glue; MCP is the glue.
 
 | Tool | Parameters | Returns | Maps to |
 |---|---|---|---|
-| `ask` | `question` (required), `project_id?`, `public_only?`, `include_content?` | composed answer + citations with provenance (file path + title on every citation; full chunk bytes on opt-in, capped at 4000 chars with `content_truncated`) | `POST /qa`, `POST /qa/public` |
-| `search` | `query` (required), `k` (default 8, max 50), `project_id?`, `public_only?` | cited chunks with provenance (item title/path, source ref, score); long chunks capped at 4000 chars with `content_truncated` flagged | `POST /qa/search` |
-| `get_entity` | `entity_id` | entity + provenance | Entity graph |
+| `ask` | `question` (required), `project_id?`, `public_only?`, `include_content?` | composed answer + citations with provenance (item id + file path + title + env class on every citation; full chunk bytes on opt-in, capped at 4000 chars with `content_truncated`) | `POST /qa`, `POST /qa/public` |
+| `search` | `query` (required), `k` (default 8, max 50), `project_id?`, `public_only?`, `env?` (`live`/`test`) | cited chunks with provenance (item id/title/path, env class, source ref, score); summaries/snippets window on the match; test fixtures rank below live hits unless the query names them; long chunks capped at 4000 chars with `content_truncated` flagged | `POST /qa/search` |
+| `get_entity` | `entity_id` | entity + parent item/chunk links (`item_id`, `chunk_id`) + manual PII mark | Entity graph |
 | `get_source` | `source_id` | source details (no config/secrets) | Sources |
 | `list_sources` | — | names, connectors, last sync | Sources |
 | `memory_status` | — | version, model availability, pending embeddings | `/system/status` |

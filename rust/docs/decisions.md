@@ -4,6 +4,15 @@ ADR log. Append newest first.
 
 ---
 
+## 2026-10-12 — R34.1: System tray via tray-icon, NSApplication first on macOS
+
+* **Decision:** Minimal tray (Open + Quit, stay-in-tray) with Tauri's `tray-icon` (+ `muda` menu), target-gated to Windows/macOS with a no-op stub on Linux so CI needs no system tray libraries. Quit drives the same graceful shutdown as Ctrl+C/SIGTERM (new `shutdown_signal`, all three select-raced). On macOS the app initializes `NSApplication` before building the status item — without it macOS 15 aborts in `CGSConnectionByID` (uncatchable assertion; tray-icon never inits it). Icon is the favicon rasterized in code (no asset). Opt-outs: `--no-tray`, `ANCHOR_TRAY=0`.
+* **Context:** Owner request — windowed release builds have no console, so stopping the app meant Task Manager/Activity Monitor/`kill`. Scope locked by Q&A: minimal menu, Win+macOS, stay-in-tray (no single-instance).
+* **Alternatives considered:** (A) bare `statusItemWithLength` with no NSApp (tray-icon default) — aborts on macOS 15.5, proven by a 20-line probe (exit 134) while the Swift `NSApplication.shared` + status-item probe on the same machine succeeded. (B) helper process for the tray (survive the abort) — rejected, IPC complexity for an exotic case; failures log and fall back to tray-less instead. (C) SSH-sniffing to auto-disable headless — rejected as magic; explicit flags only (true-headless macOS is untested).
+* **Consequences:** `main` binds via `std::net::TcpListener` (no await) so tray creation stays on the main thread and a second instance dies at bind before planting a zombie icon; `maybe_open_browser` shares `tray::open_url`. Menu clicks can't be automated here — the seams are unit-tested (gating, icon, Notify→shutdown) and creation/serve/shutdown are live-smoked; physical clicks are hand-verified on release builds. Docs: `docs/tray.md`.
+
+---
+
 ## 2026-10-12 — R28: Agent-native read path + ops fixes (owner bug report)
 
 * **Decision:** Fix the owner-reported defects at the root: (1) `/qa/search` fills `item_title` and `path` (section breadcrumb, else the item's relative path via `external_id`) and accepts `include_content: true` as the alias for `fields: content` — content is served verbatim on opt-in, the summary preview grew 200→500 chars; (2) the Python embedding backfill (`scheduler.py:_backfill_loop` + startup one-shot) is ported as `scheduler.rs` `spawn_backfill`/`backfill_once` (startup + every 15 min), deliberately **without** the IDF/PII ingest gates — its job is to drain `pending_embeddings` (IDF-skipped low-signal chunks like `"The"` would otherwise stay NULL forever) and to log + record a `system_events` warning when the embedder is down; (3) tracing writes a rotating `{data_dir}/anchorcore.log` (10 MB × 3, Python parity) in addition to stdout; (4) `finish_job` no longer overwrites `total`/`processed` with the changed-items count — `total` stays the docs scanned, the result JSON's `items` stays the changed/new subset.
@@ -61,5 +70,20 @@ ADR log. Append newest first.
 * **Decision:** Use `rusqlite_migration` in `rust/crates/anchorcore/src/db.rs:1` with idempotent `migrations/*.sql` (IF NOT EXISTS + `ensure_columns`) rather than `refinery`.
 * **Context:** Alembic is source of truth; Rust must apply history on both fresh and Python-created DBs without inventing schema. `rusqlite_migration` handles `PRAGMA foreign_keys=ON` + `WAL` + `migrations.to_latest` idempotently and matches `backend/app/db.py:44` pragmas.
 * **Consequences:** New Rust tables must have a matching Alembic migration; Rust devs run `cargo test` against `data/anchorcore.db` not a separate file.
+
+---
+
+## 2026-10-12 — R35.1: people-driven PII — manual doc mark, auto-detect deleted
+
+* **Decision:** PII is marked by people at whole-document level (`ingested_items.is_pii`, `PATCH /items/:id`, Entities toggle, `item_is_pii` on entity JSON, backup round-trip). The auto-detect stack is deleted, not deprecated-in-place: `pii.rs` incl. `scan_text` + the regex KB, `/pii/*` routes, ingest `flag_pii` phase, `embed_gated` chunk flags, the `?gate=provider` honor system, and the chunk-`is_pii` half of the answer/search gate. Source labels + `public_only` + cloud-trust stay and are now the only enforcement.
+* **Context:** Owner decision after the direct-API bypass report: entity/item reads gated only on self-asserted `?gate=provider`, and ask/search gated against the server's provider instead of the byte consumer. Building a real multi-principal trust model for a single-user local app is overengineering; the honor system gave false confidence. The auto machinery also had measured costs (`flag_pii_for_item`: 28 s on one PDF, 100–250 ms per small file — R30.5) and regex detection leaks by nature.
+* **Alternatives considered:**
+  - *A: `scan_text` survives as a suggest-helper* — rejected: no suggest UI exists and none is planned; dead code with a KB to maintain. Git history preserves it if a suggest feature is ever specified.
+  - *B: Keep chunk flags, gate on them* — rejected: same leak-by-nature problem; doc-level people marks are coarser but truthful.
+  - *C: Fix `?gate` into real enforcement* — rejected: the bypass report's option set; overengineering at this stage (see Context).
+* **Consequences:**
+  - `chunks.is_pii`/`pii_categories` columns stop being written but stay until a follow-up drop migration (R35.3); backup keeps round-tripping them meanwhile.
+  - How manual marks gate cloud classify/embed/answer is a follow-up ticket (R35.2), not bundled — until then marks are advisory + visible.
+  - R30.5's "PII scan bounded" clause is resolved by deletion; its tag/empty-text clauses stand.
 
 ---

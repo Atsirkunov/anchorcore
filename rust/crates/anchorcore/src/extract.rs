@@ -41,6 +41,10 @@ const CODE_EXTS: &[&str] = &[
 /// `.dockerignore` stay non-code).
 const CODE_NAMES: &[&str] = &["dockerfile", "makefile", "justfile", "gemfile", "rakefile", "cmakelists.txt"];
 
+/// Hierarchical config formats — chunked by key/table (R33.4), never
+/// entity-extracted. Flat configs (ini/cfg/...) stay prose-chunked.
+const CONFIG_EXTS: &[&str] = &["yaml", "yml", "json", "jsonc", "toml"];
+
 /// Extensions that need a real extractor (not plain text).
 const FORMAT_EXTS: &[&str] = &[
     "html", "htm", "pdf", "docx", "docm", "pptx", "pptm", "xlsx", "xlsm", "xlsb", "xls", "ods", "odt", "odp", "rtf",
@@ -83,6 +87,16 @@ pub fn is_code_filename(name: &str) -> bool {
 
 pub fn is_code_path(path: &Path) -> bool {
     path.file_name().and_then(|n| n.to_str()).map(is_code_filename).unwrap_or(false)
+}
+
+/// True when a filename is a hierarchical config file — drives the
+/// key/table chunking family and the pipeline extraction skip (R33.4).
+pub fn is_config_filename(name: &str) -> bool {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name).to_ascii_lowercase();
+    match base.rsplit('.').next() {
+        Some(ext) if ext != base.as_str() => CONFIG_EXTS.contains(&ext),
+        _ => false,
+    }
 }
 
 /// Extract text from a file on disk (folder connector).
@@ -1133,6 +1147,18 @@ Hello \b bold\b0  and \'93quoted\'94.\par Second \u8364? paragraph.\par}";
         }
         assert!(is_code_path(Path::new("a/b/main.go")));
         assert!(!is_code_path(Path::new("a/b/notes.md")));
+    }
+
+    #[test]
+    fn config_filename_matrix() {
+        // R33.4: hierarchical configs are their own family — never code.
+        for yes in ["config.yaml", "values.yml", "C:\\repo\\tsconfig.json", "a/b/settings.jsonc", "Cargo.toml"] {
+            assert!(is_config_filename(yes), "{yes} should be config");
+            assert!(!is_code_filename(yes), "{yes} should not be code");
+        }
+        for no in ["notes.md", "main.rs", "app.ini", "setup.cfg", "data.xml", "Makefile", "README"] {
+            assert!(!is_config_filename(no), "{no} should not be config");
+        }
     }
 
     #[test]

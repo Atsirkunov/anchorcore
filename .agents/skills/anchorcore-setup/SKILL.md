@@ -1,6 +1,6 @@
 ---
 name: anchorcore-setup
-description: Install, update, launch, connect, and fully configure AnchorCore (local-first company memory) through its local REST API — always check the installed build and any installer copy on the PC against the newest GitHub release and update when stale, first-run setup on Windows/macOS/Linux, answer-model choice (local Ollama or the user's own OpenAI-compatible AI), classification/embedding models, sources (folder, Jira, Linear, Google Drive, generic REST), source labels and cloud-trust rules, projects, PII settings, MCP agent connection, and end-to-end verification of cited answers. Use when the user asks to set up, configure, install, update, upgrade, connect, audit, or troubleshoot AnchorCore; add their documents or trackers to it; point its answers at their own model; or asks why answers are context-only, keyword-only, or uncited.
+description: Install, update, launch, connect, and fully configure AnchorCore (local-first company memory) through its local REST API — always check the installed build and any installer copy on the PC against the newest GitHub release and update when stale, first-run setup on Windows/macOS/Linux, answer-model choice (local Ollama or the user's own OpenAI-compatible AI), classification/embedding models, sources (folder, Jira, Linear, Google Drive, generic REST), source labels and cloud-trust rules, projects, manual PII marking, MCP agent connection, and end-to-end verification of cited answers. Use when the user asks to set up, configure, install, update, upgrade, connect, audit, or troubleshoot AnchorCore; add their documents or trackers to it; point its answers at their own model; or asks why answers are context-only, keyword-only, or uncited.
 ---
 
 # AnchorCore setup
@@ -146,7 +146,7 @@ name the cause** (`/system/status` → `answer.provider` is `ollama|configured|m
 `context_only` output as a model answer — and never let a harness degrade
 silently to a model the user did not choose.
 
-Cloud providers are trusted for `sensitive`/`pii` sources and PII-flagged chunks
+Cloud providers are trusted for `sensitive`/`pii` sources
 only when the host is in `ANCHOR_TRUSTED_PROVIDERS` or `ANCHOR_CLOUD_TRUST=1`
 (both env vars — restart needed); localhost is always trusted. If the user is
 not comfortable with that, use a local model.
@@ -187,10 +187,9 @@ repo's `sample/` corpus (release zips do not include it; clone
 
 - Projects scope Ask: `POST /projects {"name":"Payments","source_ids":[1,2]}`;
   `PATCH /projects/{id} {"source_ids":[…],"is_default":true}`.
-- PII: `GET /pii/config` → `PUT /pii/config {"custom_words":["…"],
-  "disabled_categories":["…"]}`; review `GET /pii/review?only_flagged=true`;
-  decide `POST /pii/review/{chunk_id} {"is_pii":true|false}`; scan a source
-  `POST /pii/scan/{source_id}`.
+- PII marks (people-driven): `PATCH /items/{id} {"is_pii":true|false}` marks
+  a whole document; entities carry their parent item's mark as `item_is_pii`.
+  The auto-detect/review endpoints are retired — do not call `/pii/*`.
 - Housekeeping: `GET /review/low-confidence`, `GET /review/duplicates`,
   `POST /review/merge {"proposal_id":…,"decision":"merge"|"dismiss"}`.
 

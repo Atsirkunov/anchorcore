@@ -1,5 +1,5 @@
 //! Embedder + IDF gate — port of `backend/app/embedder.py:1`.
-//! `pack_f32`, cloud-trust gate for `is_pii` chunks, `vec0` sync triggers, `signal()` gating via `distill::signal`.
+//! `pack_f32`, cloud-trust gate for labeled sources, `vec0` sync triggers, `signal()` gating via `distill::signal`.
 
 use std::sync::Arc;
 
@@ -134,11 +134,12 @@ impl Embedder {
     }
 
     /// Embed with IDF+trust gating (mirrors `backend/app/pipeline.py:316` `_embed_item`).
-    /// Returns packed bytes for storage; skips low-signal and PII-gated chunks.
+    /// Returns packed bytes for storage; skips low-signal chunks and gated sources.
+    /// R35.1: the per-chunk PII skip is gone with auto-detect — `gated` (source
+    /// label vs provider trust) is the only remaining gate.
     pub async fn embed_gated(
         &self,
         contents: Vec<String>,
-        is_pii_flags: Vec<bool>,
         gated: bool,
         embed_min_signal: f64,
     ) -> Result<Vec<Option<Vec<u8>>>, String> {
@@ -155,18 +156,10 @@ impl Embedder {
             }
             embeddable_idx.push(i);
         }
-        // PII gate
-        let trusted = self.cloud_trusted();
-        if gated && !trusted {
-            tracing::info!("embed gate: sensitive source skipped remote embedder (PII gate)");
+        // Label gate: sensitive/pii sources skip an untrusted remote embedder.
+        if gated && !self.cloud_trusted() {
+            tracing::info!("embed gate: sensitive source skipped remote embedder");
             return Ok(vec![None; contents.len()]);
-        }
-        if !trusted {
-            let before = embeddable_idx.len();
-            embeddable_idx.retain(|&i| !is_pii_flags[i]);
-            if embeddable_idx.len() < before {
-                tracing::info!("embed gate: {} PII-flagged chunk(s) skipped remote embedder", before - embeddable_idx.len());
-            }
         }
         if embeddable_idx.is_empty() {
             return Ok(vec![None; contents.len()]);

@@ -1,4 +1,4 @@
-import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, ConflictLink, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, PiiChunk, PiiConfig, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult, UpdateStatus } from "./types";
+import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, ConflictLink, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult, UpdateStatus } from "./types";
 
 export class RequestAbortedError extends Error {
   constructor(message = "Request cancelled") {
@@ -280,31 +280,6 @@ export const api = {
     }),
   ollamaPulls: () => request<{ pulls: PullProgress[] }>("/system/ollama/pulls"),
 
-  piiConfig: () => request<PiiConfig>("/pii/config"),
-  updatePiiConfig: (payload: { custom_words?: string[]; disabled_categories?: string[] }) =>
-    request<PiiConfig>("/pii/config", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }),
-  piiReview: (params?: { only_flagged?: boolean; limit?: number; offset?: number }) => {
-    const q = new URLSearchParams();
-    if (params?.only_flagged !== undefined) q.set("only_flagged", String(params.only_flagged));
-    if (params?.limit !== undefined) q.set("limit", String(params.limit));
-    if (params?.offset !== undefined) q.set("offset", String(params.offset));
-    return request<PiiChunk[]>("/pii/review" + (q.toString() ? `?${q}` : ""));
-  },
-  decidePii: (chunkId: number, is_pii: boolean) =>
-    request<PiiChunk>(`/pii/review/${chunkId}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ is_pii }),
-    }),
-  scanPiiSource: (sourceId: number) =>
-    request<{ source_id: number; chunks: number; flagged: number }>(`/pii/scan/${sourceId}`, { method: "POST" }),
-  itemPii: (itemId: number) =>
-    request<{ item_id: number; is_pii: boolean; flagged: number; total: number; categories: string[]; matches: { category: string; label: string; match: string }[] }>(`/pii/item/${itemId}`),
-
   sections: (params?: { item_id?: number; source_id?: number }) => {
     const q = new URLSearchParams();
     if (params?.item_id) q.set("item_id", String(params.item_id));
@@ -315,4 +290,19 @@ export const api = {
   sectionChunks: (id: number) => request<import("./types").ChunkInfo[]>(`/sections/${id}/chunks`),
   tags: () => request<import("./types").Tag[]>("/tags"),
   tagChunks: (id: number) => request<import("./types").ChunkInfo[]>(`/tags/${id}/chunks`),
+  setItemPii: (itemId: number, isPii: boolean) =>
+    request<{ id: number; is_pii: boolean }>(`/items/${itemId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_pii: isPii }),
+    }),
+  listItems: (params?: { path_prefix?: string; source_id?: number; limit?: number; offset?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.path_prefix) q.set("path_prefix", params.path_prefix);
+    if (params?.source_id) q.set("source_id", String(params.source_id));
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.offset) q.set("offset", String(params.offset));
+    const qs = q.toString();
+    return request<import("./types").ItemList>(`/items${qs ? `?${qs}` : ""}`);
+  },
 };

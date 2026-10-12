@@ -29,28 +29,78 @@ pub fn is_who_knows(query: &str) -> bool {
     re.is_match(query)
 }
 
-/// Mirrors `answer_engine.py:71` _fts_match_query — R8.2: Unicode-aware (was [a-z0-9_])
-pub fn fts_match_query(question: &str) -> Option<String> {
+/// Shared query terms for FTS matching and match-centered snippets:
+/// Unicode word runs, lowercased, len ≥ 2, stopwords removed.
+fn query_terms(question: &str) -> Vec<String> {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| Regex::new(r"[\p{L}\p{N}_§\-]+").unwrap());
-    let stopwords: HashSet<&str> = [
-        "a", "an", "the", "and", "or", "but", "of", "in", "on", "at", "to", "for", "with",
-        "about", "is", "are", "was", "were", "be", "been", "being", "am", "do", "does", "did",
-        "have", "has", "had", "will", "would", "can", "could", "should", "shall", "may",
-        "might", "must", "what", "which", "who", "whom", "whose", "when", "where", "why", "how",
-        "this", "that", "these", "those", "it", "its", "not", "no", "so", "if", "then", "than",
-        "too", "very", "s", "t", "you", "your", "we", "our", "they", "their", "i", "me", "my",
-    ]
-    .into();
-    let terms: Vec<String> = re
-        .find_iter(&question.to_lowercase())
+    static STOPWORDS: OnceLock<HashSet<&str>> = OnceLock::new();
+    let stopwords = STOPWORDS.get_or_init(|| {
+        [
+            "a", "an", "the", "and", "or", "but", "of", "in", "on", "at", "to", "for", "with",
+            "about", "is", "are", "was", "were", "be", "been", "being", "am", "do", "does", "did",
+            "have", "has", "had", "will", "would", "can", "could", "should", "shall", "may",
+            "might", "must", "what", "which", "who", "whom", "whose", "when", "where", "why", "how",
+            "this", "that", "these", "those", "it", "its", "not", "no", "so", "if", "then", "than",
+            "too", "very", "s", "t", "you", "your", "we", "our", "they", "their", "i", "me", "my",
+        ]
+        .into()
+    });
+    re.find_iter(&question.to_lowercase())
         .map(|m| m.as_str().to_string())
         .filter(|t| t.len() >= 2 && !stopwords.contains(t.as_str()))
-        .collect();
+        .collect()
+}
+
+/// Mirrors `answer_engine.py:71` _fts_match_query — R8.2: Unicode-aware (was [a-z0-9_])
+pub fn fts_match_query(question: &str) -> Option<String> {
+    let terms = query_terms(question);
     if terms.is_empty() {
         return None;
     }
     Some(terms.iter().map(|t| format!("\"{}\"", t)).collect::<Vec<_>>().join(" OR "))
+}
+
+/// Earliest query-term occurrence in lowercased `hay`: byte offset + term char len.
+fn earliest_term_pos(hay: &str, terms: &[String]) -> Option<(usize, usize)> {
+    terms
+        .iter()
+        .filter_map(|t| hay.find(t.as_str()).map(|b| (b, t.chars().count())))
+        .min_by_key(|(b, _)| *b)
+}
+
+/// Match-centered preview: the `n`-char window around the first query-term
+/// hit, `…`-marked where cut. Falls back to the head (byte-identical to a
+/// plain prefix) when nothing matches — a head-only preview of an expanded
+/// hit hides the match it was expanded for (1.0.24 retest).
+pub fn match_snippet(content: &str, query: &str, n: usize) -> String {
+    if n == 0 {
+        return String::new();
+    }
+    let chars: Vec<char> = content.chars().collect();
+    if chars.len() <= n {
+        return content.to_string();
+    }
+    // Window math runs on the lowercased copy: case mapping can shift byte
+    // offsets (e.g. 'İ'), so the original must never be sliced at them.
+    let lower = content.to_lowercase();
+    let Some((byte, term_len)) = earliest_term_pos(&lower, &query_terms(query)) else {
+        return chars[..n].iter().collect();
+    };
+    let match_char = lower[..byte].chars().count().min(chars.len());
+    let half = (n.saturating_sub(term_len)) / 2;
+    let start = match_char.saturating_sub(half);
+    let end = (start + n).min(chars.len());
+    let start = end.saturating_sub(n);
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.extend(chars[start..end].iter());
+    if end < chars.len() {
+        out.push('…');
+    }
+    out
 }
 
 /// Mirrors `answer_engine.py:96` _rrf_fuse_multi
@@ -198,10 +248,11 @@ fn vec_chunk_count(conn: &Connection) -> i64 {
 
 // --- R15.1: shared search helpers (single implementation for every scope) ---
 
-/// Which chunk kinds a search covers. Base vec/FTS search = all kinds.
+/// Which chunk kinds a search covers. Base vec/FTS search = leaf kinds:
+/// summaries are TOC coarse-stage internals — a `doc_summary` surfacing as a
+/// final hit is a one-line extract masquerading as evidence (1.0.24 retest).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KindScope {
-    All,
     Summary,
     Leaf,
 }
@@ -209,13 +260,12 @@ enum KindScope {
 impl KindScope {
     fn kind_clause(&self) -> Option<&'static str> {
         match self {
-            KindScope::All => None,
             KindScope::Summary => Some(" AND c.kind IN ('section_summary','doc_summary')"),
             KindScope::Leaf => Some(" AND c.kind IN ('document','entity','distilled')"),
         }
     }
 
-    /// Base/leaf treat `Some({})` as no-match; summary treats it as no-prune.
+    /// Leaf treats `Some({})` as no-match; summary treats it as no-prune.
     fn empty_section_is_empty(&self) -> bool {
         !matches!(self, KindScope::Summary)
     }
@@ -268,9 +318,14 @@ fn append_section_filter(
     }
 }
 
-fn sort_hits(hits: &mut Vec<Hit>) {
+pub(crate) fn sort_hits(hits: &mut Vec<Hit>) {
     hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
 }
+
+/// FTS/vec0 over-fetch multiplier: short fixture rows crowd long live docs
+/// out of a small candidate pool on BM25 length norm (1.0.24 retest) —
+/// demotion can only promote what was fetched.
+const CANDIDATE_MULT: usize = 10;
 
 /// vec0 distance → score; mirrors the `0.2` floor used by every vec path.
 fn vec_score_from_distance(distance: f64) -> Option<f64> {
@@ -397,7 +452,7 @@ fn exec_vec_search(
         sql.push_str(clause);
     }
     sql.push_str(" AND k = ?");
-    let limit = (top_k * 4) as i64;
+    let limit = (top_k * CANDIDATE_MULT) as i64;
     params.push(rusqlite::types::Value::Integer(limit));
     let mut stmt = conn.prepare(&sql).ok()?;
     let rows: Vec<(i64, f64)> = stmt
@@ -435,9 +490,9 @@ fn hits_from_ranks(
     out
 }
 
-/// Single FTS implementation for every scope. Base scope (`All`) is the same
-/// join shape without a kind filter — equivalent to the old `chunks_fts`-only
-/// query (`rowid` == chunk id) while guaranteeing the chunk row exists.
+/// Single FTS implementation for every scope. Base scope is the leaf join
+/// shape — equivalent to the old `chunks_fts`-only query (`rowid` == chunk
+/// id) while guaranteeing the chunk row exists and is a leaf kind.
 fn exec_fts_search(
     conn: &Connection,
     query: &str,
@@ -448,7 +503,7 @@ fn exec_fts_search(
     scope: KindScope,
 ) -> Vec<Hit> {
     let Some(match_q) = fts_match_query(query) else { return vec![] };
-    let limit = (top_k * 4) as i64;
+    let limit = (top_k * CANDIDATE_MULT) as i64;
     let mut sql = String::from(
         "SELECT c.id, bm25(chunks_fts) AS rank FROM chunks_fts JOIN chunks c ON c.id=chunks_fts.rowid WHERE chunks_fts MATCH :q",
     );
@@ -478,7 +533,7 @@ fn vector_search_vec0_filtered(
     top_k: usize,
     qa_exclude_disputed: bool,
 ) -> Option<Vec<Hit>> {
-    exec_vec_search(conn, query_emb, source_ids, section_ids, top_k, qa_exclude_disputed, KindScope::All)
+    exec_vec_search(conn, query_emb, source_ids, section_ids, top_k, qa_exclude_disputed, KindScope::Leaf)
 }
 
 fn vector_search_scan_filtered(
@@ -503,15 +558,17 @@ fn vector_search_scan_filtered(
         }
     }
     sort_hits(&mut scored);
-    scored.truncate(top_k * 4);
+    scored.truncate(top_k * CANDIDATE_MULT);
     scored
 }
 
 type HitRow11 = (i64, Option<i64>, Option<i64>, String, String, i64, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<i64>, String);
 
 fn hit_from_row11(row: HitRow11, source_ids: Option<&HashSet<i64>>, section_ids: Option<&HashSet<i64>>, qa_exclude_disputed: bool) -> Option<Hit> {
-    let (cid, eid, iid, content, source_ref, is_pii, _created, status, _eff, sid, sec, path) = row;
-    make_hit(cid, eid, iid, content, source_ref, is_pii, status, sid, sec, path, source_ids, section_ids, qa_exclude_disputed)
+    // R32.2: entity chunks store item_id NULL (they key off entity_id) — the
+    // hit carries the effective item so every hit drills into GET /items/:id.
+    let (cid, eid, _iid, content, source_ref, is_pii, _created, status, eff, sid, sec, path) = row;
+    make_hit(cid, eid, eff, content, source_ref, is_pii, status, sid, sec, path, source_ids, section_ids, qa_exclude_disputed)
 }
 
 fn load_hits_filtered(
@@ -570,11 +627,12 @@ fn load_chunks_with_embedding_filtered(
     section_ids: Option<&HashSet<i64>>,
     qa_exclude_disputed: bool,
 ) -> Vec<Hit> {
-    let sql = "SELECT c.id, c.entity_id, c.item_id, c.content, c.source_ref, c.is_pii, e.status, i.source_id, c.section_id, c.path \
+    // Leaf kinds only — the scan path must match the vec0 path (R32.6).
+    let sql = "SELECT c.id, c.entity_id, COALESCE(c.item_id, e.item_id), c.content, c.source_ref, c.is_pii, e.status, i.source_id, c.section_id, c.path \
                FROM chunks c \
                LEFT JOIN entities e ON e.id = c.entity_id \
                LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
-               WHERE c.embedding IS NOT NULL";
+               WHERE c.embedding IS NOT NULL AND c.kind IN ('document','entity','distilled')";
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(_) => return vec![],
@@ -597,6 +655,7 @@ fn load_chunks_with_embedding_filtered(
         .unwrap();
     let mut out = Vec::new();
     for row in rows.flatten() {
+        // R32.2: col 2 is the effective item (entity chunks resolve via e.item_id).
         let (cid, eid, iid, content, source_ref, is_pii, status, sid, sec, path) = row;
         // Scan covers every embedded chunk: a missing source always filters out
         // (stricter than make_hit's scoped pass-through).
@@ -636,7 +695,7 @@ pub fn keyword_search_filtered(
     top_k: usize,
     qa_exclude_disputed: bool,
 ) -> Vec<Hit> {
-    exec_fts_search(conn, question, source_ids, section_ids, top_k, qa_exclude_disputed, KindScope::All)
+    exec_fts_search(conn, question, source_ids, section_ids, top_k, qa_exclude_disputed, KindScope::Leaf)
 }
 
 fn matching_tag_sections(
@@ -760,11 +819,14 @@ pub fn toc_search(
     } else {
         vec![]
     };
-    let summary_hits = if summary_hits.is_empty() {
+    let mut summary_hits = if summary_hits.is_empty() {
         summary_keyword_search_filtered(conn, query, source_ids, tag_filter.as_ref(), 5, qa_exclude_disputed)
     } else {
         summary_hits
     };
+    // Live sections must survive the top-5 cut: fixture summaries win BM25
+    // on length norm and would otherwise prune every live section.
+    prefer_live_envs(conn, &mut summary_hits, query);
     if summary_hits.is_empty() {
         return vec![];
     }
@@ -788,13 +850,15 @@ pub fn toc_search(
     };
     let mut hits = fused;
     sort_hits(&mut hits);
-    hits.truncate(top_k);
+    // Over-fetch for the downstream live-first cut in `fuse_and_rank`: a
+    // tight truncate here would drop live leaves before the partition.
+    hits.truncate(top_k.saturating_mul(5).max(top_k));
     hits
 }
 
-type HitRow8 = (i64, Option<i64>, Option<i64>, String, String, i64, Option<String>, Option<i64>);
+type HitRow9 = (i64, Option<i64>, Option<i64>, String, String, i64, Option<String>, Option<i64>, Option<i64>);
 
-fn row8(r: &rusqlite::Row) -> rusqlite::Result<HitRow8> {
+fn row9(r: &rusqlite::Row) -> rusqlite::Result<HitRow9> {
     Ok((
         r.get::<_, i64>(0)?,
         r.get::<_, Option<i64>>(1)?,
@@ -804,11 +868,14 @@ fn row8(r: &rusqlite::Row) -> rusqlite::Result<HitRow8> {
         r.get::<_, i64>(5)?,
         r.get::<_, Option<String>>(6)?,
         r.get::<_, Option<i64>>(7)?,
+        r.get::<_, Option<i64>>(8)?,
     ))
 }
 
-fn fallback_hit_from_row8(row: HitRow8, source_ids: Option<&HashSet<i64>>, qa_exclude_disputed: bool) -> Option<Hit> {
-    let (cid, eid, iid, content, source_ref, is_pii, status, sid) = row;
+fn fallback_hit_from_row9(row: HitRow9, source_ids: Option<&HashSet<i64>>, qa_exclude_disputed: bool) -> Option<Hit> {
+    // R32.2: col 8 is the effective item (entity chunks resolve via e.item_id).
+    let (cid, eid, _iid, content, source_ref, is_pii, status, sid, eff) = row;
+    let iid = eff;
     // Fallback lists every chunk, so a missing source always filters out (stricter
     // than make_hit's pass-through, which only applies to scoped searches).
     if !status_ok(status.as_deref(), qa_exclude_disputed) {
@@ -829,16 +896,19 @@ pub fn keyword_fallback(
     top_k: usize,
     qa_exclude_disputed: bool,
 ) -> Vec<Hit> {
+    // Leaf kinds only: summaries are created last, so an unfiltered
+    // `ORDER BY created_at DESC` fallback returns extracts, not evidence.
     let mut sql = String::from(
-        "SELECT c.id, c.entity_id, c.item_id, c.content, c.source_ref, c.is_pii, e.status, i.source_id \
+        "SELECT c.id, c.entity_id, c.item_id, c.content, c.source_ref, c.is_pii, e.status, i.source_id, COALESCE(c.item_id, e.item_id) \
          FROM chunks c \
          LEFT JOIN entities e ON e.id = c.entity_id \
-         LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id)",
+         LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
+         WHERE c.kind IN ('document','entity','distilled')",
     );
     let mut params: Vec<rusqlite::types::Value> = vec![];
     if let Some(ids) = source_ids {
         if !ids.is_empty() {
-            sql.push_str(&format!(" WHERE i.source_id IN ({})", placeholders(ids.len())));
+            sql.push_str(&format!(" AND i.source_id IN ({})", placeholders(ids.len())));
             for id in ids {
                 params.push(rusqlite::types::Value::Integer(*id));
             }
@@ -850,13 +920,13 @@ pub fn keyword_fallback(
         Ok(s) => s,
         Err(_) => return vec![],
     };
-    let rows = match stmt.query_map(rusqlite::params_from_iter(params.iter()), row8) {
+    let rows = match stmt.query_map(rusqlite::params_from_iter(params.iter()), row9) {
         Ok(m) => m,
         Err(_) => return vec![],
     };
     let mut out = Vec::new();
     for row in rows.flatten() {
-        if let Some(h) = fallback_hit_from_row8(row, source_ids, qa_exclude_disputed) {
+        if let Some(h) = fallback_hit_from_row9(row, source_ids, qa_exclude_disputed) {
             out.push(h);
         }
     }
@@ -876,7 +946,7 @@ pub fn who_knows_search(
     let terms: Vec<String> = re.find_iter(&query.to_lowercase()).map(|m| m.as_str().to_string()).filter(|t| t.len()>=3 && !stopwords.contains(t.as_str())).collect();
     if terms.is_empty() { return vec![]; }
     // parametrized LIKE with ESCAPE (P1 4.5) — was format!(" OR e.summary LIKE '%{}%'", t)
-    let mut sql = String::from("SELECT c.id, c.entity_id, c.item_id, c.content, c.source_ref, c.is_pii, e.status, e.owner, e.author, e.summary, e.confidence, e.created_at, i.source_id FROM chunks c JOIN entities e ON e.id=c.entity_id JOIN ingested_items i ON i.id=e.item_id WHERE (e.owner != '' OR e.author != ''");
+    let mut sql = String::from("SELECT c.id, c.entity_id, c.item_id, c.content, c.source_ref, c.is_pii, e.status, e.owner, e.author, e.summary, e.confidence, e.created_at, i.source_id, COALESCE(c.item_id, e.item_id) FROM chunks c JOIN entities e ON e.id=c.entity_id JOIN ingested_items i ON i.id=e.item_id WHERE (e.owner != '' OR e.author != ''");
     let mut params: Vec<rusqlite::types::Value> = vec![];
     for t in &terms {
         // escape LIKE wildcards % _ and \  (was raw t with only ' escaped)
@@ -891,9 +961,11 @@ pub fn who_knows_search(
     let mut out = Vec::new();
     let halflife: f64 = std::env::var("ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(365.0);
     let now = Utc::now();
-    let rows = match stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, i64>(5)?, r.get::<_, Option<String>>(6)?, r.get::<_, String>(7)?, r.get::<_, String>(8)?, r.get::<_, String>(9)?, r.get::<_, f64>(10)?, r.get::<_, Option<String>>(11)?, r.get::<_, Option<i64>>(12)?))) { Ok(m) => m, Err(_) => return out };
+    let rows = match stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, i64>(5)?, r.get::<_, Option<String>>(6)?, r.get::<_, String>(7)?, r.get::<_, String>(8)?, r.get::<_, String>(9)?, r.get::<_, f64>(10)?, r.get::<_, Option<String>>(11)?, r.get::<_, Option<i64>>(12)?, r.get::<_, Option<i64>>(13)?))) { Ok(m) => m, Err(_) => return out };
     for row in rows.flatten() {
-        let (cid, eid, iid, content, source_ref, is_pii, status, owner, author, summary, conf, created, sid) = row;
+        // R32.2: col 13 is the effective item (entity chunks resolve via e.item_id).
+        let (cid, eid, _iid, content, source_ref, is_pii, status, owner, author, summary, conf, created, sid, eff) = row;
+        let iid = eff;
         if !status_ok(status.as_deref(), qa_exclude_disputed) { continue; }
         let blob = format!("{} {} {}", owner, author, summary).to_lowercase();
         let overlap = terms.iter().filter(|t| blob.contains(&t.to_lowercase())).count();
@@ -988,6 +1060,7 @@ pub fn fuse_evidence(mut lists: Vec<Vec<Hit>>, weights: Vec<f64>) -> Vec<Hit> {
     rrf_fuse_multi(lists, weights)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn fuse_and_rank(
     conn: &Connection,
     vector_hits: Option<Vec<Hit>>,
@@ -997,6 +1070,7 @@ pub fn fuse_and_rank(
     max_per_source: usize,
     top_k: usize,
     qa_exclude_disputed: bool,
+    query: &str,
 ) -> Vec<Hit> {
     // R8.1: preserve single-list scores (was 1/61 constant, discarding BM25/cosine)
     let mut fused = if vector_hits.is_none() && keyword_hits.is_none() {
@@ -1030,6 +1104,10 @@ pub fn fuse_and_rank(
             h.score *= age_decay(created, halflife_days, now);
         }
     }
+    // R32.3: demote AFTER fusion — RRF ranks ignore scores, so demoting the
+    // input lists never reordered hybrid results (1.0.24 retest: scores
+    // dropped but the live file still never surfaced).
+    demote_test_envs(conn, &mut fused, query);
     sort_hits(&mut fused);
     // diversity cap per item
     if max_per_source>0 {
@@ -1046,6 +1124,9 @@ pub fn fuse_and_rank(
         fused = capped;
     }
     fused = dedupe_similar(fused);
+    // Live-first sits directly before the cut: any later score sort would
+    // undo the partition, and the cut must choose from a live-led list.
+    prefer_live_envs(conn, &mut fused, query);
     let mut hits: Vec<Hit> = fused.into_iter().take(top_k).collect();
     expand_context(conn, &mut hits, 1);
     // filter stale/disputed again (already in load, but for fused graph hits)
@@ -1091,7 +1172,7 @@ fn expand_max_chars() -> usize {
     std::env::var("ANCHOR_EXPAND_MAX_CHARS").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(EXPAND_MAX_CHARS)
 }
 
-fn expand_by_section(conn: &Connection, hit: &mut Hit, hit_ids: &HashSet<i64>) {
+fn expand_by_section(conn: &Connection, hit: &mut Hit, claimed: &mut HashSet<i64>) {
     let sec = match hit.section_id {
         Some(id) => id,
         None => return,
@@ -1115,7 +1196,13 @@ fn expand_by_section(conn: &Connection, hit: &mut Hit, hit_ids: &HashSet<i64>) {
     let mut extra = Vec::new();
     let mut truncated = window.len() < siblings.len();
     for (cid, content) in window {
-        if *cid == hit.chunk_id || hit_ids.contains(cid) {
+        if *cid == hit.chunk_id {
+            continue;
+        }
+        // A sibling living in another hit (or an earlier hit's window) is
+        // skipped and flagged — the window promise is broken either way.
+        if claimed.contains(cid) {
+            truncated = true;
             continue;
         }
         used += content.chars().count() + 4;
@@ -1123,13 +1210,14 @@ fn expand_by_section(conn: &Connection, hit: &mut Hit, hit_ids: &HashSet<i64>) {
             truncated = true;
             break;
         }
+        claimed.insert(*cid);
         extra.push(content.clone());
     }
     append_continuation(hit, extra);
     hit.content_truncated = truncated;
 }
 
-fn expand_by_item(conn: &Connection, hit: &mut Hit, window: usize, hit_ids: &HashSet<i64>) {
+fn expand_by_item(conn: &Connection, hit: &mut Hit, window: usize, claimed: &mut HashSet<i64>) {
     let item_id = match hit.item_id {
         Some(id) => id,
         None => return,
@@ -1139,17 +1227,28 @@ fn expand_by_item(conn: &Connection, hit: &mut Hit, window: usize, hit_ids: &Has
     if let Some(i) = idx {
         let start = i.saturating_sub(window);
         let end = (i + window + 1).min(siblings.len());
+        let cap = expand_max_chars();
+        let mut used = hit.content.chars().count();
         let mut extra = Vec::new();
-        for (j, (cid, content)) in siblings[start..end].iter().enumerate() {
-            if *cid == hit.chunk_id || hit_ids.contains(cid) {
+        let mut truncated = (end - start) < siblings.len();
+        for (cid, content) in &siblings[start..end] {
+            if *cid == hit.chunk_id {
                 continue;
             }
-            if j == i {
+            if claimed.contains(cid) {
+                truncated = true;
                 continue;
             }
+            used += content.chars().count() + 4;
+            if used > cap {
+                truncated = true;
+                break;
+            }
+            claimed.insert(*cid);
             extra.push(content.clone());
         }
         append_continuation(hit, extra);
+        hit.content_truncated = truncated;
     }
 }
 
@@ -1157,39 +1256,58 @@ pub fn expand_context(conn: &Connection, hits: &mut [Hit], window: usize) {
     if window == 0 || hits.is_empty() {
         return;
     }
-    let hit_ids: HashSet<i64> = hits.iter().map(|h| h.chunk_id).collect();
+    // Claimed across the page in rank order (seeded with the hits): a
+    // sibling pulled into an earlier hit's window is skipped — flagged — by
+    // later ones instead of repeating the same bytes under a second
+    // "[continued]" header (1.0.24 retest).
+    let mut claimed: HashSet<i64> = hits.iter().map(|h| h.chunk_id).collect();
     for h in hits.iter_mut() {
         if h.section_id.is_some() {
-            expand_by_section(conn, h, &hit_ids);
+            expand_by_section(conn, h, &mut claimed);
         } else {
-            expand_by_item(conn, h, window, &hit_ids);
+            expand_by_item(conn, h, window, &mut claimed);
         }
     }
 }
 
 /// Test-env markers matched as whole path segments — a substring match
 /// would demote "latest" or "contest" for containing "test".
-const TEST_ENV_MARKERS: &[&str] = &["test", "tests", "sandbox", "staging", "mock", "mocks", "fixture", "fixtures", "example", "examples", "sample", "samples", "dev"];
+const TEST_ENV_MARKERS: &[&str] = &["test", "tests", "testdata", "sandbox", "staging", "mock", "mocks", "fixture", "fixtures", "example", "examples", "sample", "samples", "dev"];
+
+/// Header markers: the deliberate subset. Whole words like "test", "sample"
+/// or "dev" appear constantly in live prose ("test the connection"), so the
+/// file head only counts fixture-grade vocabulary.
+const HEADER_ENV_MARKERS: &[&str] = &["testdata", "sandbox", "staging", "mock", "mocks", "fixture", "fixtures"];
 
 fn test_env_factor() -> f64 {
     std::env::var("ANCHOR_TEST_ENV_DEMOTE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.5)
 }
 
-fn has_env_marker(text: &str) -> bool {
+fn has_marker_in(text: &str, markers: &[&str]) -> bool {
     text.split(|c: char| !c.is_alphanumeric()).any(|seg| {
         let s = seg.to_lowercase();
-        TEST_ENV_MARKERS.contains(&s.as_str())
+        markers.contains(&s.as_str())
     })
 }
 
-/// Chunk → item file path, batched (entity chunks resolve via their entity).
-fn chunk_item_paths(conn: &Connection, chunk_ids: &[i64]) -> HashMap<i64, String> {
+fn has_env_marker(text: &str) -> bool {
+    has_marker_in(text, TEST_ENV_MARKERS)
+}
+
+fn has_header_marker(head: &str) -> bool {
+    has_marker_in(head, HEADER_ENV_MARKERS)
+}
+
+/// Chunk → (item file path, item text head), batched (entity chunks resolve
+/// via their entity). One query feeds demotion, live-first and the `env`
+/// field so all three always agree on the class.
+fn chunk_item_env(conn: &Connection, chunk_ids: &[i64]) -> HashMap<i64, (String, String)> {
     let mut out = HashMap::new();
     if chunk_ids.is_empty() {
         return out;
     }
     let sql = format!(
-        "SELECT c.id, COALESCE(i1.external_id, i2.external_id, '') FROM chunks c LEFT JOIN ingested_items i1 ON i1.id=c.item_id LEFT JOIN entities e ON e.id=c.entity_id LEFT JOIN ingested_items i2 ON i2.id=e.item_id WHERE c.id IN ({})",
+        "SELECT c.id, COALESCE(i1.external_id, i2.external_id, ''), substr(COALESCE(i1.text, i2.text, ''), 1, 1024) FROM chunks c LEFT JOIN ingested_items i1 ON i1.id=c.item_id LEFT JOIN entities e ON e.id=c.entity_id LEFT JOIN ingested_items i2 ON i2.id=e.item_id WHERE c.id IN ({})",
         placeholders(chunk_ids.len())
     );
     let mut stmt = match conn.prepare(&sql) {
@@ -1197,13 +1315,44 @@ fn chunk_item_paths(conn: &Connection, chunk_ids: &[i64]) -> HashMap<i64, String
         Err(_) => return out,
     };
     if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(chunk_ids.iter()), |r| {
-        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
     }) {
-        for (id, path) in rows.flatten() {
-            out.insert(id, path);
+        for (id, path, head) in rows.flatten() {
+            out.insert(id, (path, head));
         }
     }
     out
+}
+
+/// Live-first ordering: test-env hits sink below live hits regardless of
+/// score gaps. A multiplicative demotion cannot do this on its own —
+/// single-list BM25 scores span several × on length norm alone, so halving
+/// never reorders ("scores halved but the order didn't change", 1.0.24
+/// retest). Stable within each class, so relevance still orders live-vs-live
+/// and test-vs-test. Same guards as `demote_test_envs` (query exemption,
+/// `ANCHOR_TEST_ENV_DEMOTE=1.0` disables).
+pub fn prefer_live_envs(conn: &Connection, hits: &mut Vec<Hit>, query: &str) {
+    if hits.len() < 2 || has_env_marker(query) {
+        return;
+    }
+    if !(0.0..1.0).contains(&test_env_factor()) {
+        return;
+    }
+    let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+    let env = chunk_item_env(conn, &ids);
+    let mut live = Vec::with_capacity(hits.len());
+    let mut test = Vec::new();
+    for h in hits.drain(..) {
+        // No marker evidence (unknown chunk) reads as live, not test.
+        let is_test = env.get(&h.chunk_id).map(|(p, head)| env_for_item(p, head) == "test").unwrap_or(false);
+        if is_test {
+            test.push(h);
+        } else {
+            live.push(h);
+        }
+    }
+    live.extend(test);
+    *hits = live;
 }
 
 /// Demote test-env files (`.test.yml`, `/sandbox/`, …) when the query does
@@ -1211,6 +1360,8 @@ fn chunk_item_paths(conn: &Connection, chunk_ids: &[i64]) -> HashMap<i64, String
 /// outrank the live documents on BM25 length norm and the live file never
 /// surfaces. Multiplicative and uniform (`ANCHOR_TEST_ENV_DEMOTE`, default
 /// 0.5, 1.0 disables) so ordering within each env class is preserved.
+/// Ordering across classes is `prefer_live_envs` (a multiplier alone never
+/// reorders single-list BM25 gaps).
 pub fn demote_test_envs(conn: &Connection, hits: &mut [Hit], query: &str) {
     if hits.is_empty() || has_env_marker(query) {
         return;
@@ -1220,14 +1371,41 @@ pub fn demote_test_envs(conn: &Connection, hits: &mut [Hit], query: &str) {
         return;
     }
     let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
-    let paths = chunk_item_paths(conn, &ids);
+    let env = chunk_item_env(conn, &ids);
     for h in hits.iter_mut() {
-        if let Some(p) = paths.get(&h.chunk_id) {
-            if has_env_marker(p) {
+        if let Some((p, head)) = env.get(&h.chunk_id) {
+            if env_for_item(p, head) == "test" {
                 h.score *= factor;
             }
         }
     }
+}
+
+/// Path-derived environment class: "test" when the item path carries a
+/// test-env marker, else "live".
+pub fn env_for_path(path: &str) -> &'static str {
+    if has_env_marker(path) {
+        "test"
+    } else {
+        "live"
+    }
+}
+
+/// Item environment class: path markers, or fixture-grade vocabulary in the
+/// file head (first 1 KB) for paths without markers. Backs the `env`
+/// hit/citation field + filter (R32.4) and the demotion paths — every caller
+/// classifies through here so the field and the ordering never disagree.
+pub fn env_for_item(path: &str, text_head: &str) -> &'static str {
+    if has_env_marker(path) || has_header_marker(text_head) {
+        "test"
+    } else {
+        "live"
+    }
+}
+
+/// Batched env classes for chunk ids (entity chunks resolve via their entity).
+pub(crate) fn envs_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> HashMap<i64, String> {
+    chunk_item_env(conn, chunk_ids).into_iter().map(|(id, (p, head))| (id, env_for_item(&p, &head).to_string())).collect()
 }
 
 /// Tokens that look like filenames (`routing-config.yml`, `service.go`):
@@ -1244,30 +1422,83 @@ fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
 }
 
+/// Query minus its filename mentions: the rest ("ACME_FEE …") is what the
+/// boosted chunk must match — the filename itself never appears in content.
+fn strip_filename_tokens(query: &str, names: &[String]) -> String {
+    let mut out = format!(" {} ", query);
+    for name in names {
+        out = out.replace(name.as_str(), " ");
+    }
+    out
+}
+
+/// Item ids for up to 3 named files (external id or title LIKE match).
+fn named_item_ids(conn: &Connection, names: &[String]) -> Vec<i64> {
+    let mut out = Vec::new();
+    for name in names.iter().take(3) {
+        let pat = format!("%{}%", escape_like(name));
+        let mut stmt = match conn.prepare(
+            "SELECT id FROM ingested_items WHERE external_id LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' ORDER BY id LIMIT 1",
+        ) {
+            Ok(s) => s,
+            Err(_) => return out,
+        };
+        let id: Option<i64> = stmt
+            .query_map(rusqlite::params![pat, pat], |r| r.get(0))
+            .map(|rows| rows.flatten().next())
+            .unwrap_or_default();
+        out.extend(id);
+    }
+    out
+}
+
+/// Best content-matching chunk of one item for an FTS match expression.
+/// Document/distilled only — a named file must surface bytes, never its
+/// one-line summary extract.
+fn best_chunk_for_item(conn: &Connection, item_id: i64, match_q: &str) -> Option<i64> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.id FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid WHERE chunks_fts MATCH ? AND c.item_id = ? AND c.kind IN ('document','distilled') ORDER BY bm25(chunks_fts) LIMIT 1",
+        )
+        .ok()?;
+    let rows: Vec<i64> = stmt
+        .query_map(rusqlite::params![match_q, item_id], |r| r.get::<_, i64>(0))
+        .ok()?
+        .flatten()
+        .collect();
+    rows.into_iter().next()
+}
+
+fn first_chunk_for_item(conn: &Connection, item_id: i64) -> Option<i64> {
+    conn.query_row(
+        "SELECT id FROM chunks WHERE item_id = ?1 AND kind IN ('document','distilled') ORDER BY id LIMIT 1",
+        [item_id],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
 /// Explicit filename mentions surface their file: FTS indexes chunk
 /// content, not filenames, so without this a filename in the query matches
-/// entity text instead of the file. Appends up to 3 first-chunks of matched
-/// items (with local expansion), ranked above fused hits — an explicit
-/// mention is the strongest intent signal. No-op when nothing matches.
+/// entity text instead of the file. Appends up to 3 matched-item chunks
+/// (with local expansion), ranked above fused hits — an explicit mention is
+/// the strongest intent signal. R32.1: the surfaced chunk is the item's best
+/// content match for the rest of the query (file head only when nothing
+/// matches) — expansion then centers on the match. No-op when nothing matches.
 pub fn filename_boost(conn: &Connection, hits: &mut Vec<Hit>, query: &str) {
     let names = filename_tokens(query);
     if names.is_empty() {
         return;
     }
+    let content_q = strip_filename_tokens(query, &names);
+    let match_q = fts_match_query(&content_q);
     let mut cids: Vec<i64> = Vec::new();
-    for name in names.iter().take(3) {
-        let pat = format!("%{}%", escape_like(name));
-        let mut stmt = match conn.prepare(
-            "SELECT c.id FROM chunks c JOIN ingested_items i ON i.id = c.item_id WHERE i.external_id LIKE ? ESCAPE '\\' OR i.title LIKE ? ESCAPE '\\' ORDER BY c.id LIMIT 1",
-        ) {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        let rows: Vec<i64> = stmt
-            .query_map(rusqlite::params![pat, pat], |r| r.get(0))
-            .map(|rows| rows.flatten().collect())
-            .unwrap_or_default();
-        cids.extend(rows);
+    for iid in named_item_ids(conn, &names).into_iter().take(3) {
+        let cid = match_q
+            .as_deref()
+            .and_then(|q| best_chunk_for_item(conn, iid, q))
+            .or_else(|| first_chunk_for_item(conn, iid));
+        cids.extend(cid);
         if cids.len() >= 3 {
             break;
         }
@@ -1282,13 +1513,13 @@ pub fn filename_boost(conn: &Connection, hits: &mut Vec<Hit>, query: &str) {
     }
     let top = hits.iter().map(|h| h.score).fold(0.0f64, f64::max);
     let mut boosted = load_hits_filtered(conn, &fresh, None, None, false);
-    let all_ids: HashSet<i64> = present.into_iter().chain(fresh.iter().copied()).collect();
+    let mut claimed: HashSet<i64> = present.into_iter().chain(fresh.iter().copied()).collect();
     for h in boosted.iter_mut() {
         h.score = top + 1.0;
         if h.section_id.is_some() {
-            expand_by_section(conn, h, &all_ids);
+            expand_by_section(conn, h, &mut claimed);
         } else {
-            expand_by_item(conn, h, 1, &all_ids);
+            expand_by_item(conn, h, 1, &mut claimed);
         }
     }
     hits.extend(boosted);
@@ -1304,6 +1535,40 @@ mod tests {
     fn fts_query() {
         assert_eq!(fts_match_query("who knows about Phoenix?"), Some("\"knows\" OR \"phoenix\"".to_string()));
         assert_eq!(fts_match_query("the and or"), None);
+    }
+
+    #[test]
+    fn match_snippet_centers_on_query_term() {
+        // 1.0.24 retest: the routing-config.yml hit previewed its first 3 KB
+        // with no ACME text — previews must center on the match instead.
+        let content = format!("{}ACME_TENANT_ID{}", "ab ".repeat(500), " cd".repeat(500));
+        let s = match_snippet(&content, "ACME_TENANT_ID", 100);
+        assert!(s.contains("ACME_TENANT_ID"), "centered window must hold the match: {}", &s.chars().take(40).collect::<String>());
+        assert!(s.starts_with('…') && s.ends_with('…'), "cut on both sides must be marked");
+        assert_eq!(s.chars().count(), 102, "100-char window plus two markers");
+        // Head match: no leading marker, trailing cut still marked.
+        let head = format!("acme leads{}", " xy".repeat(300));
+        let h = match_snippet(&head, "acme", 100);
+        assert!(h.contains("acme") && !h.starts_with('…') && h.ends_with('…'), "head: {}", &h.chars().take(40).collect::<String>());
+    }
+
+    #[test]
+    fn match_snippet_falls_back_to_head_verbatim() {
+        let content = "lorem ipsum dolor ".repeat(20);
+        // No term matched: byte-identical to a plain prefix, no markers.
+        let s = match_snippet(&content, "zzznope", 100);
+        assert_eq!(s, content.chars().take(100).collect::<String>());
+        assert!(!s.contains('…'));
+        // Empty query behaves the same.
+        assert_eq!(match_snippet(&content, "", 100), content.chars().take(100).collect::<String>());
+        // Short content passes through untouched.
+        assert_eq!(match_snippet("tiny é→ü", "tiny", 100), "tiny é→ü");
+        assert_eq!(match_snippet(&content, "lorem", 0), "");
+        // Unicode-safe: multi-byte chars never split, match still centered.
+        let uni = format!("{}acme{}", "é".repeat(200), "ü".repeat(200));
+        let u = match_snippet(&uni, "acme", 50);
+        assert!(u.contains("acme"));
+        assert!(u.starts_with('…') && u.ends_with('…'));
     }
 
     #[test]
@@ -1358,6 +1623,11 @@ mod tests {
         conn.last_insert_rowid()
     }
 
+    /// Serializes `ANCHOR_TEST_ENV_DEMOTE` readers/writers: env vars are
+    /// process-global and tests run on threads, so the knob-owning tests
+    /// below must not overlap.
+    static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn harness_graph_expand_filters_stale_and_disputed() {
         let (_dir, conn) = harness_db();
@@ -1384,6 +1654,7 @@ mod tests {
         let out2 = graph_expand(&conn, &seed, None, 2, 5, false);
         let ids2: Vec<i64> = out2.iter().filter_map(|h| h.entity_id).collect();
         assert!(ids2.contains(&e3), "disputed e3 should appear when not excluded");
+        assert!(out.iter().all(|h| h.item_id == Some(iid)), "graph neighbors must carry their item");
     }
 
     #[test]
@@ -1429,7 +1700,7 @@ mod tests {
         // need created_at for age decay; ensure chunks have timestamps via init_db
         let h1 = Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "c1".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false };
         let h2 = Hit { chunk_id: c2, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 0.5, content: "c2".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false };
-        let fused = fuse_and_rank(&conn, Some(vec![h1]), Some(vec![h2]), 1.0, 365.0, 3, 5, true);
+        let fused = fuse_and_rank(&conn, Some(vec![h1]), Some(vec![h2]), 1.0, 365.0, 3, 5, true, "phoenix billing");
         assert!(!fused.is_empty());
         // RRF should have merged both; diversity cap per item should keep both since distinct chunk_ids
         assert!(fused.len() >= 1);
@@ -1746,8 +2017,61 @@ mod tests {
     }
 
     #[test]
+    fn expansion_claims_siblings_across_hits() {
+        // R32.9: adjacent hits expanded independently repeated the same
+        // sibling bytes under two "[continued]" headers (1.0.24 retest) —
+        // the first hit (rank order) claims the window, later hits skip
+        // what's claimed and flag the gap.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_claim", "internal");
+        let iid = insert_item(&conn, sid, "doc");
+        conn.execute(
+            "INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,1,'S','S')",
+            [iid],
+        )
+        .unwrap();
+        let sec = conn.last_insert_rowid();
+        let mut cids = Vec::new();
+        for i in 0..5 {
+            conn.execute(
+                "INSERT INTO chunks (item_id, section_id, level, path, content, source_ref, created_at) VALUES (?1,?2,1,'S',?3,'ref',datetime('now'))",
+                rusqlite::params![iid, sec, format!("segment{:02} body", i)],
+            )
+            .unwrap();
+            cids.push(conn.last_insert_rowid());
+        }
+        let mk = |idx: usize| Hit {
+            chunk_id: cids[idx],
+            entity_id: None,
+            item_id: Some(iid),
+            source_id: Some(sid),
+            section_id: Some(sec),
+            path: "S".to_string(),
+            score: 10.0 - idx as f64,
+            content: format!("segment{:02} body", idx),
+            source_ref: "ref".into(),
+            is_pii: false,
+            status: None,
+            content_truncated: false,
+        };
+        let mut hits = vec![mk(1), mk(2)];
+        expand_context(&conn, &mut hits, 1);
+        let combined = format!("{}\n{}", hits[0].content, hits[1].content);
+        for i in [0, 3, 4] {
+            assert_eq!(
+                combined.matches(&format!("segment{:02}", i)).count(),
+                1,
+                "segment{:02} must appear exactly once, got:\n{}",
+                i,
+                combined
+            );
+        }
+        assert!(hits[1].content_truncated, "skipped-as-claimed must be flagged");
+    }
+
+    #[test]
     fn demote_test_envs_ranking_exemption_and_knob() {
-        // Single test owns ANCHOR_TEST_ENV_DEMOTE end-to-end (no parallel race).
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
         std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
         let (_dir, conn) = harness_db();
         let sid = insert_source(&conn, "s_env", "internal");
@@ -1778,6 +2102,257 @@ mod tests {
         assert!(!has_env_marker("notes/contest.md"));
         assert!(has_env_marker("cfg/app.test.yml"));
         assert!(has_env_marker("sandbox/vars.yml"));
+    }
+
+    #[test]
+    fn entity_chunk_hits_carry_effective_item_id() {
+        // Production shape: entity chunks carry entity_id only (no item_id) —
+        // hits must still resolve the item so agents can drill down via
+        // GET /items/:id (1.0.24 retest: only the first hit had an item_id).
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_ei", "internal");
+        let iid = insert_item(&conn, sid, "doc");
+        let eid = insert_entity(&conn, iid, "some decision", "unverified", "");
+        conn.execute(
+            "INSERT INTO chunks (entity_id, kind, source_ref, content, created_at) VALUES (?1,'entity','ref','entity chunk bytes',datetime('now'))",
+            [eid],
+        )
+        .unwrap();
+        let cid = conn.last_insert_rowid();
+        let hits = load_hits_filtered(&conn, &[cid], None, None, true);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].item_id, Some(iid), "entity chunk must resolve its item via the entity");
+    }
+
+    #[test]
+    fn filename_boost_picks_matching_chunk_not_first() {
+        // 1.0.24 retest: naming routing-config.yml surfaced the file's head
+        // chunk (~3 KB, no ACME text) — the boost must center on the chunk
+        // matching the rest of the query instead.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_fm", "internal");
+        let iid = insert_item(&conn, sid, "cfg");
+        conn.execute("UPDATE ingested_items SET external_id='cfg/routing-config.yml', title='routing-config.yml' WHERE id=?1", [iid]).unwrap();
+        let head = insert_chunk(&conn, Some(iid), None, "file head bytes with nothing relevant");
+        let matched = insert_chunk(&conn, Some(iid), None, "ACME_FEE routing table content here");
+        let other = insert_item(&conn, sid, "other");
+        let c_other = insert_chunk(&conn, Some(other), None, "unrelated notes");
+        let mk_other = || Hit { chunk_id: c_other, entity_id: None, item_id: Some(other), source_id: Some(sid), section_id: None, path: String::new(), score: 15.0, content: "unrelated".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false };
+        let mut hits = vec![mk_other()];
+        filename_boost(&conn, &mut hits, "routing-config.yml ACME_FEE");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].chunk_id, matched, "named file must surface its matching chunk, not the head (head={} match={})", head, matched);
+        assert_eq!(hits[0].item_id, Some(iid), "boosted whole-file hit must drill into its item");
+    }
+
+    #[test]
+    fn final_search_never_surfaces_summary_chunks() {
+        // R32.6: summaries are TOC coarse-stage internals — a doc_summary
+        // winning BM25 on length norm used to surface as a one-line "hit".
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_sum", "internal");
+        let iid = insert_item(&conn, sid, "doc");
+        let leaf = insert_chunk(&conn, Some(iid), None, "treasury report types content here");
+        conn.execute(
+            "INSERT INTO chunks (item_id, kind, source_ref, content, created_at) VALUES (?1,'doc_summary','ref','treasury report types summary extract',datetime('now'))",
+            [iid],
+        )
+        .unwrap();
+        let doc_sum = conn.last_insert_rowid();
+        let kw = keyword_search_filtered(&conn, "treasury report types", None, None, 5, true);
+        assert!(kw.iter().any(|h| h.chunk_id == leaf), "leaf must match");
+        assert!(!kw.iter().any(|h| h.chunk_id == doc_sum), "doc_summary must not surface as a hit");
+        // The fallback lists newest-first; summaries are created last, so an
+        // unfiltered fallback returns extracts before evidence.
+        let fb = keyword_fallback(&conn, None, 5, true);
+        assert!(fb.iter().any(|h| h.chunk_id == leaf), "fallback must keep leaves");
+        assert!(!fb.iter().any(|h| h.chunk_id == doc_sum), "fallback must not return extracts");
+    }
+
+    #[test]
+    fn filename_boost_never_surfaces_summary_extract() {
+        // The named file's best content match must be bytes, even when the
+        // file's one-line summary matches the rest-query better on BM25.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_fbs", "internal");
+        let iid = insert_item(&conn, sid, "cfg");
+        conn.execute("UPDATE ingested_items SET external_id='cfg/routing-config.yml', title='routing-config.yml' WHERE id=?1", [iid]).unwrap();
+        let _head = insert_chunk(&conn, Some(iid), None, "file head bytes with nothing relevant");
+        conn.execute(
+            "INSERT INTO chunks (item_id, kind, source_ref, content, created_at) VALUES (?1,'doc_summary','ref','ACME_FEE',datetime('now'))",
+            [iid],
+        )
+        .unwrap();
+        let matched = insert_chunk(&conn, Some(iid), None, "ACME_FEE routing table content here with padding words");
+        let other = insert_item(&conn, sid, "other");
+        let c_other = insert_chunk(&conn, Some(other), None, "unrelated notes");
+        let mut hits = vec![Hit { chunk_id: c_other, entity_id: None, item_id: Some(other), source_id: Some(sid), section_id: None, path: String::new(), score: 15.0, content: "unrelated".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false }];
+        filename_boost(&conn, &mut hits, "routing-config.yml ACME_FEE");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].chunk_id, matched, "named file must surface leaf bytes, not its summary");
+    }
+
+    #[test]
+    fn demote_test_envs_covers_entity_rows() {
+        // R32.3: production entity chunks (entity_id only, no item_id) resolve
+        // their item's path via the entity — the retest's 36-char fixture
+        // rows must demote exactly like document chunks.
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_en", "internal");
+        let live = insert_item(&conn, sid, "live");
+        let tst = insert_item(&conn, sid, "tst");
+        conn.execute("UPDATE ingested_items SET external_id='cfg/routing-config.yml' WHERE id=?1", [live]).unwrap();
+        conn.execute("UPDATE ingested_items SET external_id='cfg/payment-directions.test.yml' WHERE id=?1", [tst]).unwrap();
+        let mk_ent_chunk = |iid: i64, summary: &str| {
+            let eid = insert_entity(&conn, iid, summary, "unverified", "");
+            conn.execute(
+                "INSERT INTO chunks (entity_id, kind, source_ref, content, created_at) VALUES (?1,'entity','ref',?2,datetime('now'))",
+                rusqlite::params![eid, summary],
+            )
+            .unwrap();
+            (conn.last_insert_rowid(), eid)
+        };
+        let (c_live, e_live) = mk_ent_chunk(live, "live direction supported");
+        let (c_test, e_test) = mk_ent_chunk(tst, "test direction supported");
+        let mk = |cid: i64, eid: i64| Hit { chunk_id: cid, entity_id: Some(eid), item_id: None, source_id: Some(sid), section_id: None, path: String::new(), score: 10.0, content: "x".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false };
+        let mut hits = vec![mk(c_test, e_test), mk(c_live, e_live)];
+        demote_test_envs(&conn, &mut hits, "which treasury directions are supported");
+        assert_eq!(hits[0].score, 5.0, "test entity row must demote");
+        assert_eq!(hits[1].score, 10.0, "live entity row untouched");
+    }
+
+    #[test]
+    fn fuse_and_rank_demotes_after_rrf_before_truncate() {
+        // R32.3: RRF ranks ignore scores, so pre-fusion demotion never
+        // reordered hybrid results — the live file must win a top-1 cut even
+        // when the fixture row outranks it in both input lists.
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_fz", "internal");
+        let live = insert_item(&conn, sid, "live");
+        let tst = insert_item(&conn, sid, "tst");
+        conn.execute("UPDATE ingested_items SET external_id='cfg/routing-config.yml' WHERE id=?1", [live]).unwrap();
+        conn.execute("UPDATE ingested_items SET external_id='cfg/payment-directions.test.yml' WHERE id=?1", [tst]).unwrap();
+        let c_live = insert_chunk(&conn, Some(live), None, "live treasury directions acme content here");
+        let eid = insert_entity(&conn, tst, "test direction supported", "unverified", "");
+        conn.execute(
+            "INSERT INTO chunks (entity_id, kind, source_ref, content, created_at) VALUES (?1,'entity','ref','test direction supported',datetime('now'))",
+            [eid],
+        )
+        .unwrap();
+        let c_test = conn.last_insert_rowid();
+        let mk = |cid: i64, eid: Option<i64>, iid: i64, score: f64, content: &str| Hit {
+            chunk_id: cid, entity_id: eid, item_id: Some(iid), source_id: Some(sid), section_id: None,
+            path: String::new(), score, content: content.into(), source_ref: "ref".into(),
+            is_pii: false, status: Some("unverified".into()), content_truncated: false,
+        };
+        let lists = || {
+            (
+                vec![mk(c_test, Some(eid), tst, 9.0, "test direction supported"), mk(c_live, None, live, 5.0, "live treasury directions acme content here")],
+                vec![mk(c_test, Some(eid), tst, 8.0, "test direction supported"), mk(c_live, None, live, 4.0, "live treasury directions acme content here")],
+            )
+        };
+        let (v, k) = lists();
+        let fused = fuse_and_rank(&conn, Some(v), Some(k), 1.0, 365.0, 3, 1, true, "treasury directions");
+        assert_eq!(fused.len(), 1);
+        assert_eq!(fused[0].chunk_id, c_live, "post-RRF demotion must surface the live chunk");
+        // Exemption preserved: a query about test files keeps fixture order.
+        let (v2, k2) = lists();
+        let fused2 = fuse_and_rank(&conn, Some(v2), Some(k2), 1.0, 365.0, 3, 1, true, "what is in the test file");
+        assert_eq!(fused2.len(), 1);
+        assert_eq!(fused2[0].chunk_id, c_test, "env-marker queries must not demote");
+    }
+
+    #[test]
+    fn live_first_partition_beats_bm25_length_gap() {
+        // R32.7, the 1.0.24 retest shape: a long live chunk vs short fixture
+        // entity rows sharing one rare token. The fixture rows win BM25 by
+        // several × on length norm alone, so halving never reorders — live
+        // must still win top-1 through the partition.
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_lp", "internal");
+        let live = insert_item(&conn, sid, "live");
+        let tst = insert_item(&conn, sid, "tst");
+        conn.execute("UPDATE ingested_items SET external_id='cfg/routing-config.yml' WHERE id=?1", [live]).unwrap();
+        conn.execute("UPDATE ingested_items SET external_id='cfg/payment-directions.test.yml' WHERE id=?1", [tst]).unwrap();
+        let live_text = format!("treasury config {} acme", "padding ".repeat(300));
+        let c_live = insert_chunk(&conn, Some(live), None, &live_text);
+        let eid = insert_entity(&conn, tst, "acme fixture row", "unverified", "");
+        conn.execute(
+            "INSERT INTO chunks (entity_id, kind, source_ref, content, created_at) VALUES (?1,'entity','ref','acme fixture row',datetime('now'))",
+            [eid],
+        )
+        .unwrap();
+        let c_test = conn.last_insert_rowid();
+        // Sanity: raw FTS ranks the short fixture row first (the BM25 gap).
+        let kw = keyword_search_filtered(&conn, "acme", None, None, 8, true);
+        assert_eq!(kw.len(), 2);
+        assert_eq!(kw[0].chunk_id, c_test, "fixture row must lead pre-partition (else no gap to prove)");
+        // Single-list keyword path: live wins top-1 despite the gap.
+        let fused = fuse_and_rank(&conn, None, Some(kw), 1.0, 365.0, 3, 1, true, "treasury acme");
+        assert_eq!(fused.len(), 1);
+        assert_eq!(fused[0].chunk_id, c_live, "live chunk must win top-1 despite the BM25 gap");
+        // Exemption preserved: asking about the test file keeps fixture order.
+        let kw2 = keyword_search_filtered(&conn, "acme", None, None, 8, true);
+        let fused2 = fuse_and_rank(&conn, None, Some(kw2), 1.0, 365.0, 3, 1, true, "acme in the test file");
+        assert_eq!(fused2[0].chunk_id, c_test, "env-marker queries must not partition");
+        // Knob off: pure score order returns.
+        std::env::set_var("ANCHOR_TEST_ENV_DEMOTE", "1.0");
+        let kw3 = keyword_search_filtered(&conn, "acme", None, None, 8, true);
+        let fused3 = fuse_and_rank(&conn, None, Some(kw3), 1.0, 365.0, 3, 1, true, "treasury acme");
+        assert_eq!(fused3[0].chunk_id, c_test, "knob 1.0 disables live-first");
+        std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
+    }
+
+    #[test]
+    fn env_for_path_classes_live_vs_test() {
+        assert_eq!(env_for_path("cfg/routing-config.yml"), "live");
+        assert_eq!(env_for_path("cfg/payment-directions.test.yml"), "test");
+        assert_eq!(env_for_path("sandbox/vars.yml"), "test");
+        assert_eq!(env_for_path("pkg/treasury/testdata/golden.json"), "test");
+        assert_eq!(env_for_path("reports/latest.yml"), "live");
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_ev", "internal");
+        let live = insert_item(&conn, sid, "live");
+        conn.execute("UPDATE ingested_items SET external_id='cfg/routing-config.yml' WHERE id=?1", [live]).unwrap();
+        let cid = insert_chunk(&conn, Some(live), None, "live content");
+        let map = envs_for_chunks(&conn, &[cid, 999999]);
+        assert_eq!(map.get(&cid).map(|s| s.as_str()), Some("live"));
+        assert!(!map.contains_key(&999999), "unknown chunks have no class");
+        assert!(envs_for_chunks(&conn, &[]).is_empty());
+    }
+
+    #[test]
+    fn env_for_item_reads_path_or_file_head() {
+        // R32.8: a live path with a fixture-grade file head still classifies
+        // test — but casual "test"/"sample" prose must not flip a live file.
+        assert_eq!(env_for_item("cfg/seed.yml", "# mock treasury seed data"), "test");
+        assert_eq!(env_for_item("cfg/seed.yml", "package treasury // mock clients"), "test");
+        assert_eq!(env_for_item("cfg/app.yml", "runbook: test the connection today"), "live");
+        assert_eq!(env_for_item("cfg/app.yml", "see the sample output below"), "live");
+        assert_eq!(env_for_item("cfg/payment-directions.test.yml", "live-looking head"), "test");
+        // End to end through the batched classifier (item text head, 1 KB).
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_eh", "internal");
+        let mk = |path: &str, head: &str| {
+            let iid = insert_item(&conn, sid, path);
+            conn.execute(
+                "UPDATE ingested_items SET external_id=?1, text=?2 WHERE id=?3",
+                rusqlite::params![path, head, iid],
+            )
+            .unwrap();
+            insert_chunk(&conn, Some(iid), None, "shared body")
+        };
+        let c_fixture = mk("cfg/seed.yml", "# fixture rows for the treasury tests");
+        let c_live = mk("cfg/app.yml", "runbook: test the connection today");
+        let map = envs_for_chunks(&conn, &[c_fixture, c_live]);
+        assert_eq!(map.get(&c_fixture).map(|s| s.as_str()), Some("test"));
+        assert_eq!(map.get(&c_live).map(|s| s.as_str()), Some("live"));
     }
 
     #[test]
