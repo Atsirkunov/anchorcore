@@ -15,6 +15,9 @@ pub struct AskRequest {
     pub history: Option<Vec<AskTurn>>,
     pub project_id: Option<i64>,
     pub public_only: Option<bool>,
+    /// Opt back into full chunk bytes on citations (default: compact
+    /// 200/500-char previews). Mirrors `SearchRequest.include_content`.
+    pub include_content: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -51,6 +54,7 @@ pub struct Citation {
     pub snippet: String,
     pub doc_type: String,
     pub conflicts_with: Vec<i64>,
+    pub content: String,
 }
 
 #[derive(Deserialize)]
@@ -361,14 +365,20 @@ fn item_meta_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> std::collection
     out
 }
 
-fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str) -> Vec<Citation> {
+/// Citation count knob: `ANCHOR_CITATIONS`, default 5. The B55 golden set
+/// tunes this with data instead of guesses.
+fn citations_limit() -> usize {
+    std::env::var("ANCHOR_CITATIONS").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(5)
+}
+
+fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content: bool, limit: usize) -> Vec<Citation> {
     let db_path = crate::db::resolve_db_path(data_dir);
     let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
-    let ids: Vec<i64> = hits.iter().take(5).map(|h| h.chunk_id).collect();
+    let ids: Vec<i64> = hits.iter().take(limit).map(|h| h.chunk_id).collect();
     let conflict_map = conflicts_for_chunks(&conn, &ids);
     let tag_map = tags_for_chunks(&conn, &ids);
     let doc_type_map = doc_types_for_chunks(&conn, &ids);
-    hits.iter().take(5).map(|h| {
+    hits.iter().take(limit).map(|h| {
         Citation {
             entity_id: h.entity_id,
             kind: hit_kind(h),
@@ -379,7 +389,8 @@ fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str) -> Vec<Citati
             doc_type: doc_type_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             conflicts_with: conflict_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             score: rounded_score(h.score),
-            snippet: take_chars(&h.content, 300),
+            snippet: take_chars(&h.content, 500),
+            content: if want_content { h.content.clone() } else { String::new() },
         }
     }).collect()
 }
@@ -451,7 +462,8 @@ pub async fn ask(
     let sections: Vec<String> = hits.iter().enumerate().map(|(i, h)| format!("[S{}] {}", i+1, h.content.chars().take(2000).collect::<String>())).collect();
     let context = sections.join("\n\n");
     let (answer, composed) = generate_answer(settings, &question, &context, &history_for_gen).await;
-    let citations = build_citations(&hits, &data_dir_string);
+    let want_content = req.include_content.unwrap_or(false);
+    let citations = build_citations(&hits, &data_dir_string, want_content, citations_limit());
     let mode = if composed { "composed" } else { "context_only" };
     AskResponse { answer, citations, refusal: None, mode: mode.to_string(), retrieval: retrieval.to_string() }
 }
@@ -1101,7 +1113,7 @@ mod tests {
         // Untrusted base + no key: ordinary hit survives the gate, but no
         // model can compose — the response must say so (B58).
         settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
-        let req = AskRequest { question: "sunshine".to_string(), history: None, project_id: None, public_only: None };
+        let req = AskRequest { question: "sunshine".to_string(), history: None, project_id: None, public_only: None, include_content: None };
         let res = ask(&settings, &embedder, req, &data_dir).await;
         assert!(!res.citations.is_empty(), "keyword hit on ordinary source must survive");
         assert_eq!(res.mode, "context_only");
@@ -1151,5 +1163,57 @@ mod tests {
         let (text, composed) = generate_answer(&settings, "q", "ctx", &[]).await;
         assert!(composed, "mock model must yield composed=true, got: {}", text.chars().take(120).collect::<String>());
         assert_eq!(text, "mocked answer");
+    }
+
+    #[test]
+    fn build_citations_content_opt_in_and_snippet_floor() {
+        let (dir, _conn, _settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let mut hit = mk_hit(1, false);
+        hit.content = "lorem ipsum dolor ".repeat(60); // ~1000 chars
+        let compact = build_citations(std::slice::from_ref(&hit), &data_dir, false, 5);
+        assert_eq!(compact.len(), 1);
+        assert!(compact[0].content.is_empty(), "content stays empty unless requested");
+        assert_eq!(compact[0].snippet.chars().count(), 500, "snippet floor matches search summaries");
+        let full = build_citations(std::slice::from_ref(&hit), &data_dir, true, 5);
+        assert_eq!(full[0].content, hit.content, "opt-in returns verbatim bytes");
+    }
+
+    #[test]
+    fn build_citations_respects_limit() {
+        let (dir, _conn, _settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let hits = vec![mk_hit(1, false), mk_hit(1, false), mk_hit(1, false)];
+        assert_eq!(build_citations(&hits, &data_dir, false, 2).len(), 2);
+        assert_eq!(build_citations(&hits, &data_dir, false, 9).len(), 3);
+    }
+
+    #[test]
+    fn citations_limit_defaults_to_five() {
+        // No other test touches ANCHOR_CITATIONS, so set/remove is safe.
+        std::env::remove_var("ANCHOR_CITATIONS");
+        assert_eq!(citations_limit(), 5);
+        std::env::set_var("ANCHOR_CITATIONS", "2");
+        assert_eq!(citations_limit(), 2);
+        std::env::set_var("ANCHOR_CITATIONS", "bogus");
+        assert_eq!(citations_limit(), 5);
+        std::env::set_var("ANCHOR_CITATIONS", "0");
+        assert_eq!(citations_limit(), 5);
+        std::env::remove_var("ANCHOR_CITATIONS");
+    }
+
+    #[tokio::test]
+    async fn ask_passes_include_content_through() {
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
+        let req = AskRequest { question: "sunshine".to_string(), history: None, project_id: None, public_only: None, include_content: Some(true) };
+        let res = ask(&settings, &embedder, req, &data_dir).await;
+        assert!(!res.citations.is_empty());
+        assert!(res.citations.iter().all(|c| !c.content.is_empty()), "opt-in ask must carry chunk bytes");
+        let req2 = AskRequest { question: "sunshine".to_string(), history: None, project_id: None, public_only: None, include_content: None };
+        let res2 = ask(&settings, &embedder, req2, &data_dir).await;
+        assert!(res2.citations.iter().all(|c| c.content.is_empty()), "default ask stays compact");
     }
 }

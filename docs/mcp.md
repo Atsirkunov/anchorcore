@@ -37,7 +37,7 @@ needs custom glue; MCP is the glue.
 
 | Tool | Parameters | Returns | Maps to |
 |---|---|---|---|
-| `ask` | `question` (required), `project_id?`, `public_only?` | composed answer + citations | `POST /qa`, `POST /qa/public` |
+| `ask` | `question` (required), `project_id?`, `public_only?`, `include_content?` | composed answer + citations (full chunk bytes on opt-in, capped at 4000 chars with `content_truncated`) | `POST /qa`, `POST /qa/public` |
 | `search` | `query` (required), `k` (default 8, max 50), `project_id?`, `public_only?` | cited chunks with provenance (item title/path, source ref, score); long chunks capped at 4000 chars with `content_truncated` flagged | `POST /qa/search` |
 | `get_entity` | `entity_id` | entity + provenance | Entity graph |
 | `get_source` | `source_id` | source details (no config/secrets) | Sources |

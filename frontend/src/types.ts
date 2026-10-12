@@ -225,6 +225,7 @@ export type Citation = {
   score: number;
   conflicts_with?: number[];
   snippet: string;
+  content: string;
 };
 
 export type Section = {
