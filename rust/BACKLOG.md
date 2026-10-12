@@ -60,7 +60,7 @@ Status: `todo` | `doing` | `done` (✅). Update this file when you pick/complete
 
 ## Shipped log (2026-10-10 — 2026-10-11)
 
-> Committed and shipped as of `v1.0.19` (2026-10-11) — the working-tree era ended with `4528b99`/`b233bea`. Full evidence lives in each commit or `docs/handover-*.md`.
+> Committed and shipped as of `v1.0.20` (2026-10-12) — the working-tree era ended with `4528b99`/`b233bea`. Full evidence lives in each commit or `docs/handover-*.md`.
 
 | Date | Task | Shipped |
 |---|---|---|

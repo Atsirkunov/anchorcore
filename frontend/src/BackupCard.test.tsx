@@ -11,7 +11,7 @@ const REPORT: BackupImportReport = {
   dry_run: true,
   mode: "dry_run",
   format_version: 1,
-  app_version: "1.0.19",
+  app_version: "1.0.20",
   created_at: "2026-10-11T00:00:00+00:00",
   counts: { source: 1, item: 2, entity: 3 },
   imported: { source: 1, item: 2, entity: 3 },
