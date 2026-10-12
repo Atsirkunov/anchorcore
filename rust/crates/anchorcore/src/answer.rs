@@ -55,6 +55,7 @@ pub struct Citation {
     pub doc_type: String,
     pub conflicts_with: Vec<i64>,
     pub content: String,
+    pub item_title: String,
 }
 
 #[derive(Deserialize)]
@@ -378,13 +379,19 @@ fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content:
     let conflict_map = conflicts_for_chunks(&conn, &ids);
     let tag_map = tags_for_chunks(&conn, &ids);
     let doc_type_map = doc_types_for_chunks(&conn, &ids);
+    let meta_map = item_meta_for_chunks(&conn, &ids);
     hits.iter().take(limit).map(|h| {
+        // Path rule mirrors search hits: section breadcrumb when the chunk
+        // lives in one, else the item's file path — entity citations must
+        // stay attributable to their source file.
+        let (item_title, item_path) = meta_map.get(&h.chunk_id).cloned().unwrap_or_default();
         Citation {
             entity_id: h.entity_id,
             kind: hit_kind(h),
             summary: take_chars(&h.content, 200),
             source_ref: display_source_ref(h),
-            path: h.path.clone(),
+            path: if h.path.is_empty() { item_path } else { h.path.clone() },
+            item_title,
             tags: tag_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             doc_type: doc_type_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             conflicts_with: conflict_map.get(&h.chunk_id).cloned().unwrap_or_default(),
@@ -1175,6 +1182,8 @@ mod tests {
         assert_eq!(compact.len(), 1);
         assert!(compact[0].content.is_empty(), "content stays empty unless requested");
         assert_eq!(compact[0].snippet.chars().count(), 500, "snippet floor matches search summaries");
+        assert_eq!(compact[0].item_title, "t");
+        assert_eq!(compact[0].path, "docs/f.md", "pathless chunks fall back to the item path");
         let full = build_citations(std::slice::from_ref(&hit), &data_dir, true, 5);
         assert_eq!(full[0].content, hit.content, "opt-in returns verbatim bytes");
     }

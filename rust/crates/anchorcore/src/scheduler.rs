@@ -35,6 +35,8 @@ pub struct SourceSchedule {
 /// logged.
 const BACKFILL_BATCH: usize = 64;
 const BACKFILL_INTERVAL_SECS: u64 = 15 * 60;
+const BACKFILL_RETRY_SECS: u64 = 60;
+const BACKFILL_RETRIES: u32 = 5;
 
 pub struct Scheduler {
     jobs: Arc<JobManager>,
@@ -151,26 +153,45 @@ impl Scheduler {
     }
 
     /// Spawn the backfill task: one run at startup, then every 15 minutes.
+    /// A failed pass retries at 60 s (Ollama often starts after us) instead
+    /// of leaving chunks pending for the full interval.
     pub fn spawn_backfill(self: &Arc<Self>) {
         let sched = self.clone();
         tokio::spawn(async move {
-            sched.backfill_once().await;
+            sched.backfill_with_retry().await;
             let mut tick = tokio::time::interval(Duration::from_secs(BACKFILL_INTERVAL_SECS));
             tick.tick().await; // consume the immediate tick
             loop {
                 tick.tick().await;
-                sched.backfill_once().await;
+                sched.backfill_with_retry().await;
             }
         });
+    }
+
+    /// One backfill pass, retried up to `BACKFILL_RETRIES` times at 60 s
+    /// while the embedder fails — covers the Ollama-starts-after-us race
+    /// without spamming a dead endpoint forever.
+    async fn backfill_with_retry(&self) {
+        let mut attempt = 0u32;
+        loop {
+            let (_, failed) = self.backfill_once().await;
+            if !failed || attempt >= BACKFILL_RETRIES {
+                return;
+            }
+            attempt += 1;
+            tokio::time::sleep(Duration::from_secs(BACKFILL_RETRY_SECS)).await;
+        }
     }
 
     /// Embed NULL-vector chunks in ascending-id batches until none remain.
     /// Deliberately ungated (no IDF/PII gate): this is the safety net that
     /// drains `pending_embeddings`, and ingest already applied the trust
     /// gates. A failed batch logs + records a system_event and stops; the
-    /// next interval retries. Returns how many chunks were embedded (tests).
-    pub async fn backfill_once(&self) -> usize {
+    /// caller retries (see `backfill_with_retry`). Returns
+    /// `(embedded, failed)`.
+    pub async fn backfill_once(&self) -> (usize, bool) {
         let mut embedded = 0usize;
+        let mut failed = false;
         loop {
             match self.backfill_batch().await {
                 Ok((n, more)) => {
@@ -180,6 +201,7 @@ impl Scheduler {
                     }
                 }
                 Err(e) => {
+                    failed = true;
                     let pending = pending_embedding_count(&self.data_dir);
                     tracing::warn!("embedding backfill failed ({}); {} chunks still pending", e, pending);
                     record_backfill_event(&self.data_dir, pending, &e);
@@ -190,7 +212,7 @@ impl Scheduler {
         if embedded > 0 {
             tracing::info!("embedding backfill: embedded {} chunks", embedded);
         }
-        embedded
+        (embedded, failed)
     }
 
     async fn backfill_batch(&self) -> Result<(usize, bool), String> {
@@ -317,7 +339,8 @@ mod tests {
         svc.set("embed_base_url", &format!("http://127.0.0.1:{}", port), &conn).unwrap();
         let embedder = std::sync::Arc::new(crate::embedder::Embedder::new(svc.clone()));
         let sched = Scheduler::new(JobManager::new(), dir.path().to_string_lossy().to_string(), svc, embedder);
-        let embedded = sched.backfill_once().await;
+        let (embedded, failed) = sched.backfill_once().await;
+        assert!(!failed);
         assert_eq!(embedded, 2, "both NULL chunks incl. the low-signal one must embed");
         assert!(hits.load(std::sync::atomic::Ordering::SeqCst) >= 1, "the mock embedder must have served the request");
         let pending: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL", [], |r| r.get(0)).unwrap();
@@ -335,14 +358,32 @@ mod tests {
         svc.set("embed_base_url", "http://127.0.0.1:9", &conn).unwrap();
         let embedder = std::sync::Arc::new(crate::embedder::Embedder::new(svc.clone()));
         let sched = Scheduler::new(JobManager::new(), dir.path().to_string_lossy().to_string(), svc, embedder);
-        let embedded = sched.backfill_once().await;
+        let (embedded, failed) = sched.backfill_once().await;
         assert_eq!(embedded, 0);
+        assert!(failed, "a dead embedder must report failure so the caller retries");
         let msg: String = conn
             .query_row("SELECT message FROM system_events WHERE component='embedder' ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
             .unwrap();
         assert!(msg.contains("backfill failed"), "event: {}", msg);
         let pending: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL", [], |r| r.get(0)).unwrap();
         assert_eq!(pending, 1, "a failed backfill must leave the chunk pending");
+    }
+
+    #[tokio::test]
+    async fn backfill_with_retry_drains_on_success_without_sleeping() {
+        let dir = tempdir().unwrap();
+        let (conn, _sid) = seed_one_item_with_chunks(&dir, &["retry me"]);
+        let (port, _hits) = mock_embed_server().await;
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let svc = std::sync::Arc::new(crate::settings::SettingsService::new(store));
+        svc.set_data_dir(dir.path());
+        svc.set("embed_base_url", &format!("http://127.0.0.1:{}", port), &conn).unwrap();
+        let embedder = std::sync::Arc::new(crate::embedder::Embedder::new(svc.clone()));
+        let sched = Scheduler::new(JobManager::new(), dir.path().to_string_lossy().to_string(), svc, embedder);
+        // Success returns immediately (no 60 s sleeps), draining the queue.
+        sched.backfill_with_retry().await;
+        let pending: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(pending, 0);
     }
 
     #[test]
