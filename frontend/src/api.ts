@@ -1,4 +1,4 @@
-import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, PiiChunk, PiiConfig, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
+import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, ConflictLink, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, PiiChunk, PiiConfig, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult } from "./types";
 
 export class RequestAbortedError extends Error {
   constructor(message = "Request cancelled") {
@@ -163,6 +163,15 @@ export const api = {
       body: JSON.stringify({ reason }),
     }),
   entityDisputes: (id: number) => request<Dispute[]>(`/entities/${id}/disputes`),
+  listConflicts: (id: number) => request<ConflictLink[]>(`/entities/${id}/conflicts`),
+  flagConflict: (id: number, otherId: number, note?: string) =>
+    request<{ id: number; from_entity_id: number; to_entity_id: number; kind: string; note: string; created_at: string }>(`/entities/${id}/conflicts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ other_entity_id: otherId, note }),
+    }),
+  unflagConflict: (id: number, otherId: number) =>
+    request<{ deleted: boolean }>(`/entities/${id}/conflicts/${otherId}`, { method: "DELETE" }),
   entityContext: (id: number) =>
     request<{ entity_id: number; source_name: string | null; source_ref: string; window_text: string; expanded_before: string[]; expanded_after: string[]; full_text: string; highlight: string; item_title: string }>(`/entities/${id}/context`),
 

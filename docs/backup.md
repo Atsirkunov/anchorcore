@@ -240,8 +240,8 @@ with that passphrase → `GET /sources/{id}/config` shows `***set***` and a sync
 succeeds; a wrong passphrase fails cleanly with no partial import.
 
 A4/A5 (folder packs, zero-knowledge relay) belong to Phases B/C and stay in
-`docs/plan-backup-sync.md` §9 until Phase A ships and the §8 decisions are
-signed off.
+`docs/plan-backup-sync.md` §9 (Phase A shipped in 1.0.20; B/C still wait on
+the §8 sign-off).
 
 ## Walkthrough: move to a new machine
 

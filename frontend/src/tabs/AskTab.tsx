@@ -197,8 +197,11 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
                         className="animated"
                         style={{ ...styles.cite, animation: `rise 0.4s ease both`, animationDelay: `${Math.min(j * 0.08, 0.4)}s` }}
                       >
-                        <span style={{ color: theme.purple }}>[{c.kind}]</span> {c.summary}
+                        <span style={{ color: theme.purple }}>[{c.kind}]</span>{c.doc_type === "code" && <span style={{ color: theme.blue }}> [code]</span>} {c.summary}
                         <div style={{ color: theme.textDim, fontSize: 12 }}>{c.source_ref} · score {c.score}</div>
+                        {c.conflicts_with && c.conflicts_with.length > 0 && (
+                          <div style={{ color: theme.amber, fontSize: 12 }}>contradicts {c.conflicts_with.map((id) => `#${id}`).join(", ")}</div>
+                        )}
                         {c.path && (
                           <div style={{ marginTop: 3 }}>
                             <Breadcrumb path={c.path} />

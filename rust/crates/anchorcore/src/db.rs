@@ -125,6 +125,8 @@ fn ensure_columns(conn: &Connection) -> Result<()> {
     try_add_column(conn, "ALTER TABLE chunks ADD COLUMN section_id INTEGER REFERENCES sections(id) ON DELETE SET NULL");
     try_add_column(conn, "ALTER TABLE chunks ADD COLUMN level INTEGER NOT NULL DEFAULT 0");
     try_add_column(conn, "ALTER TABLE chunks ADD COLUMN path TEXT NOT NULL DEFAULT ''");
+    // relationships.note (R27.4 conflict links)
+    try_add_column(conn, "ALTER TABLE relationships ADD COLUMN note TEXT NOT NULL DEFAULT ''");
     // ensure sections table exists even on old DBs that migrated before 11_sections.sql
     let _ = conn.execute(
         "CREATE TABLE IF NOT EXISTS sections (
@@ -333,6 +335,8 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/13_system_events_default.sql")),
         // R25.1: stable uids (UUIDv7) for backup/export + device migration
         M::up(include_str!("../migrations/14_uids.sql")),
+        // R27.4: free-text reason on conflict links
+        M::up(include_str!("../migrations/15_conflict_note.sql")),
     ])
 }
 
@@ -389,6 +393,10 @@ mod tests {
                 conn.execute(&format!("ALTER TABLE {} DROP COLUMN uid", table), [])
                     .unwrap_or_else(|e| panic!("drop column {table}: {e}"));
             }
+            // A real v10 DB also predates R27.4 — drop `note` so migration 15
+            // has real work to do (same "duplicate column by design" rule).
+            conn.execute("ALTER TABLE relationships DROP COLUMN note", [])
+                .unwrap_or_else(|e| panic!("drop note: {e}"));
             conn.execute("DROP TABLE vec_chunks", []).unwrap();
             conn.pragma_update(None, "writable_schema", "ON").unwrap();
             conn.execute(
@@ -406,7 +414,7 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         run_migrations(&mut conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 14);
+        assert_eq!(v, 15);
         assert_eq!(vec_trigger_sql(&conn), before);
         let sys_sql: String = conn
             .query_row("SELECT sql FROM sqlite_master WHERE name = 'system_events'", [], |r| r.get(0))

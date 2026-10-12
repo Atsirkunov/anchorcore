@@ -133,6 +133,8 @@ async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool) ->
         "kind": c.get("kind").and_then(|v| v.as_str()).unwrap_or("document"),
         "summary": c.get("summary").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>(),
         "source_ref": c.get("source_ref").and_then(|v| v.as_str()).unwrap_or(""),
+        "doc_type": c.get("doc_type").and_then(|v| v.as_str()).unwrap_or(""),
+        "conflicts_with": c.get("conflicts_with").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
         "score": c.get("score"),
         "snippet": c.get("snippet").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>()
     })).collect();
@@ -164,6 +166,8 @@ async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only
         "summary": h.get("summary").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>(),
         "content": h.get("content").and_then(|v| v.as_str()).unwrap_or("").chars().take(4000).collect::<String>(),
         "source_ref": h.get("source_ref").and_then(|v| v.as_str()).unwrap_or(""),
+        "doc_type": h.get("doc_type").and_then(|v| v.as_str()).unwrap_or(""),
+        "conflicts_with": h.get("conflicts_with").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
         "source_id": h.get("source_id"),
         "item_id": h.get("item_id"),
         "item_title": h.get("item_title").and_then(|v| v.as_str()).unwrap_or(""),
@@ -190,6 +194,7 @@ async fn tool_get_entity(entity_id: i64) -> Result<Value, String> {
         "author": v.get("author").and_then(|x| x.as_str()).unwrap_or(""),
         "owner": v.get("owner").and_then(|x| x.as_str()).unwrap_or(""),
         "source_ref": v.get("source_ref").and_then(|x| x.as_str()).unwrap_or(""),
+        "doc_type": v.get("doc_type").and_then(|x| x.as_str()).unwrap_or(""),
         "window_text": v.get("window_text").and_then(|x| x.as_str()).unwrap_or("").chars().take(4000).collect::<String>(),
         "dispute_count": v.get("dispute_count"),
         "created_at": v.get("created_at")

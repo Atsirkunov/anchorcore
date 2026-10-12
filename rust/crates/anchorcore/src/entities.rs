@@ -31,6 +31,12 @@ pub struct DisputePayload {
 }
 
 #[derive(Deserialize)]
+pub struct ConflictPayload {
+    pub other_entity_id: Option<i64>,
+    pub note: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct GateQuery {
     pub gate: Option<String>,
 }
@@ -84,6 +90,7 @@ fn entity_json_from_row(row: &rusqlite::Row) -> rusqlite::Result<Value> {
     let dispute_count: i64 = row.get(11)?;
     let created_at: Option<String> = row.get(12)?;
     let updated_at: Option<String> = row.get(13)?;
+    let doc_type: String = row.get(14).unwrap_or_default();
     Ok(serde_json::json!({
         "id": id,
         "item_id": item_id,
@@ -98,7 +105,8 @@ fn entity_json_from_row(row: &rusqlite::Row) -> rusqlite::Result<Value> {
         "window_text": window_text,
         "dispute_count": dispute_count,
         "created_at": created_at.unwrap_or_default(),
-        "updated_at": updated_at.unwrap_or_default()
+        "updated_at": updated_at.unwrap_or_default(),
+        "doc_type": doc_type
     }))
 }
 
@@ -109,7 +117,7 @@ pub async fn list_handler(State(state): State<AppState>, Query(q): Query<ListQue
     let status = q.status.clone();
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
-        let mut sql = "SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities".to_string();
+        let mut sql = "SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at, (SELECT doc_type FROM ingested_items WHERE ingested_items.id = entities.item_id) FROM entities".to_string();
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![];
         let mut clauses = vec![];
         if let Some(k) = kind {
@@ -152,7 +160,7 @@ pub async fn get_handler(
         if let Some(err) = provider_gate_fail(&conn, &settings, &gate, entity_id) {
             return Err(err);
         }
-        let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities WHERE id = ?1").unwrap();
+        let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at, (SELECT doc_type FROM ingested_items WHERE ingested_items.id = entities.item_id) FROM entities WHERE id = ?1").unwrap();
         let v = stmt.query_row([entity_id], |r| entity_json_from_row(r));
         match v {
             Ok(j) => Ok(j),
@@ -186,7 +194,7 @@ pub async fn patch_handler(
             let _ = conn.execute("UPDATE entities SET owner = ?1 WHERE id = ?2", rusqlite::params![o, entity_id]);
         }
         let _ = conn.execute("UPDATE entities SET updated_at = datetime('now') WHERE id = ?1", [entity_id]);
-        let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities WHERE id = ?1").unwrap();
+        let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at, (SELECT doc_type FROM ingested_items WHERE ingested_items.id = entities.item_id) FROM entities WHERE id = ?1").unwrap();
         let v = stmt.query_row([entity_id], |r| entity_json_from_row(r)).unwrap();
         Ok(v)
     })
@@ -239,7 +247,7 @@ pub async fn related_handler(
                 }
             }
         }
-        let sql = format!("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities WHERE id IN ({})", crate::common::placeholders(all.len()));
+        let sql = format!("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at, (SELECT doc_type FROM ingested_items WHERE ingested_items.id = entities.item_id) FROM entities WHERE id IN ({})", crate::common::placeholders(all.len()));
         let mut stmt3 = conn.prepare(&sql).unwrap();
         let rows = stmt3.query_map(rusqlite::params_from_iter(all.iter()), |r| entity_json_from_row(r)).unwrap();
         let out: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
@@ -266,7 +274,7 @@ pub async fn dispute_handler(
         crate::common::require_row(&conn, "entities", entity_id, "Entity not found")?;
         let _ = conn.execute("INSERT INTO disputes (entity_id, reason, user) VALUES (?1, ?2, ?3)", rusqlite::params![entity_id, reason, user]);
         let _ = conn.execute("UPDATE entities SET dispute_count = COALESCE(dispute_count,0)+1, status='disputed', updated_at=datetime('now') WHERE id=?1", [entity_id]);
-        let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at FROM entities WHERE id = ?1").unwrap();
+        let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at, (SELECT doc_type FROM ingested_items WHERE ingested_items.id = entities.item_id) FROM entities WHERE id = ?1").unwrap();
         let v = stmt.query_row([entity_id], |r| entity_json_from_row(r)).unwrap();
         Ok(v)
     })
@@ -276,6 +284,142 @@ pub async fn dispute_handler(
         Ok(v) => Ok(Json(v)),
         Err(e) => Err(e),
     }
+}
+
+/// R27.4: flag that two entities contradict each other (typically a prose
+/// decision vs a code-documented one). One directed `conflicts_with` row —
+/// every read queries both directions, like `related`. Unlike disputes, both
+/// sides stay visible to Q&A; answers warn instead.
+pub async fn conflict_create_handler(
+    State(state): State<AppState>,
+    Path(entity_id): Path<i64>,
+    Json(payload): Json<ConflictPayload>,
+) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
+    let other = match payload.other_entity_id {
+        Some(o) => o,
+        None => {
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({"detail": "other_entity_id required"})),
+            ))
+        }
+    };
+    if other == entity_id {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"detail": "an entity cannot conflict with itself"})),
+        ));
+    }
+    let note: String = payload.note.unwrap_or_default().trim().chars().take(1000).collect();
+    let data_dir = state.data_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = crate::common::open_data_db(&data_dir);
+        crate::common::require_row(&conn, "entities", entity_id, "Entity not found")?;
+        crate::common::require_row(&conn, "entities", other, "Entity not found")?;
+        let dup: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM relationships WHERE kind='conflicts_with' AND ((from_entity_id=?1 AND to_entity_id=?2) OR (from_entity_id=?2 AND to_entity_id=?1))",
+                rusqlite::params![entity_id, other],
+                |r| r.get(0),
+            )
+            .ok();
+        if dup.is_some() {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"detail": "conflict already flagged"})),
+            ));
+        }
+        conn.execute(
+            "INSERT INTO relationships (from_entity_id, to_entity_id, kind, confidence, note) VALUES (?1,?2,'conflicts_with',1.0,?3)",
+            rusqlite::params![entity_id, other, note],
+        )
+        .map_err(|e| {
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({"detail": e.to_string()})),
+            )
+        })?;
+        let id = conn.last_insert_rowid();
+        let created: String = conn
+            .query_row("SELECT created_at FROM relationships WHERE id=?1", [id], |r| r.get(0))
+            .unwrap_or_default();
+        Ok((
+            StatusCode::CREATED,
+            Json(serde_json::json!({
+                "id": id,
+                "from_entity_id": entity_id,
+                "to_entity_id": other,
+                "kind": "conflicts_with",
+                "note": note,
+                "created_at": created,
+            })),
+        ))
+    })
+    .await
+    .unwrap();
+    result
+}
+
+pub async fn conflict_delete_handler(
+    State(state): State<AppState>,
+    Path((entity_id, other_id)): Path<(i64, i64)>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let data_dir = state.data_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = crate::common::open_data_db(&data_dir);
+        let n = conn
+            .execute(
+                "DELETE FROM relationships WHERE kind='conflicts_with' AND ((from_entity_id=?1 AND to_entity_id=?2) OR (from_entity_id=?2 AND to_entity_id=?1))",
+                rusqlite::params![entity_id, other_id],
+            )
+            .unwrap_or(0);
+        if n == 0 {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"detail": "Conflict not found"})),
+            ));
+        }
+        Ok(Json(serde_json::json!({"deleted": true})))
+    })
+    .await
+    .unwrap();
+    result
+}
+
+pub async fn conflicts_list_handler(
+    State(state): State<AppState>,
+    Path(entity_id): Path<i64>,
+    Query(gate): Query<GateQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let data_dir = state.data_dir.clone();
+    let settings = state.settings.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = crate::common::open_data_db(&data_dir);
+        crate::common::require_row(&conn, "entities", entity_id, "Entity not found")?;
+        let mut stmt = conn.prepare("SELECT CASE WHEN from_entity_id=?1 THEN to_entity_id ELSE from_entity_id END, note, created_at FROM relationships WHERE kind='conflicts_with' AND (from_entity_id=?1 OR to_entity_id=?1) ORDER BY created_at DESC").unwrap();
+        let gated = gate.gate.as_deref() == Some("provider") && !crate::answer::is_answer_trusted(&settings);
+        let rows = stmt
+            .query_map([entity_id], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                ))
+            })
+            .unwrap();
+        let mut out = Vec::new();
+        for row in rows.flatten() {
+            // extraction-plane gate: skip counterparts withheld from the model
+            if gated && crate::answer::gate_entity_content(&conn, row.0).is_some() {
+                continue;
+            }
+            out.push(serde_json::json!({"other_entity_id": row.0, "note": row.1, "created_at": row.2}));
+        }
+        Ok(Json(Value::Array(out)))
+    })
+    .await
+    .unwrap();
+    result
 }
 
 pub async fn disputes_handler(State(state): State<AppState>, Path(entity_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -445,6 +589,84 @@ mod tests {
                 assert_eq!(v.get("code").and_then(|c| c.as_str()), Some("gated_provider"));
             }
             Ok(_) => panic!("sensitive entity must be gated for untrusted provider"),
+        }
+    }
+
+    #[tokio::test]
+    async fn entity_json_carries_parent_doc_type() {
+        let dir = tempdir().unwrap();
+        let state = gate_state(&dir, false);
+        let eid = sensitive_eid(&state);
+        let db_path = crate::db::resolve_db_path(&state.data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("UPDATE ingested_items SET doc_type='code' WHERE id=(SELECT item_id FROM entities WHERE id=?1)", [eid]).unwrap();
+        drop(conn);
+        let open = Query(GateQuery { gate: None });
+        let Json(v) = get_handler(State(state), Path(eid), open).await.expect("get must succeed");
+        assert_eq!(v.get("doc_type").and_then(|d| d.as_str()), Some("code"));
+    }
+
+    #[tokio::test]
+    async fn conflict_flag_list_unflag_round_trip() {
+        let dir = tempdir().unwrap();
+        let state = gate_state(&dir, false);
+        let a = sensitive_eid(&state);
+        let db_path = crate::db::resolve_db_path(&state.data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let item: i64 = conn.query_row("SELECT item_id FROM entities WHERE id=?1", [a], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO entities (item_id, kind, summary) VALUES (?1,'decision','code choice')", [item]).unwrap();
+        let b = conn.last_insert_rowid();
+        drop(conn);
+        let open = || Query(GateQuery { gate: None });
+        // flag a→b
+        let payload = ConflictPayload { other_entity_id: Some(b), note: Some("code uses sessions, doc says JWT".to_string()) };
+        let (status, Json(v)) = conflict_create_handler(State(state.clone()), Path(a), Json(payload)).await.expect("flag must succeed");
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(v.get("kind").and_then(|k| k.as_str()), Some("conflicts_with"));
+        // visible from both directions with the note
+        let Json(list_a) = conflicts_list_handler(State(state.clone()), Path(a), open()).await.expect("list a");
+        assert_eq!(list_a.as_array().map(|l| l.len()), Some(1));
+        assert_eq!(list_a[0].get("other_entity_id").and_then(|i| i.as_i64()), Some(b));
+        assert_eq!(list_a[0].get("note").and_then(|n| n.as_str()), Some("code uses sessions, doc says JWT"));
+        let Json(list_b) = conflicts_list_handler(State(state.clone()), Path(b), open()).await.expect("list b");
+        assert_eq!(list_b[0].get("other_entity_id").and_then(|i| i.as_i64()), Some(a));
+        // duplicate in either direction → 409
+        let dup = ConflictPayload { other_entity_id: Some(a), note: None };
+        match conflict_create_handler(State(state.clone()), Path(b), Json(dup)).await {
+            Err((s, _)) => assert_eq!(s, StatusCode::CONFLICT),
+            Ok(_) => panic!("duplicate conflict must be rejected"),
+        }
+        // unflag from the other side works (direction-insensitive)
+        let Json(del) = conflict_delete_handler(State(state.clone()), Path((b, a))).await.expect("unflag must succeed");
+        assert_eq!(del.get("deleted").and_then(|d| d.as_bool()), Some(true));
+        let Json(list_empty) = conflicts_list_handler(State(state.clone()), Path(a), open()).await.expect("list after unflag");
+        assert_eq!(list_empty.as_array().map(|l| l.len()), Some(0));
+    }
+
+    #[tokio::test]
+    async fn conflict_create_validates_input() {
+        let dir = tempdir().unwrap();
+        let state = gate_state(&dir, false);
+        let a = sensitive_eid(&state);
+        // self-conflict → 422
+        let slf = ConflictPayload { other_entity_id: Some(a), note: None };
+        match conflict_create_handler(State(state.clone()), Path(a), Json(slf)).await {
+            Err((s, Json(v))) => {
+                assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+                assert!(v.get("detail").and_then(|d| d.as_str()).unwrap_or("").contains("itself"));
+            }
+            Ok(_) => panic!("self-conflict must be rejected"),
+        }
+        // missing counterpart → 404
+        let missing = ConflictPayload { other_entity_id: Some(999999), note: None };
+        match conflict_create_handler(State(state.clone()), Path(a), Json(missing)).await {
+            Err((s, _)) => assert_eq!(s, StatusCode::NOT_FOUND),
+            Ok(_) => panic!("missing counterpart must be rejected"),
+        }
+        // unflagging nothing → 404
+        match conflict_delete_handler(State(state.clone()), Path((a, 999999))).await {
+            Err((s, _)) => assert_eq!(s, StatusCode::NOT_FOUND),
+            Ok(_) => panic!("unflag with no link must be rejected"),
         }
     }
 

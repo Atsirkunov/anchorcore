@@ -49,7 +49,7 @@ mod watcher;
 
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use clap::Parser;
@@ -288,6 +288,8 @@ fn build_router(state: health::AppState) -> Router {
         .route("/entities/:id/related", get(entities::related_handler))
         .route("/entities/:id/dispute", post(entities::dispute_handler))
         .route("/entities/:id/disputes", get(entities::disputes_handler))
+        .route("/entities/:id/conflicts", get(entities::conflicts_list_handler).post(entities::conflict_create_handler))
+        .route("/entities/:id/conflicts/:other_id", delete(entities::conflict_delete_handler))
         .route("/entities/:id/context", get(entities::context_handler))
         .route("/review/low-confidence", get(review::low_confidence_handler))
         .route("/review/duplicates", get(review::duplicates_handler))

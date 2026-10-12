@@ -41,12 +41,12 @@ Repo: `git@github.com:Atsirkunov/anchorcore.git`. Backend under `backend/` (depr
 - `backend/app/pii.py` — PII knowledge base + `scan_text` (B30), categories + custom words, persisted in `app_settings`.
 - `backend/app/auth.py` — hosted auth (B40): PBKDF2 + HS256 JWT, `get_current_user`/`require_auth` (off when `ANCHOR_AUTH_SECRET` empty).
 - `backend/app/classifier.py` / Rust `classifier.rs` — per-doc-type extraction prompts
-  (`standards|runbook|documentation|meeting|decision_log|prd|general`), `detect_document_type` (LLM with
+  (`standards|runbook|documentation|meeting|decision_log|prd|code|general`), `detect_document_type` (extension fast path for source files, else LLM with
   `detect_rules` fallback), `classify`, `distill`; rule-based fallbacks for all (tests must pass without
   Ollama) — note-only types (standards/runbook/documentation) never emit decision/action. Takes
   `cloud_trusted` (B39). **R22.1:** the Rust pipeline must call `Classifier::classify`/`distill` per
   window — don't route extraction back through `classify_rules` (that shipped 1.0.10–1.0.14 and fabricated
-  decisions/actions from process docs).
+  decisions/actions from process docs). `code` is deliberately NOT note-only (implementation choices must surface as decisions); entities/citations/search hits carry the parent item's `doc_type` so code-derived decisions are visibly badged (`code`) in Entities/Review/Ask + MCP.
 - `backend/app/routers/` — `sources.py` (create/list/update/delete + config + jobs, label B39),
   `entities.py` (`GET /{id}`, `PATCH`, `GET /{id}/related`, `POST /{id}/dispute`, `GET /{id}/disputes`, **`GET /{id}/context` B27 neighbour expansion**; `review_router` for low-confidence/duplicates/merge), `qa.py` (`POST /qa` + `POST /qa/public` B30 share-safe), `projects.py`, `settings.py`, `system.py` (status/errors/logs/onboarding B8), `pii.py` (`/pii/config`, `/pii/review`, `/pii/review/{id}`, `/pii/scan/{source}`), `auth.py` (`/auth/status`, `/auth/signup`, `/auth/login`, `/auth/me` B40).
 - `backend/app/secrets.py` — `SecretStore` (OS keychain, encrypted-file fallback when
@@ -173,6 +173,9 @@ Key rules:
 - **Agent skills are installed state, not source.** Our own two skills are tracked once, in `.agents/skills/` (the dir every agent reads — see the `skills` CLI table); `.claude/skills/`, `agent/skills/` and the vendored third-party skills are gitignored and restored with `npx skills experimental_install` (`skills-lock.json` is the manifest). Never `git add -A` them back — that is how 896 files / 3.1 MB (81% of the index) got committed once.
 - **Repo files are CRLF** — the edit tool matches exact text, so multi-line finds with LF fail; use single-line anchors or a script that preserves CRLF. **Rust builds DO work on this box** (2026-10-12): use `C:\Users\Aleksandr\.local\winlibs\mingw64\bin` on PATH + `cargo +stable-x86_64-pc-windows-gnu ... --target x86_64-pc-windows-gnu --offline` from `rust/` (see `rust/AGENTS.md` + `docs/handover-2026-10-10-b54-verify.md`); the msvc toolchain still cannot link. A fresh `git worktree` has no `rust/target`/`frontend/dist` (gitignored) — robocopy them from the main checkout or rebuild.
 - **Backup/export (Phase 25, `rust/crates/anchorcore/src/backup.rs`)** — archives are uid-based (never local ids), records are rendered by SQLite `json_object` and streamed into the zip, import is one transaction (dry run = apply-then-rollback), the secrets bundle is decrypted *before* any write (a wrong passphrase must leave nothing behind), `exports/safety-backup-*` is never swept, and imports queue `jobs.kind='embed'` (`Pipeline::embed_missing_for_source`) — retrieval stays keyword-only until it runs. Keep the plan §7 grep test green.
+
+- **Entity chunks don't surface through `toc_search` leaf search** (`section_id IS NULL` never matches the top-sections filter), so live citations are overwhelmingly *document* chunks — any feature keyed on cited entities (R27.4 conflict warnings) must attribute via the item (`conflicts_for_chunks`), not the hit's `entity_id`. Related: `graph_expand` walks *every* relationship kind at `GRAPH_DEFAULT_WEIGHT` unless told otherwise — a new adversarial kind (e.g. `conflicts_with`) must be explicitly skipped or contradictions enter as supporting evidence.
+- **Code splits by symbols, not headings** (R27.1): `chunk_code_with_sections` (python indent + brace keyword/depth families, js-const + c-style extras) returns the same `(SectionMeta, ChunkMeta)` shape via the shared `materialize` tail; `store_doc_chunks` dispatches on `doc_type == "code"` with the filename from `external_id` (opaque ids → root-only). Minified files + unknown extensions stay root-only by guard, never by accident.
 
 ## UI notes
 

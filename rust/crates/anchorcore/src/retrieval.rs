@@ -925,6 +925,9 @@ pub fn graph_expand(
         let rows: Vec<(i64,i64,String)> = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().filter_map(|r| r.ok()).collect();
         let mut next = HashSet::new();
         for (from,to,kind) in rows {
+            // R27.4: contradictions warn via citations — they must never enter
+            // as supporting evidence through graph expansion
+            if kind == "conflicts_with" { continue; }
             for (a,b) in [(from,to),(to,from)] {
                 if !frontier.contains(&a) || visited.contains(&b) { continue; }
                 let w = GRAPH_KIND_WEIGHTS.iter().find(|(k,_)| *k==kind).map(|(_,v)| *v).unwrap_or(GRAPH_DEFAULT_WEIGHT) * (0.5_f64.powi(hop as i32));
@@ -1209,6 +1212,24 @@ mod tests {
         let out2 = graph_expand(&conn, &seed, None, 2, 5, false);
         let ids2: Vec<i64> = out2.iter().filter_map(|h| h.entity_id).collect();
         assert!(ids2.contains(&e3), "disputed e3 should appear when not excluded");
+    }
+
+    #[test]
+    fn graph_expand_skips_conflicts_with() {
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s1", "internal");
+        let iid = insert_item(&conn, sid, "doc1");
+        let e1 = insert_entity(&conn, iid, "prose decision", "unverified", "alice");
+        let e2 = insert_entity(&conn, iid, "code decision", "unverified", "bob");
+        let e3 = insert_entity(&conn, iid, "related note", "unverified", "carol");
+        let c1 = insert_chunk(&conn, Some(iid), Some(e1), "prose decision details");
+        let _ = conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?2,'conflicts_with')", rusqlite::params![e1, e2]).unwrap();
+        let _ = conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?2,'related')", rusqlite::params![e1, e3]).unwrap();
+        let seed = vec![Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "seed".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()) }];
+        let out = graph_expand(&conn, &seed, None, 2, 5, true);
+        let ids: Vec<i64> = out.iter().filter_map(|h| h.entity_id).collect();
+        assert!(!ids.contains(&e2), "conflicting e2 must never expand as supporting evidence");
+        assert!(ids.contains(&e3), "related e3 still expands");
     }
 
     #[test]

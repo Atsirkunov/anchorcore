@@ -49,6 +49,8 @@ pub struct Citation {
     pub tags: Vec<String>,
     pub score: f64,
     pub snippet: String,
+    pub doc_type: String,
+    pub conflicts_with: Vec<i64>,
 }
 
 #[derive(Deserialize)]
@@ -81,6 +83,8 @@ pub struct SearchHit {
     pub source_id: Option<i64>,
     pub item_id: Option<i64>,
     pub item_title: String,
+    pub doc_type: String,
+    pub conflicts_with: Vec<i64>,
     pub score: f64,
 }
 
@@ -189,11 +193,151 @@ fn tags_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> std::collections::Ha
     out
 }
 
+/// Single batched doc_type lookup — marks citations derived from code.
+/// Document chunks join via `item_id`, entity chunks via their entity's item.
+/// Single batched conflict lookup — drives the "contradicts #N" citation
+/// warning. Links to `stale` counterparts are resolved, hence excluded.
+fn conflicts_for_entities(conn: &Connection, entity_ids: &[i64]) -> std::collections::HashMap<i64, Vec<i64>> {
+    let mut out: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
+    if entity_ids.is_empty() {
+        return out;
+    }
+    let sql = format!(
+        "SELECT r.from_entity_id, r.to_entity_id FROM relationships r JOIN entities a ON a.id=r.from_entity_id JOIN entities b ON b.id=r.to_entity_id WHERE r.kind='conflicts_with' AND (r.from_entity_id IN ({}) OR r.to_entity_id IN ({})) AND COALESCE(a.status,'') != 'stale' AND COALESCE(b.status,'') != 'stale'",
+        crate::common::placeholders(entity_ids.len()),
+        crate::common::placeholders(entity_ids.len())
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    let mut params: Vec<i64> = Vec::with_capacity(entity_ids.len() * 2);
+    params.extend_from_slice(entity_ids);
+    params.extend_from_slice(entity_ids);
+    if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+    }) {
+        for (from, to) in rows.flatten() {
+            for (a, b) in [(from, to), (to, from)] {
+                if entity_ids.contains(&a) {
+                    out.entry(a).or_default().push(b);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Chunk-level conflict map for citations. Entity chunks attribute via their
+/// own entity; document chunks (the common citation) via live entities on
+/// the same item — a file containing a conflicted decision warns, naming the
+/// counterpart, instead of silently disagreeing.
+fn conflicts_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> std::collections::HashMap<i64, Vec<i64>> {
+    let mut out: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
+    if chunk_ids.is_empty() {
+        return out;
+    }
+    let sql = format!(
+        "SELECT id, entity_id, item_id FROM chunks WHERE id IN ({})",
+        crate::common::placeholders(chunk_ids.len())
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    let rows: Vec<(i64, Option<i64>, Option<i64>)> = match stmt.query_map(
+        rusqlite::params_from_iter(chunk_ids.iter()),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    ) {
+        Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+        Err(_) => return out,
+    };
+    let item_ids: Vec<i64> = rows.iter().filter_map(|(_, e, i)| if e.is_none() { *i } else { None }).collect();
+    let item_entities = entities_for_items(conn, &item_ids);
+    let mut candidate_ids: Vec<i64> = rows.iter().filter_map(|(_, e, _)| *e).collect();
+    for ids in item_entities.values() {
+        candidate_ids.extend(ids.iter().copied());
+    }
+    let by_entity = conflicts_for_entities(conn, &candidate_ids);
+    for (cid, entity_id, item_id) in rows {
+        let mut warned: Vec<i64> = Vec::new();
+        if let Some(eid) = entity_id {
+            if let Some(ids) = by_entity.get(&eid) {
+                warned.extend(ids.iter().copied());
+            }
+        } else if let Some(iid) = item_id {
+            if let Some(eids) = item_entities.get(&iid) {
+                for eid in eids {
+                    if let Some(ids) = by_entity.get(eid) {
+                        warned.extend(ids.iter().copied());
+                    }
+                }
+            }
+        }
+        warned.sort_unstable();
+        warned.dedup();
+        if !warned.is_empty() {
+            out.insert(cid, warned);
+        }
+    }
+    out
+}
+
+/// Live (non-stale) entity ids per item — stale entities are resolved, so
+/// their items must not warn.
+fn entities_for_items(conn: &Connection, item_ids: &[i64]) -> std::collections::HashMap<i64, Vec<i64>> {
+    let mut out: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
+    if item_ids.is_empty() {
+        return out;
+    }
+    let sql = format!(
+        "SELECT item_id, id FROM entities WHERE item_id IN ({}) AND COALESCE(status,'') != 'stale'",
+        crate::common::placeholders(item_ids.len())
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(item_ids.iter()), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+    }) {
+        for (iid, eid) in rows.flatten() {
+            out.entry(iid).or_default().push(eid);
+        }
+    }
+    out
+}
+
+fn doc_types_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> std::collections::HashMap<i64, String> {
+    let mut out: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    if chunk_ids.is_empty() {
+        return out;
+    }
+    let sql = format!(
+        "SELECT c.id, COALESCE(i1.doc_type, i2.doc_type, '') FROM chunks c LEFT JOIN ingested_items i1 ON i1.id=c.item_id LEFT JOIN entities e ON e.id=c.entity_id LEFT JOIN ingested_items i2 ON i2.id=e.item_id WHERE c.id IN ({})",
+        crate::common::placeholders(chunk_ids.len())
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(chunk_ids.iter()), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    }) {
+        for row in rows.flatten() {
+            out.insert(row.0, row.1);
+        }
+    }
+    out
+}
+
 fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str) -> Vec<Citation> {
     let db_path = crate::db::resolve_db_path(data_dir);
     let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
     let ids: Vec<i64> = hits.iter().take(5).map(|h| h.chunk_id).collect();
+    let conflict_map = conflicts_for_chunks(&conn, &ids);
     let tag_map = tags_for_chunks(&conn, &ids);
+    let doc_type_map = doc_types_for_chunks(&conn, &ids);
     hits.iter().take(5).map(|h| {
         Citation {
             entity_id: h.entity_id,
@@ -202,6 +346,8 @@ fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str) -> Vec<Citati
             source_ref: display_source_ref(h),
             path: h.path.clone(),
             tags: tag_map.get(&h.chunk_id).cloned().unwrap_or_default(),
+            doc_type: doc_type_map.get(&h.chunk_id).cloned().unwrap_or_default(),
+            conflicts_with: conflict_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             score: rounded_score(h.score),
             snippet: take_chars(&h.content, 300),
         }
@@ -550,7 +696,9 @@ pub async fn search(
     let db_path = crate::db::resolve_db_path(&data_dir_string);
     let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
     let ids: Vec<i64> = page.iter().map(|h| h.chunk_id).collect();
+    let conflict_map = conflicts_for_chunks(&conn, &ids);
     let tag_map = tags_for_chunks(&conn, &ids);
+    let doc_type_map = doc_types_for_chunks(&conn, &ids);
     let hits = page.into_iter().map(|h| {
         SearchHit {
             chunk_id: Some(h.chunk_id),
@@ -561,6 +709,8 @@ pub async fn search(
             source_ref: display_source_ref(&h),
             path: h.path.clone(),
             tags: tag_map.get(&h.chunk_id).cloned().unwrap_or_default(),
+            doc_type: doc_type_map.get(&h.chunk_id).cloned().unwrap_or_default(),
+            conflicts_with: conflict_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             source_id: h.source_id,
             item_id: h.item_id,
             item_title: String::new(),
@@ -761,6 +911,58 @@ mod tests {
             is_pii: pii,
             status: None,
         }
+    }
+
+    #[test]
+    fn conflicts_for_chunks_warns_doc_chunks_via_item() {
+        let (_dir, conn, _settings) = seed_gate_db();
+        let a: i64 = conn.query_row("SELECT id FROM entities WHERE summary='sunshine entity'", [], |r| r.get(0)).unwrap();
+        let b: i64 = conn.query_row("SELECT id FROM entities WHERE summary='moonvault entity'", [], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?2,'conflicts_with')", rusqlite::params![a, b]).unwrap();
+        let sun_doc: i64 = conn.query_row("SELECT id FROM chunks WHERE item_id IS NOT NULL AND content LIKE 'quarterly sunshine%'", [], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content) VALUES (?1,'entity','ref','sunshine entity')", [a]).unwrap();
+        let sun_ent: i64 = conn.last_insert_rowid();
+        let map = conflicts_for_chunks(&conn, &[sun_doc, sun_ent]);
+        assert_eq!(map.get(&sun_doc).cloned().unwrap_or_default(), vec![b], "doc chunk warns via its item");
+        assert_eq!(map.get(&sun_ent).cloned().unwrap_or_default(), vec![b], "entity chunk warns via its entity");
+        // stale own side resolves the warning for the whole item
+        conn.execute("UPDATE entities SET status='stale' WHERE id=?1", [a]).unwrap();
+        let map_stale = conflicts_for_chunks(&conn, &[sun_doc, sun_ent]);
+        assert!(map_stale.get(&sun_doc).cloned().unwrap_or_default().is_empty());
+        assert!(conflicts_for_chunks(&conn, &[]).is_empty());
+    }
+
+    #[test]
+    fn conflicts_resolve_both_directions_and_skip_stale() {
+        let (_dir, conn, _settings) = seed_gate_db();
+        let a: i64 = conn.query_row("SELECT id FROM entities WHERE summary='sunshine entity'", [], |r| r.get(0)).unwrap();
+        let b: i64 = conn.query_row("SELECT id FROM entities WHERE summary='moonvault entity'", [], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind, note) VALUES (?1,?2,'conflicts_with','x vs y')", rusqlite::params![a, b]).unwrap();
+        let map = conflicts_for_entities(&conn, &[a]);
+        assert_eq!(map.get(&a).cloned().unwrap_or_default(), vec![b]);
+        let map_b = conflicts_for_entities(&conn, &[b]);
+        assert_eq!(map_b.get(&b).cloned().unwrap_or_default(), vec![a]);
+        // stale counterpart = resolved: no warning
+        conn.execute("UPDATE entities SET status='stale' WHERE id=?1", [b]).unwrap();
+        let map_stale = conflicts_for_entities(&conn, &[a]);
+        assert!(map_stale.get(&a).cloned().unwrap_or_default().is_empty());
+        assert!(conflicts_for_entities(&conn, &[]).is_empty());
+    }
+
+    #[test]
+    fn chunk_doc_types_resolve_for_doc_and_entity_chunks() {
+        let (_dir, conn, _settings) = seed_gate_db();
+        conn.execute("UPDATE ingested_items SET doc_type='code' WHERE text LIKE 'quarterly sunshine%'", []).unwrap();
+        let eid: i64 = conn.query_row("SELECT id FROM entities WHERE summary='sunshine entity'", [], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content) VALUES (?1,'entity','main.rs','sunshine entity')", [eid]).unwrap();
+        let sun_doc: i64 = conn.query_row("SELECT id FROM chunks WHERE item_id IS NOT NULL AND content LIKE 'quarterly sunshine%'", [], |r| r.get(0)).unwrap();
+        let sun_ent: i64 = conn.query_row("SELECT id FROM chunks WHERE entity_id=?1", [eid], |r| r.get(0)).unwrap();
+        let moon_doc: i64 = conn.query_row("SELECT id FROM chunks WHERE content LIKE 'quarterly moonvault%'", [], |r| r.get(0)).unwrap();
+        let map = doc_types_for_chunks(&conn, &[sun_doc, sun_ent, moon_doc]);
+        assert_eq!(map.get(&sun_doc).cloned().unwrap_or_default(), "code");
+        assert_eq!(map.get(&sun_ent).cloned().unwrap_or_default(), "code");
+        assert_eq!(map.get(&moon_doc).cloned().unwrap_or_default(), "");
+        assert!(doc_types_for_chunks(&conn, &[]).is_empty());
     }
 
     #[test]

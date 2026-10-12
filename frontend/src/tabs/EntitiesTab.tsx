@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { theme } from "../theme";
-import type { Entity, Section, Tag } from "../types";
+import type { ConflictLink, Entity, Section, Tag } from "../types";
 
 function Breadcrumb({ path, onSelect }: { path: string; onSelect?: (part: string) => void }) {
   if (!path) return null;
@@ -32,6 +32,90 @@ function TagChips({ names }: { names: string[] }) {
         <span key={n} style={{ fontSize: 10, background: theme.bgHover, color: theme.accentAlt, border: `1px solid ${theme.border}`, padding: "0.1rem 0.4rem", borderRadius: 999 }}>{n}</span>
       ))}
     </span>
+  );
+}
+
+function ConflictBlock({ entityId }: { entityId: number }) {
+  const [links, setLinks] = useState<ConflictLink[] | null>(null);
+  const [open, setOpen] = useState(false);
+  const [other, setOther] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load() {
+    try {
+      setError(null);
+      setLinks(await api.listConflicts(entityId));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load conflicts");
+    }
+  }
+
+  async function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (next && links === null) await load();
+  }
+
+  async function flag() {
+    const otherId = Number(other);
+    if (!Number.isInteger(otherId) || otherId <= 0) {
+      setError("Enter the conflicting entity id (a number).");
+      return;
+    }
+    setBusy(true);
+    try {
+      setError(null);
+      await api.flagConflict(entityId, otherId, note.trim() || undefined);
+      setOther("");
+      setNote("");
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to flag conflict");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function unflag(otherId: number) {
+    setBusy(true);
+    try {
+      setError(null);
+      await api.unflagConflict(entityId, otherId);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to remove conflict");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 6 }}>
+      <button onClick={toggle} style={{ background: "none", border: "none", color: theme.accentAlt, cursor: "pointer", fontSize: 12, padding: 0, textDecoration: "underline" }}>
+        {open ? "Hide conflicts ▲" : `Conflicts${links !== null && links.length > 0 ? ` (${links.length})` : ""} ▼`}
+      </button>
+      {open && (
+        <div style={{ marginTop: 6, display: "grid", gap: 6 }}>
+          {links === null && <div style={{ fontSize: 12, color: theme.textDim }}>Loading…</div>}
+          {links !== null && links.length === 0 && <div style={{ fontSize: 12, color: theme.textDim }}>No conflicts flagged.</div>}
+          {links !== null && links.map((l) => (
+            <div key={l.other_entity_id} style={{ fontSize: 12, display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+              <span style={{ color: theme.amber, fontWeight: 700 }}>contradicts #{l.other_entity_id}</span>
+              {l.note && <span style={{ color: theme.textMuted }}>{l.note}</span>}
+              <button onClick={() => unflag(l.other_entity_id)} disabled={busy} style={{ ...styles.button, ...(busy ? styles.disabled : {}) }}>Remove</button>
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            <input value={other} onChange={(e) => setOther(e.target.value)} placeholder="Entity id" inputMode="numeric" style={{ ...styles.input, width: 90 }} />
+            <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Why do they contradict? (optional)" style={{ ...styles.input, flex: 1, minWidth: 180 }} />
+            <button onClick={flag} disabled={busy} style={{ ...styles.button, ...(busy ? styles.disabled : {}) }}>{busy ? "…" : "Flag conflict"}</button>
+          </div>
+          {error && <div style={{ fontSize: 12, color: theme.red }}>{error}</div>}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -370,6 +454,7 @@ export function EntitiesTab() {
                       <article key={e.id} style={{ ...styles.cardSmall, borderLeft: `3px solid ${KIND_COLORS[e.kind] ?? theme.textDim}` }}>
                         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                           <span style={{ ...styles.badge, background: KIND_COLORS[e.kind] ?? theme.textDim, fontSize: 10 }}>{e.kind}</span>
+                          {e.doc_type === "code" && <span style={styles.codeBadge} title="Derived from source code">code</span>}
                           <span style={{ ...styles.badge, background: e.status === "verified" ? theme.greenBg : e.status === "stale" ? theme.mutedBg : theme.amberBg, fontSize: 10 }}>{e.status}</span>
                         <span style={{ fontSize: 11, color: theme.textMuted }}>conf {(e.confidence * 100).toFixed(0)}%</span>
                         <span style={{ marginLeft: "auto", fontSize: 11, color: theme.textDim, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.source_ref}</span>
@@ -395,6 +480,7 @@ export function EntitiesTab() {
                           )}
                         </div>
                       )}
+                      <ConflictBlock entityId={e.id} />
                       <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
                         <button style={{ ...styles.button, ...(busyId === e.id ? styles.disabled : {}) }} disabled={busyId === e.id} onClick={() => update(e, { status: "verified" })}>{busyId === e.id ? "…" : "Verify"}</button>
                         <button style={{ ...styles.button, ...(busyId === e.id ? styles.disabled : {}) }} disabled={busyId === e.id} onClick={() => update(e, { status: "disputed" })}>{busyId === e.id ? "…" : "Dispute"}</button>
@@ -414,6 +500,7 @@ export function EntitiesTab() {
             <article key={e.id} style={{ ...styles.card, borderLeft: `4px solid ${KIND_COLORS[e.kind] ?? theme.textDim}` }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <span style={{ ...styles.badge, background: KIND_COLORS[e.kind] ?? theme.textDim }}>{e.kind}</span>
+                {e.doc_type === "code" && <span style={styles.codeBadge} title="Derived from source code">code</span>}
                 <span style={{ ...styles.badge, background: e.status === "verified" ? theme.greenBg : e.status === "stale" ? theme.mutedBg : theme.amberBg }}>{e.status}</span>
                 <span style={{ fontSize: 12, color: theme.textMuted }}>conf {(e.confidence * 100).toFixed(0)}%</span>
                 <span style={{ marginLeft: "auto", fontSize: 12, color: theme.textDim }}>{e.source_ref}</span>
@@ -450,6 +537,7 @@ export function EntitiesTab() {
                   )}
                 </div>
               )}
+              <ConflictBlock entityId={e.id} />
               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                 <button style={{ ...styles.button, ...(busyId === e.id ? styles.disabled : {}) }} disabled={busyId === e.id} onClick={() => update(e, { status: "verified" })}>{busyId === e.id ? "…" : "Verify"}</button>
                 <button style={{ ...styles.button, ...(busyId === e.id ? styles.disabled : {}) }} disabled={busyId === e.id} onClick={() => update(e, { status: "disputed" })}>{busyId === e.id ? "…" : "Dispute"}</button>
@@ -477,6 +565,7 @@ const styles: Record<string, React.CSSProperties> = {
   needBadge: { fontSize: 10, background: theme.amberBg, color: theme.amber, border: `1px solid ${theme.amber}`, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 700 },
   docToggle: { background: "none", border: `1px solid ${theme.border}`, color: theme.accentAlt, borderRadius: 6, padding: "0.2rem 0.5rem", cursor: "pointer", fontSize: 11 },
   piiBadge: { fontSize: 10, background: theme.amberBg, color: theme.amber, border: `1px solid ${theme.amber}`, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 700 },
+  codeBadge: { fontSize: 10, background: theme.blueBg, color: theme.blue, border: `1px solid ${theme.blue}`, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 700 },
   badge: { fontSize: 11, color: theme.bg, padding: "0.1rem 0.5rem", borderRadius: 999, fontWeight: 700, textTransform: "uppercase" },
   button: { padding: "0.3rem 0.7rem", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bgHover, color: theme.text, cursor: "pointer", fontSize: 12 },
   disabled: { opacity: 0.5, cursor: "not-allowed" },
