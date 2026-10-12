@@ -371,7 +371,7 @@ erDiagram
 
 | Container | Responsibility | Tech |
 |---|---|---|
-| Web UI | Connect sources, project scoping, review queue, PII review, Q&A chat, model settings | React SPA (Vite, TS, 7 tabs) |
+| Web UI | Connect sources, project scoping, review queue, Q&A chat, model settings | React SPA (Vite, TS, 6 tabs) |
 | API | All endpoints, orchestration, config | **Rust Axum (shipped)** — same binary in the local app and the Team container; Python `backend/` archived (conformance) |
 | Entity Store | Entities, provenance, window context, sync state | SQLite (Rust `rusqlite`) — local app and Team container |
 | Vector Store | Chunk embeddings + similarity search | sqlite-vec vec0 when the module is present, same file; in-code cosine scan fallback (Rust) |

@@ -138,6 +138,7 @@ async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool, in
         let content_truncated = content.chars().count() > 4000;
         json!({
         "entity_id": c.get("entity_id"),
+        "item_id": c.get("item_id"),
         "kind": c.get("kind").and_then(|v| v.as_str()).unwrap_or("document"),
         "summary": c.get("summary").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>(),
         "content": content.chars().take(4000).collect::<String>(),
@@ -146,6 +147,7 @@ async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool, in
         "path": c.get("path").and_then(|v| v.as_str()).unwrap_or(""),
         "item_title": c.get("item_title").and_then(|v| v.as_str()).unwrap_or(""),
         "doc_type": c.get("doc_type").and_then(|v| v.as_str()).unwrap_or(""),
+        "env": c.get("env").and_then(|v| v.as_str()).unwrap_or("live"),
         "conflicts_with": c.get("conflicts_with").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
         "score": c.get("score"),
         "snippet": c.get("snippet").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>()
@@ -154,7 +156,7 @@ async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool, in
     Ok(json!({"answer": answer, "citations": citations, "refusal": refusal, "mode": mode, "retrieval": retrieval}))
 }
 
-async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only: bool) -> Result<Value, String> {
+async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only: bool, env: Option<&str>) -> Result<Value, String> {
     if query.trim().is_empty() {
         return Err("query must be a non-empty string".to_string());
     }
@@ -169,6 +171,9 @@ async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only
     }
     if public_only {
         payload["public_only"] = json!(true);
+    }
+    if let Some(e) = env {
+        payload["env"] = json!(e);
     }
     let result = http_call("POST", "/qa/search", Some(payload)).await?;
     audit_mcp("search", &format!("q={} k={} public_only={} hits={}", query.chars().take(80).collect::<String>(), k, public_only, result.get("hits").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0)));
@@ -188,6 +193,7 @@ async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only
         "source_ref": h.get("source_ref").and_then(|v| v.as_str()).unwrap_or(""),
         "path": h.get("path").and_then(|v| v.as_str()).unwrap_or(""),
         "doc_type": h.get("doc_type").and_then(|v| v.as_str()).unwrap_or(""),
+        "env": h.get("env").and_then(|v| v.as_str()).unwrap_or("live"),
         "conflicts_with": h.get("conflicts_with").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
         "source_id": h.get("source_id"),
         "item_id": h.get("item_id"),
@@ -201,12 +207,15 @@ async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only
 }
 
 async fn tool_get_entity(entity_id: i64) -> Result<Value, String> {
-    // gate=provider: this read flows toward the agent's model, so the server
-    // withholds sensitive/PII content from untrusted providers (deterministic
-    // refusal with code "gated_provider" instead of silent bytes).
-    let v = http_call("GET", &format!("/entities/{}?gate=provider", entity_id), None).await.map_err(|e| if e=="not found" { format!("entity {entity_id} not found") } else { e })?;
+    // R35.1: entity reads are ungated direct fetches (the `?gate=provider`
+    // honor system is gone with auto-detect). Sensitivity travels with the
+    // parent item's manual PII mark + source label, enforced on cloud flows.
+    let v = http_call("GET", &format!("/entities/{}", entity_id), None).await.map_err(|e| if e=="not found" { format!("entity {entity_id} not found") } else { e })?;
     Ok(json!({
         "id": v.get("id"),
+        "item_id": v.get("item_id"),
+        "chunk_id": v.get("chunk_id"),
+        "item_is_pii": v.get("item_is_pii"),
         "kind": v.get("kind").and_then(|x| x.as_str()).unwrap_or(""),
         "summary": v.get("summary").and_then(|x| x.as_str()).unwrap_or("").chars().take(1000).collect::<String>(),
         "reasoning": v.get("reasoning").and_then(|x| x.as_str()).unwrap_or("").chars().take(1000).collect::<String>(),
@@ -290,14 +299,15 @@ fn tool_defs() -> Value {
                     "query": {"type": "string"},
                     "k": {"type": "integer", "default": 8, "minimum": 1, "maximum": 50},
                     "project_id": {"type": "integer"},
-                    "public_only": {"type": "boolean", "description": "If true, only public sources are searched"}
+                    "public_only": {"type": "boolean", "description": "If true, only public sources are searched"},
+                    "env": {"type": "string", "description": "Optional env class filter: 'live' or 'test' (path- or header-derived; test fixtures rank below live hits by default, not hidden)"}
                 },
                 "required": ["query"]
             }
         },
         {
             "name": "get_entity",
-            "description": "Fetch one entity with provenance (summary, confidence, status, window_text, source_ref). Sensitive/PII content is withheld from untrusted providers with a coded \"gated_provider\" refusal.",
+            "description": "Fetch one entity with provenance (summary, confidence, status, window_text, source_ref, parent item's manual PII mark).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -371,7 +381,8 @@ async fn handle_request(req: Request) -> Option<Response> {
                     let k = args.get("k").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
                     let pid = args.get("project_id").and_then(|v| v.as_i64());
                     let pub_only = args.get("public_only").and_then(|v| v.as_bool()).unwrap_or(false);
-                    tool_search(q, k, pid, pub_only).await
+                    let env = args.get("env").and_then(|v| v.as_str());
+                    tool_search(q, k, pid, pub_only, env).await
                 }
                 "get_entity" => {
                     let eid = args.get("entity_id").and_then(|v| v.as_i64()).unwrap_or(0);

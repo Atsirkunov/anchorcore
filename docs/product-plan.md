@@ -439,6 +439,7 @@ Priorities: P1 = testers hit it during validation, P2 = quality/trust, P3 = late
 **DoD:** a tester points Claude Code at their AnchorCore memory (local or centralized), asks a question, and gets a cited answer; every `ask`/`search` call appears in the audit trail.
 
 ### B30. Data labeling: PII/sensitive gating of models, sharing, and answers (P1 for PII — v1 risk, P2 rest) — DONE (v1.0.8)
+> 2026-10-12: auto-detect + review direction deprecated per owner decision — people-driven doc-level marking replaces it (R35.1); source labels + `public_only` + cloud-trust stay. The DONE record below is history; do not build on its deferred auto-detect items.
 **Problem:** cloud classification exists (B23) — but nothing stops PII or sensitive content from being sent to a cloud model, or surfaced in shared/agent-facing answers. For team use (v2) this is a hard blocker; even locally it's a trust story ("what leaves my machine?").
 
 **Concept — labels on sources, gates on everything else:**
@@ -1198,7 +1199,7 @@ purge `{"entities":112,"items":3,"purged":0}` and the 441k-char PDF re-ingests
 
 **Problem:** the owner reports the Entities tab is "very confusing to see / use". It grew by accretion — grouped-by-document vs flat, `⚠ Needs review` as the default filter, `All kinds` dots + `code` badges, confidence/status, `Verify`/`Dispute` at two levels (entity and `Dispute doc`), `Conflicts (N)` with a bare entity-id input, `Whole doc` expanders, per-entity `Show context ▼`, section breadcrumbs + tag chips, the PII shield — with no hierarchy of importance and engineering jargon. A person cannot quickly answer what AnchorCore knows, what needs their attention, or why an item exists.
 
-**Scope:** design pass first (owner-approved before code): walk the tab on the sample/ corpus, list every confusing element with the label exactly as shown, propose 2–3 options (keep structure / language + hierarchy / regroup around the three questions), pick one, then implement — keeping provenance (context, review, conflicts, PII) and both grouped and flat views. No schema change expected. `rust/BACKLOG.md` Phase 31 (R31.1 → R31.2).
+**Scope:** design pass first (owner-approved before code): walk the tab on the sample/ corpus, list every confusing element with the label exactly as shown, propose 2–3 options (keep structure / language + hierarchy / regroup around the three questions), pick one, then implement — keeping provenance (context, review, conflicts) and both grouped and flat views. No schema change expected. (Entities PII shield removed 2026-10-12 under R35.1 — audit the tab as it is now.) `rust/BACKLOG.md` Phase 31 (R31.1 → R31.2).
 
 **DoD:** a fresh tester answers, unaided and in about a minute each: (1) what does AnchorCore know about X? (2) which of these needs my attention, and what do I do with it? (3) why is this item here / based on what? `npm run build` + tests green; no new hex outside `theme.ts`.
 

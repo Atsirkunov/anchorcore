@@ -196,8 +196,26 @@ export type Entity = {
   window_text: string;
   dispute_count: number;
   doc_type?: string;
+  /** R35.1: parent item's manual PII mark. Optional — review endpoints don't send it. */
+  item_is_pii?: boolean;
+  /** R32.13: the entity's own chunk (first by id); null when none stored. */
+  chunk_id?: number | null;
   created_at: string;
   updated_at: string;
+};
+
+/** R32.11: ingested-item metadata from GET /items (no bytes — drill down via GET /items/:id). */
+export type ItemMeta = {
+  id: number;
+  source_id: number;
+  title: string;
+  path: string;
+  is_pii: boolean;
+};
+
+export type ItemList = {
+  items: ItemMeta[];
+  total: number;
 };
 
 export type ConflictLink = {
@@ -216,12 +234,14 @@ export type Dispute = {
 
 export type Citation = {
   entity_id: number;
+  item_id: number | null;
   kind: string;
   summary: string;
   source_ref: string;
   path?: string;
   tags?: string[];
   doc_type?: string;
+  env: string;
   score: number;
   conflicts_with?: number[];
   snippet: string;
@@ -305,39 +325,6 @@ export type Job = {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
-};
-
-export type PiiCategory = {
-  id: string;
-  label: string;
-  description: string;
-  field_names: string[];
-  patterns: string[];
-  enabled: boolean;
-};
-
-export type PiiConfig = {
-  categories: PiiCategory[];
-  custom_words: string[];
-};
-
-export type PiiMatch = {
-  category: string;
-  label: string;
-  strong: boolean;
-  match: string;
-};
-
-export type PiiChunk = {
-  chunk_id: number;
-  source_id: number | null;
-  source_name: string;
-  source_label: string;
-  kind: string;
-  content: string;
-  snippet: string;
-  is_pii: boolean;
-  categories: PiiMatch[];
 };
 
 // R25.5 — backup / restore (Phase A of docs/plan-backup-sync.md)

@@ -65,7 +65,7 @@ App tokens live in `frontend/src/theme.ts` (`theme.*`); site tokens in
 
 ## 4. App UX — keep layout, fix consistency
 
-Current 7 tabs (Ask, Sources, Entities, Review, PII, Settings, System) are correct. No navigation redesign needed.
+Current 6 tabs (Ask, Sources, Entities, Review, Settings, System) are correct. No navigation redesign needed. (PII tab removed 2026-10-12, R35.1.)
 
 **Token adoption: done.** `frontend/src/theme.ts` is the single source and no
 literal hex remains outside it. New UI must import `theme` / `commonStyles`

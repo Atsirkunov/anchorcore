@@ -444,10 +444,11 @@ fn export_items(conn: &Connection, zip: &mut ArchiveWriter, opts: &ExportOptions
     let sql = format!(
         "SELECT json_object('type','item','uid',i.uid,'source_uid',s.uid,'external_id',i.external_id, \
             'title',i.title,'doc_type',i.doc_type,'text',i.text,'content_hash',i.content_hash, \
-            'author',i.author,'updated_at',i.updated_at,'stale',{stale},'created_at',i.created_at) \
+            'author',i.author,'updated_at',i.updated_at,'stale',{stale},'is_pii',{is_pii},'created_at',i.created_at) \
          FROM ingested_items i JOIN sources s ON s.id = i.source_id WHERE 1=1{} ORDER BY i.id",
         scope,
-        stale = json_bool("i.stale")
+        stale = json_bool("i.stale"),
+        is_pii = json_bool("i.is_pii")
     );
     write_jsonl_query(conn, zip, &sql)
 }
@@ -1205,12 +1206,15 @@ fn apply_item(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let author = str_field(rec, "author");
     let doc_type = str_field(rec, "doc_type");
     let stale = bool_int(rec, "stale");
+    // R35.1: manual PII mark round-trips with the item (missing in old
+    // archives reads as unmarked).
+    let is_pii = bool_int(rec, "is_pii");
     if action == Action::Insert {
         ctx.conn
             .execute(
-                "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, doc_type, stale, uid, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))",
-                rusqlite::params![source_id, external_id, title, text, hash, author, doc_type, stale, uid],
+                "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, doc_type, stale, is_pii, uid, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'))",
+                rusqlite::params![source_id, external_id, title, text, hash, author, doc_type, stale, is_pii, uid],
             )
             .map_err(|e| e.to_string())?;
         let id = ctx.conn.last_insert_rowid();
@@ -1220,8 +1224,8 @@ fn apply_item(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let id = existing.unwrap();
     ctx.conn
         .execute(
-            "UPDATE ingested_items SET external_id=?2, title=?3, text=?4, content_hash=?5, author=?6, doc_type=?7, stale=?8, updated_at=datetime('now') WHERE id=?1",
-            rusqlite::params![id, external_id, title, text, hash, author, doc_type, stale],
+            "UPDATE ingested_items SET external_id=?2, title=?3, text=?4, content_hash=?5, author=?6, doc_type=?7, stale=?8, is_pii=?9, updated_at=datetime('now') WHERE id=?1",
+            rusqlite::params![id, external_id, title, text, hash, author, doc_type, stale, is_pii],
         )
         .map_err(|e| e.to_string())?;
     ctx.remember("ingested_items", &uid, id);
@@ -2553,6 +2557,22 @@ mod tests {
         import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
         let conn = db(dst.path());
         assert_eq!(one::<String>(&conn, "SELECT note FROM relationships WHERE kind='conflicts_with'"), "doc says JWT, code uses sessions");
+    }
+
+    #[test]
+    fn item_pii_mark_survives_export_import() {
+        // R35.1: the manual whole-doc mark travels with the item.
+        let _env = EnvGuard::file_only();
+        let src = tempdir().unwrap();
+        let sid = seed(src.path());
+        let conn = db(src.path());
+        conn.execute("UPDATE ingested_items SET is_pii = 1 WHERE source_id = ?1", [sid]).unwrap();
+        drop(conn);
+        let archive = exported(src.path(), ExportOptions::default());
+        let dst = tempdir().unwrap();
+        import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
+        let conn = db(dst.path());
+        assert_eq!(one::<i64>(&conn, "SELECT is_pii FROM ingested_items"), 1);
     }
 
     #[test]

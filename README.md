@@ -15,6 +15,8 @@ Free for personal use. No account, no Docker, no setup:
 
 Unzip, run, and the app opens in your browser. Your data stays in `~/.anchorcore`
 on your machine — nothing leaves it unless you configure a cloud model.
+The app keeps running in the system tray (Windows) / menu bar (macOS) — quit
+it from there; closing the browser tab doesn't stop it.
 
 > First launch: on macOS right-click → Open (the app isn't Apple-notarized yet);
 > on Windows click "More info → Run anyway" on the SmartScreen prompt.
@@ -54,6 +56,7 @@ Team and commercial use requires a paid license.
 - [Agent connectivity (MCP)](./docs/mcp.md) - how harnesses (Claude Code, Codex, opencode, Cursor) use the memory
 - [Backup, export & device migration](./docs/backup.md) - portable `.anchorcore-backup` archives, secrets model, CLI + UI walkthrough
 - [Updates](./docs/updates.md) - manual release check (no background pings), the startup-check opt-in, what updating does to your data
+- [System tray](./docs/tray.md) - Open + Quit from the tray/menu bar, opt-outs, headless notes
 - [Agent setup skill](./.agents/skills/anchorcore-setup/SKILL.md) — hand it to your agent: install, configure models and sources, connect MCP, verify answers
 - [v2/v3 business scoping](./docs/v2v3-scope.md) — website, hosting, sharing, pricing, free tier
 - [Design system](./docs/design-system.md) — color tokens, typography, messaging, website approach (single source for app + site)

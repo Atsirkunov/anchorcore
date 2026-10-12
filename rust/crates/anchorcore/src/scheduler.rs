@@ -184,7 +184,7 @@ impl Scheduler {
     }
 
     /// Embed NULL-vector chunks in ascending-id batches until none remain.
-    /// Deliberately ungated (no IDF/PII gate): this is the safety net that
+    /// Deliberately ungated (no IDF gate): this is the safety net that
     /// drains `pending_embeddings`, and ingest already applied the trust
     /// gates. A failed batch logs + records a system_event and stops; the
     /// caller retries (see `backfill_with_retry`). Returns

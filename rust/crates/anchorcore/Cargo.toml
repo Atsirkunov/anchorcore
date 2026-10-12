@@ -54,3 +54,14 @@ open = "5"
 tempfile = "3"
 tower = "0.5"
 # conformance: reuse Python backend/tests as black-box HTTP tests
+
+# R34.1: tray is Windows/macOS only — target-gated so Linux/CI builds need no
+# system tray libraries (tray.rs is a stub there).
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+tray-icon = "0.26"
+# R34.1 macOS: NSApplication must exist before NSStatusBar builds the item —
+# without it macOS 15 aborts (CGSConnection assertion, uncatchable). Proven by
+# the Swift probe, see docs/tray.md.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication"] }

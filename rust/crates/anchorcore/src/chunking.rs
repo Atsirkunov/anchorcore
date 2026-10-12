@@ -318,7 +318,8 @@ fn push_symbol(
 }
 
 /// Non-symbol line: opens a preamble root on first use, else appends to the
-/// innermost open symbol. Stack keys are indent (python) or brace depth.
+/// innermost open symbol. Stack keys are indent (python, yaml/json keys) or
+/// brace depth.
 fn append_code_line(raw: &mut Vec<RawSection>, stack: &mut Vec<(i64, usize)>, line: &str) {
     if raw.is_empty() {
         raw.push(RawSection {
@@ -395,16 +396,223 @@ fn is_minified(text: &str) -> bool {
     text.len() / newlines.max(1) > 2000
 }
 
-/// Pipeline entry: code items split by symbols, everything else by headings.
+/// Pipeline entry: configs split by key/table, code by symbols, the rest by
+/// headings. The extension is ground truth for the format — a `.yml` file's
+/// structure is keys whatever its doc_type.
 pub fn chunk_for_doc_type(
     doc_type: &str,
     filename: &str,
     text: &str,
 ) -> (Vec<SectionMeta>, Vec<ChunkMeta>) {
-    if doc_type == "code" {
+    if crate::extract::is_config_filename(filename) {
+        chunk_config_with_sections(text, filename)
+    } else if doc_type == "code" {
         chunk_code_with_sections(text, filename)
     } else {
         chunk_document_with_sections(text)
+    }
+}
+
+/// Config entry (R33.4): YAML keeps its key splitter; JSON/JSONC nest object
+/// keys the same way; TOML splits tables + keys. Minified single-line files
+/// stay root-only instead of producing garbage sections.
+pub fn chunk_config_with_sections(text: &str, filename: &str) -> (Vec<SectionMeta>, Vec<ChunkMeta>) {
+    let max_chars = env_usize("ANCHOR_CHUNK_MAX_CHARS", CHUNK_MAX_CHARS);
+    if is_minified(text) {
+        return materialize(vec![root_section(text)], max_chars);
+    }
+    match file_ext(filename).as_str() {
+        "yaml" | "yml" => chunk_yaml_with_sections(text),
+        "json" | "jsonc" => materialize(split_json_sections(text), max_chars),
+        "toml" => materialize(split_toml_sections(text), max_chars),
+        _ => materialize(vec![root_section(text)], max_chars),
+    }
+}
+
+pub fn chunk_yaml_with_sections(text: &str) -> (Vec<SectionMeta>, Vec<ChunkMeta>) {
+    let max_chars = env_usize("ANCHOR_CHUNK_MAX_CHARS", CHUNK_MAX_CHARS);
+    materialize(split_yaml_sections(text), max_chars)
+}
+
+/// YAML key splitter: every mapping key opens a section (indent-nested like
+/// the python family), so a 68 KB routing-config.yml becomes per-key
+/// sections with `treasury > acme` breadcrumbs instead of one root blob.
+/// List items and comments stay in the current section; files with no keys
+/// degrade to a single root, never to an error.
+fn split_yaml_sections(text: &str) -> Vec<RawSection> {
+    let mut raw: Vec<RawSection> = Vec::new();
+    let mut stack: Vec<(i64, usize)> = Vec::new();
+    let mut symbols = 0usize;
+    for line in text.split('\n') {
+        let found = if symbols >= 500 { None } else { detect_yaml_key(line) };
+        match found {
+            Some((indent, title)) => {
+                symbols += 1;
+                while stack.last().map(|&(k, _)| k >= indent).unwrap_or(false) {
+                    stack.pop();
+                }
+                let parent = stack.last().map(|&(_, idx)| idx);
+                let level = symbol_level(&raw, parent);
+                let idx = push_symbol(&mut raw, parent, truncate_title(&title), level, line);
+                stack.push((indent, idx));
+            }
+            None => append_code_line(&mut raw, &mut stack, line),
+        }
+    }
+    raw
+}
+
+/// A YAML mapping key (`name:`) at any indent. List items, comments and doc
+/// markers never open sections; the colon must be followed by space/EOL so
+/// `http://x` and `12:30` can't match. Detection-only — content intact.
+fn detect_yaml_key(line: &str) -> Option<(i64, String)> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let indent = (line.len() - line.trim_start_matches([' ', '\t']).len()) as i64;
+    let probe = line.trim_start_matches([' ', '\t']);
+    if probe.is_empty() || probe.starts_with('#') || probe.starts_with("---") || probe.starts_with("...") {
+        return None;
+    }
+    if probe == "-" || probe.starts_with("- ") || probe.starts_with("-\t") {
+        return None;
+    }
+    let re = RE.get_or_init(|| {
+        Regex::new(r#"^(?:"([^"\n]+)"|'([^'\n]+)'|([A-Za-z0-9_][A-Za-z0-9_.\-/]*))\s*:(?:\s|$)"#).unwrap()
+    });
+    let cap = re.captures(probe)?;
+    let key = cap.get(1).or(cap.get(2)).or(cap.get(3))?.as_str();
+    Some((indent, key.to_string()))
+}
+
+/// JSON key splitter (R33.4): every object key opens a section (indent-nested
+/// like YAML), so nested objects get `server > tls` breadcrumbs. Array items
+/// and JSONC comments stay in the current section, never open one.
+fn split_json_sections(text: &str) -> Vec<RawSection> {
+    let mut raw: Vec<RawSection> = Vec::new();
+    let mut stack: Vec<(i64, usize)> = Vec::new();
+    let mut symbols = 0usize;
+    let mut in_block = false;
+    for line in text.split('\n') {
+        let probe = strip_jsonc_comment(line, &mut in_block);
+        let found = if symbols >= 500 { None } else { detect_json_key(&probe) };
+        match found {
+            Some((indent, title)) => {
+                symbols += 1;
+                while stack.last().map(|&(k, _)| k >= indent).unwrap_or(false) {
+                    stack.pop();
+                }
+                let parent = stack.last().map(|&(_, idx)| idx);
+                let level = symbol_level(&raw, parent);
+                let idx = push_symbol(&mut raw, parent, truncate_title(&title), level, line);
+                stack.push((indent, idx));
+            }
+            None => append_code_line(&mut raw, &mut stack, line),
+        }
+    }
+    raw
+}
+
+/// A JSON object key (`"name":`) at any indent. Runs on the JSONC-stripped
+/// probe; the section keeps the original line.
+fn detect_json_key(probe: &str) -> Option<(i64, String)> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r#"^(\s*)"((?:[^"\\]|\\.)*)"\s*:"#).unwrap());
+    let cap = re.captures(probe)?;
+    let key = cap[2].replace("\\\"", "\"").replace("\\\\", "\\");
+    if key.is_empty() {
+        return None;
+    }
+    Some((cap[1].len() as i64, key))
+}
+
+/// JSONC detection surface: `//` to end of line plus `/* */` (inline and
+/// multi-line via `in_block`) removed. Content keeps the original lines.
+/// String-unaware on purpose: truncation only removes matches (a line folds),
+/// never opens a false section — stripping text can't invent a `"key":` pair.
+fn strip_jsonc_comment(line: &str, in_block: &mut bool) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if *in_block {
+            if c == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                *in_block = false;
+            }
+            continue;
+        }
+        if c == '/' {
+            match chars.peek() {
+                Some('/') => break,
+                Some('*') => {
+                    chars.next();
+                    *in_block = true;
+                }
+                _ => out.push(c),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// TOML splitter (R33.4): tables open flat sections under their full dotted
+/// name (`[a.b]` is its own breadcrumb, not a child — TOML tables don't nest)
+/// and every key opens a sub-section, so values get `server > host` paths.
+/// Preamble keys before the first table are top-level sections.
+fn split_toml_sections(text: &str) -> Vec<RawSection> {
+    static RE_TABLE: OnceLock<Regex> = OnceLock::new();
+    static RE_KEY: OnceLock<Regex> = OnceLock::new();
+    let re_table = RE_TABLE.get_or_init(|| Regex::new(r"^\s*\[{1,2}\s*([^\]#]+?)\s*\]{1,2}\s*(?:#.*)?$").unwrap());
+    let re_key = RE_KEY.get_or_init(|| Regex::new(r"^\s*([^#\[=\s][^=]*?)\s*=").unwrap());
+    let mut raw: Vec<RawSection> = Vec::new();
+    let mut table: Option<usize> = None;
+    let mut current: Option<usize> = None;
+    let mut symbols = 0usize;
+    for line in text.split('\n') {
+        if symbols < 500 {
+            if let Some(name) = re_table.captures(line).map(|cap| cap[1].trim().to_string()) {
+                if !name.is_empty() {
+                    symbols += 1;
+                    let idx = push_symbol(&mut raw, None, truncate_title(&name), 1, line);
+                    table = Some(idx);
+                    current = Some(idx);
+                    continue;
+                }
+            }
+            if let Some(key) = re_key.captures(line).map(|cap| unquote_toml_key(cap[1].trim())) {
+                if !key.is_empty() {
+                    symbols += 1;
+                    let level = symbol_level(&raw, table);
+                    let idx = push_symbol(&mut raw, table, truncate_title(&key), level, line);
+                    current = Some(idx);
+                    continue;
+                }
+            }
+        }
+        // fold: preamble root until the first section, else the current one
+        // (covers comments, blank lines, and multi-line value continuations).
+        if raw.is_empty() {
+            raw.push(RawSection {
+                title: String::new(),
+                level: 0,
+                parent: None,
+                path: String::new(),
+                lines: Vec::new(),
+            });
+        }
+        let top = current.unwrap_or(0);
+        raw[top].lines.push(line.to_string());
+    }
+    raw
+}
+
+/// TOML keys may be bare, dotted, or quoted — strip one matching quote pair.
+fn unquote_toml_key(key: &str) -> String {
+    let b = key.as_bytes();
+    if b.len() >= 2 && (b[0] == b'"' || b[0] == b'\'') && b[b.len() - 1] == b[0] {
+        key[1..key.len() - 1].to_string()
+    } else {
+        key.to_string()
     }
 }
 
@@ -748,5 +956,76 @@ mod tests {
         let (secs, chunks) = chunk_document_with_sections(doc);
         assert!(secs.iter().any(|s| s.level == 0));
         assert_eq!(chunks.len(), 2);
+    }
+
+    #[test]
+    fn config_yaml_every_key_splits() {
+        // every mapping key (leaves included) opens an indent-nested section
+        let yaml = "server:\n  host: example.com\n  tls:\n    cert_file: /etc/cert.pem\nreplicas: 3\n";
+        let (secs, chunks) = chunk_config_with_sections(yaml, "values.yaml");
+        let titles: Vec<&str> = secs.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, vec!["server", "host", "tls", "cert_file", "replicas"]);
+        assert_eq!(secs[3].path, "server > tls > cert_file");
+        assert!(chunks.iter().any(|c| c.path == "server > tls > cert_file"));
+    }
+
+    #[test]
+    fn config_yaml_ignores_urls_times_lists_markers() {
+        // the colon guard: `http://x` values and `12:30` lines never open
+        // sections; list items, comments and doc markers fold
+        let yaml = "# comment\nurl: http://example.com:8080/x\nseen at 12:30\nitems:\n  - alpha\n  - beta\n---\nnext: 1\n";
+        let (secs, _) = chunk_config_with_sections(yaml, "c.yml");
+        let titles: Vec<&str> = secs.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, vec!["", "url", "items", "next"]);
+    }
+
+    #[test]
+    fn config_json_every_key_splits() {
+        let json = "{\n  \"server\": {\n    \"host\": \"x\",\n    \"tls\": {\n      \"cert\": \"f.pem\"\n    }\n  },\n  \"replicas\": 3\n}\n";
+        let (secs, chunks) = chunk_config_with_sections(json, "cfg.json");
+        let titles: Vec<&str> = secs.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, vec!["", "server", "host", "tls", "cert", "replicas"]);
+        assert_eq!(secs[4].path, "server > tls > cert");
+        assert!(chunks.iter().any(|c| c.path == "server > host"));
+    }
+
+    #[test]
+    fn config_jsonc_comments_stay_in_section() {
+        let json = "{\n  // server block\n  \"a\": 1,\n  /* x */ \"b\": 2\n}\n";
+        let (secs, _) = chunk_config_with_sections(json, "s.jsonc");
+        let titles: Vec<&str> = secs.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, vec!["", "a", "b"]);
+    }
+
+    #[test]
+    fn config_toml_tables_and_keys_split() {
+        let toml = "title = \"demo\"\n\n[server]\nhost = \"x\"\n\n[server.tls]\ncert = \"f.pem\"\n";
+        let (secs, chunks) = chunk_config_with_sections(toml, "app.toml");
+        let titles: Vec<&str> = secs.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, vec!["title", "server", "host", "server.tls", "cert"]);
+        assert_eq!(secs[4].path, "server.tls > cert");
+        assert!(chunks.iter().any(|c| c.path == "server > host"));
+    }
+
+    #[test]
+    fn config_guards_minified_single_line() {
+        let big = "{\"a\":1,".repeat(20_000);
+        let (secs_min, _) = chunk_config_with_sections(&big, "bundle.json");
+        assert_eq!(secs_min.len(), 1);
+    }
+
+    #[test]
+    fn chunk_for_doc_type_dispatches_config_by_filename() {
+        // extension is ground truth: structured files split by keys whatever
+        // their detected doc_type; code + prose dispatch unchanged
+        let yaml = "server:\n  host: x\n";
+        let (secs, _) = chunk_for_doc_type("general", "values.yaml", yaml);
+        assert!(secs.iter().any(|s| s.title == "server"));
+        let toml = "[server]\nhost = \"x\"\n";
+        let (secs_toml, _) = chunk_for_doc_type("general", "app.toml", toml);
+        assert!(secs_toml.iter().any(|s| s.title == "server"));
+        let code = "pub fn f() {}\n";
+        let (secs_code, _) = chunk_for_doc_type("code", "lib.rs", code);
+        assert!(secs_code.iter().any(|s| s.title == "fn f"));
     }
 }

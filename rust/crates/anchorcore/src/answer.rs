@@ -45,6 +45,9 @@ pub struct AskResponse {
 #[derive(Serialize)]
 pub struct Citation {
     pub entity_id: Option<i64>,
+    /// R32.2: every citation drills into GET /items/:id (entity citations
+    /// resolve via their entity — never None for stored hits).
+    pub item_id: Option<i64>,
     pub kind: String,
     pub summary: String,
     pub source_ref: String,
@@ -53,6 +56,8 @@ pub struct Citation {
     pub score: f64,
     pub snippet: String,
     pub doc_type: String,
+    /// R32.4: path-derived class — "live", or "test" for fixture/sandbox paths.
+    pub env: String,
     pub conflicts_with: Vec<i64>,
     pub content: String,
     pub item_title: String,
@@ -77,6 +82,9 @@ pub struct SearchRequest {
     /// Convenience alias for `fields: content` — agents commonly ask for the
     /// chunk bytes by this name. `fields` remains the canonical selector.
     pub include_content: Option<bool>,
+    /// R32.4: env filter — "live" or "test" (case-insensitive). Anything
+    /// else (or absent) means unfiltered; demotion still orders the mix.
+    pub env: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -93,6 +101,8 @@ pub struct SearchHit {
     pub item_id: Option<i64>,
     pub item_title: String,
     pub doc_type: String,
+    /// R32.4: path-derived class — "live", or "test" for fixture/sandbox paths.
+    pub env: String,
     pub conflicts_with: Vec<i64>,
     pub score: f64,
     pub content_truncated: bool,
@@ -151,16 +161,12 @@ async fn record_gate_event(data_dir: &str, blocked: &[String]) {
     let _ = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         if let Ok(conn) = crate::db::init_db(&db_path) {
-            let msg = format!("answer gate: {} hit(s) excluded from cloud answer (sensitive/pii source or PII chunk)", blocked_len);
+            let msg = format!("answer gate: {} hit(s) excluded from cloud answer (sensitive/pii source)", blocked_len);
             let detail = format!("labels={:?}; set ANCHOR_CLOUD_TRUST=1 to allow", labels);
             let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning',?1,?2)", rusqlite::params![msg, detail]);
         }
     })
     .await;
-}
-
-fn take_chars(s: &str, n: usize) -> String {
-    s.chars().take(n).collect()
 }
 
 fn display_source_ref(h: &crate::retrieval::Hit) -> String {
@@ -374,7 +380,7 @@ fn citations_limit() -> usize {
     std::env::var("ANCHOR_CITATIONS").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(5)
 }
 
-fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content: bool, limit: usize) -> Vec<Citation> {
+fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content: bool, limit: usize, query: &str) -> Vec<Citation> {
     let db_path = crate::db::resolve_db_path(data_dir);
     let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
     let ids: Vec<i64> = hits.iter().take(limit).map(|h| h.chunk_id).collect();
@@ -382,6 +388,7 @@ fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content:
     let tag_map = tags_for_chunks(&conn, &ids);
     let doc_type_map = doc_types_for_chunks(&conn, &ids);
     let meta_map = item_meta_for_chunks(&conn, &ids);
+    let env_map = crate::retrieval::envs_for_chunks(&conn, &ids);
     hits.iter().take(limit).map(|h| {
         // Path rule mirrors search hits: section breadcrumb when the chunk
         // lives in one, else the item's file path — entity citations must
@@ -389,16 +396,19 @@ fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content:
         let (item_title, item_path) = meta_map.get(&h.chunk_id).cloned().unwrap_or_default();
         Citation {
             entity_id: h.entity_id,
+            item_id: h.item_id,
             kind: hit_kind(h),
-            summary: take_chars(&h.content, 200),
+            summary: crate::retrieval::match_snippet(&h.content, query, 200),
             source_ref: display_source_ref(h),
             path: if h.path.is_empty() { item_path } else { h.path.clone() },
             item_title,
             tags: tag_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             doc_type: doc_type_map.get(&h.chunk_id).cloned().unwrap_or_default(),
+            // No marker evidence (unknown chunk) reads as live, not test.
+            env: env_map.get(&h.chunk_id).cloned().unwrap_or_else(|| "live".to_string()),
             conflicts_with: conflict_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             score: rounded_score(h.score),
-            snippet: take_chars(&h.content, 500),
+            snippet: crate::retrieval::match_snippet(&h.content, query, 500),
             content: if want_content { h.content.clone() } else { String::new() },
             content_truncated: h.content_truncated,
         }
@@ -473,7 +483,7 @@ pub async fn ask(
     let context = sections.join("\n\n");
     let (answer, composed) = generate_answer(settings, &question, &context, &history_for_gen).await;
     let want_content = req.include_content.unwrap_or(false);
-    let citations = build_citations(&hits, &data_dir_string, want_content, citations_limit());
+    let citations = build_citations(&hits, &data_dir_string, want_content, citations_limit(), &question);
     let mode = if composed { "composed" } else { "context_only" };
     AskResponse { answer, citations, refusal: None, mode: mode.to_string(), retrieval: retrieval.to_string() }
 }
@@ -531,12 +541,19 @@ fn apply_graph(
     hits: Vec<crate::retrieval::Hit>,
     scope: Option<&HashSet<i64>>,
     cfg: &RetrievalConfig,
+    query: &str,
 ) -> Vec<crate::retrieval::Hit> {
     let mut hits = hits;
     let graph_hits = retrieval::graph_expand(conn, &hits, scope, 2, 3, cfg.qa_exclude_disputed);
     if !graph_hits.is_empty() {
         let lists = vec![hits, graph_hits];
         hits = retrieval::fuse_evidence(lists, vec![1.0, 0.5]);
+        // R32.3: graph neighbors enter through a second RRF — demote the
+        // fused set (fixture neighbors sink) before the cut.
+        retrieval::demote_test_envs(conn, &mut hits, query);
+        retrieval::sort_hits(&mut hits);
+        // R32.7: multiplier alone never reorders — partition live-first.
+        retrieval::prefer_live_envs(conn, &mut hits, query);
         hits.truncate(cfg.top_k);
     }
     hits
@@ -556,8 +573,9 @@ fn orchestrate(
         let toc = retrieval::toc_search(conn, query, emb_opt, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed);
         if toc.is_empty() { None } else { Some(toc) }
     };
-    if let Some(mut toc) = toc_opt {
-        retrieval::demote_test_envs(conn, &mut toc, query);
+    if let Some(toc) = toc_opt {
+        // R32.3: no pre-fusion demote — scores are fused by rank (RRF), so
+        // demotion runs inside fuse_and_rank, after fusion, before the cut.
         let hits = retrieval::fuse_and_rank(
             conn,
             Some(toc),
@@ -567,13 +585,14 @@ fn orchestrate(
             cfg.max_per_source,
             cfg.top_k,
             cfg.qa_exclude_disputed,
+            query,
         );
-        let mut hits = apply_graph(conn, hits, scope.as_ref(), cfg);
+        let mut hits = apply_graph(conn, hits, scope.as_ref(), cfg, query);
         retrieval::filename_boost(conn, &mut hits, query);
         return hits;
     }
     // R8.1: hybrid search — vector + keyword
-    let mut vector_hits = query_embedding.as_ref().and_then(|emb| {
+    let vector_hits = query_embedding.as_ref().and_then(|emb| {
         let hits = retrieval::vector_search(conn, emb, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed);
         if hits.is_empty() { None } else { Some(hits) }
     });
@@ -587,13 +606,7 @@ fn orchestrate(
     } else {
         keyword_hits
     };
-    let mut keyword_opt = if evidence.is_empty() { None } else { Some(evidence) };
-    if let Some(v) = vector_hits.as_mut() {
-        retrieval::demote_test_envs(conn, v, query);
-    }
-    if let Some(k) = keyword_opt.as_mut() {
-        retrieval::demote_test_envs(conn, k, query);
-    }
+    let keyword_opt = if evidence.is_empty() { None } else { Some(evidence) };
     let hits = retrieval::fuse_and_rank(
         conn,
         vector_hits,
@@ -603,8 +616,9 @@ fn orchestrate(
         cfg.max_per_source,
         cfg.top_k,
         cfg.qa_exclude_disputed,
+        query,
     );
-    let mut hits = apply_graph(conn, hits, scope.as_ref(), cfg);
+    let mut hits = apply_graph(conn, hits, scope.as_ref(), cfg, query);
     retrieval::filename_boost(conn, &mut hits, query);
     hits
 }
@@ -649,9 +663,10 @@ fn gate_answer_hits(conn: &Connection, hits: &[retrieval::Hit]) -> (Vec<retrieva
     let mut allowed = Vec::new();
     let mut blocked = Vec::new();
     for h in hits {
+        // R35.1: label-only — the chunk-`is_pii` half is gone with auto-detect.
+        // Manual item marks gate cloud flows via a follow-up (R35.2).
         let label = h.source_id.and_then(|id| labels.get(&id).cloned()).unwrap_or_else(|| "internal".to_string());
-        let is_pii = h.is_pii;
-        if label=="sensitive" || label=="pii" || is_pii {
+        if label == "sensitive" || label == "pii" {
             blocked.push(label);
         } else {
             allowed.push(h.clone());
@@ -663,61 +678,6 @@ fn gate_answer_hits(conn: &Connection, hits: &[retrieval::Hit]) -> (Vec<retrieva
 pub(crate) fn is_answer_trusted(settings: &SettingsService) -> bool {
     let base = settings.get("answer_base_url", None).unwrap_or_else(|| "https://api.openai.com/v1".to_string());
     crate::common::provider_trusted(&base)
-}
-
-/// Phase-1 deterministic gating for single-entity reads (get/related/context).
-/// Mirrors gate_answer_hits: source label sensitive/pii, or PII-flagged chunks
-/// on the entity's item, means an untrusted provider may not read it.
-/// Returns Some(reason) when blocked, None when readable.
-pub(crate) fn gate_entity_content(conn: &Connection, entity_id: i64) -> Option<String> {
-    let item_id: i64 = conn.query_row("SELECT item_id FROM entities WHERE id=?1", [entity_id], |r| r.get(0)).ok()?;
-    let (source_id, label): (i64, String) = conn
-        .query_row(
-            "SELECT s.id, s.label FROM sources s JOIN ingested_items i ON i.source_id = s.id WHERE i.id = ?1",
-            [item_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .ok()?;
-    let pii: i64 = conn
-        .query_row("SELECT COUNT(*) FROM chunks WHERE item_id = ?1 AND is_pii = 1", [item_id], |r| r.get(0))
-        .unwrap_or(0);
-    if label == "sensitive" || label == "pii" || pii > 0 {
-        Some(format!(
-            "entity {} blocked: source {} label '{}'{}, untrusted answer provider",
-            entity_id,
-            source_id,
-            label,
-            if pii > 0 { " + PII-flagged chunks" } else { "" }
-        ))
-    } else {
-        None
-    }
-}
-
-/// Item-level twin of `gate_entity_content`: same rule (sensitive/pii
-/// source label or PII-flagged chunks), keyed by item for `GET /items/:id`.
-pub(crate) fn gate_item_content(conn: &Connection, item_id: i64) -> Option<String> {
-    let (source_id, label): (i64, String) = conn
-        .query_row(
-            "SELECT s.id, s.label FROM sources s JOIN ingested_items i ON i.source_id = s.id WHERE i.id = ?1",
-            [item_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .ok()?;
-    let pii: i64 = conn
-        .query_row("SELECT COUNT(*) FROM chunks WHERE item_id = ?1 AND is_pii = 1", [item_id], |r| r.get(0))
-        .unwrap_or(0);
-    if label == "sensitive" || label == "pii" || pii > 0 {
-        Some(format!(
-            "item {} blocked: source {} label '{}'{}, untrusted answer provider",
-            item_id,
-            source_id,
-            label,
-            if pii > 0 { " + PII-flagged chunks" } else { "" }
-        ))
-    } else {
-        None
-    }
 }
 
 pub async fn search(
@@ -746,16 +706,20 @@ pub async fn search(
     // A3: cursor pagination over the gated list (deterministic full walks).
     let limit = req.limit.unwrap_or(k).clamp(1, 50);
     let cursor = req.cursor.unwrap_or(0);
+    let env_filter = req.env.clone();
+    // Match-centered summaries need the query after `query` moves into the
+    // blocking closure below.
+    let query_text = req.query.clone();
     let _settings_clone = settings_snapshot(settings);
     let hits = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir_for_block);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
-        search_sync_inner(&conn, &query, k, project_id, public_only, query_embedding)
+        search_sync_inner(&conn, &query, k, project_id, public_only, query_embedding, env_filter)
     })
     .await
     .unwrap_or_default();
-    // Phase-1: same provider-trust gate as ask — an untrusted provider must not
-    // receive sensitive/PII chunk content through the deterministic read path.
+    // Same provider-trust gate as ask — an untrusted provider must not
+    // receive sensitive/pii-source content through the deterministic read path.
     let mut hits = hits;
     let mut blocked_count = 0usize;
     let mut refusal: Option<String> = None;
@@ -790,6 +754,7 @@ pub async fn search(
     let tag_map = tags_for_chunks(&conn, &ids);
     let doc_type_map = doc_types_for_chunks(&conn, &ids);
     let meta_map = item_meta_for_chunks(&conn, &ids);
+    let env_map = crate::retrieval::envs_for_chunks(&conn, &ids);
     let hits = page.into_iter().map(|h| {
         // path = section breadcrumb when the chunk lives in one; flat
         // documents (no sections) fall back to the item's path within its
@@ -799,13 +764,15 @@ pub async fn search(
             chunk_id: Some(h.chunk_id),
             entity_id: h.entity_id,
             kind: hit_kind(&h),
-            summary: take_chars(&h.content, 500),
+            summary: crate::retrieval::match_snippet(&h.content, &query_text, 500),
             content: if want_content { h.content.clone() } else { String::new() },
             content_truncated: h.content_truncated,
             source_ref: display_source_ref(&h),
             path: if h.path.is_empty() { item_path } else { h.path.clone() },
             tags: tag_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             doc_type: doc_type_map.get(&h.chunk_id).cloned().unwrap_or_default(),
+            // No marker evidence (unknown chunk) reads as live, not test.
+            env: env_map.get(&h.chunk_id).cloned().unwrap_or_else(|| "live".to_string()),
             conflicts_with: conflict_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             source_id: h.source_id,
             item_id: h.item_id,
@@ -816,10 +783,42 @@ pub async fn search(
     SearchResponse { hits, blocked: blocked_count, refusal, next_cursor, retrieval: retrieval.to_string() }
 }
 
-fn search_sync_inner(conn: &Connection, query: &str, k: usize, project_id: Option<i64>, public_only: bool, query_embedding: Option<Vec<f32>>) -> Vec<crate::retrieval::Hit> {
+/// R32.4: the `env` search filter — "live" or "test" (case-insensitive);
+/// anything else means unfiltered.
+fn normalize_env_filter(env: Option<String>) -> Option<String> {
+    env.and_then(|e| {
+        let v = e.trim().to_lowercase();
+        if v == "live" || v == "test" {
+            Some(v)
+        } else {
+            None
+        }
+    })
+}
+
+fn search_sync_inner(
+    conn: &Connection,
+    query: &str,
+    k: usize,
+    project_id: Option<i64>,
+    public_only: bool,
+    query_embedding: Option<Vec<f32>>,
+    env_filter: Option<String>,
+) -> Vec<crate::retrieval::Hit> {
     let scope = project_scope(conn, project_id, public_only);
-    let cfg = RetrievalConfig::from_env_with_top_k(k);
-    orchestrate(conn, query, query_embedding, scope, &cfg)
+    let want_env = normalize_env_filter(env_filter);
+    // Widen the pool when filtering: the env cut runs after ranking, so the
+    // fetch must survive it (demote-only ranking keeps fixtures in play).
+    let fetch_k = if want_env.is_some() { (k * 5).clamp(k, 50) } else { k };
+    let cfg = RetrievalConfig::from_env_with_top_k(fetch_k);
+    let mut hits = orchestrate(conn, query, query_embedding, scope, &cfg);
+    if let Some(env) = want_env {
+        let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+        let classes = crate::retrieval::envs_for_chunks(conn, &ids);
+        hits.retain(|h| classes.get(&h.chunk_id).map(|c| *c == env).unwrap_or(false));
+        hits.truncate(k);
+    }
+    hits
 }
 
 fn turn_text(turn: &AskTurn) -> String {
@@ -1063,35 +1062,16 @@ mod tests {
     }
 
     #[test]
-    fn gate_answer_hits_filters_sensitive_and_pii() {
+    fn gate_answer_hits_filters_by_source_label_only() {
+        // R35.1: the chunk-`is_pii` half is gone with auto-detect — a flagged
+        // chunk on an ordinary source no longer blocks (manual marks gate
+        // cloud flows via R35.2).
         let (_dir, conn, _settings) = seed_gate_db();
         let ord: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
         let sen: i64 = conn.query_row("SELECT id FROM sources WHERE name='secret'", [], |r| r.get(0)).unwrap();
         let (allowed, blocked) = gate_answer_hits(&conn, &[mk_hit(ord, false), mk_hit(sen, false), mk_hit(ord, true)]);
-        assert_eq!(allowed.len(), 1);
-        assert_eq!(blocked.len(), 2);
-    }
-
-    #[test]
-    fn gate_entity_content_blocks_sensitive_source() {
-        let (_dir, conn, _settings) = seed_gate_db();
-        let eid_ord: i64 = conn.query_row("SELECT id FROM entities WHERE summary LIKE 'sunshine%'", [], |r| r.get(0)).unwrap();
-        let eid_sen: i64 = conn.query_row("SELECT id FROM entities WHERE summary LIKE 'moonvault%'", [], |r| r.get(0)).unwrap();
-        assert!(gate_entity_content(&conn, eid_ord).is_none());
-        let reason = gate_entity_content(&conn, eid_sen).expect("sensitive entity must be gated");
-        assert!(reason.contains("sensitive"), "reason: {}", reason);
-        assert!(gate_entity_content(&conn, 999999).is_none(), "missing entity must not gate (404 path owns it)");
-    }
-
-    #[test]
-    fn gate_item_content_blocks_sensitive_source() {
-        let (_dir, conn, _settings) = seed_gate_db();
-        let iid_ord: i64 = conn.query_row("SELECT id FROM ingested_items WHERE text LIKE 'quarterly sunshine%'", [], |r| r.get(0)).unwrap();
-        let iid_sen: i64 = conn.query_row("SELECT id FROM ingested_items WHERE text LIKE 'quarterly moonvault%'", [], |r| r.get(0)).unwrap();
-        assert!(gate_item_content(&conn, iid_ord).is_none());
-        let reason = gate_item_content(&conn, iid_sen).expect("sensitive item must be gated");
-        assert!(reason.contains("sensitive"), "reason: {}", reason);
-        assert!(gate_item_content(&conn, 999999).is_none(), "missing item must not gate (404 path owns it)");
+        assert_eq!(allowed.len(), 2);
+        assert_eq!(blocked, vec!["sensitive".to_string()]);
     }
 
     #[tokio::test]
@@ -1101,7 +1081,7 @@ mod tests {
         let embedder = Arc::new(Embedder::new(settings.clone()));
         // Default settings: example remote base is untrusted (no ANCHOR_CLOUD_TRUST here).
         settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
-        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None };
+        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None };
         let res = search(&settings, &embedder, req, &data_dir).await;
         assert!(res.hits.is_empty(), "sensitive hit must be withheld, got {:?}", res.hits.len());
         assert_eq!(res.refusal.as_deref(), Some("gated_provider"));
@@ -1116,7 +1096,7 @@ mod tests {
         // Localhost is trusted in every environment — deterministic trust.
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         assert!(is_answer_trusted(&settings));
-        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None };
+        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None };
         let res = search(&settings, &embedder, req, &data_dir).await;
         assert!(!res.hits.is_empty(), "trusted provider must see the sensitive hit");
         assert!(res.refusal.is_none());
@@ -1129,18 +1109,18 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
-        let base = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None };
+        let base = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None };
         let compact = search(&settings, &embedder, base, &data_dir).await;
         assert!(!compact.hits.is_empty());
         assert!(compact.hits.iter().all(|h| h.content.is_empty()), "default must omit chunk bytes");
         assert!(compact.hits.iter().all(|h| !h.summary.is_empty() && !h.source_ref.is_empty()));
         assert!(compact.hits.iter().all(|h| !h.item_title.is_empty()), "item_title must carry provenance");
         assert!(compact.hits.iter().all(|h| h.path == "docs/f.md"), "flat docs fall back to the item path");
-        let full_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("summary,source_ref,score,content".to_string()), cursor: None, limit: None, include_content: None };
+        let full_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("summary,source_ref,score,content".to_string()), cursor: None, limit: None, include_content: None, env: None };
         let full = search(&settings, &embedder, full_req, &data_dir).await;
         assert!(full.hits.iter().all(|h| !h.content.is_empty()), "fields incl. content must return bytes");
         // agent-friendly alias: include_content=true is fields=content
-        let alias_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: Some(true) };
+        let alias_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: Some(true), env: None };
         let alias = search(&settings, &embedder, alias_req, &data_dir).await;
         assert!(alias.hits.iter().all(|h| !h.content.is_empty()), "include_content=true must return bytes");
     }
@@ -1152,7 +1132,7 @@ mod tests {
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         // Both seeded chunks share these words, so one page of 1 must leave a next cursor.
-        let mk = |cursor: Option<usize>| SearchRequest { query: "quarterly report numbers".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("all".to_string()), cursor, limit: Some(1), include_content: None };
+        let mk = |cursor: Option<usize>| SearchRequest { query: "quarterly report numbers".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("all".to_string()), cursor, limit: Some(1), include_content: None, env: None };
         let p1 = search(&settings, &embedder, mk(None), &data_dir).await;
         assert_eq!(p1.hits.len(), 1, "page size 1 must return exactly one hit");
         let next = p1.next_cursor.expect("first page must carry a cursor when hits remain");
@@ -1188,7 +1168,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
-        let req = SearchRequest { query: "sunshine".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None };
+        let req = SearchRequest { query: "sunshine".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None };
         let res = search(&settings, &embedder, req, &data_dir).await;
         assert!(!res.hits.is_empty(), "keyword search must find the seeded chunk");
         assert_eq!(res.retrieval, "keyword_only");
@@ -1231,14 +1211,28 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let mut hit = mk_hit(1, false);
         hit.content = "lorem ipsum dolor ".repeat(60); // ~1000 chars
-        let compact = build_citations(std::slice::from_ref(&hit), &data_dir, false, 5);
+        let compact = build_citations(std::slice::from_ref(&hit), &data_dir, false, 5, "");
         assert_eq!(compact.len(), 1);
         assert!(compact[0].content.is_empty(), "content stays empty unless requested");
         assert_eq!(compact[0].snippet.chars().count(), 500, "snippet floor matches search summaries");
         assert_eq!(compact[0].item_title, "t");
         assert_eq!(compact[0].path, "docs/f.md", "pathless chunks fall back to the item path");
-        let full = build_citations(std::slice::from_ref(&hit), &data_dir, true, 5);
+        let full = build_citations(std::slice::from_ref(&hit), &data_dir, true, 5, "");
         assert_eq!(full[0].content, hit.content, "opt-in returns verbatim bytes");
+    }
+
+    #[test]
+    fn build_citations_centers_snippet_on_match() {
+        // A head-only preview of a long hit hides the match (1.0.24 retest) —
+        // summary + snippet must window on the query terms instead.
+        let (dir, _conn, _settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let mut hit = mk_hit(1, false);
+        hit.content = format!("{}moonvault{}", "ab ".repeat(400), " cd".repeat(400));
+        let cites = build_citations(std::slice::from_ref(&hit), &data_dir, false, 5, "moonvault");
+        assert_eq!(cites.len(), 1);
+        assert!(cites[0].snippet.contains("moonvault"), "snippet: {}", cites[0].snippet.chars().take(60).collect::<String>());
+        assert!(cites[0].summary.contains("moonvault"), "summary: {}", cites[0].summary.chars().take(60).collect::<String>());
     }
 
     #[test]
@@ -1246,8 +1240,8 @@ mod tests {
         let (dir, _conn, _settings) = seed_gate_db();
         let data_dir = dir.path().to_string_lossy().to_string();
         let hits = vec![mk_hit(1, false), mk_hit(1, false), mk_hit(1, false)];
-        assert_eq!(build_citations(&hits, &data_dir, false, 2).len(), 2);
-        assert_eq!(build_citations(&hits, &data_dir, false, 9).len(), 3);
+        assert_eq!(build_citations(&hits, &data_dir, false, 2, "").len(), 2);
+        assert_eq!(build_citations(&hits, &data_dir, false, 9, "").len(), 3);
     }
 
     #[test]
@@ -1277,5 +1271,93 @@ mod tests {
         let req2 = AskRequest { question: "sunshine".to_string(), history: None, project_id: None, public_only: None, include_content: None };
         let res2 = ask(&settings, &embedder, req2, &data_dir).await;
         assert!(res2.citations.iter().all(|c| c.content.is_empty()), "default ask stays compact");
+    }
+
+    #[test]
+    fn normalize_env_filter_values() {
+        assert_eq!(normalize_env_filter(None), None);
+        assert_eq!(normalize_env_filter(Some("live".to_string())), Some("live".to_string()));
+        assert_eq!(normalize_env_filter(Some(" TEST ".to_string())), Some("test".to_string()));
+        assert!(normalize_env_filter(Some("prod".to_string())).is_none(), "unknown classes mean unfiltered");
+        assert!(normalize_env_filter(Some(String::new())).is_none());
+    }
+
+    #[test]
+    fn build_citations_carries_item_id_and_env() {
+        let (dir, conn, _settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let (cid, iid): (i64, i64) = conn
+            .query_row("SELECT id, item_id FROM chunks WHERE content LIKE 'quarterly sunshine%'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        let mut hit = mk_hit(1, false);
+        hit.chunk_id = cid;
+        hit.item_id = Some(iid);
+        hit.content = "quarterly sunshine report numbers".to_string();
+        let cites = build_citations(std::slice::from_ref(&hit), &data_dir, false, 5, "");
+        assert_eq!(cites.len(), 1);
+        assert_eq!(cites[0].item_id, Some(iid), "citation must drill into GET /items/:id");
+        assert_eq!(cites[0].env, "live", "docs/f.md carries no test marker");
+    }
+
+    #[tokio::test]
+    async fn search_env_filter_orders_and_cuts_by_class() {
+        // R32.2–R32.4 end to end: a live doc chunk plus a test entity row
+        // (production shape) sharing the query terms. Plain search orders
+        // live first; env=live/test cuts to one class; every hit carries an
+        // item_id and an env class.
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        let ord: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h','routing-config.yml','cfg/routing-config.yml','live treasury directions acme config content')",
+            [ord],
+        )
+        .unwrap();
+        let live_iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE external_id='cfg/routing-config.yml'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO chunks (item_id, source_ref, content) VALUES (?1,'routing-config.yml','live treasury directions acme config content')",
+            [live_iid],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h','payment-directions.test.yml','cfg/payment-directions.test.yml','test treasury directions content')",
+            [ord],
+        )
+        .unwrap();
+        let test_iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE external_id='cfg/payment-directions.test.yml'", [], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO entities (item_id, kind, summary) VALUES (?1,'decision','test treasury directions content')", [test_iid]).unwrap();
+        let eid: i64 = conn.last_insert_rowid();
+        conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content) VALUES (?1,'entity','payment-directions.test.yml','test treasury directions content')", [eid]).unwrap();
+
+        let mk = |env: Option<&str>| SearchRequest {
+            query: "treasury directions".to_string(),
+            k: Some(8),
+            project_id: None,
+            public_only: None,
+            fields: None,
+            cursor: None,
+            limit: None,
+            include_content: None,
+            env: env.map(|s| s.to_string()),
+        };
+        let plain = search(&settings, &embedder, mk(None), &data_dir).await;
+        assert_eq!(plain.hits.len(), 2, "both classes match the shared terms");
+        assert!(plain.hits.iter().all(|h| h.item_id.is_some()), "every hit drills into its item");
+        assert_eq!(plain.hits[0].env, "live", "post-RRF demotion must surface the live chunk first");
+        assert_eq!(plain.hits[0].item_id, Some(live_iid));
+        assert_eq!(plain.hits[1].env, "test");
+        assert_eq!(plain.hits[1].item_id, Some(test_iid), "entity rows resolve their item end to end");
+
+        let live_only = search(&settings, &embedder, mk(Some("live")), &data_dir).await;
+        assert_eq!(live_only.hits.len(), 1);
+        assert_eq!(live_only.hits[0].item_id, Some(live_iid));
+        assert_eq!(live_only.hits[0].env, "live");
+
+        let test_only = search(&settings, &embedder, mk(Some("TEST")), &data_dir).await;
+        assert_eq!(test_only.hits.len(), 1);
+        assert_eq!(test_only.hits[0].item_id, Some(test_iid));
+        assert_eq!(test_only.hits[0].env, "test");
     }
 }
