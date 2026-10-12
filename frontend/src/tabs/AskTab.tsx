@@ -130,7 +130,7 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
       </div>
       <label
         style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: theme.textDim, marginTop: 8, cursor: "pointer" }}
-        title="Answer only from sources labelled 'public' — safe to share (B30)"
+        title="Answer only from sources labelled 'public' — safe to share"
       >
         <input type="checkbox" checked={publicOnly} onChange={(e) => setPublicOnly(e.target.checked)} />
         Public-only — answer from public sources only (share/MCP-safe)

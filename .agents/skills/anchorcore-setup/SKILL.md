@@ -1,6 +1,6 @@
 ---
 name: anchorcore-setup
-description: Install, launch, connect, and fully configure AnchorCore (local-first company memory) through its local REST API — first-run setup on Windows/macOS/Linux, answer-model choice (local Ollama or the user's own OpenAI-compatible AI), classification/embedding models, sources (folder, Jira, Linear, Google Drive, generic REST), source labels and cloud-trust rules, projects, PII settings, MCP agent connection, and end-to-end verification of cited answers. Use when the user asks to set up, configure, install, connect, audit, or troubleshoot AnchorCore; add their documents or trackers to it; point its answers at their own model; or asks why answers are context-only, keyword-only, or uncited.
+description: Install, update, launch, connect, and fully configure AnchorCore (local-first company memory) through its local REST API — always check the installed build and any installer copy on the PC against the newest GitHub release and update when stale, first-run setup on Windows/macOS/Linux, answer-model choice (local Ollama or the user's own OpenAI-compatible AI), classification/embedding models, sources (folder, Jira, Linear, Google Drive, generic REST), source labels and cloud-trust rules, projects, PII settings, MCP agent connection, and end-to-end verification of cited answers. Use when the user asks to set up, configure, install, update, upgrade, connect, audit, or troubleshoot AnchorCore; add their documents or trackers to it; point its answers at their own model; or asks why answers are context-only, keyword-only, or uncited.
 ---
 
 # AnchorCore setup
@@ -19,30 +19,77 @@ command or action and wait.
    env → `~/.anchorcore/runtime.json` (if present; newer builds write it) →
    `http://127.0.0.1:8000`. Probe `GET /health`; expected `{"status":"ok"}`.
    Anything else means the app is not up — see step 1.
-2. **CSRF:** every `POST`/`PUT`/`PATCH`/`DELETE` needs `X-CSRF-Token`. Fetch one
+2. **Newest version first.** Before configuring anything, check the installed
+   build (and any installer copy you are about to use) against the newest GitHub
+   release — step 1. If it is older, update it first. Never set up, launch, or
+   unzip a stale build lying around on the PC.
+3. **CSRF:** every `POST`/`PUT`/`PATCH`/`DELETE` needs `X-CSRF-Token`. Fetch one
    with `GET /csrf` and reuse it for the session. A `403 … CSRF` means you forgot.
-3. **Auth:** local installs need no login. If `GET /auth/status` returns
+4. **Auth:** local installs need no login. If `GET /auth/status` returns
    `{"enabled":true}` or you get `401`, `POST /auth/login {"email","password"}` →
    `access_token`, then send `Authorization: Bearer <token>` (CSRF does not
    apply when auth is on).
-4. **Secrets** (API keys, tokens, passwords) go to the OS keychain, are masked
+5. **Secrets** (API keys, tokens, passwords) go to the OS keychain, are masked
    as `***set***` on read, and are never logged. To change one, send the new
    value; to keep one, send `***set***` or omit the field; an explicit `""`
    clears it. Never echo secrets into chat, logs, or shell history.
-5. **Never:** edit the SQLite file, set `ANCHOR_CSRF_DISABLE=1`, delete the data
+6. **Never:** edit the SQLite file, set `ANCHOR_CSRF_DISABLE=1`, delete the data
    dir to "fix" things, or send `sensitive`/`pii` content to an untrusted cloud
    provider — the app gates that for a reason.
 
-## 1. Install / first run (only if `/health` fails)
+## 1. Install / update — newest release first
+
+Run this check **every session** — also when `/health` is fine: a stale install
+must never be configured, and a zip lying around (Downloads, Desktop) must never
+be trusted over `releases/latest`.
+
+Installed version:
+- app running → `GET /system/status` → `version`
+- app on disk, not running → `<binary> --version` when the build supports it; on
+  builds that reject the flag (`unexpected argument '--version'`), boot that copy
+  once on a throwaway data dir (`--data-dir <temp dir>`, free `--port`,
+  `ANCHOR_OPEN_BROWSER=0`), read `/system/status`, then stop it
+- a downloaded zip → unverifiable until it runs: don't trust it, download fresh
+
+Newest release: `https://api.github.com/repos/Atsirkunov/anchorcore/releases/latest`
+→ `tag_name` (strip the leading `v`) — or, on a running app that has it,
+`GET /system/update`. PowerShell:
+`(Invoke-RestMethod https://api.github.com/repos/Atsirkunov/anchorcore/releases/latest).tag_name`;
+no JSON tooling: the `location:` header of
+`curl -sI https://github.com/Atsirkunov/anchorcore/releases/latest`. Compare
+numerically — `1.0.9` is older than `1.0.20`; string compare gets that wrong.
+Only a strictly older install is replaced, so a source/dev build ahead of the
+release is left alone. No network → say so and continue with what is installed
+(note any version you could not verify).
+
+| Installed | Do |
+|---|---|
+| same as newest, or newer (source/dev build) | use it as is |
+| older | download the newest zip, replace in place, relaunch |
+| missing, or only an unverifiable zip | download the newest zip, fresh install |
+| a `target/`/cargo source build that is older | don't overwrite it; report the newer release and let the user decide |
 
 Prebuilt artifacts — users never need Rust or Node:
 `https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-{windows,macos,linux}.zip`
 Unzip: Windows/Linux `anchorcore.exe` / `anchorcore`; macOS `AnchorCore.app`
 (right-click → Open once — not notarized — or `xattr -dr com.apple.quarantine AnchorCore.app`).
+Keep the app in one place so the next check is cheap: Windows
+`%LOCALAPPDATA%\AnchorCore\`, macOS `~/Applications/AnchorCore.app`, Linux
+`~/.local/share/anchorcore\` — or wherever the user already keeps it.
+
+**Update in place** (same folder, same data dir):
+1. Stop the app — Windows locks the running `.exe` (`Stop-Process -Name anchorcore`),
+   macOS quit the app, Linux kill the pid.
+2. Unzip the newest archive over the same folder — the path the app runs from
+   (Windows `(Get-Process anchorcore).Path`; ask the user if it is unknown).
+   macOS: replace the whole `AnchorCore.app` bundle, don't merge into it.
+3. Relaunch (below) and confirm `GET /system/status.version` equals the newest.
+An update replaces the binary only — user data (`~/.anchorcore`) is untouched,
+migrations run on the next start. Report what changed: `old → new`.
 
 Launch detached so it survives your shell:
 - Windows (PowerShell): `Start-Process -FilePath 'C:\path\anchorcore.exe'`
-- macOS: `open -a '/Applications/AnchorCore.app'` (or run `AnchorCore.app/Contents/MacOS/AnchorCore`)
+- macOS: `open "$HOME/Applications/AnchorCore.app"` (or `/Applications/AnchorCore.app`; or run `AnchorCore.app/Contents/MacOS/AnchorCore`)
 - Linux: `nohup ./anchorcore >/dev/null 2>&1 &`
 
 Terminal launch flags: `--port 8123`, `--data-dir <path>`, and
@@ -184,8 +231,9 @@ that have it).
 1. `POST /qa/search {"query":"…","k":8}` → hits with `source_ref` and scores;
    `retrieval` matches expectations.
 2. `POST /qa {"question":"…"}` → `mode` per the honesty contract, ≥1 citation.
-3. `GET /system/status` → `answer_ready: true` (or an agreed degraded state),
-   `pending_embeddings` trending to 0, no failing sources.
+3. `GET /system/status` → `version` equals the newest release (step 1),
+   `answer_ready: true` (or an agreed degraded state), `pending_embeddings`
+   trending to 0, no failing sources.
 4. `GET /system/errors?level=warning&limit=20` → every recent warning explained.
 
 Report back: what you configured, what you verified, what is degraded and why.
@@ -195,6 +243,8 @@ Report back: what you configured, what you verified, what is degraded and why.
 | Symptom | Cause | Fix |
 |---|---|---|
 | connection refused / "backend unreachable" | app not running | start it (step 1), check `/health` |
+| `version` older than `releases/latest` | stale build in use | update in place (step 1): stop → replace → relaunch, then re-probe |
+| local zip/binary version can't be verified | untrusted copy on the PC | download the newest release; don't unzip the local one |
 | `403` "missing or invalid CSRF token" | write without `X-CSRF-Token` | `GET /csrf`, retry with the header |
 | `401` | auth enabled | `POST /auth/login`, use `Authorization: Bearer` |
 | `retrieval: keyword_only` | embed model/base unreachable or unset | pull `nomic-embed-text` or set `embed_base_url`, then sync/reclassify to re-embed |

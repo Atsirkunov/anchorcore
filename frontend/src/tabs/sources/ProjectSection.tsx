@@ -73,7 +73,7 @@ export function ProjectSection({ sources, onChanged }: { sources: Source[]; onCh
       }}
     >
       <div style={{ fontWeight: 600, marginBottom: 8 }}>
-        Projects (scope questions by source group — B15)
+        Projects (scope questions by source group)
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
         <input

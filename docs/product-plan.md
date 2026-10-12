@@ -1194,6 +1194,16 @@ purge `{"entities":112,"items":3,"purged":0}` and the 441k-char PDF re-ingests
 
 **Status (2026-10-12):** Phase A **shipped** — R25.1–R25.7 (uids, export, import, secrets bundle, CLI, System-tab card, docs). Verified on Windows end-to-end (live export from a seeded instance → import into a fresh data dir → hybrid retrieval + re-embed job; replace with safety backup; wrong passphrase leaves nothing behind; secrets restore as `***set***`); the macOS leg of A1–A3 still needs a run on a Mac. Phase B/C remain design-only until the §8 decisions are signed off.
 
+### B62. Entities clarity — the tab is confusing to see/use (P1 — owner report 2026-10-12)
+
+**Problem:** the owner reports the Entities tab is "very confusing to see / use". It grew by accretion — grouped-by-document vs flat, `⚠ Needs review` as the default filter, `All kinds` dots + `code` badges, confidence/status, `Verify`/`Dispute` at two levels (entity and `Dispute doc`), `Conflicts (N)` with a bare entity-id input, `Whole doc` expanders, per-entity `Show context ▼`, section breadcrumbs + tag chips, the PII shield — with no hierarchy of importance and engineering jargon. A person cannot quickly answer what AnchorCore knows, what needs their attention, or why an item exists.
+
+**Scope:** design pass first (owner-approved before code): walk the tab on the sample/ corpus, list every confusing element with the label exactly as shown, propose 2–3 options (keep structure / language + hierarchy / regroup around the three questions), pick one, then implement — keeping provenance (context, review, conflicts, PII) and both grouped and flat views. No schema change expected. `rust/BACKLOG.md` Phase 31 (R31.1 → R31.2).
+
+**DoD:** a fresh tester answers, unaided and in about a minute each: (1) what does AnchorCore know about X? (2) which of these needs my attention, and what do I do with it? (3) why is this item here / based on what? `npm run build` + tests green; no new hex outside `theme.ts`.
+
+**Status (2026-10-12):** open — R31.1 (audit + proposal) first; no code yet.
+
 ## Current execution priorities (agreed 2026-08-07 — updated after Aug review + the B48 pass, amended for no-UX constraint)
 
 Explicit order — v1 core, hardening, scale and the website are DONE (v1.0.10–1.0.12). Queue below is post-website launch prep.
@@ -1249,5 +1259,6 @@ Explicit order — v1 core, hardening, scale and the website are DONE (v1.0.10�
 | 20 | B59 single-container Team image | ✅ DONE (R19.1) | site promises "One Docker container" but `hosting/` is a two-service Python stack; ship the Rust single container (or reword) |
 | 21 | B60 classification wiring + PDF purge safety | ✅ DONE (live) | Rust never called the LLM classifier → keyword rules fabricated decisions from process docs; PDF stub + B57 purge then deleted the ingested PDFs |
 | 22 | B61 backup / export / device migration | **P1** | no way off the device; secrets make "copy the folder" unsafe; zero-knowledge sync is the hosted differentiator — **Phase A shipped 2026-10-12 (R25.1–R25.7); Phases B/C gated on the §8 sign-off** |
+| 23 | B62 Entities clarity | **P1** | owner report 2026-10-12: "very confusing to see / use" — audit + owner-approved proposal (R31.1) before any rework |
 
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [rust-port.md](./rust-port.md), [design-system.md](./design-system.md)*

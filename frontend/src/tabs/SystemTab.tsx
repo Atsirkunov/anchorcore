@@ -3,6 +3,7 @@ import { api } from "../api";
 import { BackupCard } from "../BackupCard";
 import { McpConnectCard } from "../McpConnect";
 import { useModelPull } from "../useModelPull";
+import { UpdateCard } from "../Updates";
 import { theme } from "../theme";
 import type { Job, LogFile, SystemEvent, SystemStatus } from "../types";
 
@@ -236,6 +237,7 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
 
       <McpConnectCard />
       <BackupCard />
+      <UpdateCard onGoSettings={onConfigure} />
 
       <h3 style={{ marginBottom: 8 }}>Errors & warnings</h3>
       {events.length === 0 ? (

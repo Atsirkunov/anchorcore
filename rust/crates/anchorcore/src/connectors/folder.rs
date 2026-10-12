@@ -84,6 +84,7 @@ impl FolderConnector {
         let mut skipped = Vec::new();
         for p in supported_files(&self.path) {
             let rel = p.strip_prefix(&self.path).unwrap_or(&p).to_string_lossy().to_string();
+            let t_extract = std::time::Instant::now();
             let text = match extract::extract_file(&p) {
                 Ok(t) => t,
                 Err(e) => {
@@ -92,6 +93,10 @@ impl FolderConnector {
                     continue;
                 }
             };
+            let extract_ms = t_extract.elapsed().as_millis();
+            if extract_ms >= 200 {
+                tracing::debug!(target: "anchorcore::perf", file = %rel, ms = extract_ms, chars = text.len(), "extract");
+            }
             let mtime = std::fs::metadata(&p)
                 .ok()
                 .and_then(|m| m.modified().ok())

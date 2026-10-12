@@ -202,6 +202,35 @@ export function SettingsTab() {
         </div>
 
         <div style={styles.section}>
+          <div style={styles.sectionTitle}>Updates</div>
+          <div style={{ fontSize: 12, color: theme.textDim, lineHeight: 1.5 }}>
+            AnchorCore never checks for new releases on its own. The System tab has a manual <b>Check for
+            updates</b> button; turn on the opt-in below if you want one check when the app starts.
+          </div>
+          <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 10, fontSize: 13, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={["1", "true", "yes", "on"].includes(
+                ((form as unknown as Record<string, string>)["update_check_enabled"] ?? "").toLowerCase(),
+              )}
+              onChange={(e) =>
+                setForm({
+                  ...(form as unknown as Record<string, string>),
+                  update_check_enabled: e.target.checked ? "1" : "0",
+                } as unknown as AppSettings)
+              }
+            />
+            <span>
+              Check for new releases once at startup
+              <span style={{ display: "block", fontSize: 11, color: theme.textMuted }}>
+                One request to github.com at launch — a plain fetch of the public release info; nothing about you
+                is sent. Off unless you turn it on.
+              </span>
+            </span>
+          </label>
+        </div>
+
+        <div style={styles.section}>
           <div style={styles.sectionTitle}>Answer model (Q&A)</div>
           {providerSelect(answerProvider, setAnswerProvider, "Local Ollama (free, private)", "Cloud OpenAI-compatible")}
           {keyInput("answer_api_key", answerProvider, "API key")}

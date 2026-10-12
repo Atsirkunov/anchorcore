@@ -68,6 +68,9 @@ pub struct SearchRequest {
     pub cursor: Option<usize>,
     /// A3 cursor pagination: page size (defaults to `k`).
     pub limit: Option<usize>,
+    /// Convenience alias for `fields: content` — agents commonly ask for the
+    /// chunk bytes by this name. `fields` remains the canonical selector.
+    pub include_content: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -326,6 +329,33 @@ fn doc_types_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> std::collection
     }) {
         for row in rows.flatten() {
             out.insert(row.0, row.1);
+        }
+    }
+    out
+}
+
+/// Batched item provenance for search hits: `(item_title, item_path)` where
+/// item_path is the item's external id (folder sources: the relative file
+/// path). Document chunks join via `item_id`, entity chunks via their
+/// entity's item.
+fn item_meta_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> std::collections::HashMap<i64, (String, String)> {
+    let mut out: std::collections::HashMap<i64, (String, String)> = std::collections::HashMap::new();
+    if chunk_ids.is_empty() {
+        return out;
+    }
+    let sql = format!(
+        "SELECT c.id, COALESCE(i1.title, i2.title, ''), COALESCE(i1.external_id, i2.external_id, '') FROM chunks c LEFT JOIN ingested_items i1 ON i1.id=c.item_id LEFT JOIN entities e ON e.id=c.entity_id LEFT JOIN ingested_items i2 ON i2.id=e.item_id WHERE c.id IN ({})",
+        crate::common::placeholders(chunk_ids.len())
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(chunk_ids.iter()), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+    }) {
+        for (id, title, path) in rows.flatten() {
+            out.insert(id, (title, path));
         }
     }
     out
@@ -648,11 +678,12 @@ pub async fn search(
     let project_id = req.project_id;
     let public_only = req.public_only.unwrap_or(false);
     // A3: compact-by-default — full chunk bytes only on explicit opt-in.
-    let want_content = req
-        .fields
-        .as_deref()
-        .map(|f| f.split(',').any(|t| { let t = t.trim(); t == "content" || t == "all" }))
-        .unwrap_or(false);
+    let want_content = req.include_content.unwrap_or(false)
+        || req
+            .fields
+            .as_deref()
+            .map(|f| f.split(',').any(|t| { let t = t.trim(); t == "content" || t == "all" }))
+            .unwrap_or(false);
     // A3: cursor pagination over the gated list (deterministic full walks).
     let limit = req.limit.unwrap_or(k).clamp(1, 50);
     let cursor = req.cursor.unwrap_or(0);
@@ -699,21 +730,26 @@ pub async fn search(
     let conflict_map = conflicts_for_chunks(&conn, &ids);
     let tag_map = tags_for_chunks(&conn, &ids);
     let doc_type_map = doc_types_for_chunks(&conn, &ids);
+    let meta_map = item_meta_for_chunks(&conn, &ids);
     let hits = page.into_iter().map(|h| {
+        // path = section breadcrumb when the chunk lives in one; flat
+        // documents (no sections) fall back to the item's path within its
+        // source (folder: relative file path; opaque connectors: id).
+        let (item_title, item_path) = meta_map.get(&h.chunk_id).cloned().unwrap_or_default();
         SearchHit {
             chunk_id: Some(h.chunk_id),
             entity_id: h.entity_id,
             kind: hit_kind(&h),
-            summary: take_chars(&h.content, 200),
-            content: if want_content { take_chars(&h.content, 4000) } else { String::new() },
+            summary: take_chars(&h.content, 500),
+            content: if want_content { h.content.clone() } else { String::new() },
             source_ref: display_source_ref(&h),
-            path: h.path.clone(),
+            path: if h.path.is_empty() { item_path } else { h.path.clone() },
             tags: tag_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             doc_type: doc_type_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             conflicts_with: conflict_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             source_id: h.source_id,
             item_id: h.item_id,
-            item_title: String::new(),
+            item_title,
             score: rounded_score(h.score),
         }
     }).collect();
@@ -872,7 +908,7 @@ mod tests {
         let sen: i64 = conn.query_row("SELECT id FROM sources WHERE name='secret'", [], |r| r.get(0)).unwrap();
         for (sid, word) in [(ord, "sunshine"), (sen, "moonvault")] {
             conn.execute(
-                "INSERT INTO ingested_items (source_id, content_hash, title, text) VALUES (?1,'h','t',?2)",
+                "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h','t','docs/f.md',?2)",
                 rusqlite::params![sid, format!("quarterly {} report numbers", word)],
             )
             .unwrap();
@@ -993,7 +1029,7 @@ mod tests {
         let embedder = Arc::new(Embedder::new(settings.clone()));
         // Default settings: example remote base is untrusted (no ANCHOR_CLOUD_TRUST here).
         settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
-        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None };
+        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None };
         let res = search(&settings, &embedder, req, &data_dir).await;
         assert!(res.hits.is_empty(), "sensitive hit must be withheld, got {:?}", res.hits.len());
         assert_eq!(res.refusal.as_deref(), Some("gated_provider"));
@@ -1008,7 +1044,7 @@ mod tests {
         // Localhost is trusted in every environment — deterministic trust.
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         assert!(is_answer_trusted(&settings));
-        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None };
+        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None };
         let res = search(&settings, &embedder, req, &data_dir).await;
         assert!(!res.hits.is_empty(), "trusted provider must see the sensitive hit");
         assert!(res.refusal.is_none());
@@ -1021,14 +1057,20 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
-        let base = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None };
+        let base = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None };
         let compact = search(&settings, &embedder, base, &data_dir).await;
         assert!(!compact.hits.is_empty());
         assert!(compact.hits.iter().all(|h| h.content.is_empty()), "default must omit chunk bytes");
         assert!(compact.hits.iter().all(|h| !h.summary.is_empty() && !h.source_ref.is_empty()));
-        let full_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("summary,source_ref,score,content".to_string()), cursor: None, limit: None };
+        assert!(compact.hits.iter().all(|h| !h.item_title.is_empty()), "item_title must carry provenance");
+        assert!(compact.hits.iter().all(|h| h.path == "docs/f.md"), "flat docs fall back to the item path");
+        let full_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("summary,source_ref,score,content".to_string()), cursor: None, limit: None, include_content: None };
         let full = search(&settings, &embedder, full_req, &data_dir).await;
         assert!(full.hits.iter().all(|h| !h.content.is_empty()), "fields incl. content must return bytes");
+        // agent-friendly alias: include_content=true is fields=content
+        let alias_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: Some(true) };
+        let alias = search(&settings, &embedder, alias_req, &data_dir).await;
+        assert!(alias.hits.iter().all(|h| !h.content.is_empty()), "include_content=true must return bytes");
     }
 
     #[tokio::test]
@@ -1038,7 +1080,7 @@ mod tests {
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         // Both seeded chunks share these words, so one page of 1 must leave a next cursor.
-        let mk = |cursor: Option<usize>| SearchRequest { query: "quarterly report numbers".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("all".to_string()), cursor, limit: Some(1) };
+        let mk = |cursor: Option<usize>| SearchRequest { query: "quarterly report numbers".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("all".to_string()), cursor, limit: Some(1), include_content: None };
         let p1 = search(&settings, &embedder, mk(None), &data_dir).await;
         assert_eq!(p1.hits.len(), 1, "page size 1 must return exactly one hit");
         let next = p1.next_cursor.expect("first page must carry a cursor when hits remain");
@@ -1074,7 +1116,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
-        let req = SearchRequest { query: "sunshine".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None };
+        let req = SearchRequest { query: "sunshine".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None };
         let res = search(&settings, &embedder, req, &data_dir).await;
         assert!(!res.hits.is_empty(), "keyword search must find the seeded chunk");
         assert_eq!(res.retrieval, "keyword_only");

@@ -6,6 +6,12 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
+/// R30.2 perf counters (read by pipeline debug logs).
+pub(crate) static ENSURE_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static ENSURE_EXACT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static ENSURE_SCANS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static ENSURE_MICROS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn stopwords() -> &'static HashSet<&'static str> {
     static SW: OnceLock<HashSet<&str>> = OnceLock::new();
     SW.get_or_init(|| {
@@ -118,15 +124,21 @@ fn threshold() -> f32 {
 /// Ensure a tag exists — reuse if cosine > threshold else create.
 /// Returns tag id.
 pub fn ensure_tag(conn: &Connection, name: &str) -> Result<i64, String> {
+    use std::sync::atomic::Ordering;
+    let t0 = std::time::Instant::now();
+    ENSURE_CALLS.fetch_add(1, Ordering::Relaxed);
     let norm = normalize_tag(name);
     if norm.is_empty() {
         return Err("empty tag".to_string());
     }
     // check exact match first (fast)
     if let Ok(id) = conn.query_row("SELECT id FROM tags WHERE name=?1", [&norm], |r| r.get::<_, i64>(0)) {
+        ENSURE_EXACT.fetch_add(1, Ordering::Relaxed);
+        ENSURE_MICROS.fetch_add(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
         conn.execute("UPDATE tags SET count = count + 1 WHERE id=?1", [id]).map_err(|e| e.to_string())?;
         return Ok(id);
     }
+    ENSURE_SCANS.fetch_add(1, Ordering::Relaxed);
     // cosine similarity against existing tags
     let new_vec = tag_vec(&norm);
     let mut stmt = conn
@@ -146,10 +158,12 @@ pub fn ensure_tag(conn: &Connection, name: &str) -> Result<i64, String> {
         }
     }
     if let Some((best_id, _)) = best {
+        ENSURE_MICROS.fetch_add(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
         conn.execute("UPDATE tags SET count = count + 1 WHERE id=?1", [best_id])
             .map_err(|e| e.to_string())?;
         return Ok(best_id);
     }
+    ENSURE_MICROS.fetch_add(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
     // create new
     let emb = crate::embedder::pack_single(&new_vec);
     conn.execute(
