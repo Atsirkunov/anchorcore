@@ -1,16 +1,10 @@
 import { useState } from "react";
 import { api } from "../../api";
 import { FolderPicker } from "../../FolderPicker";
+import { LABEL_OPTIONS } from "./labels";
 import { stripPlaceholders } from "../../placeholders";
 import { theme, commonStyles } from "../../theme";
 import type { Source } from "../../types";
-
-const LABEL_OPTIONS = [
-  { value: "internal", label: "Internal" },
-  { value: "public", label: "Public" },
-  { value: "sensitive", label: "Sensitive" },
-  { value: "pii", label: "PII — never sent to cloud providers" },
-] as const;
 
 function LabelSelect({
   value,
@@ -26,6 +20,7 @@ function LabelSelect({
           {o.label}
         </option>
       ))}
+      {value === "pii" && <option value="pii">PII (deprecated — pick a new label to change it)</option>}
     </select>
   );
 }

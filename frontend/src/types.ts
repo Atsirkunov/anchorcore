@@ -27,6 +27,7 @@ export type Source = {
   connector: string;
   name: string;
   enabled: boolean;
+  /** "pii" is deprecated (hidden from the UI since 2026-10-13) but the backend still accepts it for existing sources. */
   label: "internal" | "public" | "sensitive" | "pii";
   last_synced_at: string | null;
   last_error: string | null;
@@ -196,7 +197,7 @@ export type Entity = {
   window_text: string;
   dispute_count: number;
   doc_type?: string;
-  /** R35.1: parent item's manual PII mark. Optional — review endpoints don't send it. */
+  /** @deprecated PII marking was removed from the UI (owner decision 2026-10-13); the backend still sends this for compat. Optional — review endpoints don't send it. */
   item_is_pii?: boolean;
   /** R32.13: the entity's own chunk (first by id); null when none stored. */
   chunk_id?: number | null;
@@ -210,6 +211,7 @@ export type ItemMeta = {
   source_id: number;
   title: string;
   path: string;
+  /** @deprecated PII marking was removed from the UI (owner decision 2026-10-13); the backend still sends this for compat. */
   is_pii: boolean;
 };
 

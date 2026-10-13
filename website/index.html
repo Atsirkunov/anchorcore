@@ -13,7 +13,7 @@
   </script>
   <script type="application/ld+json">
   {"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
-    {"@type":"Question","name":"Is my data private?","acceptedAnswer":{"@type":"Answer","text":"Yes. AnchorCore runs on your own machine, stores data locally, and keeps secrets in the OS keychain. Sensitive and PII sources are never sent to cloud AI you have not approved."}},
+    {"@type":"Question","name":"Is my data private?","acceptedAnswer":{"@type":"Answer","text":"Yes. AnchorCore runs on your own machine, stores data locally, and keeps secrets in the OS keychain. Sensitive sources are never sent to cloud AI you have not approved."}},
     {"@type":"Question","name":"How is this different from NotebookLM or ChatGPT file search?","acceptedAnswer":{"@type":"Answer","text":"Those are cloud-only uploads. AnchorCore is local-first and self-hostable, connects to folders, Drive, Jira and Linear directly, and gates sensitive sources per your model policy."}},
     {"@type":"Question","name":"Do I need Ollama?","acceptedAnswer":{"@type":"Answer","text":"No. Full-text search works without it. Add Ollama for AI answers with citations."}},
     {"@type":"Question","name":"Is it free?","acceptedAnswer":{"@type":"Answer","text":"Yes, the personal local app is free. Team self-hosted is a one-time platform license, perpetual including a year of support and updates. Hosted is coming soon."}},
@@ -182,7 +182,7 @@
               <table class="matrix">
                 <tr><th scope="col"></th><th scope="col">local model</th><th scope="col">listed provider</th><th scope="col">anyone else</th></tr>
                 <tr><th scope="row">ordinary sources</th><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
-                <tr><th scope="row">sensitive / PII</th><td class="y">✓</td><td class="y">✓</td><td class="n">✗ refused, audited</td></tr>
+                <tr><th scope="row">sensitive</th><td class="y">✓</td><td class="y">✓</td><td class="n">✗ refused, audited</td></tr>
               </table>
               <p class="cap">You approve each cloud provider explicitly (<code>ANCHOR_TRUSTED_PROVIDERS</code>). Public answers and agent access only ever see sources you marked public.</p>
             </details>
@@ -252,7 +252,7 @@
         </div>
         <div class="cols two">
           <div class="col"><h3>Projects — scoped search</h3><p>Group sources into projects — Client X, Research, Team. Pick one to scope every question to just those sources, or search everything.</p><small>Projects in the header · public-only toggle for sharing</small></div>
-          <div class="col"><h3>Source labels</h3><p>Label each source Public, Internal, Sensitive, or PII. Sensitive ones are never sent to cloud AI you haven't approved — matched locally only, every refusal logged.</p><small>per-source labels</small></div>
+          <div class="col"><h3>Source labels</h3><p>Label each source Public, Internal, or Sensitive. Sensitive ones are never sent to cloud AI you haven't approved — matched locally only, every refusal logged.</p><small>per-source labels</small></div>
         </div>
         <div class="guide-reader" id="guide-reader">
           <!-- legacy anchors keep old links working; each opens its panel via the hash router (R18.7) -->
@@ -295,7 +295,7 @@
       <div class="wrap">
         <h2>FAQ</h2>
         <div class="faq">
-          <div class="qa"><h3>Is my data private?</h3><p>Yes. The app only listens on your own machine, keeps everything in a database on your disk, and stores passwords in your OS keychain. Sources you mark Sensitive or PII are never sent to cloud AI unless you explicitly approve that provider.</p></div>
+          <div class="qa"><h3>Is my data private?</h3><p>Yes. The app only listens on your own machine, keeps everything in a database on your disk, and stores passwords in your OS keychain. Sources you mark Sensitive are never sent to cloud AI unless you explicitly approve that provider.</p></div>
           <div class="qa"><h3>Can I move to a new computer?</h3><p>Yes. System → Backup &amp; restore exports your whole memory — sources, entities, review state — into one portable <code>.anchorcore-backup</code> file. Import it on the new machine (preview the dry run first); credentials stay behind unless you opt into the passphrase-encrypted bundle. Full guide: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/backup.md">Backup, export &amp; device migration</a>.</p></div>
           <div class="qa"><h3>Can I check the code myself?</h3><p>Yes — AnchorCore is source-available. The repository is public: read exactly what the Rust app does (no telemetry; it only contacts endpoints you configure) or build it yourself. Personal use is free; team and commercial use need a paid license — see <a href="https://github.com/Atsirkunov/anchorcore/blob/main/LICENSE.md">LICENSE.md</a>.</p></div>
           <div class="qa"><h3>How does it read documents?</h3><p>It splits documents at their headings (§4.2, 3.1.1, Article 12…) and packs the text into short passages. Each section gets a summary and topic tags, so answers cite the exact section — not “somewhere in the PDF”.</p></div>
