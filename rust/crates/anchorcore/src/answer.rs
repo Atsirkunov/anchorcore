@@ -1583,28 +1583,28 @@ mod tests {
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         let ord: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
         conn.execute(
-            "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h','routing-config.yml','cfg/routing-config.yml','live treasury directions acme config content')",
+            "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h','routing-config.yml','cfg/routing-config.yml','live treasury routes acme config content')",
             [ord],
         )
         .unwrap();
         let live_iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE external_id='cfg/routing-config.yml'", [], |r| r.get(0)).unwrap();
         conn.execute(
-            "INSERT INTO chunks (item_id, source_ref, content) VALUES (?1,'routing-config.yml','live treasury directions acme config content')",
+            "INSERT INTO chunks (item_id, source_ref, content) VALUES (?1,'routing-config.yml','live treasury routes acme config content')",
             [live_iid],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h','payment-directions.test.yml','cfg/payment-directions.test.yml','test treasury directions content')",
+            "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h','payment-routes.test.yml','cfg/payment-routes.test.yml','test treasury routes content')",
             [ord],
         )
         .unwrap();
-        let test_iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE external_id='cfg/payment-directions.test.yml'", [], |r| r.get(0)).unwrap();
-        conn.execute("INSERT INTO entities (item_id, kind, summary) VALUES (?1,'decision','test treasury directions content')", [test_iid]).unwrap();
+        let test_iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE external_id='cfg/payment-routes.test.yml'", [], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO entities (item_id, kind, summary) VALUES (?1,'decision','test treasury routes content')", [test_iid]).unwrap();
         let eid: i64 = conn.last_insert_rowid();
-        conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content) VALUES (?1,'entity','payment-directions.test.yml','test treasury directions content')", [eid]).unwrap();
+        conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content) VALUES (?1,'entity','payment-routes.test.yml','test treasury routes content')", [eid]).unwrap();
 
         let mk = |env: Option<&str>| SearchRequest {
-            query: "treasury directions".to_string(),
+            query: "treasury routes".to_string(),
             k: Some(8),
             project_id: None,
             public_only: None,

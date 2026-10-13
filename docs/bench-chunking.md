@@ -101,7 +101,7 @@ questions and at least tie it on the keyword-obvious ones.
 Entries `own-01..own-05` (`owner_run: true`) are skipped by default.
 The corpora are owner-private and were never in the agent worktree:
 
-- `own-01` (Acme types/directions in `routing-config.yml`) and
+- `own-01` (Acme types/routes in `routing-config.yml`) and
   `own-02` (reports / filename templates / columns) run against the
   treasury Go monorepo (`owner-treasury`).
 - `own-03` (Atlas vs Beacon + Equities Launch Note) and `own-04` (funding methods)

@@ -2247,7 +2247,7 @@ mod tests {
         let (_dir, conn) = harness_db();
         let sid = insert_source(&conn, "s1", "internal");
         let iid = insert_item(&conn, sid, "doc1");
-        let cid = insert_chunk(&conn, Some(iid), None, "direction config raised bed alpha");
+        let cid = insert_chunk(&conn, Some(iid), None, "routing config raised bed alpha");
         // 768 dims = default ANCHOR_EMBED_DIM (no env games in parallel tests)
         let mut v = vec![0.0f32; 768];
         v[0] = 1.0;
@@ -2536,13 +2536,13 @@ mod tests {
         let live = insert_item(&conn, sid, "live");
         let tst = insert_item(&conn, sid, "tst");
         conn.execute("UPDATE ingested_items SET external_id='cfg/routing-config.yml' WHERE id=?1", [live]).unwrap();
-        conn.execute("UPDATE ingested_items SET external_id='cfg/payment-directions.test.yml' WHERE id=?1", [tst]).unwrap();
-        let c_live = insert_chunk(&conn, Some(live), None, "live treasury directions content");
-        let c_test = insert_chunk(&conn, Some(tst), None, "test treasury directions content");
+        conn.execute("UPDATE ingested_items SET external_id='cfg/payment-routes.test.yml' WHERE id=?1", [tst]).unwrap();
+        let c_live = insert_chunk(&conn, Some(live), None, "live treasury routes content");
+        let c_test = insert_chunk(&conn, Some(tst), None, "test treasury routes content");
         let mk = |cid: i64, iid: i64| Hit { chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 10.0, content: "x".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false };
         // Default: the test file is demoted, the live file untouched.
         let mut hits = vec![mk(c_test, tst), mk(c_live, live)];
-        demote_test_envs(&conn, &mut hits, "which treasury directions are supported");
+        demote_test_envs(&conn, &mut hits, "which treasury routes are supported");
         assert_eq!(hits[0].score, 5.0);
         assert_eq!(hits[1].score, 10.0);
         // Exemption: a query about test files demotes nothing.
@@ -2552,7 +2552,7 @@ mod tests {
         // Knob off: nothing moves.
         std::env::set_var("ANCHOR_TEST_ENV_DEMOTE", "1.0");
         let mut hits3 = vec![mk(c_test, tst)];
-        demote_test_envs(&conn, &mut hits3, "which treasury directions are supported");
+        demote_test_envs(&conn, &mut hits3, "which treasury routes are supported");
         assert_eq!(hits3[0].score, 10.0);
         std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
         // Segment matching, not substring: "latest" and "contest" survive.
@@ -2662,7 +2662,7 @@ mod tests {
         let live = insert_item(&conn, sid, "live");
         let tst = insert_item(&conn, sid, "tst");
         conn.execute("UPDATE ingested_items SET external_id='cfg/routing-config.yml' WHERE id=?1", [live]).unwrap();
-        conn.execute("UPDATE ingested_items SET external_id='cfg/payment-directions.test.yml' WHERE id=?1", [tst]).unwrap();
+        conn.execute("UPDATE ingested_items SET external_id='cfg/payment-routes.test.yml' WHERE id=?1", [tst]).unwrap();
         let mk_ent_chunk = |iid: i64, summary: &str| {
             let eid = insert_entity(&conn, iid, summary, "unverified", "");
             conn.execute(
@@ -2676,7 +2676,7 @@ mod tests {
         let (c_test, e_test) = mk_ent_chunk(tst, "test direction supported");
         let mk = |cid: i64, eid: i64| Hit { chunk_id: cid, entity_id: Some(eid), item_id: None, source_id: Some(sid), section_id: None, path: String::new(), score: 10.0, content: "x".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false };
         let mut hits = vec![mk(c_test, e_test), mk(c_live, e_live)];
-        demote_test_envs(&conn, &mut hits, "which treasury directions are supported");
+        demote_test_envs(&conn, &mut hits, "which treasury routes are supported");
         assert_eq!(hits[0].score, 5.0, "test entity row must demote");
         assert_eq!(hits[1].score, 10.0, "live entity row untouched");
     }
@@ -2693,8 +2693,8 @@ mod tests {
         let live = insert_item(&conn, sid, "live");
         let tst = insert_item(&conn, sid, "tst");
         conn.execute("UPDATE ingested_items SET external_id='cfg/routing-config.yml' WHERE id=?1", [live]).unwrap();
-        conn.execute("UPDATE ingested_items SET external_id='cfg/payment-directions.test.yml' WHERE id=?1", [tst]).unwrap();
-        let c_live = insert_chunk(&conn, Some(live), None, "live treasury directions acme content here");
+        conn.execute("UPDATE ingested_items SET external_id='cfg/payment-routes.test.yml' WHERE id=?1", [tst]).unwrap();
+        let c_live = insert_chunk(&conn, Some(live), None, "live treasury routes acme content here");
         let eid = insert_entity(&conn, tst, "test direction supported", "unverified", "");
         conn.execute(
             "INSERT INTO chunks (entity_id, kind, source_ref, content, created_at) VALUES (?1,'entity','ref','test direction supported',datetime('now'))",
@@ -2709,12 +2709,12 @@ mod tests {
         };
         let lists = || {
             (
-                vec![mk(c_test, Some(eid), tst, 9.0, "test direction supported"), mk(c_live, None, live, 5.0, "live treasury directions acme content here")],
-                vec![mk(c_test, Some(eid), tst, 8.0, "test direction supported"), mk(c_live, None, live, 4.0, "live treasury directions acme content here")],
+                vec![mk(c_test, Some(eid), tst, 9.0, "test direction supported"), mk(c_live, None, live, 5.0, "live treasury routes acme content here")],
+                vec![mk(c_test, Some(eid), tst, 8.0, "test direction supported"), mk(c_live, None, live, 4.0, "live treasury routes acme content here")],
             )
         };
         let (v, k) = lists();
-        let fused = fuse_and_rank(&conn, Some(v), Some(k), 1.0, 365.0, 3, 1, true, "treasury directions");
+        let fused = fuse_and_rank(&conn, Some(v), Some(k), 1.0, 365.0, 3, 1, true, "treasury routes");
         assert_eq!(fused.len(), 1);
         assert_eq!(fused[0].chunk_id, c_live, "post-RRF demotion must surface the live chunk");
         // Exemption preserved: a query about test files keeps fixture order.
@@ -2737,7 +2737,7 @@ mod tests {
         let live = insert_item(&conn, sid, "live");
         let tst = insert_item(&conn, sid, "tst");
         conn.execute("UPDATE ingested_items SET external_id='cfg/routing-config.yml' WHERE id=?1", [live]).unwrap();
-        conn.execute("UPDATE ingested_items SET external_id='cfg/payment-directions.test.yml' WHERE id=?1", [tst]).unwrap();
+        conn.execute("UPDATE ingested_items SET external_id='cfg/payment-routes.test.yml' WHERE id=?1", [tst]).unwrap();
         let live_text = format!("treasury config {} acme", "padding ".repeat(300));
         let c_live = insert_chunk(&conn, Some(live), None, &live_text);
         let eid = insert_entity(&conn, tst, "acme fixture row", "unverified", "");
@@ -2770,7 +2770,7 @@ mod tests {
     #[test]
     fn env_for_path_classes_live_vs_test() {
         assert_eq!(env_for_path("cfg/routing-config.yml"), "live");
-        assert_eq!(env_for_path("cfg/payment-directions.test.yml"), "test");
+        assert_eq!(env_for_path("cfg/payment-routes.test.yml"), "test");
         assert_eq!(env_for_path("sandbox/vars.yml"), "test");
         assert_eq!(env_for_path("pkg/treasury/testdata/golden.json"), "test");
         assert_eq!(env_for_path("reports/latest.yml"), "live");
@@ -2793,7 +2793,7 @@ mod tests {
         assert_eq!(env_for_item("cfg/seed.yml", "package treasury // mock clients"), "test");
         assert_eq!(env_for_item("cfg/app.yml", "runbook: test the connection today"), "live");
         assert_eq!(env_for_item("cfg/app.yml", "see the sample output below"), "live");
-        assert_eq!(env_for_item("cfg/payment-directions.test.yml", "live-looking head"), "test");
+        assert_eq!(env_for_item("cfg/payment-routes.test.yml", "live-looking head"), "test");
         // End to end through the batched classifier (item text head, 1 KB).
         let (_dir, conn) = harness_db();
         let sid = insert_source(&conn, "s_eh", "internal");
@@ -2830,7 +2830,7 @@ mod tests {
         assert!(hits[0].score > 15.0);
         // No filename in the query → untouched.
         let mut hits2 = vec![mk_other()];
-        filename_boost(&conn, &mut hits2, "treasury directions?");
+        filename_boost(&conn, &mut hits2, "treasury routes?");
         assert_eq!(hits2.len(), 1);
     }
 }

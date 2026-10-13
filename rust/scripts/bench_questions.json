@@ -131,7 +131,7 @@
     },
     {
       "id": "own-01",
-      "question": "Which Acme types and directions are configured in routing-config.yml?",
+      "question": "Which Acme types and routes are configured in routing-config.yml?",
       "corpus": "owner-treasury",
       "target": {
         "file": "routing-config.yml",
@@ -142,7 +142,7 @@
       ],
       "grep_baseline": null,
       "owner_run": true,
-      "notes": "OWNER-RUN against the private treasury Go monorepo. Known-answer notes from the task brief: routing-config.yml holds Acme types/directions. Owner: confirm the section breadcrumb and required docs on first run; this is a config-by-keys split case (R33.4)."
+      "notes": "OWNER-RUN against the private treasury Go monorepo. Known-answer notes from the task brief: routing-config.yml holds Acme types/routes. Owner: confirm the section breadcrumb and required docs on first run; this is a config-by-keys split case (R33.4)."
     },
     {
       "id": "own-02",

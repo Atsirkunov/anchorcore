@@ -86,7 +86,7 @@ root; pushing a `v*` tag builds all platform zips automatically (see `docs/relea
 
 **Developers (Rust — shipped):** `cargo run -p anchorcore -- --port 8000 --data-dir ~/.anchorcore` — applies migrations, starts Ollama, boots at http://localhost:8000. Add `cargo run -p anchorcore -- --port 8123` for conformance vs Python. Frontend dev: `cd frontend && npm run dev` at :5173 (proxies to :8000).
 
-**Agent skills (optional, for contributors and agents):** only our own two are tracked (`./.agents/skills/anchorcore-setup/SKILL.md` and `aida-landing-page/SKILL.md`). The vendored third-party skills are installed state, not source — restore them with `npx skills experimental_install` (manifest: `skills-lock.json`).
+**Agent skills (optional, for contributors and agents):** only our own three are tracked (`./.agents/skills/anchorcore-setup/SKILL.md`, `anchorcore-search/SKILL.md` and `aida-landing-page/SKILL.md`). The vendored third-party skills are installed state, not source — restore them with `npx skills experimental_install` (manifest: `skills-lock.json`).
 
 **Legacy Python (archived):** the Python backend left the tree — it's frozen on tag `archive/python-final` (the conformance suite fetches it from there). To run it: `git checkout archive/python-final -- backend`, then `.\start.ps1` (or `./start.sh`).
 
