@@ -7,9 +7,10 @@ Copyright 2022 Robyn Speer. Licensed under the Apache License, Version 2.0
 
 Derivation: first 30,000 words in bucket (frequency) order, filtered to
 ^[a-z]{2,}$ (lowercase ASCII alpha, length >= 2), deduplicated, sorted.
-29,013 words (two source entries, `continental` and `acme`, removed:
-client-associated names — detector calibration re-proven after removal).
+29,013 words (two client-associated source entries removed at the
+2026-10-13 purge — detector calibration re-proven after removal).
 Regenerate with the msgpack decode documented in the extract.rs split-word
-catcher (buckets d[1..] concatenated in order), then delete those two lines.
+catcher (buckets d[1..] concatenated in order), then drop the two entries
+missing from the vendored file (`comm -23` reveals them mechanically).
 
 Only membership is queried (fragment/join checks); frequencies are not used.
