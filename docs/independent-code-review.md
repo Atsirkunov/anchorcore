@@ -165,3 +165,19 @@ F-06 (localhost-lookalike trust) is the cheapest fix on the list and should ride
 - Test coverage is real: 310 Rust tests and 41 frontend tests, all green under the hermetic invocation, including adversarial cases (conflict links skipped in graph expansion, vec-trigger survival across migrations, wrong-passphrase import atomicity).
 
 *End of report. No source files were modified; the only file created is this report.*
+
+---
+
+## 7. Addendum — chunks as finding units, not final reading units (owner-added 2026-10-13)
+
+The note below was appended by the owner after the audit; it is product direction, not a reviewed finding.
+
+On chunks, I would not abandon them, but I would demote their role. The evidence so far suggests chunks are good for finding and ranking, not always sufficient as the final reading unit. Agents often need the whole document because extraction summaries and isolated chunks lose context, definitions, and qualifications.
+
+The scalable model is therefore:
+
+search chunks/sections → choose candidate documents → read the relevant section → read the whole item only when needed
+
+That preserves the main efficiency gain — avoiding a scan of the whole corpus — while acknowledging that whole-document reading is often the correctness step. At larger scale, reading every candidate document will not work, but neither will trusting chunks blindly. The parent-section return you already have is the right middle layer.
+
+Judge it using tokens per correct answer, number of whole-document fetches per query, answer accuracy, and retrieval latency rather than chunk recall alone.
