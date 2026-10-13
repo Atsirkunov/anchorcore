@@ -26,9 +26,30 @@ pub fn placeholders(count: usize) -> String {
 /// today’s local-only behavior. Prefix matching is boundary-safe: an entry
 /// matches the base itself or a `/`-separated path under it, never a
 /// lookalike host (`example.com.evil` does NOT match `example.com`).
+/// Boundary-safe loopback check (F-06): a `starts_with("http://localhost")`
+/// test trusts lookalikes (`http://localhost@evil`,
+/// `http://localhost.evil.example`) while `reqwest` connects to the real
+/// host — so parse the authority and compare the host exactly. Scope
+/// matches the old check (`http` only); `::1` joins the loopback set.
+pub fn provider_is_local(base_url: &str) -> bool {
+    let base = base_url.trim().trim_end_matches('/');
+    let Some(after_scheme) = base.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = after_scheme.split('/').next().unwrap_or("");
+    // strip userinfo (`user@host`) — the host follows the last `@`
+    let hostport = authority.rsplit('@').next().unwrap_or("");
+    let host = if let Some(rest) = hostport.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        hostport.split(':').next().unwrap_or("")
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
 pub fn provider_trusted(base_url: &str) -> bool {
     let base = base_url.trim().trim_end_matches('/');
-    if base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1") {
+    if provider_is_local(base) {
         return true;
     }
     if let Ok(list) = std::env::var("ANCHOR_TRUSTED_PROVIDERS") {
@@ -60,6 +81,11 @@ pub fn require_row(
         ))
     }
 }
+
+/// Serializes `ANCHOR_TRUSTED_PROVIDERS`/`ANCHOR_CLOUD_TRUST` mutation
+/// between test modules (scheduler's backfill-gate tests share it).
+#[cfg(test)]
+pub(crate) static TRUST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -97,11 +123,24 @@ mod tests {
     // One test (not three) so parallel runners can't interleave env mutations.
     #[test]
     fn trusted_providers() {
+        let _lock = TRUST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _allow = EnvGuard::remove("ANCHOR_TRUSTED_PROVIDERS");
         let _trust = EnvGuard::remove("ANCHOR_CLOUD_TRUST");
         // local always trusted, allowlist or not
         assert!(provider_trusted("http://localhost:11434"));
         assert!(provider_trusted("http://127.0.0.1:11434/v1"));
+        // F-06: localhost lookalikes are NOT local (host-boundary check)
+        assert!(!provider_is_local("http://localhost@evil.example/v1"));
+        assert!(!provider_is_local("http://localhost.evil.example/v1"));
+        assert!(!provider_is_local("http://127.0.0.1@evil.example/v1"));
+        assert!(!provider_is_local("http://127.0.0.1.evil.example/v1"));
+        assert!(!provider_is_local("http://localhost:11434@evil.example/v1"));
+        assert!(!provider_trusted("http://localhost@evil.example/v1"));
+        assert!(!provider_trusted("http://localhost.evil.example/v1"));
+        // userinfo on a real loopback host stays trusted; ::1 joins the set
+        assert!(provider_is_local("http://user@localhost:11434/v1"));
+        assert!(provider_is_local("http://[::1]:11434/v1"));
+        assert!(provider_is_local("http://localhost"));
         // default deny for unlisted remotes
         assert!(!provider_trusted("https://api.openai.com/v1"));
 

@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use crate::health::AppState;
 
 fn provider_is_local(base: &str) -> bool {
-    base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1")
+    crate::common::provider_is_local(base)
 }
 
 pub(crate) fn ollama_probe_disabled(base: &str) -> bool {
@@ -244,7 +244,7 @@ pub async fn onboarding_handler(State(state): State<AppState>) -> Json<Value> {
         let ollama_base = settings.get("ollama_base_url", None).unwrap_or_else(|| "http://localhost:11434".to_string());
         let answer_base = settings.get("answer_base_url", None).unwrap_or_else(|| "https://api.openai.com/v1".to_string());
         let answer_api_key = settings.get("answer_api_key", None).unwrap_or_default();
-        let answer_provider = if answer_base.starts_with("http://localhost") || answer_base.starts_with("http://127.0.0.1") {
+        let answer_provider = if crate::common::provider_is_local(&answer_base) {
             "ollama"
         } else if !answer_api_key.trim().is_empty() {
             "configured"

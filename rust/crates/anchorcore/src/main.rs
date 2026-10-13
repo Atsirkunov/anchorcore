@@ -127,6 +127,22 @@ fn resolve_host(cli: &str) -> String {
     "127.0.0.1".to_string()
 }
 
+/// F-01: Team edition fails closed — a non-loopback bind without
+/// `ANCHOR_AUTH_SECRET` exposes every endpoint to the LAN (Host/Origin +
+/// the public `/csrf` token authenticate nothing). Pure so tests can cover
+/// the matrix without env juggling.
+fn team_auth_gate(edition_team: bool, host: &str, auth_enabled: bool) -> Result<(), String> {
+    if !edition_team || auth_enabled {
+        return Ok(());
+    }
+    if matches!(host.trim(), "127.0.0.1" | "localhost" | "::1") {
+        return Ok(());
+    }
+    Err(format!(
+        "Team edition refuses to bind {host} without ANCHOR_AUTH_SECRET: set it (openssl rand -hex 32) or bind loopback (--host 127.0.0.1)"
+    ))
+}
+
 fn format_panic_message(
     payload: &(dyn std::any::Any + Send),
     location: Option<&std::panic::Location>,
@@ -249,6 +265,18 @@ mod cli_tests {
     #[test]
     fn version_flag_matches_package_version() {
         assert_eq!(Args::command().get_version(), Some(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn team_auth_gate_matrix() {
+        // F-01: Team + LAN bind + no secret refuses to boot; secret or
+        // loopback boots; personal edition is unaffected.
+        assert!(super::team_auth_gate(true, "0.0.0.0", false).is_err());
+        assert!(super::team_auth_gate(true, "0.0.0.0", true).is_ok());
+        assert!(super::team_auth_gate(true, "127.0.0.1", false).is_ok());
+        assert!(super::team_auth_gate(true, "localhost", false).is_ok());
+        assert!(super::team_auth_gate(true, "::1", false).is_ok());
+        assert!(super::team_auth_gate(false, "0.0.0.0", false).is_ok());
     }
 
     /// The boot banner must reflect the running binary: write-if-absent
@@ -610,6 +638,15 @@ async fn main() {
             Command::Import(import) => cli::run_import(&data_dir, args.port, import).await,
         };
         std::process::exit(code);
+    }
+    // F-01: Team fails closed on LAN binds without auth (mirrors the license
+    // gate above; CLI export/import already exited — they serve nothing).
+    if std::env::var("ANCHOR_EDITION").as_deref() == Ok(license::TEAM_EDITION) {
+        if let Err(msg) = team_auth_gate(true, &resolve_host(&args.host), auth::auth_enabled()) {
+            tracing::error!("{}", msg);
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
     }
     install_panic_hook(&data_dir);
     let db_path = db::resolve_db_path(&data_dir.to_string_lossy());

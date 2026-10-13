@@ -69,8 +69,7 @@ impl Classifier {
     }
 
     fn provider_is_local(&self) -> bool {
-        let u = self.base_url();
-        u.starts_with("http://localhost") || u.starts_with("http://127.0.0.1")
+        crate::common::provider_is_local(&self.base_url())
     }
 
     pub async fn detect_document_type(&self, text: &str, cloud_trusted: bool) -> String {

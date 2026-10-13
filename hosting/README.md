@@ -62,8 +62,10 @@ Same options as Personal:
   front (Caddy, Traefik, your cloud LB).
 - `http://localhost:8000` works out of the box. For LAN/VPC IPs or a domain,
   add each access URL to `ANCHOR_CORS_ORIGINS` (Host/Origin allowlist).
-- Team logins: set `ANCHOR_AUTH_SECRET` to enable `/auth` (signup/login,
-  HS256 JWT). Unset = single-user, no login — keep the port private then.
+- Team logins: `ANCHOR_AUTH_SECRET` enables `/auth` (signup/login, HS256
+  JWT) — and is **required** on any non-loopback bind: Team refuses to boot
+  on `0.0.0.0` without it, because Host/Origin checks authenticate nothing
+  against non-browser clients.
 
 ## Operations
 

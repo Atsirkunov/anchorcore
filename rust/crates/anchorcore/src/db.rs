@@ -118,6 +118,8 @@ fn ensure_columns(conn: &Connection) -> Result<()> {
     // Incremental folder sync: stat fingerprint (NULL = unknown, always extract)
     try_add_column(conn, "ALTER TABLE ingested_items ADD COLUMN file_mtime_ms INTEGER");
     try_add_column(conn, "ALTER TABLE ingested_items ADD COLUMN file_size INTEGER");
+    // F-03: completion marker (NULL = never fully processed; backfilled once by migration 18)
+    try_add_column(conn, "ALTER TABLE ingested_items ADD COLUMN processed_hash TEXT");
     // entities.window_text/window_index/dispute_count (b26 + B3)
     try_add_column(conn, "ALTER TABLE entities ADD COLUMN window_text TEXT NOT NULL DEFAULT ''");
     try_add_column(conn, "ALTER TABLE entities ADD COLUMN window_index INTEGER");
@@ -346,6 +348,8 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/16_item_pii.sql")),
         // Incremental folder sync: stat fingerprint so unchanged files skip extraction
         M::up(include_str!("../migrations/17_file_fingerprint.sql")),
+        // F-03: per-item completion marker (processed_hash) with one-shot backfill
+        M::up(include_str!("../migrations/18_processed_hash.sql")),
     ])
 }
 
@@ -391,6 +395,10 @@ mod tests {
         // the schema entry directly — exactly what RENAME chokes on.
         {
             let conn = open_db(&path).unwrap();
+            // One item whose completion marker migration 18 must adopt.
+            conn.execute("INSERT INTO sources (name, connector) VALUES ('s','folder')", []).unwrap();
+            let sid = conn.last_insert_rowid();
+            conn.execute("INSERT INTO ingested_items (source_id, content_hash) VALUES (?1,'h')", [sid]).unwrap();
             // A real v10 DB predates R25.1 — drop the uid columns/indexes so
             // migration 14 has real work to do (re-running it on a DB that
             // already has them hits "duplicate column name" by design).
@@ -406,6 +414,10 @@ mod tests {
             // has real work to do (same "duplicate column by design" rule).
             conn.execute("ALTER TABLE relationships DROP COLUMN note", [])
                 .unwrap_or_else(|e| panic!("drop note: {e}"));
+            // A real v10 DB predates F-03 too — drop `processed_hash` so
+            // migration 18 has real work to do (ALTER + one-shot backfill).
+            conn.execute("ALTER TABLE ingested_items DROP COLUMN processed_hash", [])
+                .unwrap_or_else(|e| panic!("drop processed_hash: {e}"));
             conn.execute("DROP TABLE vec_chunks", []).unwrap();
             conn.pragma_update(None, "writable_schema", "ON").unwrap();
             conn.execute(
@@ -423,8 +435,10 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         run_migrations(&mut conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 17);
+        assert_eq!(v, 18);
         assert_eq!(vec_trigger_sql(&conn), before);
+        let adopted: String = conn.query_row("SELECT processed_hash FROM ingested_items", [], |r| r.get(0)).unwrap();
+        assert_eq!(adopted, "h", "migration 18 must backfill processed_hash=content_hash");
         let sys_sql: String = conn
             .query_row("SELECT sql FROM sqlite_master WHERE name = 'system_events'", [], |r| r.get(0))
             .unwrap();

@@ -50,7 +50,7 @@ pub(crate) fn missing_from_installed(
 // ----- readiness -----
 
 fn is_local_base(base: &str) -> bool {
-    base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1")
+    crate::common::provider_is_local(base)
 }
 
 fn ollama_base(settings: &SettingsService) -> String {

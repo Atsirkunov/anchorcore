@@ -19,12 +19,24 @@ pub struct SecretStore {
 impl SecretStore {
     pub fn new(fallback_path: PathBuf) -> Self {
         let use_keyring = std::env::var("ANCHOR_SECRETS_NO_KEYRING").as_deref() != Ok("1");
+        Self::with_keyring(fallback_path, use_keyring)
+    }
+
+    fn with_keyring(fallback_path: PathBuf, use_keyring: bool) -> Self {
         let fernet = Self::load_fernet(&fallback_path);
         Self {
             fallback_path,
             use_keyring,
             fernet,
         }
+    }
+
+    /// Hermetic constructor for tests: never touches the OS keychain, so a
+    /// developer workstation's real credentials can't leak into the suite
+    /// (F-11: two answer tests assumed "no key" and failed on laptops).
+    #[cfg(test)]
+    pub(crate) fn new_no_keyring(fallback_path: PathBuf) -> Self {
+        Self::with_keyring(fallback_path, false)
     }
 
     fn load_fernet(fallback_path: &Path) -> Option<fernet::Fernet> {

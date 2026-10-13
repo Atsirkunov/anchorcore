@@ -444,6 +444,7 @@ fn export_items(conn: &Connection, zip: &mut ArchiveWriter, opts: &ExportOptions
     let sql = format!(
         "SELECT json_object('type','item','uid',i.uid,'source_uid',s.uid,'external_id',i.external_id, \
             'title',i.title,'doc_type',i.doc_type,'text',i.text,'content_hash',i.content_hash, \
+            'processed_hash',i.processed_hash, \
             'author',i.author,'updated_at',i.updated_at,'stale',{stale},'is_pii',{is_pii},'created_at',i.created_at) \
          FROM ingested_items i JOIN sources s ON s.id = i.source_id WHERE 1=1{} ORDER BY i.id",
         scope,
@@ -1209,12 +1210,16 @@ fn apply_item(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     // R35.1: manual PII mark round-trips with the item (missing in old
     // archives reads as unmarked).
     let is_pii = bool_int(rec, "is_pii");
+    // F-03: the completion marker round-trips too. Old archives lack it —
+    // adopt the stored hash (an archive is a snapshot of processed state),
+    // so a restore doesn't reclassify the whole corpus on the next sync.
+    let processed = opt_str_field(rec, "processed_hash").unwrap_or_else(|| hash.clone());
     if action == Action::Insert {
         ctx.conn
             .execute(
-                "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, doc_type, stale, is_pii, uid, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'))",
-                rusqlite::params![source_id, external_id, title, text, hash, author, doc_type, stale, is_pii, uid],
+                "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, processed_hash, author, doc_type, stale, is_pii, uid, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'))",
+                rusqlite::params![source_id, external_id, title, text, hash, processed, author, doc_type, stale, is_pii, uid],
             )
             .map_err(|e| e.to_string())?;
         let id = ctx.conn.last_insert_rowid();
@@ -1224,8 +1229,8 @@ fn apply_item(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let id = existing.unwrap();
     ctx.conn
         .execute(
-            "UPDATE ingested_items SET external_id=?2, title=?3, text=?4, content_hash=?5, author=?6, doc_type=?7, stale=?8, is_pii=?9, updated_at=datetime('now') WHERE id=?1",
-            rusqlite::params![id, external_id, title, text, hash, author, doc_type, stale, is_pii],
+            "UPDATE ingested_items SET external_id=?2, title=?3, text=?4, content_hash=?5, processed_hash=?6, author=?7, doc_type=?8, stale=?9, is_pii=?10, updated_at=datetime('now') WHERE id=?1",
+            rusqlite::params![id, external_id, title, text, hash, processed, author, doc_type, stale, is_pii],
         )
         .map_err(|e| e.to_string())?;
     ctx.remember("ingested_items", &uid, id);
@@ -2573,6 +2578,24 @@ mod tests {
         import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
         let conn = db(dst.path());
         assert_eq!(one::<i64>(&conn, "SELECT is_pii FROM ingested_items"), 1);
+    }
+
+    #[test]
+    fn item_processed_hash_survives_export_import() {
+        // F-03: the completion marker travels with the item, so a restore
+        // doesn't reclassify the whole corpus on the next sync.
+        let _env = EnvGuard::file_only();
+        let src = tempdir().unwrap();
+        let sid = seed(src.path());
+        let conn = db(src.path());
+        conn.execute("UPDATE ingested_items SET content_hash = 'h1', processed_hash = 'h1' WHERE source_id = ?1", [sid]).unwrap();
+        drop(conn);
+        let archive = exported(src.path(), ExportOptions::default());
+        let dst = tempdir().unwrap();
+        import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
+        let conn = db(dst.path());
+        let got: String = conn.query_row("SELECT processed_hash FROM ingested_items", [], |r| r.get(0)).unwrap();
+        assert_eq!(got, "h1");
     }
 
     #[test]

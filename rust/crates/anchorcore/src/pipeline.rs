@@ -540,6 +540,7 @@ impl Pipeline {
         let upserted = Box::pin(self.upsert_doc(data_dir, source_id, doc, force, None)).await?;
         if upserted || force {
             let n = Box::pin(self.classify_and_store(data_dir, source_id, job_id, doc, force)).await?;
+            Box::pin(self.mark_item_processed(data_dir, source_id, &doc.external_id, &content_hash(&doc.text), None)).await?;
             return Ok(Some(n));
         }
         Ok(None)
@@ -625,6 +626,7 @@ impl Pipeline {
         let upserted = Box::pin(self.upsert_doc(data_dir, source_id, &doc, force, Some((f.mtime_ms, f.len)))).await?;
         if upserted || force {
             let n = Box::pin(self.classify_and_store(data_dir, source_id, job_id, &doc, force)).await?;
+            Box::pin(self.mark_item_processed(data_dir, source_id, &doc.external_id, &content_hash(&doc.text), Some((f.mtime_ms, f.len)))).await?;
             return Ok(FileOutcome::Classified(n));
         }
         // Touched-but-identical: extracted, hash unchanged — processed, no counts.
@@ -635,23 +637,42 @@ impl Pipeline {
         let digest = content_hash(&doc.text);
         let doc = doc.clone();
         run_db(data_dir, move |conn| {
-            let existing: Option<(i64, String, Option<String>)> = conn.query_row("SELECT id, content_hash, text FROM ingested_items WHERE source_id=?1 AND external_id=?2", rusqlite::params![source_id, doc.external_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok();
-            if let Some((id, existing_hash, existing_text)) = existing {
+            let existing: Option<(i64, String, Option<String>, Option<String>)> = conn.query_row("SELECT id, content_hash, text, processed_hash FROM ingested_items WHERE source_id=?1 AND external_id=?2", rusqlite::params![source_id, doc.external_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).ok();
+            if let Some((id, existing_hash, existing_text, processed)) = existing {
                 let missing_text = existing_text.as_deref().unwrap_or("").is_empty();
-                if existing_hash == digest && !missing_text {
+                // F-03: "stored" (content_hash) and "fully processed"
+                // (processed_hash) are separate markers — a cancel between
+                // upsert and finalize must re-process, not skip. The stat
+                // fingerprint is written only by mark_item_processed (and the
+                // refresh below), never alongside unprocessed content.
+                if existing_hash == digest && processed.as_deref() == Some(digest.as_str()) && !missing_text {
                     // Touched-but-identical: still refresh the stat fingerprint
                     // so the next sync skips extraction instead of retrying it.
                     store_fingerprint(conn, id, fp);
                     return Ok(false);
                 }
                 let _ = conn.execute("UPDATE ingested_items SET content_hash=?1, title=?2, author=?3, text=?4, stale=0 WHERE id=?5", rusqlite::params![digest, doc.title, doc.author, doc.text, id]);
-                store_fingerprint(conn, id, fp);
                 Ok(true)
             } else {
                 conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale, created_at, uid) VALUES (?1,?2,?3,?4,?5,?6, 0, datetime('now'),?7)", rusqlite::params![source_id, doc.external_id, doc.title, doc.text, digest, doc.author, crate::db::new_uid()]).map_err(|e| e.to_string())?;
-                store_fingerprint(conn, conn.last_insert_rowid(), fp);
                 Ok(true)
             }
+        }).await
+    }
+
+    /// F-03: completion marker, written only after a full successful
+    /// classify + finalize. Carries the stat fingerprint with it, so a
+    /// cancel/failure anywhere earlier leaves the item reprocessable:
+    /// stale fingerprint → re-extract, stale processed_hash → reclassify.
+    async fn mark_item_processed(&self, data_dir: &str, source_id: i64, external_id: &str, digest: &str, fp: Option<(u64, u64)>) -> Result<(), String> {
+        let external_id = external_id.to_string();
+        let digest = digest.to_string();
+        run_db(data_dir, move |conn| {
+            conn.execute("UPDATE ingested_items SET processed_hash=?1 WHERE source_id=?2 AND external_id=?3", rusqlite::params![digest, source_id, external_id]).map_err(|e| e.to_string())?;
+            if let Some((mtime_ms, len)) = fp {
+                conn.execute("UPDATE ingested_items SET file_mtime_ms=?1, file_size=?2 WHERE source_id=?3 AND external_id=?4", rusqlite::params![mtime_ms as i64, len as i64, source_id, external_id]).map_err(|e| e.to_string())?;
+            }
+            Ok(())
         }).await
     }
 
@@ -866,17 +887,35 @@ impl ClassifyCtx {
         Ok(total)
     }
 
+    /// F-08: prompt cooperative cancellation — every finalize phase
+    /// re-checks, so a cancelled job stops starting new work (LLM batches,
+    /// embedding) instead of running the whole chain to completion. An
+    /// in-flight HTTP batch still completes (unsendable), but nothing new
+    /// starts after the cancel lands.
+    async fn check_cancelled(&self) -> Result<(), String> {
+        if job_cancelled(&self.data_dir, self.job_id).await? {
+            return Err("job cancelled".to_string());
+        }
+        Ok(())
+    }
+
     async fn finalize(&self, perf: &mut PhaseTimes) -> Result<(), String> {
+        self.check_cancelled().await?;
         update_window_hashes(self).await?;
         perf.mark("hashes");
+        self.check_cancelled().await?;
         store_doc_chunks(self).await?;
         perf.mark("chunks");
+        self.check_cancelled().await?;
         create_summaries(self).await?;
         perf.mark("summaries");
+        self.check_cancelled().await?;
         create_tags(self).await?;
         perf.mark("tags");
+        self.check_cancelled().await?;
         distill_item(self).await?;
         perf.mark("distill");
+        self.check_cancelled().await?;
         embed_chunks(self).await?;
         perf.mark("embed");
         Ok(())
@@ -1254,6 +1293,11 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
     // (Python nesting, YAML levels), which whitespace collapsing destroys.
     let skip_clean = ctx.skips_extraction();
     run_db(&ctx.data_dir, move |conn| {
+        // F-03: delete+insert is one transaction — a crash between the
+        // DELETEs and the re-inserts used to strand the item chunk-less.
+        // Early `?` returns skip COMMIT and this fresh per-call connection
+        // rolls back on drop; only the fall-through path commits.
+        conn.execute("BEGIN IMMEDIATE", []).map_err(|e| e.to_string())?;
         let _ = conn.execute(
             "DELETE FROM chunks WHERE item_id=?1 AND entity_id IS NULL AND kind != 'distilled'",
             [item_id],
@@ -1293,6 +1337,7 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
             )
             .map_err(|e| e.to_string())?;
         }
+        conn.execute("COMMIT", []).map_err(|e| e.to_string())?;
         Ok(())
     })
     .await
@@ -1891,12 +1936,13 @@ mod tests {
         let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
         let cfg = serde_json::json!({"path": folder.to_string_lossy()});
 
-        // Legacy row: a pre-migration item carries content but no fingerprint.
+        // Legacy row: a pre-migration item carries content but no fingerprint
+        // (migration 18 backfills processed_hash=content_hash for such rows).
         let text_a = std::fs::read_to_string(folder.join("a.md")).unwrap();
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap();
         conn.execute(
-            "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,'a.md','a.md',?2,?3)",
+            "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, processed_hash) VALUES (?1,'a.md','a.md',?2,?3,?3)",
             rusqlite::params![sid, text_a, content_hash(&text_a)],
         )
         .unwrap();
@@ -1987,6 +2033,111 @@ mod tests {
         // Force reclassifies everything, like the generic path.
         let (items, _, purged, unchanged, _) = run_folder_once(&pipe, &data_dir, sid, &cfg, true).await;
         assert_eq!((items, purged, unchanged), (2, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn interrupted_item_reprocesses_on_next_sync() {
+        // F-03: an item whose sync died between upsert and finalize (new
+        // text+hash stored, completion markers stale) must re-process on the
+        // next sync and converge to the uninterrupted state — same entities,
+        // same chunks, markers restored.
+        let data_tmp = tempdir().unwrap();
+        let folder_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().to_string_lossy().to_string();
+        let folder = folder_tmp.path();
+        write_doc(folder, "a.md", "# Alpha\n\nWe decided to use sqlite for vectors. Next step: review on Friday.\n");
+        write_doc(folder, "b.md", "# Beta\n\nWe agreed to postpone the launch. Owner: Bea will follow up.\n");
+        let (settings, sid) = seed_folder_source(&data_dir, folder);
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
+        let cfg = serde_json::json!({"path": folder.to_string_lossy()});
+        let db_path = crate::db::resolve_db_path(&data_dir);
+
+        let (items, _, _, _, _) = run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        assert_eq!(items, 2);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let marked: i64 = conn.query_row("SELECT COUNT(*) FROM ingested_items WHERE source_id=?1 AND processed_hash IS NOT NULL AND processed_hash = content_hash", [sid], |r| r.get(0)).unwrap();
+        assert_eq!(marked, 2, "a clean sync must set the completion marker");
+        let aid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE source_id=?1 AND external_id='a.md'", [sid], |r| r.get(0)).unwrap();
+        let ent_a: i64 = conn.query_row("SELECT COUNT(*) FROM entities WHERE item_id=?1", [aid], |r| r.get(0)).unwrap();
+        let chunks_a: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE item_id=?1 OR entity_id IN (SELECT id FROM entities WHERE item_id=?1)", [aid], |r| r.get(0)).unwrap();
+        assert!(ent_a > 0 && chunks_a > 0, "seed sync must produce entities+chunks for a.md");
+        // Simulate a cancel between upsert and finalize: stored content is
+        // current but the completion markers + window hashes are stale, the
+        // fingerprint is gone, and no entities were kept.
+        conn.execute("UPDATE ingested_items SET processed_hash='interrupted', file_mtime_ms=NULL, file_size=NULL, window_hashes='{}', distill_hashes='{}' WHERE id=?1", [aid]).unwrap();
+        conn.execute("DELETE FROM entities WHERE item_id=?1", [aid]).unwrap();
+        drop(conn);
+
+        let (items, _, _, unchanged, _) = run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        assert_eq!((items, unchanged), (1, 1), "only the interrupted file reprocesses; b.md still skips");
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let ent_a2: i64 = conn.query_row("SELECT COUNT(*) FROM entities WHERE item_id=?1", [aid], |r| r.get(0)).unwrap();
+        let chunks_a2: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE item_id=?1 OR entity_id IN (SELECT id FROM entities WHERE item_id=?1)", [aid], |r| r.get(0)).unwrap();
+        assert_eq!(ent_a2, ent_a, "entities must converge to the uninterrupted count");
+        assert_eq!(chunks_a2, chunks_a, "chunks must converge to the uninterrupted count");
+        let (processed, stored): (Option<String>, String) = conn.query_row("SELECT processed_hash, content_hash FROM ingested_items WHERE id=?1", [aid], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(processed.as_deref(), Some(stored.as_str()), "marker must be restored");
+        let fp: i64 = conn.query_row("SELECT COUNT(*) FROM ingested_items WHERE id=?1 AND file_mtime_ms IS NOT NULL AND file_size IS NOT NULL", [aid], |r| r.get(0)).unwrap();
+        assert_eq!(fp, 1, "fingerprint must be restored");
+    }
+
+    #[tokio::test]
+    async fn finalize_checks_cancel_before_every_phase() {
+        // F-08: a cancelled job must not start finalize work — the first gate
+        // fires before any phase writes (the same gate stands before all six).
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('s','folder','{}',1,'',0)", []).unwrap();
+        let sid = conn.last_insert_rowid();
+        conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale) VALUES (?1,'a.md','a.md','body text here','h','',0)", [sid]).unwrap();
+        let iid = conn.last_insert_rowid();
+        conn.execute("INSERT INTO jobs (source_id, kind, status, total, processed, result, created_at) VALUES (?1,'sync','cancelled',0,0,'{}',datetime('now'))", [sid]).unwrap();
+        let jid = conn.last_insert_rowid();
+        drop(conn);
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let settings = Arc::new(crate::settings::SettingsService::new(store));
+        settings.set_data_dir(dir.path());
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let doc = IngestionDoc { external_id: "a.md".to_string(), title: "a.md".to_string(), text: "body text here".to_string(), author: String::new(), updated_at: None, source_ref: "a.md".to_string() };
+        let mut ctx = ClassifyCtx::new(&data_dir, sid, jid, &doc, false, settings, classifier, embedder);
+        ctx.item_id = iid;
+        ctx.doc_type = "general".to_string();
+        let mut perf = PhaseTimes::new();
+        let err = ctx.finalize(&mut perf).await.unwrap_err();
+        assert_eq!(err, "job cancelled");
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let chunks: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE item_id=?1", [iid], |r| r.get(0)).unwrap();
+        assert_eq!(chunks, 0, "no finalize phase may write after cancel");
+    }
+
+    #[tokio::test]
+    async fn folder_sync_aborts_immediately_when_cancelled_upfront() {
+        // F-08: the between-documents gate — a job cancelled before the sync
+        // starts processes nothing.
+        let data_tmp = tempdir().unwrap();
+        let folder_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().to_string_lossy().to_string();
+        let folder = folder_tmp.path();
+        write_doc(folder, "a.md", "# Alpha\n\nWe decided to use sqlite for vectors.\n");
+        let (settings, sid) = seed_folder_source(&data_dir, folder);
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
+        let cfg = serde_json::json!({"path": folder.to_string_lossy()});
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO jobs (source_id, kind, status, total, processed, result, created_at) VALUES (?1,'sync','cancelled',0,0,'{}',datetime('now'))", [sid]).unwrap();
+        let jid = conn.last_insert_rowid();
+        drop(conn);
+        let err = pipe.run_folder_sync(sid, jid, false, &cfg, &data_dir).await.unwrap_err();
+        assert_eq!(err, "job cancelled");
+        assert_eq!(table_count(&data_dir, "ingested_items"), 0);
+        assert_eq!(table_count(&data_dir, "entities"), 0);
     }
 
     #[test]
