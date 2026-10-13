@@ -53,7 +53,7 @@ impl GDriveConnector {
                 return;
             }
         };
-        let text = match crate::extract::extract_bytes(&kind, &bytes) {
+        let text = match crate::extract::extract_bytes_labeled(&kind, &bytes, &name) {
             Ok(t) => t,
             Err(e) => {
                 tracing::warn!("gdrive file skipped ({}): {}", name, e);

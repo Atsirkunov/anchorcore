@@ -1,0 +1,3 @@
+-- Incremental folder sync: per-file stat fingerprint (file_mtime_ms + file_size).
+-- Marker — ALTERs handled in Rust (db.rs ensure_columns via try_add_column,
+-- idempotent like 07/09/16).

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use rusqlite::Connection;
 
 use crate::classifier::Classifier;
-use crate::connectors::{folder::FolderConnector, gdrive::GDriveConnector, jira::JiraConnector, linear::LinearConnector, rest::RestConnector, IngestionDoc};
+use crate::connectors::{folder::{FolderConnector, ListedFile}, gdrive::GDriveConnector, jira::JiraConnector, linear::LinearConnector, rest::RestConnector, IngestionDoc};
 use crate::embedder::Embedder;
 use crate::secrets::SecretStore;
 use crate::settings::SettingsService;
@@ -68,6 +68,20 @@ fn record_sync_error(conn: &Connection, source_id: i64, err: &str) {
 }
 fn record_sync_success(conn: &Connection, source_id: i64) {
     let _ = conn.execute("UPDATE sources SET last_error = NULL, error_count = 0, last_synced_at = datetime('now') WHERE id = ?1", [source_id]);
+}
+
+/// Catcher visibility: a PDF whose repair pass strictly improved the text
+/// gets one warning row. Ties stay debug-level — foreign text and typos
+/// trip the detector without being extractable damage.
+async fn record_pdf_quality(data_dir: &str, source_id: i64, detail: String) {
+    let _ = run_db(data_dir, move |conn| {
+        let _ = conn.execute(
+            "INSERT INTO system_events (component, level, source_id, message, detail) VALUES ('pipeline','warning',?1,'pdf split-word repair',?2)",
+            rusqlite::params![source_id, detail],
+        );
+        Ok::<(), String>(())
+    })
+    .await;
 }
 // R13.1: single DB-open boilerplate — every spawn_blocking DB task goes through this.
 fn with_db<T>(data_dir: &str, f: impl FnOnce(&Connection) -> T) -> T {
@@ -175,6 +189,17 @@ async fn purge_missing_for_sync(
         docs.iter().map(|d| d.external_id.clone()).collect();
     // unreadable-but-present files still exist at the source — never purge them
     fetched.extend(skipped.iter().cloned());
+    purge_fetched_set(data_dir, source_id, fetched).await
+}
+
+/// Purge stored items absent from a complete `fetched` set. Cleanup only — a
+/// failure logs and counts as zero, and an empty set purges nothing (a
+/// misconfiguration must not wipe the index).
+async fn purge_fetched_set(
+    data_dir: &str,
+    source_id: i64,
+    fetched: std::collections::HashSet<String>,
+) -> i64 {
     if fetched.is_empty() {
         return 0;
     }
@@ -210,6 +235,50 @@ fn purge_missing_inner(
     Ok(purged)
 }
 
+/// Live job progress: `processed` counts files scanned, `result` carries the
+/// changed/unchanged-so-far counts in the final result's shape, so progress
+/// reads "200/514 · 3 changed" instead of implying a full re-sync.
+async fn update_sync_progress(data_dir: &str, job_id: i64, processed: i64, items: i64, entities: i64, purged: i64, unchanged: i64) {
+    let result = serde_json::json!({"items": items, "entities": entities, "purged": purged, "unchanged": unchanged}).to_string();
+    let _ = run_db(data_dir, move |conn| {
+        let _ = conn.execute("UPDATE jobs SET processed=?1, result=?2 WHERE id=?3", rusqlite::params![processed, result, job_id]);
+        Ok(())
+    })
+    .await;
+}
+
+/// Stored stat fingerprints for a folder source: `external_id -> (mtime_ms, len)`.
+/// Rows without one (other connectors, pre-migration rows) are absent — the
+/// caller always extracts those.
+async fn load_fingerprints(data_dir: &str, source_id: i64) -> std::collections::HashMap<String, (u64, u64)> {
+    run_db(data_dir, move |conn| {
+        let mut stmt = conn
+            .prepare("SELECT external_id, file_mtime_ms, file_size FROM ingested_items WHERE source_id=?1 AND file_mtime_ms IS NOT NULL AND file_size IS NOT NULL")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([source_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+            .map_err(|e| e.to_string())?;
+        let mut out = std::collections::HashMap::new();
+        for row in rows.filter_map(|r| r.ok()) {
+            out.insert(row.0, (row.1 as u64, row.2 as u64));
+        }
+        Ok(out)
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Persist a file's stat fingerprint alongside its content (`None` leaves the
+/// columns untouched — only folder syncs set them).
+fn store_fingerprint(conn: &Connection, item_id: i64, fp: Option<(u64, u64)>) {
+    if let Some((mtime_ms, len)) = fp {
+        let _ = conn.execute(
+            "UPDATE ingested_items SET file_mtime_ms=?1, file_size=?2 WHERE id=?3",
+            rusqlite::params![mtime_ms as i64, len as i64, item_id],
+        );
+    }
+}
+
 fn purge_item(conn: &Connection, item_id: i64) -> Result<(), String> {
     let tag_ids: Vec<i64> = conn
         .prepare(
@@ -234,6 +303,15 @@ fn purge_item(conn: &Connection, item_id: i64) -> Result<(), String> {
     }
     let _ = conn.execute("DELETE FROM tags WHERE count <= 0", []);
     Ok(())
+}
+
+/// What one folder file cost the sync. Only `Skipped` proves the fingerprint
+/// tier worked (the file was never extracted); `NoChange` covers both
+/// extracted-but-identical and unreadable files.
+enum FileOutcome {
+    Skipped,
+    NoChange,
+    Classified(usize),
 }
 
 pub struct Pipeline {
@@ -277,7 +355,7 @@ impl Pipeline {
         self.finish_job(&conn, source_id, job_id, res);
     }
 
-    async fn run_embed_missing(&self, source_id: i64, job_id: i64, data_dir: &str) -> Result<(i64, i64, i64), String> {
+    async fn run_embed_missing(&self, source_id: i64, job_id: i64, data_dir: &str) -> Result<(i64, i64, i64, i64), String> {
         let label: String = run_db(data_dir, move |conn| {
             conn.query_row("SELECT label FROM sources WHERE id=?1", [source_id], |r| r.get(0))
                 .map_err(|e| e.to_string())
@@ -327,7 +405,7 @@ impl Pipeline {
             Ok(())
         })
         .await;
-        Ok((processed, 0, 0))
+        Ok((processed, 0, 0, 0))
     }
 
     /// R10.4: respect bounded concurrency — do NOT flip pending→running here.
@@ -372,15 +450,15 @@ impl Pipeline {
 
     /// Record the sync outcome without clobbering a concurrent cancel (R9.1),
     /// then promote the next pending job.
-    fn finish_job(&self, conn: &Connection, source_id: i64, job_id: i64, res: Result<(i64, i64, i64), String>) {
+    fn finish_job(&self, conn: &Connection, source_id: i64, job_id: i64, res: Result<(i64, i64, i64, i64), String>) {
         match res {
-            Ok((items, entities, purged)) => {
+            Ok((items, entities, purged, unchanged)) => {
                 // R9.1: do not clobber concurrent cancel
                 let cur: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "done".to_string());
                 if cur == "cancelled" {
                     self.jobs.maybe_promote(conn);
                 } else {
-                    let result = serde_json::json!({"items": items, "entities": entities, "purged": purged}).to_string();
+                    let result = serde_json::json!({"items": items, "entities": entities, "purged": purged, "unchanged": unchanged}).to_string();
                     let _ = conn.execute("UPDATE jobs SET status='done', finished_at=datetime('now'), result=?1, error=NULL WHERE id=?2", rusqlite::params![result, job_id]);
                     record_sync_success(conn, source_id);
                     // R28.1: keep the totals set by the run phase (total = docs
@@ -410,7 +488,7 @@ impl Pipeline {
         }
     }
 
-    async fn run_sync_inner(&self, source_id: i64, job_id: i64, force_reclassify: bool, data_dir: &str) -> Result<(i64, i64, i64), String> {
+    async fn run_sync_inner(&self, source_id: i64, job_id: i64, force_reclassify: bool, data_dir: &str) -> Result<(i64, i64, i64, i64), String> {
         // load source
         let (connector_type, config_str) = run_db(data_dir, move |conn| {
             let mut stmt = conn.prepare("SELECT connector, config FROM sources WHERE id = ?1").map_err(|e| e.to_string())?;
@@ -418,6 +496,11 @@ impl Pipeline {
         }).await?;
         let mut config: serde_json::Value = serde_json::from_str(&config_str).unwrap_or(serde_json::json!({}));
         config = resolve_config(data_dir, source_id, config);
+        // Folder sync is incremental (stat listing + stored fingerprints decide
+        // *whether to extract*); API connectors fetch everything and hash-skip.
+        if connector_type == "folder" {
+            return self.run_folder_sync(source_id, job_id, force_reclassify, &config, data_dir).await;
+        }
         // fetch docs — R10.2: Jira/GDrive/Linear must not silently succeed with 0 items
         let t_fetch = std::time::Instant::now();
         let (docs, skipped) = fetch_docs(&connector_type, &config, source_id).await?;
@@ -433,41 +516,140 @@ impl Pipeline {
         }).await?;
         let mut created_items = 0i64;
         let mut new_entities = 0i64;
+        let mut unchanged = 0i64;
         for (idx, doc) in docs.into_iter().enumerate() {
             // check if job was cancelled
             if job_cancelled(data_dir, job_id).await? {
                 return Err("job cancelled".to_string());
             }
-            let upserted = Box::pin(self.upsert_doc(data_dir, source_id, &doc, force_reclassify)).await.map_err(|e| e.to_string())?;
-            if upserted || force_reclassify {
-                created_items += 1;
-                let n = Box::pin(self.classify_and_store(data_dir, source_id, job_id, &doc, force_reclassify)).await.map_err(|e| e.to_string())?;
-                new_entities += n as i64;
+            match Box::pin(self.sync_fetched_doc(data_dir, source_id, job_id, &doc, force_reclassify)).await? {
+                Some(n) => {
+                    created_items += 1;
+                    new_entities += n as i64;
+                }
+                None => unchanged += 1,
             }
-            let processed = (idx + 1) as i64;
-            run_db(data_dir, move |conn| {
-                let _ = conn.execute("UPDATE jobs SET processed=?1 WHERE id=?2", rusqlite::params![processed, job_id]);
-                Ok(())
-            }).await?;
+            update_sync_progress(data_dir, job_id, (idx + 1) as i64, created_items, new_entities, purged_items, unchanged).await;
         }
-        Ok((created_items, new_entities, purged_items))
+        Ok((created_items, new_entities, purged_items, unchanged))
     }
 
-    async fn upsert_doc(&self, data_dir: &str, source_id: i64, doc: &IngestionDoc, _force: bool) -> Result<bool, String> {
+    /// One fetched API doc: hash-skip or classify. Returns `Some(n)` when
+    /// (re)classified with N entities.
+    async fn sync_fetched_doc(&self, data_dir: &str, source_id: i64, job_id: i64, doc: &IngestionDoc, force: bool) -> Result<Option<usize>, String> {
+        let upserted = Box::pin(self.upsert_doc(data_dir, source_id, doc, force, None)).await?;
+        if upserted || force {
+            let n = Box::pin(self.classify_and_store(data_dir, source_id, job_id, doc, force)).await?;
+            return Ok(Some(n));
+        }
+        Ok(None)
+    }
+
+    /// Folder sync that only extracts new/changed files: one cheap `stat`
+    /// listing up front, stored fingerprints decide *whether to extract*, and
+    /// the content hash stays the authority for *whether to reclassify*.
+    /// Unreadable files stay in the listing, so purge can never mistake them
+    /// for deleted (B57) — no separate `skipped` set needed.
+    async fn run_folder_sync(&self, source_id: i64, job_id: i64, force_reclassify: bool, config: &serde_json::Value, data_dir: &str) -> Result<(i64, i64, i64, i64), String> {
+        let fc = FolderConnector::new(config).map_err(|e| e.to_string())?;
+        let t_list = std::time::Instant::now();
+        let listed = fc.list_files().map_err(|e| e.to_string())?;
+        tracing::debug!(target: "anchorcore::perf", files = listed.len(), ms = t_list.elapsed().as_millis(), "list");
+        let fetched: std::collections::HashSet<String> = listed.iter().map(|f| f.rel.clone()).collect();
+        let purged_items = purge_fetched_set(data_dir, source_id, fetched).await;
+        let total = listed.len() as i64;
+        run_db(data_dir, move |conn| {
+            let _ = conn.execute("UPDATE jobs SET total=?1 WHERE id=?2", rusqlite::params![total, job_id]);
+            Ok(())
+        }).await?;
+        let known = if force_reclassify {
+            std::collections::HashMap::new()
+        } else {
+            load_fingerprints(data_dir, source_id).await
+        };
+        let mut created_items = 0i64;
+        let mut new_entities = 0i64;
+        let mut unchanged = 0i64;
+        for (idx, f) in listed.iter().enumerate() {
+            if job_cancelled(data_dir, job_id).await? {
+                return Err("job cancelled".to_string());
+            }
+            match Box::pin(self.sync_listed_file(data_dir, source_id, job_id, force_reclassify, &known, f)).await? {
+                FileOutcome::Classified(n) => {
+                    created_items += 1;
+                    new_entities += n as i64;
+                }
+                FileOutcome::Skipped => unchanged += 1,
+                FileOutcome::NoChange => {}
+            }
+            update_sync_progress(data_dir, job_id, (idx + 1) as i64, created_items, new_entities, purged_items, unchanged).await;
+        }
+        Ok((created_items, new_entities, purged_items, unchanged))
+    }
+
+    /// One listed file: skip when the stored fingerprint matches, else extract
+    /// (unreadable counts as processed, never purged) and run the shared
+    /// upsert → classify tail.
+    async fn sync_listed_file(
+        &self,
+        data_dir: &str,
+        source_id: i64,
+        job_id: i64,
+        force: bool,
+        known: &std::collections::HashMap<String, (u64, u64)>,
+        f: &ListedFile,
+    ) -> Result<FileOutcome, String> {
+        let unchanged = known.get(&f.rel).map(|fp| *fp == (f.mtime_ms, f.len)).unwrap_or(false);
+        if !force && unchanged {
+            return Ok(FileOutcome::Skipped);
+        }
+        let (extracted, pdf_note) = FolderConnector::extract_listed(f);
+        let text = match extracted {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!("folder file skipped ({}): {}", f.rel, e);
+                return Ok(FileOutcome::NoChange);
+            }
+        };
+        if let Some(note) = pdf_note.filter(|n| n.used_alternate) {
+            record_pdf_quality(data_dir, source_id, note.summary()).await;
+        }
+        let doc = IngestionDoc {
+            external_id: f.rel.clone(),
+            title: f.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| f.rel.clone()),
+            text,
+            author: String::new(),
+            updated_at: None,
+            source_ref: f.path.to_string_lossy().to_string(),
+        };
+        let upserted = Box::pin(self.upsert_doc(data_dir, source_id, &doc, force, Some((f.mtime_ms, f.len)))).await?;
+        if upserted || force {
+            let n = Box::pin(self.classify_and_store(data_dir, source_id, job_id, &doc, force)).await?;
+            return Ok(FileOutcome::Classified(n));
+        }
+        // Touched-but-identical: extracted, hash unchanged — processed, no counts.
+        Ok(FileOutcome::NoChange)
+    }
+
+    async fn upsert_doc(&self, data_dir: &str, source_id: i64, doc: &IngestionDoc, _force: bool, fp: Option<(u64, u64)>) -> Result<bool, String> {
         let digest = content_hash(&doc.text);
         let doc = doc.clone();
-        let digest = digest.clone();
         run_db(data_dir, move |conn| {
             let existing: Option<(i64, String, Option<String>)> = conn.query_row("SELECT id, content_hash, text FROM ingested_items WHERE source_id=?1 AND external_id=?2", rusqlite::params![source_id, doc.external_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok();
             if let Some((id, existing_hash, existing_text)) = existing {
                 let missing_text = existing_text.as_deref().unwrap_or("").is_empty();
                 if existing_hash == digest && !missing_text {
+                    // Touched-but-identical: still refresh the stat fingerprint
+                    // so the next sync skips extraction instead of retrying it.
+                    store_fingerprint(conn, id, fp);
                     return Ok(false);
                 }
                 let _ = conn.execute("UPDATE ingested_items SET content_hash=?1, title=?2, author=?3, text=?4, stale=0 WHERE id=?5", rusqlite::params![digest, doc.title, doc.author, doc.text, id]);
+                store_fingerprint(conn, id, fp);
                 Ok(true)
             } else {
                 conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale, created_at, uid) VALUES (?1,?2,?3,?4,?5,?6, 0, datetime('now'),?7)", rusqlite::params![source_id, doc.external_id, doc.title, doc.text, digest, doc.author, crate::db::new_uid()]).map_err(|e| e.to_string())?;
+                store_fingerprint(conn, conn.last_insert_rowid(), fp);
                 Ok(true)
             }
         }).await
@@ -1068,13 +1250,22 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
     let item_id = ctx.item_id;
     let full_text = ctx.full_text.clone();
     let base_ref = ctx.base_ref.clone();
+    // B12 cleaning is prose-only — code/config splitters read indentation
+    // (Python nesting, YAML levels), which whitespace collapsing destroys.
+    let skip_clean = ctx.skips_extraction();
     run_db(&ctx.data_dir, move |conn| {
         let _ = conn.execute(
             "DELETE FROM chunks WHERE item_id=?1 AND entity_id IS NULL AND kind != 'distilled'",
             [item_id],
         );
         let _ = conn.execute("DELETE FROM sections WHERE item_id=?1", [item_id]);
-        let cleaned = full_text.clone();
+        // B12 parity: clean BEFORE chunking so boundaries/embeddings/FTS
+        // tokens are clean (the stored item text stays raw, like archived).
+        let cleaned = if skip_clean {
+            full_text.clone()
+        } else {
+            crate::chunking::clean_doc_text(&full_text)
+        };
         let (metas, chunk_metas) = crate::chunking::chunk_for_doc_type(&doc_type, &filename, &cleaned);
         // insert sections in order so parent idx maps correctly
         let mut section_ids: Vec<i64> = Vec::with_capacity(metas.len());
@@ -1367,7 +1558,7 @@ mod tests {
         let classifier = Arc::new(Classifier::new(settings.clone()));
         let embedder = Arc::new(Embedder::new(settings.clone()));
         let pipeline = Pipeline::new(classifier, embedder, settings, data_dir, crate::jobs::JobManager::new());
-        pipeline.finish_job(&conn, sid, job_id, Ok((3, 5, 0)));
+        pipeline.finish_job(&conn, sid, job_id, Ok((3, 5, 0, 7)));
         let (status, total, processed, result): (String, i64, i64, String) = conn
             .query_row("SELECT status, total, processed, result FROM jobs WHERE id=?1", [job_id], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
@@ -1376,6 +1567,7 @@ mod tests {
         assert_eq!(status, "done");
         assert_eq!((total, processed), (10, 10), "changed items must not clobber scanned totals");
         assert!(result.contains("\"items\":3"), "result: {}", result);
+        assert!(result.contains("\"unchanged\":7"), "result: {}", result);
     }
 
     #[test]
@@ -1620,6 +1812,181 @@ mod tests {
         let conn = crate::db::open_db(&db_path).unwrap();
         let items: i64 = conn.query_row("SELECT COUNT(*) FROM ingested_items", [], |r| r.get(0)).unwrap();
         assert_eq!(items, 1);
+    }
+
+    fn write_doc(dir: &std::path::Path, name: &str, content: &str) {
+        std::fs::write(dir.join(name), content).unwrap();
+    }
+
+    /// Folder source + settings pinned to closed ports, so the classifier and
+    /// embedder fail fast into their degraded paths (no network in tests).
+    fn seed_folder_source(data_dir: &str, folder: &std::path::Path) -> (Arc<SettingsService>, i64) {
+        let db_path = crate::db::resolve_db_path(data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let store = crate::secrets::SecretStore::new(std::path::PathBuf::from(data_dir).join("secrets.enc"));
+        let settings = Arc::new(crate::settings::SettingsService::new(store));
+        settings.set_data_dir(std::path::Path::new(data_dir));
+        settings.set("classifier_base_url", "http://127.0.0.1:9", &conn).unwrap();
+        settings.set("embed_base_url", "http://127.0.0.1:9", &conn).unwrap();
+        let cfg = serde_json::json!({"path": folder.to_string_lossy()}).to_string();
+        conn.execute(
+            "INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('f','folder',?1,1,'',0)",
+            [cfg],
+        )
+        .unwrap();
+        let sid = conn.last_insert_rowid();
+        (settings, sid)
+    }
+
+    /// One folder sync on a fresh running job. Returns
+    /// `(items, entities, purged, unchanged, job_id)`.
+    async fn run_folder_once(
+        pipe: &Pipeline,
+        data_dir: &str,
+        sid: i64,
+        cfg: &serde_json::Value,
+        force: bool,
+    ) -> (i64, i64, i64, i64, i64) {
+        let db_path = crate::db::resolve_db_path(data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute(
+            "INSERT INTO jobs (source_id, kind, status, total, processed, result, created_at) VALUES (?1,'sync','running',0,0,'{}',datetime('now'))",
+            [sid],
+        )
+        .unwrap();
+        let jid = conn.last_insert_rowid();
+        drop(conn);
+        let (items, entities, purged, unchanged) = pipe.run_folder_sync(sid, jid, force, cfg, data_dir).await.unwrap();
+        (items, entities, purged, unchanged, jid)
+    }
+
+    fn job_row(data_dir: &str, jid: i64) -> (i64, i64, serde_json::Value) {
+        let db_path = crate::db::resolve_db_path(data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let (total, processed, result): (i64, i64, String) = conn
+            .query_row("SELECT total, processed, result FROM jobs WHERE id=?1", [jid], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        (total, processed, serde_json::from_str(&result).unwrap())
+    }
+
+    fn table_count(data_dir: &str, table: &str) -> i64 {
+        let db_path = crate::db::resolve_db_path(data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.query_row(&format!("SELECT COUNT(*) FROM {}", table), [], |r| r.get(0)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn folder_sync_skips_unchanged_files() {
+        let data_tmp = tempdir().unwrap();
+        let folder_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().to_string_lossy().to_string();
+        let folder = folder_tmp.path();
+        write_doc(folder, "a.md", "# Alpha\n\nWe decided to use sqlite for vectors. Next step: review on Friday.\n");
+        write_doc(folder, "b.md", "# Beta\n\nWe agreed to postpone the launch. Owner: Bea will follow up.\n");
+        let (settings, sid) = seed_folder_source(&data_dir, folder);
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
+        let cfg = serde_json::json!({"path": folder.to_string_lossy()});
+
+        // Legacy row: a pre-migration item carries content but no fingerprint.
+        let text_a = std::fs::read_to_string(folder.join("a.md")).unwrap();
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,'a.md','a.md',?2,?3)",
+            rusqlite::params![sid, text_a, content_hash(&text_a)],
+        )
+        .unwrap();
+        drop(conn);
+
+        // First sync ingests the new file; the legacy row is extracted once
+        // (fingerprint unknown) but hash-identical, so it is not reclassified.
+        // Progress totals count files scanned while `result` carries live counts.
+        let (items, entities, purged, unchanged, jid) = run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        assert_eq!((items, purged, unchanged), (1, 0, 0));
+        assert!(entities >= 2, "rules must extract decision/action entities, got {entities}");
+        let (total, processed, result) = job_row(&data_dir, jid);
+        assert_eq!((total, processed), (2, 2));
+        assert_eq!(result.get("items").and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(result.get("unchanged").and_then(|v| v.as_i64()), Some(0));
+        let chunks_after_first = table_count(&data_dir, "chunks");
+        assert!(chunks_after_first > 0);
+        // Fingerprints are stored for both files (legacy row backfilled).
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let fingerprinted: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ingested_items WHERE source_id=?1 AND file_mtime_ms IS NOT NULL AND file_size IS NOT NULL",
+                [sid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fingerprinted, 2);
+        drop(conn);
+
+        // No changes: both files skipped without extraction — no reclassify,
+        // no new rows anywhere.
+        let before_entities = table_count(&data_dir, "entities");
+        let (items, entities, purged, unchanged, jid) = run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        assert_eq!((items, entities, purged, unchanged), (0, 0, 0, 2));
+        assert_eq!(table_count(&data_dir, "entities"), before_entities);
+        assert_eq!(table_count(&data_dir, "chunks"), chunks_after_first);
+        let (total, processed, result) = job_row(&data_dir, jid);
+        assert_eq!((total, processed), (2, 2));
+        assert_eq!(result.get("items").and_then(|v| v.as_i64()), Some(0));
+        assert_eq!(result.get("unchanged").and_then(|v| v.as_i64()), Some(2));
+
+        // One new file: only it is processed.
+        write_doc(folder, "c.md", "# Gamma\n\nWe chose the blue design. Deadline is Monday.\n");
+        let (items, _, purged, unchanged, _) = run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        assert_eq!((items, purged, unchanged), (1, 0, 2));
+
+        // One edited file: only it is reclassified.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        write_doc(folder, "b.md", "# Beta\n\nWe agreed to launch next week instead. Owner: Bea will follow up.\n");
+        let (items, _, purged, unchanged, _) = run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        assert_eq!((items, purged, unchanged), (1, 0, 2));
+
+        // One deleted file: purged, nothing reclassified.
+        std::fs::remove_file(folder.join("a.md")).unwrap();
+        let (items, _, purged, unchanged, _) = run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        assert_eq!((items, purged, unchanged), (0, 1, 2));
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let gone: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ingested_items WHERE source_id=?1 AND external_id='a.md'", [sid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(gone, 0);
+        let kept: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ingested_items WHERE source_id=?1", [sid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 2);
+        drop(conn);
+
+        // Touched-but-identical: extracted once, not reclassified — and the
+        // fingerprint is refreshed so the next sync skips it outright. Only
+        // `b.md` counts as unchanged (it was never extracted).
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        write_doc(folder, "c.md", "# Gamma\n\nWe chose the blue design. Deadline is Monday.\n");
+        let (items, _, purged, unchanged, _) = run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        assert_eq!((items, purged, unchanged), (0, 0, 1));
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let (mtime, size): (i64, i64) = conn
+            .query_row(
+                "SELECT file_mtime_ms, file_size FROM ingested_items WHERE source_id=?1 AND external_id='c.md'",
+                [sid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        drop(conn);
+        let meta = std::fs::metadata(folder.join("c.md")).unwrap();
+        let stat_mtime = meta.modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+        assert_eq!((mtime, size), (stat_mtime, meta.len() as i64));
+
+        // Force reclassifies everything, like the generic path.
+        let (items, _, purged, unchanged, _) = run_folder_once(&pipe, &data_dir, sid, &cfg, true).await;
+        assert_eq!((items, purged, unchanged), (2, 0, 0));
     }
 
     #[test]

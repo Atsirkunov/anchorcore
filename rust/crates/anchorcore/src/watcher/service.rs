@@ -52,7 +52,9 @@ impl WatcherService {
 
 /// B56: cheap per-file fingerprint (mtime + size) so the watcher detects
 /// content edits, not just file adds/deletes. Content-hash at sync time
-/// remains the authority; this only decides *whether to sync*.
+/// remains the authority; this only decides *whether to sync*. The snapshot
+/// is built straight from the connector's stat listing — the watcher never
+/// reads file content.
 type FileSnapshot = HashMap<PathBuf, FileFp>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -61,32 +63,11 @@ struct FileFp {
     len: u64,
 }
 
-fn fingerprint_file(path: &std::path::Path) -> Option<FileFp> {
-    let meta = std::fs::metadata(path).ok()?;
-    let mtime_ms = meta
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_millis() as u64;
-    Some(FileFp {
-        mtime_ms,
-        len: meta.len(),
-    })
-}
-
-/// Snapshot every fetched doc against the source root. Files that vanish
-/// between fetch and stat are skipped — the missing entry still differs
-/// from the previous snapshot, so the deletion is detected.
-fn fingerprint_docs(root: &std::path::Path, external_ids: &[String]) -> FileSnapshot {
-    let mut out = FileSnapshot::new();
-    for id in external_ids {
-        let rel = PathBuf::from(id);
-        if let Some(fp) = fingerprint_file(&root.join(&rel)) {
-            out.insert(rel, fp);
-        }
-    }
-    out
+fn snapshot_from_listing(files: &[crate::connectors::folder::ListedFile]) -> FileSnapshot {
+    files
+        .iter()
+        .map(|f| (PathBuf::from(&f.rel), FileFp { mtime_ms: f.mtime_ms, len: f.len }))
+        .collect()
 }
 
 /// Spawn background watcher loop. Returns JoinHandle that runs forever.
@@ -144,7 +125,7 @@ fn expand_path(path_str: &str) -> PathBuf {
 
 #[cfg(not(test))]
 fn ensure_watchers(
-    watchers: &mut HashMap<i64, (crate::connectors::watcher::FolderWatcher, PathBuf)>,
+    watchers: &mut HashMap<i64, crate::connectors::watcher::FolderWatcher>,
     known_files: &mut HashMap<i64, FileSnapshot>,
     folder_sources: &[(i64, String)],
 ) {
@@ -157,14 +138,13 @@ fn ensure_watchers(
         if let Ok(w) = crate::connectors::watcher::FolderWatcher::new(&expanded) {
             let mut snapshot = FileSnapshot::new();
             if let Ok(fc) = crate::connectors::folder::FolderConnector::new(&cfg) {
-                if let Ok((docs, _)) = fc.fetch() {
-                    let ids: Vec<String> = docs.iter().map(|d| d.external_id.clone()).collect();
-                    snapshot = fingerprint_docs(&expanded, &ids);
+                if let Ok(files) = fc.list_files() {
+                    snapshot = snapshot_from_listing(&files);
                 }
             }
             known_files.insert(*sid, snapshot);
             let display_str = expanded.display().to_string();
-            watchers.insert(*sid, (w, expanded));
+            watchers.insert(*sid, w);
             tracing::info!("watcher started for source {} at {}", sid, display_str);
         }
     }
@@ -172,10 +152,10 @@ fn ensure_watchers(
 
 #[cfg(not(test))]
 fn poll_changed(
-    watchers: &HashMap<i64, (crate::connectors::watcher::FolderWatcher, PathBuf)>,
+    watchers: &HashMap<i64, crate::connectors::watcher::FolderWatcher>,
 ) -> Vec<i64> {
     let mut to_sync: Vec<i64> = Vec::new();
-    for (sid, (watcher, _)) in watchers.iter() {
+    for (sid, watcher) in watchers.iter() {
         // debounce 3s like Python folder_watch_debounce (was 300ms)
         if !watcher.poll(std::time::Duration::from_secs(3)).is_empty() {
             to_sync.push(*sid);
@@ -189,7 +169,6 @@ async fn fetch_and_compare(
     state: &AppState,
     known_files: &mut HashMap<i64, FileSnapshot>,
     sid: i64,
-    root: &std::path::Path,
     require_nonempty: bool,
     log_line: Option<&str>,
 ) -> bool {
@@ -208,11 +187,9 @@ async fn fetch_and_compare(
         serde_json::from_str(&cfg_str).unwrap_or(serde_json::json!({}));
     let mut changed = false;
     if let Ok(fc) = crate::connectors::folder::FolderConnector::new(&cfg) {
-        if let Ok((docs, _)) = fc.fetch() {
-            // B56: compare mtime+size fingerprints, not just the file set,
-            // so in-place content edits also trigger a sync.
-            let ids: Vec<String> = docs.iter().map(|d| d.external_id.clone()).collect();
-            let new_snapshot = fingerprint_docs(root, &ids);
+        // Stat listing only — comparing it never reads file content.
+        if let Ok(files) = fc.list_files() {
+            let new_snapshot = snapshot_from_listing(&files);
             let old_snapshot = known_files.get(&sid).cloned().unwrap_or_default();
             if new_snapshot != old_snapshot && (!require_nonempty || !new_snapshot.is_empty()) {
                 if let Some(line) = log_line {
@@ -228,8 +205,7 @@ async fn fetch_and_compare(
 
 #[cfg(not(test))]
 async fn run(state: AppState) {
-    let mut watchers: HashMap<i64, (crate::connectors::watcher::FolderWatcher, PathBuf)> =
-        HashMap::new();
+    let mut watchers: HashMap<i64, crate::connectors::watcher::FolderWatcher> = HashMap::new();
     let mut known_files: HashMap<i64, FileSnapshot> = HashMap::new();
     loop {
         let folder_sources = discover_folder_sources(&state.data_dir).await;
@@ -241,13 +217,8 @@ async fn run(state: AppState) {
         for sid in to_sync.clone() {
             tracing::info!("watcher detected changes for source {}", sid);
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            // Clone the root: `watchers` holds a non-Sync `FolderWatcher`,
-            // so no borrow of it may live across the await below.
-            if let Some((_, root)) = watchers.get(&sid) {
-                let root = root.clone();
-                if fetch_and_compare(&state, &mut known_files, sid, &root, false, None).await {
-                    trigger_sync(state.clone(), sid).await;
-                }
+            if fetch_and_compare(&state, &mut known_files, sid, false, None).await {
+                trigger_sync(state.clone(), sid).await;
             }
         }
 
@@ -256,20 +227,16 @@ async fn run(state: AppState) {
             if to_sync.contains(&sid) {
                 continue;
             }
-            if let Some((_, root)) = watchers.get(&sid) {
-                let root = root.clone();
-                if fetch_and_compare(
-                    &state,
-                    &mut known_files,
-                    sid,
-                    &root,
-                    true,
-                    Some("watcher fallback detected changes for source {} (missed notify)"),
-                )
-                .await
-                {
-                    trigger_sync(state.clone(), sid).await;
-                }
+            if fetch_and_compare(
+                &state,
+                &mut known_files,
+                sid,
+                true,
+                Some("watcher fallback detected changes for source {} (missed notify)"),
+            )
+            .await
+            {
+                trigger_sync(state.clone(), sid).await;
             }
         }
 
@@ -315,28 +282,33 @@ mod tests {
         std::fs::write(dir.join(name), content).unwrap();
     }
 
+    /// The real watcher path: stat listing → snapshot (never reads content).
+    fn list_snapshot(dir: &std::path::Path) -> FileSnapshot {
+        let cfg = serde_json::json!({"path": dir.to_string_lossy()});
+        let fc = crate::connectors::folder::FolderConnector::new(&cfg).unwrap();
+        snapshot_from_listing(&fc.list_files().unwrap())
+    }
+
     #[test]
-    fn fingerprint_detects_content_edit() {
+    fn snapshot_detects_content_edit() {
         let dir = tempdir().unwrap();
         write(dir.path(), "a.md", "hello");
-        let ids = vec!["a.md".to_string()];
-        let before = fingerprint_docs(dir.path(), &ids);
+        let before = list_snapshot(dir.path());
         assert_eq!(before.len(), 1);
         assert_eq!(before[&PathBuf::from("a.md")].len, 5);
         write(dir.path(), "a.md", "hello world, edited");
-        let after = fingerprint_docs(dir.path(), &ids);
+        let after = list_snapshot(dir.path());
         assert_ne!(before, after, "content edit must change the snapshot");
     }
 
     #[test]
-    fn fingerprint_detects_same_length_edit() {
+    fn snapshot_detects_same_length_edit() {
         let dir = tempdir().unwrap();
         write(dir.path(), "a.md", "aaaa");
-        let ids = vec!["a.md".to_string()];
-        let before = fingerprint_docs(dir.path(), &ids);
+        let before = list_snapshot(dir.path());
         std::thread::sleep(std::time::Duration::from_millis(10));
         write(dir.path(), "a.md", "bbbb");
-        let after = fingerprint_docs(dir.path(), &ids);
+        let after = list_snapshot(dir.path());
         assert_ne!(
             before, after,
             "same-length edit must change mtime fingerprint"
@@ -344,18 +316,16 @@ mod tests {
     }
 
     #[test]
-    fn fingerprint_stable_when_untouched_and_tracks_add_remove() {
+    fn snapshot_stable_when_untouched_and_tracks_add_remove() {
         let dir = tempdir().unwrap();
         write(dir.path(), "a.md", "hello");
-        let ids = vec!["a.md".to_string()];
-        let first = fingerprint_docs(dir.path(), &ids);
-        let second = fingerprint_docs(dir.path(), &ids);
+        let first = list_snapshot(dir.path());
+        let second = list_snapshot(dir.path());
         assert_eq!(first, second, "untouched files must not trigger");
         write(dir.path(), "b.md", "new");
-        let ids2 = vec!["a.md".to_string(), "b.md".to_string()];
-        assert_ne!(first, fingerprint_docs(dir.path(), &ids2));
+        assert_ne!(first, list_snapshot(dir.path()));
         std::fs::remove_file(dir.path().join("a.md")).unwrap();
-        let after_rm = fingerprint_docs(dir.path(), &ids2);
+        let after_rm = list_snapshot(dir.path());
         assert!(!after_rm.contains_key(&PathBuf::from("a.md")));
         assert_ne!(after_rm, first);
     }

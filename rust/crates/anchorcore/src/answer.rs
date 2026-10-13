@@ -48,10 +48,19 @@ pub struct Citation {
     /// R32.2: every citation drills into GET /items/:id (entity citations
     /// resolve via their entity — never None for stored hits).
     pub item_id: Option<i64>,
+    /// R36.3: primary matched chunk (the `[match N]` mark in `content`;
+    /// merged parents mark every match, this names the first-ranked one).
+    pub chunk_id: Option<i64>,
+    /// R36.3: returned scope — smallest fitting ancestor for parent hits,
+    /// direct section for fallback hits, None when section-less.
+    pub section_id: Option<i64>,
     pub kind: String,
     pub summary: String,
     pub source_ref: String,
     pub path: String,
+    /// R36.3: returned scope's section breadcrumb (`sections.path`), ""
+    /// when section-less. Unlike `path`, never a file-path fallback.
+    pub breadcrumb: String,
     pub tags: Vec<String>,
     pub score: f64,
     pub snippet: String,
@@ -85,17 +94,33 @@ pub struct SearchRequest {
     /// R32.4: env filter — "live" or "test" (case-insensitive). Anything
     /// else (or absent) means unfiltered; demotion still orders the mix.
     pub env: Option<String>,
+    /// R36.6: chunk-kind filter — comma list from
+    /// `document,entity,distilled,section_summary,doc_summary`
+    /// (case-insensitive; unknown or empty means unfiltered, like `env`).
+    pub kind: Option<String>,
+    /// R36.6: item-path prefix filter — relative like the items listing, or
+    /// absolute (resolved through the owning folder source's root).
+    pub path_prefix: Option<String>,
+    /// R36.6: code-symbol filter — keeps hits whose section title/path names
+    /// the symbol (case-insensitive substring; section-less chunks drop out).
+    pub symbol: Option<String>,
 }
 
 #[derive(Serialize)]
 pub struct SearchHit {
     pub chunk_id: Option<i64>,
     pub entity_id: Option<i64>,
+    /// R36.3: returned scope — smallest fitting ancestor for parent hits,
+    /// direct section for fallback hits, None when section-less.
+    pub section_id: Option<i64>,
     pub kind: String,
     pub summary: String,
     pub content: String,
     pub source_ref: String,
     pub path: String,
+    /// R36.3: returned scope's section breadcrumb (`sections.path`), ""
+    /// when section-less. Unlike `path`, never a file-path fallback.
+    pub breadcrumb: String,
     pub tags: Vec<String>,
     pub source_id: Option<i64>,
     pub item_id: Option<i64>,
@@ -374,6 +399,38 @@ fn item_meta_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> std::collection
     out
 }
 
+/// R36.3: batched section-breadcrumb lookup — one query per search/ask,
+/// keyed by the hit's returned scope (`Hit.section_id`).
+fn section_breadcrumbs(conn: &Connection, section_ids: &[i64]) -> std::collections::HashMap<i64, String> {
+    let mut out: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    if section_ids.is_empty() {
+        return out;
+    }
+    let sql = format!(
+        "SELECT id, path FROM sections WHERE id IN ({})",
+        crate::common::placeholders(section_ids.len())
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(section_ids.iter()), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    }) {
+        for (id, path) in rows.flatten() {
+            out.insert(id, path);
+        }
+    }
+    out
+}
+
+/// R36.3: match-centered preview on returned-parent content — the mark shows
+/// where the match sits inside the parent; unmarked hits keep `match_snippet`.
+fn hit_preview(content: &str, query: &str, chunk_id: i64, n: usize) -> String {
+    crate::retrieval::content_window(content, chunk_id, n)
+        .unwrap_or_else(|| crate::retrieval::match_snippet(content, query, n))
+}
+
 /// Citation count knob: `ANCHOR_CITATIONS`, default 5. The B55 golden set
 /// tunes this with data instead of guesses.
 fn citations_limit() -> usize {
@@ -389,6 +446,8 @@ fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content:
     let doc_type_map = doc_types_for_chunks(&conn, &ids);
     let meta_map = item_meta_for_chunks(&conn, &ids);
     let env_map = crate::retrieval::envs_for_chunks(&conn, &ids);
+    let section_ids: Vec<i64> = hits.iter().take(limit).filter_map(|h| h.section_id).collect();
+    let crumb_map = section_breadcrumbs(&conn, &section_ids);
     hits.iter().take(limit).map(|h| {
         // Path rule mirrors search hits: section breadcrumb when the chunk
         // lives in one, else the item's file path — entity citations must
@@ -397,10 +456,13 @@ fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content:
         Citation {
             entity_id: h.entity_id,
             item_id: h.item_id,
+            chunk_id: Some(h.chunk_id),
+            section_id: h.section_id,
             kind: hit_kind(h),
-            summary: crate::retrieval::match_snippet(&h.content, query, 200),
+            summary: hit_preview(&h.content, query, h.chunk_id, 200),
             source_ref: display_source_ref(h),
             path: if h.path.is_empty() { item_path } else { h.path.clone() },
+            breadcrumb: h.section_id.and_then(|sid| crumb_map.get(&sid).cloned()).unwrap_or_default(),
             item_title,
             tags: tag_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             doc_type: doc_type_map.get(&h.chunk_id).cloned().unwrap_or_default(),
@@ -408,7 +470,7 @@ fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content:
             env: env_map.get(&h.chunk_id).cloned().unwrap_or_else(|| "live".to_string()),
             conflicts_with: conflict_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             score: rounded_score(h.score),
-            snippet: crate::retrieval::match_snippet(&h.content, query, 500),
+            snippet: hit_preview(&h.content, query, h.chunk_id, 500),
             content: if want_content { h.content.clone() } else { String::new() },
             content_truncated: h.content_truncated,
         }
@@ -478,8 +540,14 @@ pub async fn ask(
         hits = filtered;
     }
 
-    // Build context and generate (no DB borrow across await) — R10.6 UTF-8 safe (was byte slice)
-    let sections: Vec<String> = hits.iter().enumerate().map(|(i, h)| format!("[S{}] {}", i+1, h.content.chars().take(2000).collect::<String>())).collect();
+    // Build context and generate (no DB borrow across await) — R10.6 UTF-8 safe (was byte slice).
+    // R36.3: parent hits center the window on the match mark (a head cut
+    // could drop the match); unmarked hits keep the byte-identical head.
+    let sections: Vec<String> = hits.iter().enumerate().map(|(i, h)| {
+        let window = crate::retrieval::content_window(&h.content, h.chunk_id, 2000)
+            .unwrap_or_else(|| h.content.chars().take(2000).collect::<String>());
+        format!("[S{}] {}", i + 1, window)
+    }).collect();
     let context = sections.join("\n\n");
     let (answer, composed) = generate_answer(settings, &question, &context, &history_for_gen).await;
     let want_content = req.include_content.unwrap_or(false);
@@ -559,7 +627,9 @@ fn apply_graph(
     hits
 }
 
-/// TOC coarse-to-fine first, hybrid vector+keyword fallback otherwise, then graph.
+/// TOC coarse-to-fine precision path unioned with a discounted flat hybrid
+/// recall floor (TOC fencing can hide mid-body signals from leaf search),
+/// flat-only fallback when TOC is empty, then graph.
 fn orchestrate(
     conn: &Connection,
     query: &str,
@@ -574,11 +644,36 @@ fn orchestrate(
         if toc.is_empty() { None } else { Some(toc) }
     };
     if let Some(toc) = toc_opt {
+        // Flat recall floor (R36.7 funnel follow-up): TOC fences leaf search
+        // to summary-admitted sections, and head-extract summaries can't see
+        // mid-body signals (benchmark ai-03: d1's only "incident" mention is
+        // a See-also line — its summaries match nothing, so the leaf fence
+        // excludes the whole file). Union unfiltered hybrid legs UNDERNEATH
+        // the TOC ranking (discounted: precision-first, recall-floor), so TOC
+        // can never underperform flat. Single fused list into fuse_and_rank
+        // keeps all downstream behavior (demote/dedupe/live-first/cut).
+        let floor_vec = query_embedding.as_ref().and_then(|emb| {
+            let hits = retrieval::vector_search(conn, emb, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed);
+            if hits.is_empty() { None } else { Some(hits) }
+        });
+        let floor_kw = retrieval::keyword_search(conn, query, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed);
+        let floor_kw_opt = if floor_kw.is_empty() { None } else { Some(floor_kw) };
+        let mut lists = vec![toc];
+        let mut weights = vec![1.0];
+        if let Some(h) = floor_vec {
+            lists.push(h);
+            weights.push(0.5);
+        }
+        if let Some(h) = floor_kw_opt {
+            lists.push(h);
+            weights.push(0.5);
+        }
+        let fused = retrieval::rrf_fuse_multi(lists, weights);
         // R32.3: no pre-fusion demote — scores are fused by rank (RRF), so
         // demotion runs inside fuse_and_rank, after fusion, before the cut.
         let hits = retrieval::fuse_and_rank(
             conn,
-            Some(toc),
+            Some(fused),
             None,
             cfg.keyword_weight,
             cfg.halflife,
@@ -589,7 +684,9 @@ fn orchestrate(
         );
         let mut hits = apply_graph(conn, hits, scope.as_ref(), cfg, query);
         retrieval::filename_boost(conn, &mut hits, query);
-        return hits;
+        // R36.3: return-shape assembly runs once, over the final ranked
+        // list, so same-scope merging sees graph + boosted hits too.
+        return retrieval::parent_return(conn, hits);
     }
     // R8.1: hybrid search — vector + keyword
     let vector_hits = query_embedding.as_ref().and_then(|emb| {
@@ -620,7 +717,8 @@ fn orchestrate(
     );
     let mut hits = apply_graph(conn, hits, scope.as_ref(), cfg, query);
     retrieval::filename_boost(conn, &mut hits, query);
-    hits
+    // R36.3: return-shape assembly runs once, over the final ranked list.
+    retrieval::parent_return(conn, hits)
 }
 
 fn retrieve_sync(
@@ -706,7 +804,7 @@ pub async fn search(
     // A3: cursor pagination over the gated list (deterministic full walks).
     let limit = req.limit.unwrap_or(k).clamp(1, 50);
     let cursor = req.cursor.unwrap_or(0);
-    let env_filter = req.env.clone();
+    let filters = SearchFilters::from_request(&req);
     // Match-centered summaries need the query after `query` moves into the
     // blocking closure below.
     let query_text = req.query.clone();
@@ -714,7 +812,7 @@ pub async fn search(
     let hits = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir_for_block);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
-        search_sync_inner(&conn, &query, k, project_id, public_only, query_embedding, env_filter)
+        search_sync_inner(&conn, &query, k, project_id, public_only, query_embedding, &filters)
     })
     .await
     .unwrap_or_default();
@@ -755,6 +853,8 @@ pub async fn search(
     let doc_type_map = doc_types_for_chunks(&conn, &ids);
     let meta_map = item_meta_for_chunks(&conn, &ids);
     let env_map = crate::retrieval::envs_for_chunks(&conn, &ids);
+    let section_ids: Vec<i64> = page.iter().filter_map(|h| h.section_id).collect();
+    let crumb_map = section_breadcrumbs(&conn, &section_ids);
     let hits = page.into_iter().map(|h| {
         // path = section breadcrumb when the chunk lives in one; flat
         // documents (no sections) fall back to the item's path within its
@@ -763,12 +863,14 @@ pub async fn search(
         SearchHit {
             chunk_id: Some(h.chunk_id),
             entity_id: h.entity_id,
+            section_id: h.section_id,
             kind: hit_kind(&h),
-            summary: crate::retrieval::match_snippet(&h.content, &query_text, 500),
+            summary: hit_preview(&h.content, &query_text, h.chunk_id, 500),
             content: if want_content { h.content.clone() } else { String::new() },
             content_truncated: h.content_truncated,
             source_ref: display_source_ref(&h),
             path: if h.path.is_empty() { item_path } else { h.path.clone() },
+            breadcrumb: h.section_id.and_then(|sid| crumb_map.get(&sid).cloned()).unwrap_or_default(),
             tags: tag_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             doc_type: doc_type_map.get(&h.chunk_id).cloned().unwrap_or_default(),
             // No marker evidence (unknown chunk) reads as live, not test.
@@ -796,6 +898,180 @@ fn normalize_env_filter(env: Option<String>) -> Option<String> {
     })
 }
 
+/// R36.6 normalized post-rank search filters. All cuts run after ranking on
+/// existing columns only, AND-combined — ranking scores never change, so the
+/// filters are retrieval-score-neutral by construction.
+struct SearchFilters {
+    env: Option<String>,
+    kinds: Option<Vec<String>>,
+    path_prefix: Option<String>,
+    symbol: Option<String>,
+}
+
+impl SearchFilters {
+    fn from_request(req: &SearchRequest) -> Self {
+        Self {
+            env: normalize_env_filter(req.env.clone()),
+            kinds: normalize_kind_filter(req.kind.clone()),
+            path_prefix: normalize_prefix_filter(req.path_prefix.clone()),
+            symbol: normalize_symbol_filter(req.symbol.clone()),
+        }
+    }
+
+    fn any(&self) -> bool {
+        self.env.is_some() || self.kinds.is_some() || self.path_prefix.is_some() || self.symbol.is_some()
+    }
+}
+
+/// Comma list of chunk kinds; unknown tokens drop out, and an empty result
+/// means unfiltered (env-consistent — a typo never hides everything).
+fn normalize_kind_filter(kind: Option<String>) -> Option<Vec<String>> {
+    let raw = kind?;
+    let kinds: Vec<String> = raw
+        .split(',')
+        .map(|t| t.trim().to_lowercase())
+        .filter(|t| matches!(t.as_str(), "document" | "entity" | "distilled" | "section_summary" | "doc_summary"))
+        .collect();
+    if kinds.is_empty() { None } else { Some(kinds) }
+}
+
+fn normalize_prefix_filter(prefix: Option<String>) -> Option<String> {
+    let p = prefix?;
+    if p.trim().is_empty() { None } else { Some(p) }
+}
+
+/// Lowercased at the boundary so matching is a plain `contains`.
+fn normalize_symbol_filter(symbol: Option<String>) -> Option<String> {
+    let s = symbol?;
+    let t = s.trim().to_lowercase();
+    if t.is_empty() { None } else { Some(t) }
+}
+
+/// Single batched chunk-kind lookup for the `kind` filter.
+fn kinds_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> std::collections::HashMap<i64, String> {
+    let mut out: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    if chunk_ids.is_empty() {
+        return out;
+    }
+    let sql = format!("SELECT id, kind FROM chunks WHERE id IN ({})", crate::common::placeholders(chunk_ids.len()));
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(chunk_ids.iter()), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    }) {
+        for (id, kind) in rows.flatten() {
+            out.insert(id, kind.to_lowercase());
+        }
+    }
+    out
+}
+
+/// Single batched item-path lookup for the `path_prefix` filter:
+/// `(external_id, source_id)` per chunk — document chunks join via `item_id`,
+/// entity chunks via their entity's item (same joins as `item_meta_for_chunks`).
+fn item_paths_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> std::collections::HashMap<i64, (String, Option<i64>)> {
+    let mut out: std::collections::HashMap<i64, (String, Option<i64>)> = std::collections::HashMap::new();
+    if chunk_ids.is_empty() {
+        return out;
+    }
+    let sql = format!(
+        "SELECT c.id, COALESCE(i1.external_id, i2.external_id, ''), COALESCE(i1.source_id, i2.source_id) FROM chunks c LEFT JOIN ingested_items i1 ON i1.id=c.item_id LEFT JOIN entities e ON e.id=c.entity_id LEFT JOIN ingested_items i2 ON i2.id=e.item_id WHERE c.id IN ({})",
+        crate::common::placeholders(chunk_ids.len())
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(chunk_ids.iter()), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?))
+    }) {
+        for (id, path, sid) in rows.flatten() {
+            out.insert(id, (path, sid));
+        }
+    }
+    out
+}
+
+/// Single batched section-title lookup for the `symbol` filter:
+/// `(title, path)` per chunk — empty pair when the chunk has no section.
+fn section_titles_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> std::collections::HashMap<i64, (String, String)> {
+    let mut out: std::collections::HashMap<i64, (String, String)> = std::collections::HashMap::new();
+    if chunk_ids.is_empty() {
+        return out;
+    }
+    let sql = format!(
+        "SELECT c.id, COALESCE(s.title, ''), COALESCE(s.path, '') FROM chunks c LEFT JOIN sections s ON s.id=c.section_id WHERE c.id IN ({})",
+        crate::common::placeholders(chunk_ids.len())
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(chunk_ids.iter()), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+    }) {
+        for (id, title, path) in rows.flatten() {
+            out.insert(id, (title, path));
+        }
+    }
+    out
+}
+
+fn filter_hits_by_env(conn: &Connection, mut hits: Vec<crate::retrieval::Hit>, env: &str) -> Vec<crate::retrieval::Hit> {
+    let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+    let classes = crate::retrieval::envs_for_chunks(conn, &ids);
+    hits.retain(|h| classes.get(&h.chunk_id).map(|c| c.as_str() == env).unwrap_or(false));
+    hits
+}
+
+fn filter_hits_by_kind(conn: &Connection, mut hits: Vec<crate::retrieval::Hit>, kinds: &[String]) -> Vec<crate::retrieval::Hit> {
+    let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+    let map = kinds_for_chunks(conn, &ids);
+    hits.retain(|h| map.get(&h.chunk_id).map(|k| kinds.contains(k)).unwrap_or(false));
+    hits
+}
+
+fn filter_hits_by_prefix(conn: &Connection, mut hits: Vec<crate::retrieval::Hit>, prefix: &str) -> Vec<crate::retrieval::Hit> {
+    let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+    let map = item_paths_for_chunks(conn, &ids);
+    let roots = crate::items::folder_roots(conn);
+    hits.retain(|h| {
+        map.get(&h.chunk_id).map(|(ext, sid)| crate::items::item_under_prefix(ext, *sid, &roots, prefix)).unwrap_or(false)
+    });
+    hits
+}
+
+fn filter_hits_by_symbol(conn: &Connection, mut hits: Vec<crate::retrieval::Hit>, symbol: &str) -> Vec<crate::retrieval::Hit> {
+    let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+    let map = section_titles_for_chunks(conn, &ids);
+    hits.retain(|h| {
+        map.get(&h.chunk_id)
+            .map(|(title, path)| title.to_lowercase().contains(symbol) || path.to_lowercase().contains(symbol))
+            .unwrap_or(false)
+    });
+    hits
+}
+
+fn apply_search_filters(conn: &Connection, hits: Vec<crate::retrieval::Hit>, filters: &SearchFilters, k: usize) -> Vec<crate::retrieval::Hit> {
+    let mut hits = hits;
+    if let Some(env) = filters.env.as_deref() {
+        hits = filter_hits_by_env(conn, hits, env);
+    }
+    if let Some(kinds) = filters.kinds.as_deref() {
+        hits = filter_hits_by_kind(conn, hits, kinds);
+    }
+    if let Some(prefix) = filters.path_prefix.as_deref() {
+        hits = filter_hits_by_prefix(conn, hits, prefix);
+    }
+    if let Some(symbol) = filters.symbol.as_deref() {
+        hits = filter_hits_by_symbol(conn, hits, symbol);
+    }
+    hits.truncate(k);
+    hits
+}
+
 fn search_sync_inner(
     conn: &Connection,
     query: &str,
@@ -803,22 +1079,18 @@ fn search_sync_inner(
     project_id: Option<i64>,
     public_only: bool,
     query_embedding: Option<Vec<f32>>,
-    env_filter: Option<String>,
+    filters: &SearchFilters,
 ) -> Vec<crate::retrieval::Hit> {
     let scope = project_scope(conn, project_id, public_only);
-    let want_env = normalize_env_filter(env_filter);
-    // Widen the pool when filtering: the env cut runs after ranking, so the
-    // fetch must survive it (demote-only ranking keeps fixtures in play).
-    let fetch_k = if want_env.is_some() { (k * 5).clamp(k, 50) } else { k };
+    // Widen the pool when filtering: cuts run after ranking, so the fetch
+    // must survive them (demote-only ranking keeps fixtures in play).
+    let fetch_k = if filters.any() { (k * 5).clamp(k, 50) } else { k };
     let cfg = RetrievalConfig::from_env_with_top_k(fetch_k);
-    let mut hits = orchestrate(conn, query, query_embedding, scope, &cfg);
-    if let Some(env) = want_env {
-        let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
-        let classes = crate::retrieval::envs_for_chunks(conn, &ids);
-        hits.retain(|h| classes.get(&h.chunk_id).map(|c| *c == env).unwrap_or(false));
-        hits.truncate(k);
+    let hits = orchestrate(conn, query, query_embedding, scope, &cfg);
+    if !filters.any() {
+        return hits;
     }
-    hits
+    apply_search_filters(conn, hits, filters, k)
 }
 
 fn turn_text(turn: &AskTurn) -> String {
@@ -1081,7 +1353,7 @@ mod tests {
         let embedder = Arc::new(Embedder::new(settings.clone()));
         // Default settings: example remote base is untrusted (no ANCHOR_CLOUD_TRUST here).
         settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
-        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None };
+        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None };
         let res = search(&settings, &embedder, req, &data_dir).await;
         assert!(res.hits.is_empty(), "sensitive hit must be withheld, got {:?}", res.hits.len());
         assert_eq!(res.refusal.as_deref(), Some("gated_provider"));
@@ -1096,7 +1368,7 @@ mod tests {
         // Localhost is trusted in every environment — deterministic trust.
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         assert!(is_answer_trusted(&settings));
-        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None };
+        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None };
         let res = search(&settings, &embedder, req, &data_dir).await;
         assert!(!res.hits.is_empty(), "trusted provider must see the sensitive hit");
         assert!(res.refusal.is_none());
@@ -1109,18 +1381,18 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
-        let base = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None };
+        let base = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None };
         let compact = search(&settings, &embedder, base, &data_dir).await;
         assert!(!compact.hits.is_empty());
         assert!(compact.hits.iter().all(|h| h.content.is_empty()), "default must omit chunk bytes");
         assert!(compact.hits.iter().all(|h| !h.summary.is_empty() && !h.source_ref.is_empty()));
         assert!(compact.hits.iter().all(|h| !h.item_title.is_empty()), "item_title must carry provenance");
         assert!(compact.hits.iter().all(|h| h.path == "docs/f.md"), "flat docs fall back to the item path");
-        let full_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("summary,source_ref,score,content".to_string()), cursor: None, limit: None, include_content: None, env: None };
+        let full_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("summary,source_ref,score,content".to_string()), cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None };
         let full = search(&settings, &embedder, full_req, &data_dir).await;
         assert!(full.hits.iter().all(|h| !h.content.is_empty()), "fields incl. content must return bytes");
         // agent-friendly alias: include_content=true is fields=content
-        let alias_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: Some(true), env: None };
+        let alias_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: Some(true), env: None, kind: None, path_prefix: None, symbol: None };
         let alias = search(&settings, &embedder, alias_req, &data_dir).await;
         assert!(alias.hits.iter().all(|h| !h.content.is_empty()), "include_content=true must return bytes");
     }
@@ -1132,7 +1404,7 @@ mod tests {
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         // Both seeded chunks share these words, so one page of 1 must leave a next cursor.
-        let mk = |cursor: Option<usize>| SearchRequest { query: "quarterly report numbers".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("all".to_string()), cursor, limit: Some(1), include_content: None, env: None };
+        let mk = |cursor: Option<usize>| SearchRequest { query: "quarterly report numbers".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("all".to_string()), cursor, limit: Some(1), include_content: None, env: None, kind: None, path_prefix: None, symbol: None };
         let p1 = search(&settings, &embedder, mk(None), &data_dir).await;
         assert_eq!(p1.hits.len(), 1, "page size 1 must return exactly one hit");
         let next = p1.next_cursor.expect("first page must carry a cursor when hits remain");
@@ -1168,7 +1440,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
-        let req = SearchRequest { query: "sunshine".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None };
+        let req = SearchRequest { query: "sunshine".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None };
         let res = search(&settings, &embedder, req, &data_dir).await;
         assert!(!res.hits.is_empty(), "keyword search must find the seeded chunk");
         assert_eq!(res.retrieval, "keyword_only");
@@ -1341,6 +1613,9 @@ mod tests {
             limit: None,
             include_content: None,
             env: env.map(|s| s.to_string()),
+            kind: None,
+            path_prefix: None,
+            symbol: None,
         };
         let plain = search(&settings, &embedder, mk(None), &data_dir).await;
         assert_eq!(plain.hits.len(), 2, "both classes match the shared terms");
@@ -1359,5 +1634,427 @@ mod tests {
         assert_eq!(test_only.hits.len(), 1);
         assert_eq!(test_only.hits[0].item_id, Some(test_iid));
         assert_eq!(test_only.hits[0].env, "test");
+    }
+
+    #[test]
+    fn normalize_r36_filters() {
+        assert!(normalize_kind_filter(None).is_none());
+        assert!(normalize_kind_filter(Some(String::new())).is_none());
+        assert!(normalize_kind_filter(Some("banana".to_string())).is_none(), "unknown kinds mean unfiltered, like env");
+        assert_eq!(normalize_kind_filter(Some("document".to_string())), Some(vec!["document".to_string()]));
+        assert_eq!(
+            normalize_kind_filter(Some(" Entity , DOC_SUMMARY, banana ".to_string())),
+            Some(vec!["entity".to_string(), "doc_summary".to_string()]),
+            "case/space tolerant, unknown tokens dropped"
+        );
+        assert!(normalize_prefix_filter(None).is_none());
+        assert!(normalize_prefix_filter(Some("  ".to_string())).is_none());
+        assert_eq!(normalize_prefix_filter(Some("cfg/".to_string())), Some("cfg/".to_string()));
+        assert!(normalize_symbol_filter(None).is_none());
+        assert!(normalize_symbol_filter(Some(String::new())).is_none());
+        assert_eq!(normalize_symbol_filter(Some("  Fetch_User ".to_string())), Some("fetch_user".to_string()));
+        let req = SearchRequest {
+            query: "q".to_string(),
+            k: None,
+            project_id: None,
+            public_only: None,
+            fields: None,
+            cursor: None,
+            limit: None,
+            include_content: None,
+            env: Some("live".to_string()),
+            kind: None,
+            path_prefix: None,
+            symbol: None,
+        };
+        assert!(SearchFilters::from_request(&req).any());
+        let req_none = SearchRequest {
+            query: "q".to_string(),
+            k: None,
+            project_id: None,
+            public_only: None,
+            fields: None,
+            cursor: None,
+            limit: None,
+            include_content: None,
+            env: None,
+            kind: Some("banana".to_string()),
+            path_prefix: None,
+            symbol: None,
+        };
+        assert!(!SearchFilters::from_request(&req_none).any(), "unknown-only kind normalizes away");
+    }
+
+    #[test]
+    fn batched_filter_lookups_handle_empty() {
+        let (_dir, conn, _settings) = seed_gate_db();
+        assert!(kinds_for_chunks(&conn, &[]).is_empty());
+        assert!(item_paths_for_chunks(&conn, &[]).is_empty());
+        assert!(section_titles_for_chunks(&conn, &[]).is_empty());
+        assert!(section_breadcrumbs(&conn, &[]).is_empty());
+    }
+
+    /// Six chunks sharing the query terms `acme ledger`: doc chunks on
+    /// `cfg/a.yml` + `docs/b.md`, an entity chunk on the cfg item, and three
+    /// chunks on `src/code.py` (symbol section, other section, flat).
+    fn seed_filter_db() -> (tempfile::TempDir, Connection, Arc<SettingsService>, String) {
+        let dir = tempdir().unwrap();
+        // The corpus dir only lends its path string for root matching (the
+        // folder root is config text — existence is never checked), so it can
+        // drop right away.
+        let root = tempdir().unwrap().path().to_string_lossy().to_string();
+        let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let cfg = serde_json::json!({"path": root}).to_string();
+        conn.execute("INSERT INTO sources (connector, name, config) VALUES ('folder','ordinary',?1)", [cfg]).unwrap();
+        let sid: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
+        let mk_item = |ext: &str| {
+            conn.execute(
+                "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h',?2,?2,'acme ledger body')",
+                rusqlite::params![sid, ext],
+            )
+            .unwrap();
+            conn.query_row("SELECT id FROM ingested_items WHERE external_id=?1", [ext], |r| r.get::<_, i64>(0)).unwrap()
+        };
+        let cfg_iid = mk_item("cfg/a.yml");
+        let _docs_iid = mk_item("docs/b.md");
+        let code_iid = mk_item("src/code.py");
+        let mk_chunk = |iid: i64, content: &str| {
+            conn.execute("INSERT INTO chunks (item_id, source_ref, content) VALUES (?1,'ref',?2)", rusqlite::params![iid, content]).unwrap();
+        };
+        mk_chunk(cfg_iid, "acme ledger alpha config");
+        // docs item chunk
+        let docs_iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE external_id='docs/b.md'", [], |r| r.get(0)).unwrap();
+        mk_chunk(docs_iid, "acme ledger beta docs");
+        // entity chunk on the cfg item
+        conn.execute("INSERT INTO entities (item_id, kind, summary) VALUES (?1,'decision','acme ledger gamma entity')", [cfg_iid]).unwrap();
+        let eid: i64 = conn.last_insert_rowid();
+        conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content) VALUES (?1,'entity','ref','acme ledger gamma entity')", [eid]).unwrap();
+        // code item: symbol section, other section, flat chunk
+        conn.execute("INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,0,'def fetch_user','fetch_user')", [code_iid]).unwrap();
+        let sym = conn.last_insert_rowid();
+        conn.execute("INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,0,'Other','Other')", [code_iid]).unwrap();
+        let other = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO chunks (item_id, section_id, path, source_ref, content) VALUES (?1,?2,'fetch_user','ref','acme ledger delta symbol')",
+            rusqlite::params![code_iid, sym],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chunks (item_id, section_id, path, source_ref, content) VALUES (?1,?2,'Other','ref','acme ledger epsilon misc')",
+            rusqlite::params![code_iid, other],
+        )
+        .unwrap();
+        mk_chunk(code_iid, "acme ledger zeta flat");
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let settings = Arc::new(SettingsService::new(store));
+        settings.set_data_dir(dir.path());
+        settings.set("embed_base_url", "http://127.0.0.1:9", &conn).unwrap();
+        (dir, conn, settings, root)
+    }
+
+    fn filter_req(query: &str, kind: Option<&str>, path_prefix: Option<&str>, symbol: Option<&str>) -> SearchRequest {
+        SearchRequest {
+            query: query.to_string(),
+            k: Some(8),
+            project_id: None,
+            public_only: None,
+            fields: Some("all".to_string()),
+            cursor: None,
+            limit: None,
+            include_content: None,
+            env: None,
+            kind: kind.map(|s| s.to_string()),
+            path_prefix: path_prefix.map(|s| s.to_string()),
+            symbol: symbol.map(|s| s.to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn search_kind_filter_cuts_by_chunk_kind() {
+        let (dir, conn, settings, _root) = seed_filter_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        let plain = search(&settings, &embedder, filter_req("acme ledger", None, None, None), &data_dir).await;
+        assert_eq!(plain.hits.len(), 6, "all six seeded chunks match the shared terms");
+        let docs = search(&settings, &embedder, filter_req("acme ledger", Some("document"), None, None), &data_dir).await;
+        assert_eq!(docs.hits.len(), 5);
+        assert!(docs.hits.iter().all(|h| h.entity_id.is_none()));
+        let ents = search(&settings, &embedder, filter_req("acme ledger", Some("ENTITY"), None, None), &data_dir).await;
+        assert_eq!(ents.hits.len(), 1);
+        assert!(ents.hits[0].entity_id.is_some());
+        let both = search(&settings, &embedder, filter_req("acme ledger", Some("document,entity"), None, None), &data_dir).await;
+        assert_eq!(both.hits.len(), 6, "comma list unions");
+        let bogus = search(&settings, &embedder, filter_req("acme ledger", Some("banana"), None, None), &data_dir).await;
+        assert_eq!(bogus.hits.len(), 6, "unknown kind means unfiltered, like env");
+        let summaries = search(&settings, &embedder, filter_req("acme ledger", Some("section_summary"), None, None), &data_dir).await;
+        assert!(summaries.hits.is_empty(), "known-but-absent kind matches nothing");
+    }
+
+    #[tokio::test]
+    async fn search_path_prefix_filter_cuts_by_item_dir() {
+        let (dir, conn, settings, root) = seed_filter_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        // Relative: the cfg item's doc chunk AND its entity chunk (paths
+        // resolve through the entity's item).
+        let rel = search(&settings, &embedder, filter_req("acme ledger", None, Some("cfg/"), None), &data_dir).await;
+        assert_eq!(rel.hits.len(), 2);
+        assert!(rel.hits.iter().all(|h| h.item_title == "cfg/a.yml"));
+        // Absolute through the folder root spells the same cut.
+        let abs = search(&settings, &embedder, filter_req("acme ledger", None, Some(&format!("{root}/cfg")), None), &data_dir).await;
+        assert_eq!(abs.hits.len(), 2);
+        assert!(abs.hits.iter().all(|h| h.item_title == "cfg/a.yml"));
+        let none = search(&settings, &embedder, filter_req("acme ledger", None, Some("/no/such/root"), None), &data_dir).await;
+        assert!(none.hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_symbol_filter_matches_section_title() {
+        let (dir, conn, settings, _root) = seed_filter_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        let sym = search(&settings, &embedder, filter_req("acme ledger", None, None, Some("fetch_user")), &data_dir).await;
+        assert_eq!(sym.hits.len(), 1);
+        assert_eq!(sym.hits[0].item_title, "src/code.py");
+        assert!(sym.hits[0].path.contains("fetch_user"), "hit path carries the section: {}", sym.hits[0].path);
+        let upper = search(&settings, &embedder, filter_req("acme ledger", None, None, Some("FETCH_USER")), &data_dir).await;
+        assert_eq!(upper.hits.len(), 1, "symbol match is case-insensitive");
+        let miss = search(&settings, &embedder, filter_req("acme ledger", None, None, Some("no_such_symbol")), &data_dir).await;
+        assert!(miss.hits.is_empty(), "section-less chunks drop out of a symbol cut");
+    }
+
+    #[tokio::test]
+    async fn search_filters_combine_with_and() {
+        let (dir, conn, settings, root) = seed_filter_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        // doc ∩ symbol: only the symbol-section chunk survives.
+        let both = search(&settings, &embedder, filter_req("acme ledger", Some("document"), None, Some("fetch_user")), &data_dir).await;
+        assert_eq!(both.hits.len(), 1);
+        assert!(both.hits[0].entity_id.is_none());
+        // entity ∩ symbol: entity chunks have no section — empty intersection.
+        let empty = search(&settings, &embedder, filter_req("acme ledger", Some("entity"), None, Some("fetch_user")), &data_dir).await;
+        assert!(empty.hits.is_empty());
+        // kind ∩ path: the cfg entity chunk is the only entity under cfg/.
+        let cfg_ent = search(&settings, &embedder, filter_req("acme ledger", Some("entity"), Some("cfg/"), None), &data_dir).await;
+        assert_eq!(cfg_ent.hits.len(), 1);
+        assert!(cfg_ent.hits[0].entity_id.is_some());
+        // Absolute prefix ∩ symbol: the symbol chunk lives under src/.
+        let abs_sym = search(
+            &settings,
+            &embedder,
+            filter_req("acme ledger", None, Some(&format!("{root}/src")), Some("fetch_user")),
+            &data_dir,
+        )
+        .await;
+        assert_eq!(abs_sym.hits.len(), 1);
+        // Scores survive filtering untouched (score-neutral cuts).
+        let plain = search(&settings, &embedder, filter_req("acme ledger", None, None, None), &data_dir).await;
+        let plain_score = plain.hits.iter().find(|h| h.summary.contains("delta symbol")).map(|h| h.score);
+        assert_eq!(both.hits[0].score, plain_score.unwrap_or(-1.0), "a cut must not rescore");
+    }
+
+    #[tokio::test]
+    async fn search_filters_survive_parent_return() {
+        // All four R36.6 cuts AND-combined on parent-returned hits: filters
+        // read matched-chunk identity from the DB, so grouping never
+        // confuses them.
+        let (dir, conn, settings, root) = seed_filter_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        let req = |env: Option<&str>, kind: Option<&str>, prefix: Option<&str>, symbol: Option<&str>| SearchRequest {
+            query: "acme ledger".to_string(),
+            k: Some(8),
+            project_id: None,
+            public_only: None,
+            fields: Some("all".to_string()),
+            cursor: None,
+            limit: None,
+            include_content: None,
+            env: env.map(|s| s.to_string()),
+            kind: kind.map(|s| s.to_string()),
+            path_prefix: prefix.map(|s| s.to_string()),
+            symbol: symbol.map(|s| s.to_string()),
+        };
+        // Four-way: only the live doc chunk under src/ in the symbol section.
+        let four = search(&settings, &embedder, req(Some("live"), Some("document"), Some("src/"), Some("fetch_user")), &data_dir).await;
+        assert_eq!(four.hits.len(), 1);
+        assert_eq!(four.hits[0].item_title, "src/code.py");
+        assert!(four.hits[0].content.contains("[match "), "surviving hit is parent-shaped");
+        // Same combo with an absolute prefix spells the same cut.
+        let abs = search(&settings, &embedder, req(Some("live"), Some("document"), Some(&format!("{root}/src")), Some("fetch_user")), &data_dir).await;
+        assert_eq!(abs.hits.len(), 1);
+        // env=test empties the all-live seed under any combination.
+        let tst = search(&settings, &embedder, req(Some("test"), Some("document"), None, None), &data_dir).await;
+        assert!(tst.hits.is_empty());
+        // kind ∩ env: the cfg entity chunk is the only live entity.
+        let ent = search(&settings, &embedder, req(Some("live"), Some("entity"), None, None), &data_dir).await;
+        assert_eq!(ent.hits.len(), 1);
+        assert!(ent.hits[0].entity_id.is_some());
+    }
+
+    /// Parent-return seed: one `docs/billing.md` item with a two-section
+    /// tree sharing the query terms `tungsten invoice` — `Billing` holds
+    /// two matching chunks (merge partners), `Auth` holds one.
+    fn seed_parent_db() -> (tempfile::TempDir, Connection, Arc<SettingsService>) {
+        let dir = tempdir().unwrap();
+        let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (connector, name) VALUES ('folder','ordinary')", []).unwrap();
+        let sid: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h','billing.md','docs/billing.md','tungsten invoice body')",
+            [sid],
+        )
+        .unwrap();
+        let iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE external_id='docs/billing.md'", [], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,1,'Billing','Billing')", [iid]).unwrap();
+        let bill = conn.last_insert_rowid();
+        conn.execute("INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,1,'Auth','Auth')", [iid]).unwrap();
+        let auth = conn.last_insert_rowid();
+        for (sec, path, content) in [
+            (bill, "Billing", "tungsten invoice first billing lines"),
+            (bill, "Billing", "tungsten invoice second billing lines"),
+            (auth, "Auth", "tungsten invoice auth lines"),
+        ] {
+            conn.execute(
+                "INSERT INTO chunks (item_id, section_id, path, source_ref, content) VALUES (?1,?2,?3,'billing.md',?4)",
+                rusqlite::params![iid, sec, path, content],
+            )
+            .unwrap();
+        }
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let settings = Arc::new(SettingsService::new(store));
+        settings.set_data_dir(dir.path());
+        settings.set("embed_base_url", "http://127.0.0.1:9", &conn).unwrap();
+        (dir, conn, settings)
+    }
+
+    #[tokio::test]
+    async fn search_groups_matches_by_parent_section() {
+        // End to end: three chunk matches become two parent hits, and every
+        // hit carries the full R36.3 field set.
+        let (dir, conn, settings) = seed_parent_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        let req = SearchRequest { query: "tungsten invoice".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("all".to_string()), cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None };
+        let res = search(&settings, &embedder, req, &data_dir).await;
+        assert_eq!(res.hits.len(), 2, "two Billing matches merge into one parent");
+        let bill = res.hits.iter().find(|h| h.breadcrumb == "Billing").expect("billing parent");
+        assert!(bill.chunk_id.is_some() && bill.item_id.is_some() && bill.section_id.is_some(), "ids carried");
+        assert_eq!(bill.path, "Billing");
+        assert_eq!(bill.item_title, "billing.md");
+        assert_eq!(bill.env, "live");
+        assert!(!bill.content_truncated, "whole section returned");
+        assert_eq!(bill.content.matches("[match ").count(), 2, "every match marked, got:\n{}", bill.content);
+        assert!(bill.summary.contains("[match "), "summary windows on the mark: {}", bill.summary);
+        let auth = res.hits.iter().find(|h| h.breadcrumb == "Auth").expect("auth parent");
+        assert_eq!(auth.content.matches("[match ").count(), 1);
+    }
+
+    fn seed_floor_db() -> (tempfile::TempDir, Connection) {
+        // Item A matches at summary AND leaf; item B matches ONLY mid-body
+        // (its head-extract summary sees nothing) — the ai-03 shape.
+        let dir = tempdir().unwrap();
+        let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (connector, name) VALUES ('folder','floor')", []).unwrap();
+        let sid: i64 = conn.query_row("SELECT id FROM sources WHERE name='floor'", [], |r| r.get(0)).unwrap();
+        for (title, ext, sum, body) in [
+            ("alpha.md", "docs/alpha.md", "alpha alpha project kickoff", "alpha first lines here"),
+            ("beta.md", "docs/beta.md", "nothing relevant here at all", "buried alpha mention mid-body lines"),
+        ] {
+            conn.execute(
+                "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h',?2,?3,'x')",
+                rusqlite::params![sid, title, ext],
+            )
+            .unwrap();
+            let iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE title=?1", [title], |r| r.get(0)).unwrap();
+            conn.execute("INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,1,'S','S')", [iid]).unwrap();
+            let sec = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO chunks (item_id, section_id, kind, source_ref, content) VALUES (?1,?2,'section_summary',?3,?4)",
+                rusqlite::params![iid, sec, ext, sum],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO chunks (item_id, section_id, source_ref, content) VALUES (?1,?2,?3,?4)",
+                rusqlite::params![iid, sec, ext, body],
+            )
+            .unwrap();
+        }
+        (dir, conn)
+    }
+
+    #[test]
+    fn orchestrate_flat_floor_rescues_mid_body_match() {
+        // Differential: TOC fencing alone excludes B (its summary matches
+        // nothing); the flat recall floor brings B back without losing A.
+        let (_dir, conn) = seed_floor_db();
+        let cfg = RetrievalConfig::from_env_with_top_k(8);
+        let toc = retrieval::toc_search(&conn, "alpha", None, None, 8, true);
+        assert!(!toc.is_empty(), "fence active: A matches at summary stage");
+        assert!(toc.iter().all(|h| h.item_id != Some(beta_id(&conn))), "TOC alone misses B: {:?}", toc.iter().map(|h| h.item_id).collect::<Vec<_>>());
+        let hits = orchestrate(&conn, "alpha", None, None, &cfg);
+        let items: Vec<Option<i64>> = hits.iter().map(|h| h.item_id).collect();
+        assert!(items.contains(&Some(alpha_id(&conn))), "A kept: {items:?}");
+        assert!(items.contains(&Some(beta_id(&conn))), "floor rescues B: {items:?}");
+    }
+
+    fn alpha_id(conn: &Connection) -> i64 {
+        conn.query_row("SELECT id FROM ingested_items WHERE title='alpha.md'", [], |r| r.get(0)).unwrap()
+    }
+
+    fn beta_id(conn: &Connection) -> i64 {
+        conn.query_row("SELECT id FROM ingested_items WHERE title='beta.md'", [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn build_citations_carries_parent_shape() {
+        let (dir, conn, _settings) = seed_parent_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let (cid, iid, sec): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT c.id, c.item_id, c.section_id FROM chunks c WHERE c.content LIKE 'tungsten invoice first%'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        let mut hit = mk_hit(1, false);
+        hit.chunk_id = cid;
+        hit.item_id = Some(iid);
+        hit.section_id = Some(sec);
+        hit.path = "Billing".to_string();
+        // Terms early, mark late: the preview must window on the mark (a
+        // vector-style match), not on the first term occurrence.
+        hit.content = format!("tungsten early {}[match {}]\nlate match bytes\n[/match {}]", "zz ".repeat(400), cid, cid);
+        let cites = build_citations(std::slice::from_ref(&hit), &data_dir, true, 5, "tungsten");
+        assert_eq!(cites.len(), 1);
+        assert_eq!(cites[0].chunk_id, Some(cid));
+        assert_eq!(cites[0].section_id, Some(sec));
+        assert_eq!(cites[0].breadcrumb, "Billing");
+        assert_eq!(cites[0].path, "Billing");
+        assert_eq!(cites[0].item_id, Some(iid));
+        assert!(cites[0].summary.contains(&format!("[match {}]", cid)), "summary: {}", cites[0].summary);
+        assert!(!cites[0].summary.contains("tungsten early"), "summary must not pull to early terms: {}", cites[0].summary);
+        assert!(cites[0].snippet.contains(&format!("[match {}]", cid)));
+        assert_eq!(cites[0].content, hit.content, "opt-in returns verbatim parent bytes");
+    }
+
+    #[test]
+    fn hit_preview_centers_marked_parents_on_the_mark() {
+        let content = format!("tungsten early {}[match 9]\nlate match bytes\n[/match 9]", "zz ".repeat(400));
+        let s = hit_preview(&content, "tungsten", 9, 200);
+        assert!(s.contains("[match 9]"), "marked parents window on the mark, got: {s}");
+        assert!(!s.contains("tungsten early"), "terms outside the mark don't pull the window");
+        // Unmarked content keeps match_snippet behavior.
+        assert_eq!(hit_preview("plain content", "zzz", 1, 50), crate::retrieval::match_snippet("plain content", "zzz", 50));
     }
 }

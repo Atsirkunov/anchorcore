@@ -1,3 +1,14 @@
+//! Prose/code/config splitters: fixed windows (`chunk_text`), heading sections
+//! (`chunk_document_with_sections`), symbol sections (`chunk_code_with_sections`)
+//! and key sections (`chunk_config_with_sections`).
+//!
+//! R36.7 prose structure rules: `#`–`######` markers (emitted by `extract.rs`
+//! for docx `w:pStyle` / ODT `text:h` / HTML `h1`–`h6`, native in Markdown)
+//! section the document; `§`/numbered/ALL-CAPS lines keep their legacy rules;
+//! heading-less docs over one window fall back to paragraph windows; tables
+//! split by row groups with the header repeated. Auto-generated tables of
+//! contents are stripped at extraction, never indexed.
+
 use std::sync::OnceLock;
 
 use regex::Regex;
@@ -12,7 +23,7 @@ fn env_usize(key: &str, fallback: usize) -> usize {
 }
 
 /// Shared sliding window over chars (Python str-len semantics, UTF-8 safe).
-/// Powers `chunk_text` and `classify_windows` — same loop, one place.
+/// Powers `classify_windows` — `chunk_text` snaps to boundaries instead.
 fn slide_windows(text: &str, size: usize, step: usize) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     if chars.len() <= size {
@@ -39,22 +50,249 @@ fn slide_windows(text: &str, size: usize, step: usize) -> Vec<String> {
     out
 }
 
-/// Fixed-size chunks with overlap — mirrors `backend/app/chunking.py:14` `chunk_text`.
-/// Operates on chars (Python str len) to match Python semantics and avoid UTF-8 panics.
+/// Fixed-size chunks with overlap — boundary-snapped: window ends pull back
+/// to a sentence end, else a word break (bounded by the overlap so coverage
+/// never gaps); window starts advance to the next word start (clamped to the
+/// previous end). The single-window fast path returns the text untouched.
+/// The archived Python `chunk_text` sliced blindly mid-word; Rust snaps so
+/// entity summaries and oversized paragraphs stay whole-worded.
 pub fn chunk_text(text: &str) -> Vec<String> {
     let size = env_usize("ANCHOR_CHUNK_SIZE", CHUNK_SIZE);
     let overlap = env_usize("ANCHOR_CHUNK_OVERLAP", CHUNK_OVERLAP);
-    slide_windows(text, size, size.saturating_sub(overlap).max(1))
+    snap_windows(text, size, overlap)
+}
+
+fn snap_windows(text: &str, size: usize, overlap: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= size || size == 0 {
+        return vec![text.to_string()];
+    }
+    let step = size.saturating_sub(overlap).max(1);
+    let max_shrink = overlap.min(size - 1);
+    let mut out = Vec::new();
+    let mut start = snap_start(&chars, 0);
+    loop {
+        let raw_end = (start + size).min(chars.len());
+        // The tail window always covers to the end — never strand a suffix.
+        let end = if raw_end == chars.len() { chars.len() } else { snap_end(&chars, raw_end, max_shrink) };
+        let chunk = chars[start..end].iter().collect::<String>();
+        let trimmed = chunk.trim_end();
+        if !trimmed.is_empty() {
+            out.push(trimmed.to_string());
+        }
+        if end == chars.len() {
+            break;
+        }
+        start = snap_start(&chars, start + step).min(end);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
+/// Next word start at/after `p`: first non-space char that opens a word
+/// (string start or preceded by whitespace). Falls back to `p` when the
+/// rest is one partial word or trailing spaces (clamped/skipped by caller).
+fn snap_start(chars: &[char], p: usize) -> usize {
+    let mut i = p.min(chars.len());
+    while i < chars.len() {
+        if !chars[i].is_whitespace() && (i == 0 || chars[i - 1].is_whitespace()) {
+            return i;
+        }
+        i += 1;
+    }
+    p.min(chars.len())
+}
+
+/// Pull a window end back to a sentence end, else a word break, searching
+/// at most `max` chars back. Falls back to the raw end (hard cut) when no
+/// boundary fits — long tokens still split rather than drop.
+fn snap_end(chars: &[char], raw_end: usize, max: usize) -> usize {
+    let lo = raw_end.saturating_sub(max);
+    if let Some(end) = sentence_end_in(chars, lo, raw_end) {
+        return end;
+    }
+    word_break_in(chars, lo, raw_end).unwrap_or(raw_end)
+}
+
+/// Last `[.?!]` followed by whitespace in `[lo, raw_end)` — snap after the
+/// space run. Abbreviations and decimals ("U.S.A", "3.5") never match.
+fn sentence_end_in(chars: &[char], lo: usize, raw_end: usize) -> Option<usize> {
+    let mut i = raw_end;
+    while i > lo {
+        i -= 1;
+        if matches!(chars[i], '.' | '!' | '?') {
+            let mut j = i + 1;
+            while j < raw_end && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j > i + 1 {
+                return Some(j);
+            }
+        }
+    }
+    None
+}
+
+/// Last whitespace in `[lo, raw_end)` — snap at it (caller's trim cleans).
+fn word_break_in(chars: &[char], lo: usize, raw_end: usize) -> Option<usize> {
+    let mut k = raw_end;
+    while k > lo {
+        k -= 1;
+        if chars[k].is_whitespace() {
+            return Some(k);
+        }
+    }
+    None
+}
+
+/// B12 document cleaning (archived `cleaning.py` parity): control chars,
+/// page-number lines and whitespace per `clean_text`, plus repeated
+/// header/footer line stripping. Applied to the document copy that feeds
+/// chunking — `ingested_items.text` stays raw, exactly like the archived
+/// pipeline (`strip_repeated(clean_text(t), repeated_lines(t))`).
+pub fn clean_doc_text(text: &str) -> String {
+    let cleaned = clean_text_lines(text);
+    strip_repeated_lines(&cleaned, &repeated_lines(text))
+}
+
+/// Per-line cleaning: `\r` normalisation, control-char strip, page-number
+/// line drop, intra-line whitespace collapse, blank-run collapse.
+fn clean_text_lines(text: &str) -> String {
+    let nls = text.replace("\r\n", "\n").replace('\r', "\n");
+    let mut out: Vec<String> = Vec::new();
+    let mut blanks = 0usize;
+    for line in nls.split('\n') {
+        let noctrl: String = line.chars().filter(|c| !is_stripped_control(*c)).collect();
+        if noctrl.trim().is_empty() {
+            blanks += 1;
+            if blanks == 1 {
+                out.push(String::new());
+            }
+            continue;
+        }
+        blanks = 0;
+        if is_page_number_line(noctrl.trim()) {
+            continue;
+        }
+        out.push(collapse_ws_rstrip(&noctrl));
+    }
+    out.join("\n").trim().to_string()
+}
+
+/// Control chars the cleaner strips (`\t`/`\n` survive; `\r` is normalised
+/// to `\n` before this runs).
+fn is_stripped_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0}'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{7f}' | '\u{ad}' | '\u{200b}'..='\u{200f}' | '\u{feff}' | '\u{fffd}'
+    )
+}
+
+/// Collapse `[ \t]` runs to one space, strip the right end (a single
+/// leading space survives, like the archived cleaner).
+fn collapse_ws_rstrip(line: &str) -> String {
+    let mut collapsed = String::with_capacity(line.len());
+    let mut in_ws = false;
+    for c in line.chars() {
+        if c == ' ' || c == '\t' {
+            if !in_ws {
+                collapsed.push(' ');
+            }
+            in_ws = true;
+        } else {
+            collapsed.push(c);
+            in_ws = false;
+        }
+    }
+    collapsed.trim_end().to_string()
+}
+
+/// Page-number lines: `42`, `Page 3`, `3 of 10`, `- 12 -`, `— 7 —`.
+/// Anything else carrying digits (`Section 42`, `42 things`) is kept.
+fn is_page_number_line(s: &str) -> bool {
+    static RE_PAGE: OnceLock<Regex> = OnceLock::new();
+    static RE_ORPHAN: OnceLock<Regex> = OnceLock::new();
+    let re = RE_PAGE
+        .get_or_init(|| Regex::new(r"(?i)^(?:page\s*)?\d{1,4}(?:\s*of\s*\d{1,4})?\s*$").unwrap());
+    if re.is_match(s) {
+        return true;
+    }
+    let orphan =
+        RE_ORPHAN.get_or_init(|| Regex::new(r"^[-–—]\s*\d{1,4}\s*[-–—]$").unwrap());
+    orphan.is_match(s)
+}
+
+/// Lines repeated across the document (headers/footers/templates): lowercased
+/// stripped lines at/above threshold, computed on the raw text like the
+/// archived pipeline. Lines over 120 chars never count.
+fn repeated_lines(text: &str) -> std::collections::HashSet<String> {
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut total = 0usize;
+    for line in text.split('\n') {
+        let s = line.trim().to_lowercase();
+        if s.is_empty() || s.chars().count() > 120 {
+            continue;
+        }
+        *counts.entry(s).or_insert(0) += 1;
+        total += 1;
+    }
+    let threshold = repeat_threshold(total);
+    counts.into_iter().filter(|(_, c)| *c >= threshold).map(|(s, _)| s).collect()
+}
+
+/// `max(3, round(total * 0.01))` with Python banker's rounding, in integer
+/// math (exact — float `0.01` never enters).
+fn repeat_threshold(total: usize) -> usize {
+    let q = total / 100;
+    let r = total % 100;
+    let rounded = q + if r > 50 { 1 } else if r < 50 { 0 } else { q % 2 };
+    rounded.max(3)
+}
+
+fn strip_repeated_lines(text: &str, repeated: &std::collections::HashSet<String>) -> String {
+    if repeated.is_empty() {
+        return text.to_string();
+    }
+    text.split('\n')
+        .filter(|l| !repeated.contains(l.trim().to_lowercase().as_str()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Parser-emitted heading marker (R36.7): `#`–`######` + space, shared by
+/// `extract.rs` (docx `w:pStyle`, ODT `text:h`, HTML `h1`–`h6`) and native
+/// Markdown. No length cap — a long extractor heading still sections (its
+/// title truncates via `truncate_title`); `#nospace` and `#######` (7+) are
+/// body text, never headings.
+pub(crate) fn marker_heading(line: &str) -> Option<(i32, &str)> {
+    let s = line.trim();
+    let hashes = s.chars().take_while(|c| *c == '#').count();
+    if !(1..=6).contains(&hashes) {
+        return None;
+    }
+    // `#` is one byte, so `hashes` is a safe byte index into the prefix run.
+    let rest = s.get(hashes..)?.strip_prefix([' ', '\t'])?;
+    let title = rest.trim();
+    if title.is_empty() {
+        return None;
+    }
+    Some((hashes as i32, title))
 }
 
 /// Single heading classifier — was `is_heading` + `heading_level` (+ 3 level
 /// helpers), which evaluated the same regexes twice. Returns the section level
 /// (`Some`) or `None` for body text. Level rules are unchanged: §-forms carry
 /// dots (`§434`→1, `4.2.1`-style→1+dots), article/annex/section words and
-/// ALL-CAPS lines are level 1.
+/// ALL-CAPS lines are level 1. R36.7 checks `#` markers first (they bypass
+/// the 80-char guard — parser structure, not heuristic guesswork).
 fn classify_heading(line: &str) -> Option<i32> {
     static RE_NUM: OnceLock<Regex> = OnceLock::new();
     static RE_CAPS: OnceLock<Regex> = OnceLock::new();
+    if let Some((level, _)) = marker_heading(line) {
+        return Some(level);
+    }
     let s = line.trim();
     if s.is_empty() || s.len() > 80 {
         return None;
@@ -135,7 +373,7 @@ pub fn chunk_document_with_sections(text: &str) -> (Vec<SectionMeta>, Vec<ChunkM
 
     for line in lines {
         if let Some(level) = classify_heading(line) {
-            let title = line.trim().to_string();
+            let title = section_title(line);
             // pop stack to find parent
             while let Some(&top) = stack.last() {
                 if raw_sections[top].level >= level {
@@ -192,10 +430,217 @@ pub fn chunk_document_with_sections(text: &str) -> (Vec<SectionMeta>, Vec<ChunkM
     // if raw_sections was root-only with empty title, keep section but chunks will map to it
     // filter empty metas? keep all for tree completeness (root with level 0 may be omitted if empty title and no parent)
     // Keep metas as is; pipeline will skip inserting empty-title root if it has no content? but we keep it for now.
-    materialize(raw_sections, max_chars)
+    // R36.7: a root-only document has no headings — paragraph windows give
+    // parent-return section units instead of one whole-file section.
+    let raw_sections = if raw_sections.len() == 1 && raw_sections[0].title.is_empty() {
+        fallback_windows(&raw_sections[0].lines.join("\n"))
+    } else {
+        raw_sections
+    };
+    materialize_opts(raw_sections, max_chars, true)
+}
+
+/// Section title for a heading line: marker headings (`# Title`) drop the
+/// markers (breadcrumbs read naturally; the content keeps the marker line),
+/// legacy `§`/numbered/ALL-CAPS headings keep today's verbatim title.
+fn section_title(line: &str) -> String {
+    if let Some((_, title)) = marker_heading(line) {
+        return truncate_title(title);
+    }
+    line.trim().to_string()
+}
+
+/// Heading-less fallback (R36.7): paragraph-aligned sliding windows, each
+/// ~2–4 KB with ~0.5 KB of shared paragraphs, deterministic. Docs under one
+/// window keep today's single root; windows carry empty titles — unit
+/// scaffolding for parent-return, not fabricated headings.
+const FALLBACK_WINDOW_MIN: usize = 2000;
+const FALLBACK_WINDOW_MAX: usize = 4000;
+const FALLBACK_OVERLAP: usize = 500;
+
+fn fallback_windows(text: &str) -> Vec<RawSection> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"\n\s*\n").unwrap());
+    let paras: Vec<String> = re
+        .split(text)
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    let total: usize = paras.iter().map(|p| p.chars().count() + 2).sum();
+    if paras.len() < 2 || total <= FALLBACK_WINDOW_MAX {
+        return vec![root_section(text)];
+    }
+    let mut raw = Vec::new();
+    let mut s = 0;
+    while s < paras.len() {
+        let e = window_end(&paras, s);
+        raw.push(window_section(&paras[s..e]));
+        if e >= paras.len() {
+            break;
+        }
+        s = overlap_start(&paras, s, e);
+    }
+    raw
+}
+
+/// Grow a window from `s`: stop before exceeding MAX once MIN is held; the
+/// first paragraph is always taken, so a lone giant paragraph becomes a
+/// single oversized window (hard-split later, never dropped).
+fn window_end(paras: &[String], s: usize) -> usize {
+    let mut size = 0usize;
+    let mut e = s;
+    while e < paras.len() {
+        let next = paras[e].chars().count() + 2;
+        if e > s && size >= FALLBACK_WINDOW_MIN && size + next > FALLBACK_WINDOW_MAX {
+            break;
+        }
+        size += next;
+        e += 1;
+    }
+    e.max(s + 1)
+}
+
+/// Next window starts strictly after `s`, sharing ~0.5 KB of trailing
+/// paragraphs; a single-paragraph window advances without overlap.
+fn overlap_start(paras: &[String], s: usize, e: usize) -> usize {
+    let mut j = e;
+    let mut shared = 0usize;
+    while j > s + 1 && shared < FALLBACK_OVERLAP {
+        j -= 1;
+        shared += paras[j].chars().count() + 2;
+    }
+    j.min(e.saturating_sub(1)).max(s + 1)
+}
+
+fn window_section(paras: &[String]) -> RawSection {
+    let mut lines = Vec::new();
+    for (i, p) in paras.iter().enumerate() {
+        if i > 0 {
+            lines.push(String::new());
+        }
+        lines.extend(p.split('\n').map(|l| l.to_string()));
+    }
+    RawSection {
+        title: String::new(),
+        level: 0,
+        parent: None,
+        path: String::new(),
+        lines,
+    }
+}
+
+/// Table shape inside a paragraph block (R36.7): Markdown pipe rows or the
+/// tab-separated rows `extract.rs` emits for docx/odt/HTML tables.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TableKind {
+    Markdown,
+    Tsv,
+}
+
+/// A paragraph is a table only when it holds 2+ non-blank lines and EVERY
+/// line is the same row kind — one caption line degrades the block to plain
+/// text (kept whole if it fits, hard-split if not).
+fn table_kind(para: &str) -> Option<TableKind> {
+    let lines: Vec<&str> = para.lines().filter(|l| !l.trim().is_empty()).collect();
+    if lines.len() < 2 {
+        return None;
+    }
+    if lines.iter().all(|l| is_md_row(l)) {
+        return Some(TableKind::Markdown);
+    }
+    if lines.iter().all(|l| is_tsv_row(l)) {
+        return Some(TableKind::Tsv);
+    }
+    None
+}
+
+fn is_md_row(line: &str) -> bool {
+    let t = line.trim();
+    // `|` is one byte, so byte index 1 is the char after it.
+    t.starts_with('|') && t.len() > 1 && t[1..].contains('|')
+}
+
+fn is_tsv_row(line: &str) -> bool {
+    // trimmed: leading-indent tabs (code) never count, interior ones do.
+    line.trim().contains('\t')
+}
+
+fn is_md_delimiter(line: &str) -> bool {
+    let t = line.trim();
+    t.contains('-') && t.chars().all(|c| matches!(c, '|' | ':' | '-' | ' ' | '\t'))
+}
+
+/// Split an over-cap table into row groups, repeating the header block (the
+/// header row plus the Markdown delimiter row, if any) on every unit — an
+/// unheadered row group is unanswerable. Degenerate shapes (a header or a
+/// single row past the cap alone) hard-split instead; content is never cut.
+fn split_table(para: &str, kind: TableKind, max_chars: usize) -> Vec<String> {
+    let rows: Vec<&str> = para.lines().filter(|l| !l.trim().is_empty()).collect();
+    let header: Vec<&str> = rows[..table_header_len(&rows, kind)].to_vec();
+    let header_len: usize = header.iter().map(|r| r.chars().count() + 1).sum();
+    if header_len > max_chars {
+        return chunk_text(para);
+    }
+    let mut out = Vec::new();
+    let mut group: Vec<&str> = Vec::new();
+    let mut group_len = header_len;
+    for row in &rows[header.len()..] {
+        let row_len = row.chars().count() + 1;
+        if !group.is_empty() && group_len + row_len > max_chars {
+            out.push(join_rows(&header, &group));
+            group.clear();
+            group_len = header_len;
+        }
+        if group.is_empty() && header_len + row_len > max_chars {
+            out.extend(chunk_text(row));
+            continue;
+        }
+        group.push(row);
+        group_len += row_len;
+    }
+    if !group.is_empty() {
+        out.push(join_rows(&header, &group));
+    }
+    if out.is_empty() {
+        out.push(para.to_string());
+    }
+    out
+}
+
+fn table_header_len(rows: &[&str], kind: TableKind) -> usize {
+    if kind == TableKind::Markdown && rows.len() >= 2 && is_md_delimiter(rows[1]) {
+        2
+    } else {
+        1
+    }
+}
+
+fn join_rows(header: &[&str], group: &[&str]) -> String {
+    header
+        .iter()
+        .chain(group.iter())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn split_oversized_para(para: &str, max_chars: usize, tables: bool) -> Vec<String> {
+    if tables {
+        if let Some(kind) = table_kind(para) {
+            return split_table(para, kind, max_chars);
+        }
+    }
+    chunk_text(para)
 }
 
 fn split_section(section: &str, max_chars: usize) -> Vec<String> {
+    split_section_opts(section, max_chars, false)
+}
+
+/// Paragraph packing with an R36.7 prose-only table rule: an over-cap table
+/// splits by row groups (header repeated) instead of mid-row. Code/config
+/// keep `tables = false` — tab-indented code must never read as a table.
+fn split_section_opts(section: &str, max_chars: usize, tables: bool) -> Vec<String> {
     static RE_SPLIT: OnceLock<Regex> = OnceLock::new();
     if section.chars().count() <= max_chars {
         return vec![section.to_string()];
@@ -214,7 +659,7 @@ fn split_section(section: &str, max_chars: usize) -> Vec<String> {
                 out.push(cur.clone());
                 cur.clear();
             }
-            out.extend(chunk_text(&para));
+            out.extend(split_oversized_para(&para, max_chars, tables));
         } else if cur.chars().count() + para.chars().count() + 2 <= max_chars {
             if cur.is_empty() {
                 cur = para;
@@ -246,6 +691,16 @@ struct RawSection {
 
 /// Shared tail: section rows + paragraph-packed chunks per section.
 fn materialize(raw_sections: Vec<RawSection>, max_chars: usize) -> (Vec<SectionMeta>, Vec<ChunkMeta>) {
+    materialize_opts(raw_sections, max_chars, false)
+}
+
+/// Shared tail with the R36.7 prose table rule (`tables = true` only from
+/// the prose heading splitter — symbol/key splitters keep `false`).
+fn materialize_opts(
+    raw_sections: Vec<RawSection>,
+    max_chars: usize,
+    tables: bool,
+) -> (Vec<SectionMeta>, Vec<ChunkMeta>) {
     let metas: Vec<SectionMeta> = raw_sections
         .iter()
         .map(|r| SectionMeta {
@@ -261,7 +716,7 @@ fn materialize(raw_sections: Vec<RawSection>, max_chars: usize) -> (Vec<SectionM
         if text.trim().is_empty() {
             continue;
         }
-        let parts = split_section(&text, max_chars);
+        let parts = split_section_opts(&text, max_chars, tables);
         for p in parts {
             chunks.push(ChunkMeta {
                 content: p,
@@ -852,6 +1307,90 @@ mod tests {
         assert!(c.iter().all(|s| s.chars().count() <= 800));
     }
     #[test]
+    fn chunk_text_snaps_to_word_boundaries_without_gaps() {
+        let words: Vec<String> = (0..400).map(|i| format!("w{i:03}")).collect();
+        let t = words.join(" ");
+        let c = chunk_text(&t);
+        assert!(c.len() >= 2);
+        for chunk in &c {
+            // whole tokens at both edges — never "w01" / "02".
+            assert!(chunk.starts_with('w'), "{chunk:?}");
+            assert!(chunk.chars().last().unwrap().is_ascii_digit(), "{chunk:?}");
+            assert!(chunk.chars().count() <= 800);
+        }
+        for w in &words {
+            assert!(c.iter().any(|chunk| chunk.split(' ').any(|tok| tok == w)), "gap at {w}");
+        }
+    }
+    #[test]
+    fn chunk_text_prefers_sentence_ends() {
+        let t = "Sentence one states the rule. Sentence two gives context! Sentence three asks why? ".repeat(30);
+        let c = chunk_text(&t);
+        assert!(c.len() >= 2);
+        for chunk in &c[..c.len() - 1] {
+            assert!(
+                chunk.chars().last().is_some_and(|c| matches!(c, '.' | '!' | '?')),
+                "non-final chunk cuts mid-sentence: {chunk:?}"
+            );
+        }
+    }
+    #[test]
+    fn sentence_end_skips_abbreviations_and_decimals() {
+        // Only [.?!] followed by whitespace counts — "U.S.A" and "3.5"
+        // never win; the real end does.
+        let chars: Vec<char> = "See U.S.A v3.5 notes. Next".chars().collect();
+        let end = sentence_end_in(&chars, 0, chars.len()).unwrap();
+        assert_eq!(chars[end - 2..end].iter().collect::<String>(), ". ");
+        assert_eq!(chars[end], 'N');
+    }
+    #[test]
+    fn chunk_text_hard_cuts_only_past_overlap() {
+        // A 900-char token: no boundary fits in the shrink zone, so the
+        // first window hard-cuts at 800 and the tail stays covered.
+        let t = format!("{} tail words here", "a".repeat(900));
+        let c = chunk_text(&t);
+        assert_eq!(c[0].chars().count(), 800);
+        assert!(c.last().unwrap().contains("tail words here"));
+        assert!(c.iter().all(|s| s.chars().count() <= 800));
+    }
+    #[test]
+    fn clean_doc_text_strips_controls_and_page_numbers() {
+        let raw = "Title\r\n\x00\x0bBody\u{200b} text\t\tspaced  \n42\nPage 3\n3 of 10\n- 12 -\n— 7 —\nSection 42 stays\n42 things stay\n12345 stays\n\n\nTail\u{feff}";
+        let cleaned = clean_doc_text(raw);
+        assert!(cleaned.contains("Title\nBody text spaced"), "{cleaned:?}");
+        assert!(!cleaned.contains("\u{200b}") && !cleaned.contains('\u{feff}'));
+        for dropped in ["\n42\n", "Page 3", "3 of 10", "- 12 -", "— 7 —"] {
+            assert!(!cleaned.contains(dropped), "{cleaned:?}");
+        }
+        for kept in ["Section 42 stays", "42 things stay", "12345 stays", "Tail"] {
+            assert!(cleaned.contains(kept), "{cleaned:?}");
+        }
+        assert!(!cleaned.contains("\n\n\n"));
+    }
+    #[test]
+    fn clean_doc_text_strips_repeated_headers() {
+        let page = "Acme Confidential\nBody line one.\nBody line two.";
+        let raw = format!("{page}\n{page}\n{page}\nFinal words here.");
+        let cleaned = clean_doc_text(&raw);
+        assert!(!cleaned.contains("Acme Confidential"), "{cleaned:?}");
+        assert!(cleaned.contains("Final words here."), "{cleaned:?}");
+        // twice is not a pattern — kept.
+        let raw2 = "Acme Confidential\nBody.\nAcme Confidential\nOther.";
+        assert!(clean_doc_text(raw2).contains("Acme Confidential"));
+        // long lines never count toward repetition.
+        let long = format!("{}\n{}\n{}\nshort", "L".repeat(121), "L".repeat(121), "L".repeat(121));
+        assert!(clean_doc_text(&long).contains(&"L".repeat(121)));
+    }
+    #[test]
+    fn repeat_threshold_matches_python_rounding() {
+        assert_eq!(repeat_threshold(0), 3);
+        assert_eq!(repeat_threshold(50), 3); // round(0.5) = 0 -> floor 3
+        assert_eq!(repeat_threshold(250), 3); // round(2.5) = 2 -> floor 3
+        assert_eq!(repeat_threshold(450), 4); // round(4.5) = 4 banker
+        assert_eq!(repeat_threshold(550), 6); // round(5.5) = 6 banker
+        assert_eq!(repeat_threshold(1000), 10);
+    }
+    #[test]
     fn code_rust_sections_nest_impl_methods() {
         let code = "use std::sync::Arc;\n\n/// Classify text.\npub struct Item {\n    pub name: String,\n}\n\nimpl Item {\n    pub fn new(name: &str) -> Self {\n        Self { name: name.into() }\n    }\n\n    fn helper(&self) -> bool {\n        true\n    }\n}\n\npub fn classify(text: &str) -> Vec<String> {\n    vec![]\n}\n";
         let (secs, chunks) = chunk_code_with_sections(code, "src/lib.rs");
@@ -1012,6 +1551,203 @@ mod tests {
         let big = "{\"a\":1,".repeat(20_000);
         let (secs_min, _) = chunk_config_with_sections(&big, "bundle.json");
         assert_eq!(secs_min.len(), 1);
+    }
+
+    #[test]
+    fn markers_split_sections_with_clean_titles() {
+        let doc = "# Report\nintro line\n\n## Budget\nbudget line\n\n### Notes\nnote line\n";
+        let (secs, chunks) = chunk_document_with_sections(doc);
+        let titles: Vec<&str> = secs.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, vec!["Report", "Budget", "Notes"]);
+        assert_eq!(
+            secs.iter().map(|s| s.level).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(secs[1].parent, Some(0));
+        assert_eq!(secs[2].parent, Some(1));
+        assert_eq!(secs[2].path, "Report > Budget > Notes");
+        assert_eq!(chunks.len(), 3);
+        // content keeps the marker line; titles/paths drop it
+        assert!(chunks[0].content.starts_with("# Report\n"));
+        assert!(chunks[1].content.starts_with("## Budget\n"));
+        assert_eq!(chunks[1].path, "Report > Budget");
+        // a long extractor heading still sections; its title truncates
+        let long = format!("# {}\nbody\n", "x".repeat(100));
+        let (secs_long, _) = chunk_document_with_sections(&long);
+        assert_eq!(secs_long.len(), 1);
+        assert_eq!(secs_long[0].level, 1);
+        assert!(secs_long[0].title.chars().count() <= 80);
+        assert!(secs_long[0].title.ends_with("..."));
+    }
+
+    #[test]
+    fn marker_nospace_and_deep_hash_are_body() {
+        let doc = "#nospace line here\n\n####### seven\n\n# \n\nnormal text";
+        let (secs, chunks) = chunk_document_with_sections(doc);
+        assert!(secs.iter().all(|s| s.title.is_empty()));
+        assert_eq!(secs.len(), 1);
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn byte_identical_prose_guards() {
+        // No `#` markers, no tables, under the fallback threshold: exact
+        // legacy outputs, byte for byte (blank lines fold into sections).
+        let (secs, chunks) =
+            chunk_document_with_sections("§434 Merger\ncontent a\n\n§437 Dates\njan");
+        assert_eq!(secs.len(), 2);
+        let bodies: Vec<_> = chunks.iter().map(|c| c.content.as_str()).collect();
+        assert_eq!(bodies, vec!["§434 Merger\ncontent a\n", "§437 Dates\njan"]);
+        let (secs_caps, chunks_caps) = chunk_document_with_sections("QUARTERLY PLAN\nbody here");
+        assert_eq!(secs_caps[0].title, "QUARTERLY PLAN");
+        assert_eq!(chunks_caps[0].content, "QUARTERLY PLAN\nbody here");
+        let (secs_root, chunks_root) =
+            chunk_document_with_sections("plain intro\nno heading\n\n§434 Merger\ncontent");
+        assert_eq!(secs_root.len(), 2);
+        assert_eq!(secs_root[0].level, 0);
+        let root_bodies: Vec<_> = chunks_root.iter().map(|c| c.content.as_str()).collect();
+        assert_eq!(
+            root_bodies,
+            vec!["plain intro\nno heading\n", "§434 Merger\ncontent"]
+        );
+        // small heading-less docs keep their single root
+        let small = "just a note\nsecond line\n";
+        let (secs_small, chunks_small) = chunk_document_with_sections(small);
+        assert_eq!(secs_small.len(), 1);
+        assert!(secs_small[0].title.is_empty());
+        assert_eq!(chunks_small.len(), 1);
+        assert_eq!(chunks_small[0].content, small);
+    }
+
+    #[test]
+    fn fallback_windows_split_headingless_docs() {
+        let paras: Vec<String> = (0..60)
+            .map(|i| format!("Paragraph {i:02} {}", "body text ".repeat(20)))
+            .collect();
+        let doc = paras.join("\n\n");
+        assert!(doc.len() > 8000);
+        let (secs, chunks) = chunk_document_with_sections(&doc);
+        // several untitled level-0 windows, never one whole-file section
+        assert!(secs.len() >= 3, "sections: {}", secs.len());
+        assert!(secs
+            .iter()
+            .all(|s| s.title.is_empty() && s.level == 0 && s.parent.is_none()));
+        // every paragraph is covered, chunks stay capped ...
+        for i in 0..60 {
+            let needle = format!("Paragraph {i:02}");
+            assert!(
+                chunks.iter().any(|c| c.content.contains(&needle)),
+                "{needle} missing"
+            );
+        }
+        assert!(chunks.iter().all(|c| c.content.chars().count() <= 1600));
+        // ... with overlap (shared paragraphs repeat across windows) ...
+        let total: usize = chunks.iter().map(|c| c.content.len()).sum();
+        assert!(total > doc.len(), "no overlap: {total} <= {}", doc.len());
+        // ... deterministically.
+        let (secs2, chunks2) = chunk_document_with_sections(&doc);
+        assert_eq!(secs2.len(), secs.len());
+        assert_eq!(
+            chunks2.iter().map(|c| &c.content).collect::<Vec<_>>(),
+            chunks.iter().map(|c| &c.content).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn fallback_degenerate_shapes_stay_safe() {
+        // one giant paragraph: single root, hard-split into capped chunks
+        let big = "x".repeat(10_000);
+        let (secs, chunks) = chunk_document_with_sections(&big);
+        assert_eq!(secs.len(), 1);
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|c| c.content.chars().count() <= 800));
+        // empty text: one empty root, no chunks (today's shape)
+        let (secs_e, chunks_e) = chunk_document_with_sections("");
+        assert_eq!(secs_e.len(), 1);
+        assert!(chunks_e.is_empty());
+    }
+
+    #[test]
+    fn tables_fit_one_unit_when_fitting() {
+        let md = "# Report\n\n| Name | Cost |\n|---|---|\n| A | 1 |\n| B | 2 |\n";
+        let (_, chunks) = chunk_document_with_sections(md);
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].content.contains("| A | 1 |"));
+        assert!(chunks[0].content.contains("| B | 2 |"));
+        let tsv = "# Report\n\nName\tCost\nA\t1\nB\t2\n";
+        let (_, chunks_tsv) = chunk_document_with_sections(tsv);
+        assert_eq!(chunks_tsv.len(), 1);
+        assert!(chunks_tsv[0].content.contains("A\t1"));
+    }
+
+    #[test]
+    fn tables_split_with_header_repeat() {
+        let header = "| Name | Cost |";
+        let delim = "|---|---|";
+        let rows: Vec<String> = (0..80)
+            .map(|i| format!("| Item {i:02} | description text padded to widen row {i:02} |"))
+            .collect();
+        let md = format!("# Report\n\n{}\n{}\n{}\n", header, delim, rows.join("\n"));
+        let (_, chunks) = chunk_document_with_sections(&md);
+        assert!(chunks.len() >= 3, "chunks: {}", chunks.len());
+        assert_eq!(chunks[0].content, "# Report");
+        for c in &chunks[1..] {
+            let head = &c.content[..c.content.len().min(60)];
+            assert!(c.content.contains(header), "unheadered unit: {head}");
+            assert!(c.content.contains(delim), "delimiter dropped: {head}");
+        }
+        for row in &rows {
+            assert!(
+                chunks.iter().any(|c| c.content.contains(row.as_str())),
+                "split row: {row}"
+            );
+        }
+        // tab-separated (docx/odt shape): first row repeats, rows stay whole
+        let thead = "Name\tCost";
+        let trows: Vec<String> = (0..80)
+            .map(|i| format!("Item {i:02}\tcost center {i:02} with padding text to widen the row"))
+            .collect();
+        let tsv = format!("# Report\n\n{}\n{}\n", thead, trows.join("\n"));
+        let (_, tchunks) = chunk_document_with_sections(&tsv);
+        assert!(tchunks.len() >= 3, "chunks: {}", tchunks.len());
+        for c in &tchunks[1..] {
+            let head = &c.content[..c.content.len().min(60)];
+            assert!(c.content.contains(thead), "unheadered unit: {head}");
+        }
+        for row in &trows {
+            assert!(
+                tchunks.iter().any(|c| c.content.contains(row.as_str())),
+                "split row: {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn table_with_caption_degrades_without_losing_content() {
+        // one non-row line breaks the table shape: the block hard-splits,
+        // but every cell's text still lands in some chunk.
+        let mut lines = vec![
+            "# Report".to_string(),
+            String::new(),
+            "Caption: quarterly costs".to_string(),
+        ];
+        for i in 0..80 {
+            lines.push(format!(
+                "| Item {i:02} | value {i:02} padded to widen the row enough |"
+            ));
+        }
+        let doc = lines.join("\n");
+        let (_, chunks) = chunk_document_with_sections(&doc);
+        assert!(chunks
+            .iter()
+            .any(|c| c.content.contains("Caption: quarterly costs")));
+        for i in 0..80 {
+            let needle = format!("Item {i:02}");
+            assert!(
+                chunks.iter().any(|c| c.content.contains(&needle)),
+                "{needle} missing"
+            );
+        }
     }
 
     #[test]
