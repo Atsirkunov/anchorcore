@@ -132,7 +132,6 @@ export function EntitiesTab() {
   const [statusFilter, setStatusFilter] = useState<string>("needs_review");
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
-  const [piiBusy, setPiiBusy] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [ctx, setCtx] = useState<Record<number, { source_name: string | null; source_ref: string; window_text: string; expanded_before: string[]; expanded_after: string[]; highlight: string; item_title: string; full_text?: string }>>({});
   // grouped view: Map<item_id, Entity[]> — zero backend change, client-side only
@@ -166,19 +165,6 @@ export function EntitiesTab() {
         const c = await api.entityContext(e.id);
         setCtx((m) => ({ ...m, [e.id]: c }));
       } catch { void 0; }
-    }
-  }
-
-  async function toggleItemPii(itemId: number, next: boolean) {
-    setPiiBusy(itemId);
-    setError(null);
-    try {
-      await api.setItemPii(itemId, next);
-      refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setPiiBusy(null);
     }
   }
 
@@ -329,7 +315,6 @@ export function EntitiesTab() {
             const docTitle = docCtx[itemId]?.item_title || first.source_ref.split("/").pop() || `Doc #${itemId}`;
             const docRef = docCtx[itemId]?.source_ref || first.source_ref;
             const isDocVerified = verifiedDocs.has(itemId) || list.every((e) => e.status === "verified");
-            const docMarked = list[0].item_is_pii ?? false;
             return (
               <section key={itemId} style={{ ...styles.docCard, borderLeft: `4px solid ${isDocVerified ? theme.greenBg : theme.accent}` }}>
                 <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -360,14 +345,6 @@ export function EntitiesTab() {
                     ))}
                   </span>
                   {isDocVerified && <span style={{ fontSize: 10, background: theme.greenBg, color: theme.greenText, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 700 }}>✓ Verified</span>}
-                  <button
-                    onClick={() => toggleItemPii(itemId, !docMarked)}
-                    disabled={piiBusy === itemId}
-                    title={docMarked ? "Clear the PII mark on this document" : "Mark this document as PII"}
-                    style={{ ...styles.docToggle, ...(docMarked ? { borderColor: theme.amber, color: theme.amber, fontWeight: 700 } : {}), ...(piiBusy === itemId ? styles.disabled : {}) }}
-                  >
-                    {piiBusy === itemId ? "…" : docMarked ? "PII ●" : "Mark PII"}
-                  </button>
                   <button onClick={() => toggleDoc(itemId, first.id)} style={styles.docToggle}>
                     {isOpen ? "Hide doc ▲" : isDocVerified ? "Open doc ▶" : "Show doc ▼"}
                   </button>
@@ -512,14 +489,6 @@ export function EntitiesTab() {
               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                 <button style={{ ...styles.button, ...(busyId === e.id ? styles.disabled : {}) }} disabled={busyId === e.id} onClick={() => update(e, { status: "verified" })}>{busyId === e.id ? "…" : "Verify"}</button>
                 <button style={{ ...styles.button, ...(busyId === e.id ? styles.disabled : {}) }} disabled={busyId === e.id} onClick={() => update(e, { status: "disputed" })}>{busyId === e.id ? "…" : "Dispute"}</button>
-                <button
-                  style={{ ...styles.button, ...(piiBusy === e.item_id ? styles.disabled : {}) }}
-                  disabled={piiBusy === e.item_id}
-                  onClick={() => toggleItemPii(e.item_id, !(e.item_is_pii ?? false))}
-                  title={(e.item_is_pii ? "Clear the PII mark on this document" : "Mark this document as PII") + " — the mark lives on the whole document, not this row"}
-                >
-                  {piiBusy === e.item_id ? "…" : e.item_is_pii ? "PII ●" : "Mark PII"}
-                </button>
                 <select value={e.kind} onChange={(ev) => update(e, { kind: ev.target.value as Entity["kind"] })} style={styles.input}>
                   <option value="decision">decision</option>
                   <option value="document">document</option>

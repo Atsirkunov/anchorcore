@@ -290,6 +290,11 @@ export const api = {
   sectionChunks: (id: number) => request<import("./types").ChunkInfo[]>(`/sections/${id}/chunks`),
   tags: () => request<import("./types").Tag[]>("/tags"),
   tagChunks: (id: number) => request<import("./types").ChunkInfo[]>(`/tags/${id}/chunks`),
+  /**
+   * @deprecated PII marking was removed from the UI (owner decision 2026-10-13).
+   * Kept as a hidden compat shim — the backend still accepts PATCH /items/:id
+   * {is_pii} in case the feature returns. Do not add new callers.
+   */
   setItemPii: (itemId: number, isPii: boolean) =>
     request<{ id: number; is_pii: boolean }>(`/items/${itemId}`, {
       method: "PATCH",
