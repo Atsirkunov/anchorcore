@@ -6,6 +6,18 @@
 //! `extract_bytes` for the Drive connector (exports/downloads arrive as bytes
 //! with a MIME type, not a path). Unsupported formats return `Err` — folder
 //! treats that as "skipped" (kept out of purge, B57), Drive the same.
+//!
+//! R36.7 structure rules: docx `w:pStyle` Heading 1–6 (plus Title → 1),
+//! ODT `text:h` (outline-level, missing → 1) and HTML `h1`–`h6` all emit
+//! `#`–`######` markers that the chunker sections on; unknown or missing
+//! styles degrade to plain paragraphs (text kept, never dropped). Tables
+//! stay tab-separated rows (docx/odt/HTML) for the chunker's row-group
+//! splitter. Auto-generated tables of contents are stripped, never indexed:
+//! docx `TOC1`–`TOC9` paragraphs, ODT `text:table-of-content` subtrees, and
+//! (`strip_toc`) non-heading lines that exactly repeat a heading title or
+//! pair one with a TOC page-number artifact (tab number, dot leaders).
+//! A page number joined by a plain space ("Chapter 2") is a cross-reference,
+//! not a TOC entry, and is kept.
 
 use std::io::{Cursor, Read};
 use std::path::Path;
@@ -101,13 +113,40 @@ pub fn is_config_filename(name: &str) -> bool {
 
 /// Extract text from a file on disk (folder connector).
 pub fn extract_file(path: &Path) -> Result<String, String> {
+    extract_file_noted(path).0
+}
+
+/// `extract_file` plus the PDF catcher's report — `Some` only when a PDF
+/// tripped the split-word detector (repaired or not). The pipeline turns
+/// improved notes into `system_events` rows.
+pub fn extract_file_noted(path: &Path) -> (Result<String, String>, Option<PdfQualityNote>) {
     let kind = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
         .unwrap_or_else(|| path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase());
-    let bytes = std::fs::read(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
-    extract_bytes(&kind, &bytes)
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => return (Err(format!("read {}: {}", path.display(), e)), None),
+    };
+    if kind == "pdf" {
+        match extract_pdf_labeled(&bytes, &path.display().to_string()) {
+            Ok((text, note)) => (Ok(text), note),
+            Err(e) => (Err(e), None),
+        }
+    } else {
+        (extract_bytes(&kind, &bytes), None)
+    }
+}
+
+/// Labeled variant: the PDF catcher logs the file it repaired (Drive
+/// passes the file name; the kind alone names nothing).
+pub fn extract_bytes_labeled(kind: &str, bytes: &[u8], label: &str) -> Result<String, String> {
+    let raw = kind.to_ascii_lowercase();
+    if raw.trim_start_matches('.') == "pdf" {
+        return extract_pdf_labeled(bytes, label).map(|(text, _)| text);
+    }
+    extract_bytes(kind, bytes)
 }
 
 /// Extract text from bytes given a kind (extension, or a well-known file name)
@@ -119,7 +158,7 @@ pub fn extract_bytes(kind: &str, bytes: &[u8]) -> Result<String, String> {
         return decode_text(bytes);
     }
     match k {
-        "html" | "htm" => Ok(strip_html(&decode_text(bytes)?)),
+        "html" | "htm" => Ok(strip_toc(&strip_html(&decode_text(bytes)?))),
         "pdf" => extract_pdf(bytes),
         "docx" | "docm" => extract_docx(bytes),
         "pptx" | "pptm" => extract_pptx(bytes),
@@ -253,33 +292,33 @@ fn decode_utf16(bytes: &[u8], le: bool) -> Result<String, String> {
 /// Windows-1252 byte to char (items 0x80–0x9F differ from Latin-1).
 fn cp1252_byte(b: u8) -> char {
     match b {
-        0x80 => '€',
-        0x82 => '‚',
-        0x83 => 'ƒ',
-        0x84 => '„',
-        0x85 => '…',
-        0x86 => '†',
-        0x87 => '‡',
-        0x88 => 'ˆ',
-        0x89 => '‰',
-        0x8A => 'Š',
-        0x8B => '‹',
-        0x8C => 'Œ',
-        0x8E => 'Ž',
-        0x91 => '‘',
-        0x92 => '’',
-        0x93 => '“',
-        0x94 => '”',
-        0x95 => '•',
-        0x96 => '–',
-        0x97 => '—',
-        0x98 => '˜',
-        0x99 => '™',
-        0x9A => 'š',
-        0x9B => '›',
-        0x9C => 'œ',
-        0x9E => 'ž',
-        0x9F => 'Ÿ',
+        0x80 => '\u{20AC}',
+        0x82 => '\u{201A}',
+        0x83 => '\u{0192}',
+        0x84 => '\u{201E}',
+        0x85 => '\u{2026}',
+        0x86 => '\u{2020}',
+        0x87 => '\u{2021}',
+        0x88 => '\u{02C6}',
+        0x89 => '\u{2030}',
+        0x8A => '\u{0160}',
+        0x8B => '\u{2039}',
+        0x8C => '\u{0152}',
+        0x8E => '\u{017D}',
+        0x91 => '\u{2018}',
+        0x92 => '\u{2019}',
+        0x93 => '\u{201C}',
+        0x94 => '\u{201D}',
+        0x95 => '\u{2022}',
+        0x96 => '\u{2013}',
+        0x97 => '\u{2014}',
+        0x98 => '\u{02DC}',
+        0x99 => '\u{2122}',
+        0x9A => '\u{0161}',
+        0x9B => '\u{203A}',
+        0x9C => '\u{0153}',
+        0x9E => '\u{017E}',
+        0x9F => '\u{0178}',
         _ => b as char,
     }
 }
@@ -288,30 +327,489 @@ fn decode_cp1252(bytes: &[u8]) -> String {
     bytes.iter().map(|b| cp1252_byte(*b)).collect()
 }
 
-/// Strip tags/scripts/styles and collapse whitespace (same rules the folder
-/// connector always used for `.html`).
+/// Strip tags/scripts/styles, keeping block structure (R36.7): `h1`–`h6`
+/// become `#` markers, blocks break lines, table cells separate with tabs
+/// (same shape as docx/odt tables, for the chunker's row-group splitter).
 fn strip_html(s: &str) -> String {
     use std::sync::OnceLock;
     static RE_SCRIPT: OnceLock<regex::Regex> = OnceLock::new();
     static RE_STYLE: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_H: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_BLOCK: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_CELL_OPEN: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_CELL: OnceLock<regex::Regex> = OnceLock::new();
     static RE_TAG: OnceLock<regex::Regex> = OnceLock::new();
-    static RE_WS: OnceLock<regex::Regex> = OnceLock::new();
     let re_script =
         RE_SCRIPT.get_or_init(|| regex::Regex::new(r"(?is)<script[^>]*>.*?</script>").unwrap());
     let re_style =
         RE_STYLE.get_or_init(|| regex::Regex::new(r"(?is)<style[^>]*>.*?</style>").unwrap());
+    let re_h = RE_H.get_or_init(|| regex::Regex::new(r"(?i)<h([1-6])\b[^>]*>").unwrap());
+    let re_block = RE_BLOCK.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)</?(?:p|div|br|li|[ou]l|tr|h[1-6]|hr|section|article|header|footer|nav|main|aside|figure|blockquote|pre|table|thead|tbody)[^>]*>",
+        )
+        .unwrap()
+    });
+    let re_cell_open =
+        RE_CELL_OPEN.get_or_init(|| regex::Regex::new(r"(?i)<(?:td|th)\b[^>]*>").unwrap());
+    let re_cell = RE_CELL.get_or_init(|| regex::Regex::new(r"(?i)</(?:td|th)[^>]*>").unwrap());
     let re_tag = RE_TAG.get_or_init(|| regex::Regex::new(r"<[^>]+>").unwrap());
-    let re_ws = RE_WS.get_or_init(|| regex::Regex::new(r"\s+").unwrap());
     let mut t = re_script.replace_all(s, " ").to_string();
     t = re_style.replace_all(&t, " ").to_string();
+    t = re_h
+        .replace_all(&t, |caps: &regex::Captures| {
+            let level: usize = caps[1].parse().unwrap_or(1);
+            format!("\n{} ", "#".repeat(level.min(6)))
+        })
+        .to_string();
+    t = re_block.replace_all(&t, "\n").to_string();
+    t = re_cell_open.replace_all(&t, "").to_string();
+    t = re_cell.replace_all(&t, "\t").to_string();
     t = re_tag.replace_all(&t, " ").to_string();
-    re_ws.replace_all(&t, " ").trim().to_string()
+    normalize_lines(&unescape_html(&t))
+}
+
+/// Named + numeric HTML entity references (`&amp;`, `&#169;`, `&#x20;`,
+/// `&nbsp;`); unknown entities pass through untouched, never dropped.
+fn unescape_html(s: &str) -> String {
+    use std::sync::OnceLock;
+    static RE_ENT: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE_ENT.get_or_init(|| regex::Regex::new(r"&(#[xX]?[0-9a-fA-F]+|[a-zA-Z]+);").unwrap());
+    re.replace_all(s, |caps: &regex::Captures| {
+        let name = &caps[1];
+        if name.eq_ignore_ascii_case("nbsp") {
+            return "\u{a0}".to_string();
+        }
+        resolve_ref(name)
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| caps[0].to_string())
+    })
+    .into_owned()
 }
 
 // ----- pdf -----
 
 fn extract_pdf(bytes: &[u8]) -> Result<String, String> {
-    pdf_extract::extract_text_from_mem(bytes).map_err(|e| format!("pdf extract: {e}"))
+    extract_pdf_labeled(bytes, "pdf").map(|(text, _)| text)
+}
+
+/// Catcher report: the standard PDF text tripped the split-word detector.
+/// `alt_splits` is `None` when the repair pass itself failed; `tokens` is
+/// the standard text's token count.
+pub struct PdfQualityNote {
+    pub file: String,
+    pub std_splits: usize,
+    pub alt_splits: Option<usize>,
+    pub tokens: usize,
+    pub used_alternate: bool,
+}
+
+impl PdfQualityNote {
+    pub fn summary(&self) -> String {
+        let alt = self.alt_splits.map(|n| n.to_string()).unwrap_or_else(|| "failed".to_string());
+        let decision = if self.used_alternate { "repaired" } else { "kept-standard" };
+        format!(
+            "{}: split-word suspects {}/{} tokens, repair pass {} ({decision})",
+            self.file, self.std_splits, self.tokens, alt
+        )
+    }
+}
+
+/// Adaptive PDF extraction (split-word catcher): `pdf-extract` inserts a
+/// space at any glyph gap over 0.1em, and kerned/tracked PDFs trip that
+/// mid-word ("Cancellati ons"). Good PDFs are untouched — the standard
+/// output is kept unless the detector trips, in which case a flow-layout
+/// re-extraction runs and the better-scoring text wins (ties keep standard).
+fn extract_pdf_labeled(bytes: &[u8], label: &str) -> Result<(String, Option<PdfQualityNote>), String> {
+    let std = pdf_extract::extract_text_from_mem(bytes).map_err(|e| format!("pdf extract: {e}"))?;
+    let (std_splits, tokens) = split_suspects(&std);
+    if !pdf_trips_detector(std_splits, tokens) {
+        return Ok((std, None));
+    }
+    let mut note = PdfQualityNote {
+        file: label.to_string(),
+        std_splits,
+        alt_splits: None,
+        tokens,
+        used_alternate: false,
+    };
+    match extract_pdf_flow(bytes) {
+        Ok(alt) => {
+            let (alt_splits, _) = split_suspects(&alt);
+            note.alt_splits = Some(alt_splits);
+            note.used_alternate = alt_splits < std_splits;
+            log_pdf_note(&note);
+            if note.used_alternate {
+                Ok((alt, Some(note)))
+            } else {
+                Ok((std, Some(note)))
+            }
+        }
+        Err(e) => {
+            tracing::warn!("pdf split-word catcher ({label}): repair pass failed: {e}");
+            Ok((std, Some(note)))
+        }
+    }
+}
+
+/// Warn only when the repair strictly improved the text — ties are foreign
+/// text or typos tripping the detector, not extractable damage.
+fn log_pdf_note(note: &PdfQualityNote) {
+    if note.used_alternate {
+        tracing::warn!("pdf split-word catcher: {}", note.summary());
+    } else {
+        tracing::debug!("pdf split-word catcher (no improvement): {}", note.summary());
+    }
+}
+
+/// Short tokens that are real words — never split-word fragments.
+const COMMON_SHORT_WORDS: &[&str] = &[
+    "a", "i", "am", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "it", "me", "my", "no",
+    "of", "on", "or", "so", "to", "up", "us", "we", "vs", "ok", "ex", "re", "and", "the", "for", "are",
+    "but", "not", "you", "all", "any", "can", "had", "her", "was", "one", "our", "out", "day", "get",
+    "has", "him", "his", "how", "man", "new", "now", "old", "see", "two", "way", "who", "did", "its",
+    "let", "put", "say", "she", "too", "use", "etc", "per", "via", "pro", "aka", "that", "with", "have",
+    "this", "will", "your", "from", "they", "them", "then", "than",
+];
+
+/// English frequency set for the split-word catcher: top-30k wordfreq
+/// 3.1.1 words (`^[a-z]{2,}$`), Apache-2.0 — see `pdf_words.NOTICE`.
+/// Genuine ngram artifacts ("fi" from wi-fi, "ons" from add-ons, "ng")
+/// sit inside the set, so fragments alone undercount: the join signal
+/// below catches their pairs ("Cancellati"+"ons"), not the pieces.
+fn pdf_words() -> &'static std::collections::HashSet<&'static str> {
+    static WORDS: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
+        std::sync::OnceLock::new();
+    WORDS.get_or_init(|| include_str!("pdf_words.txt").split_whitespace().collect())
+}
+
+/// Domain abbreviations below the frequency cutoff — real tokens, never
+/// split fragments. Two-to-four lowercase letters only (the fragment
+/// shape); longer tokens never query this set.
+const TECH_ALLOW_WORDS: &[&str] = &[
+    "cli", "json", "yaml", "csv", "orm", "jwt", "cors", "csrf", "crud", "sdk", "xls", "jsx", "tsx",
+    "scss", "ssl", "tls", "udp", "grpc", "tiff", "bmp", "webp", "avif", "mkv", "exe", "dll", "dmg",
+    "deb", "rpm", "apk", "epub", "mobi", "faq", "wip", "tbd", "fyi", "asap", "eta", "eod", "pto",
+    "ooo", "kpi", "okr", "sla", "sop", "rfp", "poc", "mvp", "arr", "mrr", "cac", "ltv", "yoy", "qoq",
+    "ai", "llm", "rag", "nlp", "ocr", "vpn", "lan", "wan", "nat", "iam", "sso", "mfa", "kms",
+    "mttr", "mtbf", "qbr", "kyc", "pii", "ttl", "aml", "gdpr", "ccpa", "pci", "dss", "iso", "nist",
+    "oecd", "dpa", "sar", "ofac", "itil", "fips", "cc", "bcc", "oss", "bss",
+];
+
+fn is_known_word(tok: &str) -> bool {
+    COMMON_SHORT_WORDS.contains(&tok) || TECH_ALLOW_WORDS.contains(&tok) || pdf_words().contains(tok)
+}
+
+/// Split-word suspects over lowercased tokens: a short unknown fragment
+/// beside a lowercase neighbour ("noti fi", "cati ons"), or a pair whose
+/// join is a known word while at least one side is not ("Cancellati"+"ons").
+/// Two known words never trip ("sun day", "the rapist", "on line").
+/// Returns (suspect_count, token_count).
+pub fn split_suspects(text: &str) -> (usize, usize) {
+    let toks: Vec<String> = text
+        .split_whitespace()
+        .map(|raw| raw.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let mut splits = 0usize;
+    for (i, tok) in toks.iter().enumerate() {
+        if is_split_fragment(tok, toks.get(i.wrapping_sub(1)), toks.get(i + 1)) {
+            splits += 1;
+        }
+        if let Some(next) = toks.get(i + 1) {
+            if is_split_join(tok, next) {
+                splits += 1;
+            }
+        }
+    }
+    (splits, toks.len())
+}
+
+fn is_pure_alpha(tok: &str) -> bool {
+    !tok.is_empty() && tok.chars().all(|c| c.is_ascii_lowercase())
+}
+
+/// Short unknown token (single letters are math variables, never splits)
+/// touching a lowercase neighbour on either side.
+fn is_split_fragment(tok: &str, prev: Option<&String>, next: Option<&String>) -> bool {
+    let n = tok.chars().count();
+    if !(2..=4).contains(&n) || !is_pure_alpha(tok) || is_known_word(tok) {
+        return false;
+    }
+    prev.map(|p| p.chars().last().is_some_and(|c| c.is_ascii_lowercase())).unwrap_or(false)
+        || next.map(|n| n.chars().next().is_some_and(|c| c.is_ascii_lowercase())).unwrap_or(false)
+}
+
+/// Adjacent pure-alpha pair whose join is a known word with at least one
+/// unknown side — the rejoin test for ngram-artifact fragments.
+fn is_split_join(a: &str, b: &str) -> bool {
+    if a.chars().count() < 2 || b.chars().count() < 2 || !is_pure_alpha(a) || !is_pure_alpha(b) {
+        return false;
+    }
+    let joined = format!("{a}{b}");
+    if joined.chars().count() < 5 || !is_known_word(&joined) {
+        return false;
+    }
+    !is_known_word(a) || !is_known_word(b)
+}
+
+/// Detector trip wire: an absolute floor (short clean texts stay silent)
+/// plus a density ceiling (scattered false positives stay silent).
+const PDF_TRIP_MIN_SPLITS: usize = 6;
+const PDF_TRIP_PER_MILLE: usize = 6;
+
+fn pdf_trips_detector(splits: usize, tokens: usize) -> bool {
+    splits >= PDF_TRIP_MIN_SPLITS && splits.saturating_mul(1000) >= tokens.saturating_mul(PDF_TRIP_PER_MILLE)
+}
+
+/// Word gap in em for the repair pass: the standard 0.1em splits kerned
+/// and tracked words; real word spaces run ~0.25em and up, kerning and
+/// tracking jitter stays below ~0.15em.
+const PDF_WORD_GAP_EM: f64 = 0.2;
+/// Width below which a glyph's advance is untrustworthy: subsetted fonts
+/// (Word export) report 0 for positioned glyphs (`i`, `p`, …), so the gap
+/// after one measures the full advance (0.24–0.61em) — no threshold can
+/// split it. Blind gaps join unless they exceed a whole em (even the
+/// widest advance, `w` at 0.944, plus a space clears that).
+const PDF_BLIND_WIDTH_EM: f64 = 0.05;
+const PDF_BLIND_SPLIT_EM: f64 = 1.0;
+/// Row move that starts a new line / new paragraph, in em.
+const PDF_LINE_GAP_EM: f64 = 0.5;
+const PDF_PARA_GAP_EM: f64 = 1.8;
+
+/// Flow-layout PDF text sink over the same glyph stream as the standard
+/// extractor: word breaks need a real word-sized gap (explicit spaces
+/// always break), rows break lines, large row gaps break paragraphs.
+/// Repair path only — runs when the split-word detector trips.
+struct PdfFlowOutput {
+    flip: pdf_extract::Transform,
+    out: String,
+    line: String,
+    line_open: bool,
+    pending_space: bool,
+    last_end: f64,
+    last_y: f64,
+    last_width: f64,
+    pages: usize,
+}
+
+impl PdfFlowOutput {
+    fn new() -> Self {
+        Self {
+            flip: pdf_extract::Transform::identity(),
+            out: String::new(),
+            line: String::new(),
+            line_open: false,
+            pending_space: false,
+            last_end: 0.0,
+            last_y: 0.0,
+            last_width: 0.5,
+            pages: 0,
+        }
+    }
+
+    fn position(&self, trm: &pdf_extract::Transform) -> (f64, f64) {
+        let p = trm.post_transform(&self.flip);
+        (p.m31, p.m32)
+    }
+
+    fn text(mut self) -> String {
+        self.flush_line();
+        self.out
+    }
+
+    fn flush_line(&mut self) {
+        if !self.line.trim().is_empty() {
+            self.out.push_str(self.line.trim_end());
+        }
+        self.out.push('\n');
+        self.line.clear();
+        self.line_open = false;
+        self.pending_space = false;
+    }
+
+    /// Row move since the last glyph: large gap = paragraph, small gap =
+    /// line. Same-row text (columns, repositioned words) stays on the line.
+    fn break_for_gap(&mut self, y: f64, size: f64) {
+        if !self.line_open {
+            return;
+        }
+        let dy = (y - self.last_y).abs();
+        if dy > PDF_PARA_GAP_EM * size {
+            self.flush_line();
+            self.out.push('\n');
+        } else if dy > PDF_LINE_GAP_EM * size {
+            self.flush_line();
+        }
+    }
+
+    fn push_glyph(&mut self, x: f64, y: f64, size: f64, width: f64, advance: f64, ch: &str) {
+        self.break_for_gap(y, size);
+        let threshold = if self.last_width < PDF_BLIND_WIDTH_EM {
+            PDF_BLIND_SPLIT_EM
+        } else {
+            PDF_WORD_GAP_EM
+        };
+        let gap_break = self.line_open && x > self.last_end + threshold * size;
+        if self.pending_space || gap_break {
+            if self.line_open && !self.line.ends_with(' ') {
+                self.line.push(' ');
+            }
+            self.pending_space = false;
+        }
+        self.line.push_str(ch);
+        self.line_open = true;
+        self.last_end = x + advance;
+        self.last_y = y;
+        self.last_width = width;
+    }
+
+    fn push_space(&mut self, x: f64, y: f64, width: f64, advance: f64) {
+        if self.line_open {
+            self.pending_space = true;
+        }
+        self.last_end = x + advance;
+        self.last_y = y;
+        self.last_width = width;
+    }
+}
+
+impl pdf_extract::OutputDev for PdfFlowOutput {
+    fn begin_page(
+        &mut self,
+        _page_num: u32,
+        media_box: &pdf_extract::MediaBox,
+        _art_box: Option<(f64, f64, f64, f64)>,
+    ) -> Result<(), pdf_extract::OutputError> {
+        self.flush_line();
+        if self.pages > 0 {
+            self.out.push('\n');
+        }
+        self.flip = pdf_extract::Transform::row_major(1.0, 0.0, 0.0, -1.0, 0.0, media_box.ury - media_box.lly);
+        self.pages += 1;
+        Ok(())
+    }
+
+    fn end_page(&mut self) -> Result<(), pdf_extract::OutputError> {
+        self.flush_line();
+        Ok(())
+    }
+
+    fn output_character(
+        &mut self,
+        trm: &pdf_extract::Transform,
+        width: f64,
+        spacing: f64,
+        font_size: f64,
+        ch: &str,
+    ) -> Result<(), pdf_extract::OutputError> {
+        let (x, y) = self.position(trm);
+        let size = pdf_glyph_size(trm, font_size);
+        let advance = pdf_advance(width, spacing, font_size, size);
+        if ch.is_empty() {
+            self.last_end = x + advance;
+            self.last_y = y;
+            self.last_width = width;
+        } else if ch.trim().is_empty() {
+            self.push_space(x, y, width, advance);
+        } else {
+            self.push_glyph(x, y, size, width, advance, ch);
+        }
+        Ok(())
+    }
+
+    fn begin_word(&mut self) -> Result<(), pdf_extract::OutputError> {
+        Ok(())
+    }
+
+    fn end_word(&mut self) -> Result<(), pdf_extract::OutputError> {
+        Ok(())
+    }
+
+    fn end_line(&mut self) -> Result<(), pdf_extract::OutputError> {
+        Ok(())
+    }
+}
+
+/// Device-space glyph size: mirrors `pdf-extract`'s own estimate (linear
+/// part of the text matrix applied to the font size), guarded for
+/// degenerate matrices.
+fn pdf_glyph_size(trm: &pdf_extract::Transform, font_size: f64) -> f64 {
+    let x = (trm.m11 + trm.m21) * font_size;
+    let y = (trm.m12 + trm.m22) * font_size;
+    let size = (x * y).abs().sqrt();
+    if size.is_finite() && size > 0.0 {
+        size
+    } else if font_size.is_finite() && font_size > 0.0 {
+        font_size
+    } else {
+        12.0
+    }
+}
+
+/// Expected device-space advance of one glyph: nominal width plus the
+/// text-state spacing (`Tc` tracking, `Tw` justification) the standard
+/// sink ignores — scaled into device space like the glyph size.
+fn pdf_advance(width: f64, spacing: f64, font_size: f64, size: f64) -> f64 {
+    let scale = if font_size > 0.0 { size / font_size } else { 1.0 };
+    (width * font_size + spacing) * scale
+}
+
+fn extract_pdf_flow(bytes: &[u8]) -> Result<String, String> {
+    let mut doc = pdf_extract::Document::load_mem(bytes).map_err(|e| format!("pdf extract: {e}"))?;
+    if doc.is_encrypted() {
+        doc.decrypt("").map_err(|e| format!("pdf extract: {e}"))?;
+    }
+    let mut out = PdfFlowOutput::new();
+    pdf_extract::output_doc(&doc, &mut out).map_err(|e| format!("pdf extract: {e}"))?;
+    Ok(normalize_lines(&dehyphenate_pdf(&out.text())))
+}
+
+/// Join typeset line-break hyphens ("notifica-\ntions" → "notifications"):
+/// a line ending in `-`/soft-hyphen continues on a lowercase/digit line.
+/// Hyphenated compounds ("well-\nknown") join too — typeset breaks
+/// dominate in justified PDFs, and the joined form still embeds better
+/// than the split pair.
+fn dehyphenate_pdf(text: &str) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut carry: Option<String> = None;
+    for (idx, raw) in lines.iter().enumerate() {
+        let cur = match carry.take() {
+            Some(head) => format!("{head}{}", raw.trim()),
+            None => raw.to_string(),
+        };
+        let next_low = lines.get(idx + 1).is_some_and(|n| starts_lower_alnum(n.trim_start()));
+        if next_low {
+            if let Some(head) = strip_break_hyphen(&cur) {
+                carry = Some(head);
+                continue;
+            }
+        }
+        out.push(cur);
+    }
+    if let Some(head) = carry {
+        out.push(format!("{head}-"));
+    }
+    out.join("\n")
+}
+
+/// Trailing break hyphen: `-`/soft-hyphen after an alphanumeric, never a
+/// lone bullet or a double-hyphen dash.
+fn strip_break_hyphen(line: &str) -> Option<String> {
+    let t = line.trim_end();
+    let head = t.strip_suffix('-').or_else(|| t.strip_suffix('\u{ad}'))?;
+    if head.is_empty() || !head.chars().last().is_some_and(|c| c.is_alphanumeric()) {
+        return None;
+    }
+    if head.ends_with('-') || head.ends_with('\u{ad}') {
+        return None;
+    }
+    Some(head.to_string())
+}
+
+fn starts_lower_alnum(s: &str) -> bool {
+    s.chars().next().is_some_and(|c| c.is_ascii_digit() || (c.is_alphabetic() && c.is_lowercase()))
 }
 
 /// Resolve an XML general reference name (`amp`, `#169`, `#x20`) to a char.
@@ -375,7 +873,7 @@ fn extract_docx(bytes: &[u8]) -> Result<String, String> {
     let mut archive = open_zip(bytes)?;
     let xml = read_zip_entry(&mut archive, "word/document.xml")?;
     let text = xml_text(&xml, Profile::Word).map_err(|e| format!("docx: {e}"))?;
-    Ok(normalize_lines(&text))
+    Ok(strip_toc(&normalize_lines(&text)))
 }
 
 fn extract_pptx(bytes: &[u8]) -> Result<String, String> {
@@ -410,7 +908,7 @@ fn extract_odf(bytes: &[u8]) -> Result<String, String> {
     let mut archive = open_zip(bytes)?;
     let xml = read_zip_entry(&mut archive, "content.xml")?;
     let text = xml_text(&xml, Profile::Odf).map_err(|e| format!("odf: {e}"))?;
-    Ok(normalize_lines(&text))
+    Ok(strip_toc(&normalize_lines(&text)))
 }
 
 #[derive(Clone, Copy)]
@@ -467,78 +965,248 @@ impl Profile {
     }
 }
 
+/// What a tracked paragraph is: body text, a heading (`#` level), or a
+/// field-generated TOC entry (stripped, not even a blank line is left).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ParaKind {
+    Body,
+    Heading(u8),
+    Toc,
+}
+
+/// Walker state for `xml_text` — paragraph tracking drives R36.7 structure:
+/// docx `w:pStyle` headings become `#` markers, TOC entries are stripped.
+struct WalkState {
+    out: String,
+    in_text: bool,
+    in_body: bool,
+    para_start: Option<usize>,
+    para_kind: ParaKind,
+    toc_depth: u32,
+}
+
+impl WalkState {
+    fn new(profile: Profile) -> Self {
+        WalkState {
+            out: String::new(),
+            in_text: matches!(profile, Profile::Odf),
+            in_body: !matches!(profile, Profile::Odf),
+            para_start: None,
+            para_kind: ParaKind::Body,
+            toc_depth: 0,
+        }
+    }
+
+    fn wants_text(&self) -> bool {
+        self.in_text && self.in_body && self.toc_depth == 0
+    }
+
+    fn on_start(&mut self, e: &quick_xml::events::BytesStart, profile: Profile) {
+        let name = e.name();
+        let n: &str = name.as_ref();
+        if n == "office:body" {
+            self.in_body = true;
+        }
+        if n == "text:table-of-content" {
+            self.toc_depth += 1;
+        }
+        if self.toc_depth == 0 {
+            self.track_para_start(e, n, profile);
+        }
+        if profile.text_elem(n) {
+            self.in_text = true;
+        }
+    }
+
+    fn track_para_start(&mut self, e: &quick_xml::events::BytesStart, n: &str, profile: Profile) {
+        match profile {
+            Profile::Word if n == "w:p" => {
+                self.para_start = Some(self.out.len());
+                self.para_kind = ParaKind::Body;
+            }
+            Profile::Word if n == "w:pStyle" => {
+                if self.para_start.is_some() {
+                    if let Some(val) = xml_attr(e, "w:val") {
+                        self.para_kind = docx_para_kind(&val);
+                    }
+                }
+            }
+            Profile::Odf if n == "text:h" => {
+                self.para_start = Some(self.out.len());
+                self.para_kind = ParaKind::Heading(odf_heading_level(e));
+            }
+            _ => {}
+        }
+    }
+
+    fn on_end(&mut self, e: &quick_xml::events::BytesEnd, profile: Profile) {
+        let name = e.name();
+        let n: &str = name.as_ref();
+        if n == "text:table-of-content" {
+            self.toc_depth = self.toc_depth.saturating_sub(1);
+            return;
+        }
+        if self.toc_depth > 0 {
+            return;
+        }
+        if profile.text_elem(n) {
+            self.in_text = false;
+        }
+        if n == "office:body" {
+            self.in_body = false;
+        }
+        if is_para_close(n, profile) {
+            if self.flush_para() {
+                self.out.push('\n');
+            }
+        } else if profile.cell_end(n) {
+            while self.out.ends_with('\n') {
+                self.out.pop();
+            }
+            self.out.push('\t');
+        } else if profile.para_end(n) {
+            self.out.push('\n');
+        }
+    }
+
+    fn on_empty(&mut self, e: &quick_xml::events::BytesStart, profile: Profile) {
+        let name = e.name();
+        let n: &str = name.as_ref();
+        if self.toc_depth > 0 {
+            return;
+        }
+        if matches!(profile, Profile::Word) && n == "w:pStyle" && self.para_start.is_some() {
+            if let Some(val) = xml_attr(e, "w:val") {
+                self.para_kind = docx_para_kind(&val);
+            }
+        }
+        if profile.tab(n) {
+            self.out.push('\t');
+        } else if profile.line_break(n) || profile.para_end(n) {
+            self.out.push('\n');
+        }
+    }
+
+    /// Close a tracked paragraph: strip TOC entries, prefix headings with
+    /// `#` markers. Returns whether the paragraph break is still wanted.
+    fn flush_para(&mut self) -> bool {
+        let Some(start) = self.para_start.take() else {
+            return true;
+        };
+        let kind = std::mem::replace(&mut self.para_kind, ParaKind::Body);
+        match kind {
+            ParaKind::Body => true,
+            ParaKind::Toc => {
+                self.out.truncate(start);
+                false
+            }
+            ParaKind::Heading(level) => {
+                if !self.out[start..].trim().is_empty() {
+                    self.out
+                        .insert_str(start, &format!("{} ", "#".repeat(level as usize)));
+                }
+                true
+            }
+        }
+    }
+}
+
+/// Tracked paragraph closes: docx `w:p`, ODT `text:h`. (`w:tr` still ends
+/// a row via the generic `para_end` branch — rows are never headings.)
+fn is_para_close(n: &str, profile: Profile) -> bool {
+    matches!(
+        (profile, n),
+        (Profile::Word, "w:p") | (Profile::Odf, "text:h")
+    )
+}
+
+/// Raw attribute value (`w:val`, `text:outline-level`, ...) — style ids are
+/// plain ASCII, so no entity decoding is needed.
+fn xml_attr(e: &quick_xml::events::BytesStart, key: &str) -> Option<String> {
+    for attr in e.attributes() {
+        let attr = attr.ok()?;
+        if attr.key.into_inner() == key {
+            return Some(attr.value.into_owned());
+        }
+    }
+    None
+}
+
+/// Map a docx paragraph style id to structure: `Heading1`–`Heading9`
+/// (clamped to six `#` levels) and `Title` become headings, `TOC1`–`TOC9`
+/// (field-generated TOC entries) strip. Anything else is a body paragraph —
+/// unknown styles degrade to plain text, never to dropped text.
+fn docx_para_kind(style: &str) -> ParaKind {
+    if style.eq_ignore_ascii_case("title") {
+        return ParaKind::Heading(1);
+    }
+    let lower: String = style.chars().filter(|c| !c.is_whitespace()).collect();
+    let lower = lower.to_ascii_lowercase();
+    if let Some(n) = style_num(&lower, "heading") {
+        return ParaKind::Heading(n.min(6));
+    }
+    if style_num(&lower, "toc").is_some() {
+        return ParaKind::Toc;
+    }
+    ParaKind::Body
+}
+
+/// Trailing `1`–`9` after a style prefix (`heading2`, `toc1`) — anything
+/// else (letters, `0`, multi-digit past 9) is not a numbered style.
+fn style_num(style: &str, prefix: &str) -> Option<u8> {
+    style
+        .strip_prefix(prefix)?
+        .parse::<u8>()
+        .ok()
+        .filter(|n| (1..=9).contains(n))
+}
+
+/// ODT heading level from `text:outline-level` — a `text:h` without one is
+/// still a heading (level 1), never body text.
+fn odf_heading_level(e: &quick_xml::events::BytesStart) -> u8 {
+    xml_attr(e, "text:outline-level")
+        .and_then(|v| v.parse::<u8>().ok())
+        .filter(|n| (1..=9).contains(n))
+        .unwrap_or(1)
+        .min(6)
+}
+
 /// Walk XML and pull text out of one of the three document shapes.
 fn xml_text(xml: &str, profile: Profile) -> Result<String, String> {
     use quick_xml::events::Event;
     let mut reader = quick_xml::Reader::from_str(xml);
-    let mut out = String::new();
-    let mut in_text = matches!(profile, Profile::Odf);
-    let mut in_body = !matches!(profile, Profile::Odf);
+    let mut st = WalkState::new(profile);
     loop {
         match reader.read_event() {
-            Ok(Event::Start(e)) => {
-                let name = e.name();
-                let n: &str = name.as_ref();
-                if n == "office:body" {
-                    in_body = true;
-                }
-                if profile.text_elem(n) {
-                    in_text = true;
-                }
-            }
-            Ok(Event::End(e)) => {
-                let name = e.name();
-                let n: &str = name.as_ref();
-                if profile.text_elem(n) {
-                    in_text = false;
-                }
-                if n == "office:body" {
-                    in_body = false;
-                }
-                if profile.cell_end(n) {
-                    while out.ends_with('\n') {
-                        out.pop();
-                    }
-                    out.push('\t');
-                } else if profile.para_end(n) {
-                    out.push('\n');
-                }
-            }
+            Ok(Event::Start(e)) => st.on_start(&e, profile),
+            Ok(Event::End(e)) => st.on_end(&e, profile),
             Ok(Event::Text(t)) => {
-                if in_text && in_body {
+                if st.wants_text() {
                     let raw = t.into_inner();
                     let s = quick_xml::escape::unescape(&raw)
                         .map_err(|e| format!("xml entity: {e}"))?;
-                    out.push_str(&s);
+                    st.out.push_str(&s);
                 }
             }
             Ok(Event::CData(t)) => {
-                if in_text && in_body {
-                    out.push_str(&t.into_inner());
+                if st.wants_text() {
+                    st.out.push_str(&t.into_inner());
                 }
             }
             Ok(Event::GeneralRef(r)) => {
-                if in_text && in_body {
+                if st.wants_text() {
                     if let Some(c) = resolve_ref(&r.into_inner()) {
-                        out.push(c);
+                        st.out.push(c);
                     }
                 }
             }
-            Ok(Event::Empty(e)) => {
-                let name = e.name();
-                let n: &str = name.as_ref();
-                if profile.tab(n) {
-                    out.push('\t');
-                } else if profile.line_break(n) || profile.para_end(n) {
-                    out.push('\n');
-                }
-            }
+            Ok(Event::Empty(e)) => st.on_empty(&e, profile),
             Ok(Event::Eof) => break,
             Err(e) => return Err(format!("xml: {e}")),
             _ => {}
         }
     }
-    Ok(out)
+    Ok(st.out)
 }
 
 // ----- spreadsheets (xlsx/xlsm/xlsb/xls/ods via calamine) -----
@@ -870,6 +1538,80 @@ fn part_text(mail: &mailparse::ParsedMail<'_>, depth: usize) -> Option<String> {
     None
 }
 
+// ----- table-of-contents stripping (R36.7) -----
+
+/// Strip unstyled/manual tables of contents from parser-produced text: a
+/// non-heading line drops when it exactly repeats a `#`-marker heading title
+/// (running header, title-page repeat) or pairs one with a TOC page-number
+/// artifact (tab number, dot leaders). Field-marked TOCs (docx `TOC1`–`9`
+/// styles, ODT `text:table-of-content`) never reach this pass — the XML
+/// walker strips them. Plain-text/markdown passthrough never calls it.
+fn strip_toc(text: &str) -> String {
+    use std::collections::HashSet;
+    let titles: HashSet<&str> = text
+        .lines()
+        .filter_map(|l| crate::chunking::marker_heading(l).map(|(_, t)| t))
+        .collect();
+    if titles.is_empty() {
+        return text.to_string();
+    }
+    text.lines()
+        .filter(|l| !is_toc_line(l, &titles))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_toc_line(line: &str, titles: &std::collections::HashSet<&str>) -> bool {
+    if crate::chunking::marker_heading(line).is_some() {
+        return false;
+    }
+    let t = line.trim();
+    if t.is_empty() {
+        return false;
+    }
+    if titles.contains(t) {
+        return true;
+    }
+    toc_entry_core(t)
+        .map(|core| titles.contains(core))
+        .unwrap_or(false)
+}
+
+/// Core text of a TOC page-number entry: `Title\t12` or `Title .... 12`.
+/// A number joined by a plain space is NOT an entry (cross-reference).
+fn toc_entry_core(line: &str) -> Option<&str> {
+    if let Some((core, num)) = line.rsplit_once('\t') {
+        if is_page_number(num.trim()) && !core.trim().is_empty() {
+            return Some(core.trim());
+        }
+    }
+    let cut = line.find("..").or_else(|| line.find('\u{2026}'))?;
+    let core = line[..cut].trim();
+    if core.is_empty() {
+        return None;
+    }
+    let tail: String = line[cut..]
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '.' && *c != '\u{2026}')
+        .collect();
+    if is_page_number(&tail) {
+        Some(core)
+    } else {
+        None
+    }
+}
+
+fn is_page_number(s: &str) -> bool {
+    !s.is_empty() && (s.chars().all(|c| c.is_ascii_digit()) || s.chars().all(is_roman_numeral))
+}
+
+fn is_roman_numeral(c: char) -> bool {
+    // `str::contains`, not a `matches!` alternative list: lizard 1.24
+    // mis-scopes the `|`-separated char literals and swallows the rest of
+    // the file into this function's span (same tokenizer family as R36.7).
+    "ivxlcdm".contains(c.to_ascii_lowercase())
+}
+
 // ----- shared text shaping -----
 
 /// Trim each line, collapse runs of spaces, drop leading/trailing blank lines
@@ -1162,6 +1904,130 @@ Hello \b bold\b0  and \'93quoted\'94.\par Second \u8364? paragraph.\par}";
     }
 
     #[test]
+    fn docx_heading_styles_emit_markers() {
+        // R36.7: Heading styles → `#` markers; Title → `#`; unknown/missing
+        // styles degrade to plain paragraphs (kept, never dropped).
+        let doc = zip_bytes(&[(
+            "word/document.xml",
+            r#"<?xml version="1.0"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>Annual Report</w:t></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Overview</w:t></w:r></w:p>
+<w:p><w:r><w:t>Body para one.</w:t></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Heading2"></w:pStyle></w:pPr><w:r><w:t>Details</w:t></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Quote"/></w:pPr><w:r><w:t>Quoted text.</w:t></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Heading7"/></w:pPr><w:r><w:t>Deep</w:t></w:r></w:p>
+</w:body></w:document>"#,
+        )]);
+        let text = extract_bytes("docx", &doc).unwrap();
+        assert_eq!(
+            text,
+            "# Annual Report\n# Overview\nBody para one.\n## Details\nQuoted text.\n###### Deep",
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn docx_toc_styles_stripped_without_trace() {
+        let doc = zip_bytes(&[(
+            "word/document.xml",
+            r#"<?xml version="1.0"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Overview</w:t></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="TOC1"/></w:pPr><w:r><w:t>Overview</w:t></w:r><w:r><w:tab/><w:t>3</w:t></w:r></w:p>
+<w:p><w:r><w:t>After toc.</w:t></w:r></w:p>
+</w:body></w:document>"#,
+        )]);
+        let text = extract_bytes("docx", &doc).unwrap();
+        assert_eq!(text, "# Overview\nAfter toc.", "{text}");
+    }
+
+    #[test]
+    fn docx_manual_toc_repetition_stripped_cross_ref_kept() {
+        // Unstyled TOC entries (tab number, dot leaders) strip; a number
+        // joined by a plain space is a cross-reference and stays.
+        let doc = zip_bytes(&[(
+            "word/document.xml",
+            r#"<?xml version="1.0"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:r><w:t>Overview</w:t></w:r><w:r><w:tab/><w:t>3</w:t></w:r></w:p>
+<w:p><w:r><w:t>Details .... 5</w:t></w:r></w:p>
+<w:p><w:r><w:t>See Chapter 2 for background</w:t></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Overview</w:t></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>Details</w:t></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Chapter</w:t></w:r></w:p>
+<w:p><w:r><w:t>Chapter 2</w:t></w:r></w:p>
+</w:body></w:document>"#,
+        )]);
+        let text = extract_bytes("docx", &doc).unwrap();
+        assert_eq!(
+            text, "See Chapter 2 for background\n# Overview\n## Details\n# Chapter\nChapter 2",
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn odt_headings_and_toc_subtree() {
+        // `text:h` outline-level → markers (missing level → 1);
+        // `text:table-of-content` subtree stripped.
+        let odt = zip_bytes(&[(
+            "content.xml",
+            "<office:document-content xmlns:office=\"o\" xmlns:text=\"t\"><office:body><office:text>\n\
+             <text:table-of-content><text:p>Overview\t3</text:p></text:table-of-content>\n\
+             <text:h text:outline-level=\"1\">Overview</text:h>\n\
+             <text:p>Body.</text:p>\n\
+             <text:h text:outline-level=\"3\">Deep dive</text:h>\n\
+             <text:h>No level</text:h>\n\
+             </office:text></office:body></office:document-content>",
+        )]);
+        let text = extract_bytes("odt", &odt).unwrap();
+        assert_eq!(
+            text, "# Overview\n\nBody.\n\n### Deep dive\n\n# No level",
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn html_headings_tables_and_entities() {
+        let html = "<html><head><title>Doc</title><style>p{x}</style><script>bad()</script></head>\
+             <body><h1>Plan &amp; Budget</h1><p>First para.</p><h3>Deep</h3>\
+             <table><tr><th>Name</th><th>Cost</th></tr><tr><td>Item</td><td>42</td></tr></table>\
+             <p>Tail.</p></body></html>";
+        let text = extract_bytes("html", html.as_bytes()).unwrap();
+        assert_eq!(
+            text,
+            "Doc\n# Plan & Budget\n\nFirst para.\n\n### Deep\n\nName\tCost\n\nItem\t42\n\nTail.",
+            "{text}"
+        );
+        assert!(!text.contains("bad()"));
+        assert!(!text.contains("p{x}"));
+        assert!(!text.contains('<'));
+    }
+
+    #[test]
+    fn docx_markers_section_end_to_end() {
+        // docx bytes → `#` markers → heading sections with clean titles.
+        let doc = zip_bytes(&[(
+            "word/document.xml",
+            r#"<?xml version="1.0"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Overview</w:t></w:r></w:p>
+<w:p><w:r><w:t>Body one.</w:t></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>Details</w:t></w:r></w:p>
+<w:p><w:r><w:t>Body two.</w:t></w:r></w:p>
+</w:body></w:document>"#,
+        )]);
+        let text = extract_bytes("docx", &doc).unwrap();
+        let (secs, chunks) = crate::chunking::chunk_document_with_sections(&text);
+        let titles: Vec<&str> = secs.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, vec!["Overview", "Details"]);
+        assert_eq!(secs[1].parent, Some(0));
+        assert_eq!(secs[1].path, "Overview > Details");
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].content.starts_with("# Overview\n"));
+    }
+
+    #[test]
     fn corrupt_inputs_error_instead_of_panicking() {
         assert!(extract_bytes("docx", b"not a zip").is_err());
         assert!(extract_bytes("pptx", b"not a zip").is_err());
@@ -1169,5 +2035,290 @@ Hello \b bold\b0  and \'93quoted\'94.\par Second \u8364? paragraph.\par}";
         assert!(extract_bytes("pdf", b"not a pdf").is_err());
         assert!(extract_bytes("ods", b"nope").is_err());
         assert!(extract_bytes("weird", b"x").is_err());
+    }
+
+    /// Minimal single-font (Helvetica) PDF with one content stream per page —
+    /// byte offsets are computed, so the xref table is always valid.
+    fn pdf_bytes(page_streams: &[&str]) -> Vec<u8> {
+        let n_pages = page_streams.len();
+        let page_first = 3;
+        let content_first = page_first + n_pages;
+        let font_id = content_first + n_pages;
+        let mut parts: Vec<(usize, Vec<u8>)> = Vec::new();
+        let kids: Vec<String> = (0..n_pages).map(|i| format!("{} 0 R", page_first + i)).collect();
+        parts.push((1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()));
+        parts.push((
+            2,
+            format!("<< /Type /Pages /Kids [{}] /Count {} >>", kids.join(" "), n_pages).into_bytes(),
+        ));
+        for i in 0..n_pages {
+            parts.push((
+                page_first + i,
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+                     /Resources << /Font << /F1 {font_id} 0 R >> >> /Contents {} 0 R >>",
+                    content_first + i,
+                )
+                .into_bytes(),
+            ));
+        }
+        for (i, stream) in page_streams.iter().enumerate() {
+            parts.push((
+                content_first + i,
+                format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len()).into_bytes(),
+            ));
+        }
+        parts.push((font_id, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec()));
+        parts.sort_by_key(|(n, _)| *n);
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = vec![0usize; font_id + 1];
+        for (n, body) in &parts {
+            offsets[*n] = out.len();
+            out.extend_from_slice(format!("{n} 0 obj\n").as_bytes());
+            out.extend_from_slice(body);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let xref_at = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", font_id + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n", font_id + 1)
+                .as_bytes(),
+        );
+        out
+    }
+
+    #[test]
+    fn pdf_fixture_extracts_clean_line() {
+        let pdf = pdf_bytes(&["BT /F1 12 Tf 72 720 Td (Cancellations and notifications.) Tj ET"]);
+        let text = pdf_extract::extract_text_from_mem(&pdf).unwrap();
+        assert!(text.contains("Cancellations and notifications."), "{text:?}");
+    }
+
+    #[test]
+    fn pdf_standard_splits_kerned_tj_words() {
+        // Repro: TJ kerning offsets between string fragments read as word
+        // gaps ("Cancellati ons") — the reported extraction damage.
+        let pdf = pdf_bytes(&[
+            "BT /F1 12 Tf 72 720 Td [(Cancellati) -150 (ons and noti) -150 (fi) -150 (cati) -150 (ons.)] TJ ET",
+        ]);
+        let text = pdf_extract::extract_text_from_mem(&pdf).unwrap();
+        assert!(text.contains("Cancellati ons"), "{text:?}");
+        assert!(text.contains("noti fi cati ons"), "{text:?}");
+    }
+
+    #[test]
+    fn split_scorer_flags_shredded_text() {
+        let shredded = "Cancellati ons and Correcti ons with noti fi cati ons \
+            for processi ng of subscripti ons and installati on guides";
+        let (splits, tokens) = split_suspects(shredded);
+        assert!(splits >= 6, "splits={splits} tokens={tokens}");
+        assert!(pdf_trips_detector(splits, tokens));
+    }
+
+    #[test]
+    fn split_scorer_silent_on_clean_prose() {
+        for clean in [
+            "Cancellations and notifications for processing of subscriptions.",
+            "The db migration ran via the CLI with no errors, etc.",
+            "Section 12.3 covers Article 4, pages 10 of 42 - see - 12 - below.",
+            "State-of-the-art results: e.g. well-known DON'T stop # Heading One",
+        ] {
+            let (splits, tokens) = split_suspects(clean);
+            assert!(!pdf_trips_detector(splits, tokens), "{clean:?} splits={splits} tokens={tokens}");
+        }
+    }
+
+    fn md_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let entries = std::fs::read_dir(dir).unwrap();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                md_files(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// Three shredded lines (~9 suspects in standard output): kerned TJ
+    /// fragments across several join shapes (plurals, gerunds, middles).
+    fn shredded_pdf() -> Vec<u8> {
+        pdf_bytes(&[
+            "BT /F1 12 Tf 72 720 Td [(Cancellati) -150 (ons and noti) -150 (fi) -150 (cati) -150 (ons.)] TJ 0 -14 Td [(Correcti) -150 (ons for processi) -150 (ng of subscripti) -150 (ons.)] TJ 0 -14 Td [(Installati) -150 (on guides and noti) -150 (fi) -150 (cati) -150 (ons.)] TJ ET",
+        ])
+    }
+
+    #[test]
+    fn pdf_adaptive_repairs_shredded_text() {
+        let pdf = shredded_pdf();
+        let std = pdf_extract::extract_text_from_mem(&pdf).unwrap();
+        let (std_splits, _) = split_suspects(&std);
+        assert!(std_splits >= 6, "fixture must trip: {std:?}");
+        let (text, note) = extract_pdf_labeled(&pdf, "shredded.pdf").unwrap();
+        let note = note.expect("tripped detector reports a note");
+        assert!(note.used_alternate, "{}", note.summary());
+        assert!(note.alt_splits.unwrap() < std_splits, "{}", note.summary());
+        assert!(text.contains("Cancellations"), "{text:?}");
+        assert!(text.contains("notifications"), "{text:?}");
+        assert!(text.contains("Corrections"), "{text:?}");
+        assert!(text.contains("processing"), "{text:?}");
+        assert!(text.contains("subscriptions"), "{text:?}");
+        assert!(text.contains("Installation"), "{text:?}");
+        assert!(!text.contains("Cancellati ons"), "{text:?}");
+    }
+
+    #[test]
+    fn pdf_adaptive_keeps_clean_byte_identical() {
+        let pdf = pdf_bytes(&["BT /F1 12 Tf 72 720 Td (Cancellations and notifications.) Tj 0 -14 Td (Second line here.) Tj ET"]);
+        let std = pdf_extract::extract_text_from_mem(&pdf).unwrap();
+        let (text, note) = extract_pdf_labeled(&pdf, "clean.pdf").unwrap();
+        assert!(note.is_none());
+        assert_eq!(text, std);
+    }
+
+    #[test]
+    fn pdf_flow_keeps_tj_word_spaces() {
+        // A real word-sized TJ gap (0.278em) still breaks in the repair pass.
+        let pdf = pdf_bytes(&["BT /F1 12 Tf 72 720 Td [(Hello) -278 (world)] TJ ET"]);
+        let text = extract_pdf_flow(&pdf).unwrap();
+        assert!(text.contains("Hello world"), "{text:?}");
+    }
+
+    #[test]
+    fn pdf_flow_joins_tracked_fragments() {
+        // `Tc` tracking shifts every advance; the standard sink ignores the
+        // spacing term and splits, the flow sink accounts for it.
+        let pdf = pdf_bytes(&["BT /F1 12 Tf 2 Tc 72 720 Td [(Tra) (cked)] TJ ET"]);
+        let std = pdf_extract::extract_text_from_mem(&pdf).unwrap();
+        assert!(std.contains("Tra cked"), "{std:?}");
+        let text = extract_pdf_flow(&pdf).unwrap();
+        assert!(text.contains("Tracked"), "{text:?}");
+    }
+
+    #[test]
+    fn pdf_flow_breaks_lines_paragraphs_and_pages() {
+        let pdf = pdf_bytes(&[
+            "BT /F1 12 Tf 72 720 Td (First line) Tj 0 -14 Td (Second line) Tj 0 -40 Td (New paragraph) Tj ET",
+            "BT /F1 12 Tf 72 720 Td (Page two) Tj ET",
+        ]);
+        let text = extract_pdf_flow(&pdf).unwrap();
+        assert!(text.contains("First line\nSecond line"), "{text:?}");
+        assert!(text.contains("Second line\n\nNew paragraph"), "{text:?}");
+        assert!(text.contains("New paragraph\n\nPage two"), "{text:?}");
+    }
+
+    #[test]
+    fn pdf_flow_dehyphenates_line_breaks() {
+        let pdf = pdf_bytes(&["BT /F1 12 Tf 72 720 Td (notifica-) Tj 0 -14 Td (tions here) Tj ET"]);
+        let text = extract_pdf_flow(&pdf).unwrap();
+        assert!(text.contains("notifications here"), "{text:?}");
+    }
+
+    #[test]
+    fn dehyphenate_joins_breaks_keeps_bullets() {
+        assert_eq!(dehyphenate_pdf("notifica-\ntions"), "notifications");
+        assert_eq!(dehyphenate_pdf("a-\nb-\nc"), "abc");
+        assert_eq!(dehyphenate_pdf("well-\nKnown"), "well-\nKnown");
+        assert_eq!(dehyphenate_pdf("-\nfoo"), "-\nfoo");
+        assert_eq!(dehyphenate_pdf("word --\nnext"), "word --\nnext");
+        assert_eq!(dehyphenate_pdf("tail-\n"), "tail-\n");
+        assert_eq!(dehyphenate_pdf("no hyphen\nhere"), "no hyphen\nhere");
+    }
+
+    #[test]
+    fn pdf_quality_note_summary_names_decision() {
+        let repaired = PdfQualityNote {
+            file: "a.pdf".to_string(),
+            std_splits: 9,
+            alt_splits: Some(1),
+            tokens: 100,
+            used_alternate: true,
+        };
+        assert!(repaired.summary().contains("repaired"), "{}", repaired.summary());
+        let kept = PdfQualityNote {
+            file: "b.pdf".to_string(),
+            std_splits: 9,
+            alt_splits: Some(9),
+            tokens: 100,
+            used_alternate: false,
+        };
+        assert!(kept.summary().contains("kept-standard"), "{}", kept.summary());
+    }
+
+    /// Drive the flow sink directly with synthetic glyphs
+    /// (`x`, `width_em`, `font_size`, `char` on one row): zero-width font
+    /// entries can't be produced through a Helvetica fixture.
+    fn flow_glyph_text(calls: &[(f64, f64, f64, &str)]) -> String {
+        use pdf_extract::OutputDev;
+        let mut out = PdfFlowOutput::new();
+        out.begin_page(
+            1,
+            &pdf_extract::MediaBox { llx: 0.0, lly: 0.0, urx: 612.0, ury: 792.0 },
+            None,
+        )
+        .unwrap();
+        for (x, w, fs, ch) in calls {
+            let trm = pdf_extract::Transform::row_major(1.0, 0.0, 0.0, 1.0, *x, 400.0);
+            out.output_character(&trm, *w, 0.0, *fs, ch).unwrap();
+        }
+        out.end_page().unwrap();
+        out.text()
+    }
+
+    #[test]
+    fn pdf_flow_joins_zero_width_gaps() {
+        // Subsetted font reports width 0 for `p`/`i`: the measured gaps
+        // (0.61em/0.24em) are phantom advances, not word spaces.
+        let text = flow_glyph_text(&[
+            (72.0, 0.73, 40.0, "C"),
+            (101.2, 0.60, 40.0, "o"),
+            (125.2, 0.376, 40.0, "r"),
+            (140.9, 0.0, 40.0, "p"),
+            (165.4, 0.60, 40.0, "o"),
+        ]);
+        assert_eq!(text.trim(), "Corpo");
+        let text = flow_glyph_text(&[(337.7, 0.0, 40.0, "i"), (347.3, 0.60, 40.0, "o")]);
+        assert_eq!(text.trim(), "io");
+    }
+
+    #[test]
+    fn pdf_flow_splits_only_huge_blind_gaps() {
+        // Past one em even a blind gap must hold a real space.
+        let text = flow_glyph_text(&[(0.0, 0.0, 40.0, "i"), (45.0, 0.60, 40.0, "o")]);
+        assert_eq!(text.trim(), "i o");
+    }
+
+    #[test]
+    fn pdf_flow_normal_gap_threshold_unchanged() {
+        // Sanity either side of 0.2em with honest widths.
+        let text = flow_glyph_text(&[(0.0, 0.5, 40.0, "a"), (30.0, 0.5, 40.0, "b")]);
+        assert_eq!(text.trim(), "a b");
+        let text = flow_glyph_text(&[(0.0, 0.5, 40.0, "a"), (26.0, 0.5, 40.0, "b")]);
+        assert_eq!(text.trim(), "ab");
+    }
+
+    #[test]
+    fn pdf_detector_silent_on_repo_corpora() {
+        // Calibrated 2026-10-13: 0 trips over 832 clean files (sample/,
+        // sample-ai/ plus the local business-scale fixture set); the worst
+        // clean file scores 3 suspects against a trip floor of 6.
+        let mut files = Vec::new();
+        for corpus in ["../../../sample", "../../../sample-ai"] {
+            md_files(std::path::Path::new(corpus), &mut files);
+        }
+        assert!(!files.is_empty());
+        for path in &files {
+            let text = std::fs::read_to_string(path).unwrap();
+            let (splits, tokens) = split_suspects(&text);
+            assert!(
+                !pdf_trips_detector(splits, tokens),
+                "{} trips: splits={splits} tokens={tokens}",
+                path.display()
+            );
+        }
     }
 }

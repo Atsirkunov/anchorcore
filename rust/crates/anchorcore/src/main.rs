@@ -445,6 +445,7 @@ fn build_router(state: health::AppState) -> Router {
         .route("/entities/:id/conflicts/:other_id", delete(entities::conflict_delete_handler))
         .route("/items", get(items::list_handler))
         .route("/items/:id", get(items::get_handler).patch(items::patch_handler))
+        .route("/items/:id/outline", get(sections::outline_handler))
         .route("/entities/:id/context", get(entities::context_handler))
         .route("/review/low-confidence", get(review::low_confidence_handler))
         .route("/review/duplicates", get(review::duplicates_handler))
@@ -456,6 +457,8 @@ fn build_router(state: health::AppState) -> Router {
         // sections (R14.1)
         .route("/sections", get(sections::list_handler))
         .route("/sections/:id/chunks", get(sections::chunks_handler))
+        // nodes (R36.6) — single tree-node lookup with opt-in links
+        .route("/nodes/:id", get(sections::node_handler))
         // tags (R14.4)
         .route("/tags", get(tags::list_handler))
         .route("/tags/:id/chunks", get(tags::chunks_handler))

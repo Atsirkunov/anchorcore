@@ -47,6 +47,29 @@ fn supported_files(root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// One supported file plus its cheap stat fingerprint — a listing never reads
+/// content, so an incremental sync can skip unchanged files without
+/// extracting them. Content hash at sync time stays the authority for files
+/// whose fingerprint changed; this only decides *whether to extract*.
+#[derive(Clone, Debug)]
+pub struct ListedFile {
+    pub rel: String,
+    pub path: PathBuf,
+    pub mtime_ms: u64,
+    pub len: u64,
+}
+
+fn fingerprint_stat(path: &Path) -> Option<(u64, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime_ms = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64;
+    Some((mtime_ms, meta.len()))
+}
+
 pub struct FolderConnector {
     path: PathBuf,
 }
@@ -71,43 +94,68 @@ impl FolderConnector {
         Ok((docs, cursor))
     }
 
+    fn ensure_dir(&self) -> Result<(), ConnectorError> {
+        if !self.path.exists() || !self.path.is_dir() {
+            return Err(ConnectorError(format!("folder does not exist: {}", self.path.display())));
+        }
+        Ok(())
+    }
+
+    /// Cheap listing of every supported file + stat fingerprint — no content
+    /// is read. Files that vanish mid-walk are dropped (purge treats a file
+    /// missing from the listing as deleted). Sorted by relative path so sync
+    /// order is stable across runs.
+    pub fn list_files(&self) -> Result<Vec<ListedFile>, ConnectorError> {
+        self.ensure_dir()?;
+        let mut out = Vec::new();
+        for p in supported_files(&self.path) {
+            let rel = p.strip_prefix(&self.path).unwrap_or(&p).to_string_lossy().to_string();
+            if let Some((mtime_ms, len)) = fingerprint_stat(&p) {
+                out.push(ListedFile { rel, path: p, mtime_ms, len });
+            }
+        }
+        out.sort_by(|a, b| a.rel.cmp(&b.rel));
+        Ok(out)
+    }
+
+    /// Extract one listed file. The caller (incremental sync) decides *which*
+    /// files need extraction; unreadable files are the caller's `skipped`.
+    /// The note carries the PDF catcher's report for pipeline `system_events`.
+    pub fn extract_listed(f: &ListedFile) -> (Result<String, String>, Option<extract::PdfQualityNote>) {
+        extract::extract_file_noted(&f.path)
+    }
+
     /// B57 safety: files that exist but could not be read (e.g. a corrupt PDF)
     /// are reported as skipped — purge must never mistake them for deleted.
     pub fn fetch_with_skipped(&self) -> Result<(Vec<IngestionDoc>, Vec<String>, String), ConnectorError> {
-        if !self.path.exists() {
-            return Err(ConnectorError(format!("folder does not exist: {}", self.path.display())));
-        }
-        if !self.path.is_dir() {
-            return Err(ConnectorError(format!("folder does not exist: {}", self.path.display())));
-        }
+        self.ensure_dir()?;
         let mut docs = Vec::new();
         let mut skipped = Vec::new();
-        for p in supported_files(&self.path) {
-            let rel = p.strip_prefix(&self.path).unwrap_or(&p).to_string_lossy().to_string();
+        for f in self.list_files()? {
             let t_extract = std::time::Instant::now();
-            let text = match extract::extract_file(&p) {
-                Ok(t) => t,
-                Err(e) => {
-                    tracing::warn!("folder file skipped ({}): {}", rel, e);
-                    skipped.push(rel);
+            let text = match Self::extract_listed(&f) {
+                (Ok(t), _) => t,
+                (Err(e), _) => {
+                    tracing::warn!("folder file skipped ({}): {}", f.rel, e);
+                    skipped.push(f.rel);
                     continue;
                 }
             };
             let extract_ms = t_extract.elapsed().as_millis();
             if extract_ms >= 200 {
-                tracing::debug!(target: "anchorcore::perf", file = %rel, ms = extract_ms, chars = text.len(), "extract");
+                tracing::debug!(target: "anchorcore::perf", file = %f.rel, ms = extract_ms, chars = text.len(), "extract");
             }
-            let mtime = std::fs::metadata(&p)
+            let mtime = std::fs::metadata(&f.path)
                 .ok()
                 .and_then(|m| m.modified().ok())
                 .map(|t| DateTime::<Utc>::from(t));
             docs.push(IngestionDoc {
-                external_id: rel,
-                title: p.file_name().unwrap().to_string_lossy().to_string(),
+                external_id: f.rel,
+                title: f.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
                 text,
                 author: String::new(),
                 updated_at: mtime,
-                source_ref: p.to_string_lossy().to_string(),
+                source_ref: f.path.to_string_lossy().to_string(),
             });
         }
         Ok((docs, skipped, String::new()))
@@ -136,6 +184,37 @@ mod tests {
         // an unreadable file is reported, not silently dropped (purge safety)
         assert_eq!(skipped.len(), 1);
         assert!(skipped[0].ends_with("c.pdf"));
+    }
+
+    #[test]
+    fn list_files_stats_without_extracting() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("b.md"), "# B").unwrap();
+        std::fs::write(dir.path().join("a.md"), "# A\nmore").unwrap();
+        // corrupt-by-extension: fetch would report it as skipped, but a bare
+        // listing must include it (a listing never reads content).
+        std::fs::write(dir.path().join("c.pdf"), "not a real pdf").unwrap();
+        let cfg = serde_json::json!({"path": dir.path().to_string_lossy()});
+        let c = FolderConnector::new(&cfg).unwrap();
+        let files = c.list_files().unwrap();
+        assert_eq!(files.len(), 3);
+        // sorted by rel path for a stable sync order
+        let rels: Vec<&str> = files.iter().map(|f| f.rel.as_str()).collect();
+        assert_eq!(rels, vec!["a.md", "b.md", "c.pdf"]);
+        // fingerprints track stat reality
+        let a = files.iter().find(|f| f.rel == "a.md").unwrap();
+        let meta = std::fs::metadata(dir.path().join("a.md")).unwrap();
+        assert_eq!(a.len, meta.len());
+        assert!(a.mtime_ms > 0);
+        // an edit changes the fingerprint
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(dir.path().join("a.md"), "# A\nmore and more").unwrap();
+        let files2 = c.list_files().unwrap();
+        let a2 = files2.iter().find(|f| f.rel == "a.md").unwrap();
+        assert_ne!((a.mtime_ms, a.len), (a2.mtime_ms, a2.len));
+        let b = files2.iter().find(|f| f.rel == "b.md").unwrap();
+        let b_before = files.iter().find(|f| f.rel == "b.md").unwrap();
+        assert_eq!((b.mtime_ms, b.len), (b_before.mtime_ms, b_before.len));
     }
 
     #[test]

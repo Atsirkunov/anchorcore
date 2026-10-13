@@ -6,7 +6,13 @@ import { SourceEditForm } from "./SourceForm";
 
 function jobLabel(job: Job): string {
   const verb = job.kind === "reclassify" ? "Reclassifying" : "Syncing";
-  if (job.total > 0) return `${verb}… ${job.processed}/${job.total}`;
+  if (job.total > 0) {
+    // `processed/total` counts files scanned; `result.items` is the live
+    // changed count, so "514/514 · 3 changed" can't read as a full re-sync.
+    const changed = job.result?.items;
+    const suffix = typeof changed === "number" ? ` · ${changed} changed` : "";
+    return `${verb}… ${job.processed}/${job.total}${suffix}`;
+  }
   return `${verb}…`;
 }
 

@@ -1,0 +1,200 @@
+{
+  "_comment": "R36.1 retrieval benchmark question set. Runnable entries (owner_run=false) run against the repo's sample/ + sample-ai/ corpora. Owner-run entries need private corpora (see docs/bench-chunking.md). Fields: id, question, corpus, target {file, section}, required_docs (coverage set), grep_baseline (manual, nullable), owner_run, notes.",
+  "questions": [
+    {
+      "id": "pay-01",
+      "question": "What are the steps of an outgoing instant payment?",
+      "corpus": "sample",
+      "target": {
+        "file": "specs/instant-payments-spec.md",
+        "section": "Payment lifecycle"
+      },
+      "required_docs": [
+        "specs/instant-payments-spec.md",
+        "decisions/d1-instant-payments-scope.md"
+      ],
+      "grep_baseline": null,
+      "owner_run": false,
+      "notes": "Known answer: 6 steps in order — Initiation, Validation, Funds hold, Submission, Payment confirmation, Audit record. Spec holds the steps; d1 holds the outgoing-only scope decision."
+    },
+    {
+      "id": "pay-02",
+      "question": "What is the rollback plan for the billing provider migration?",
+      "corpus": "sample",
+      "target": {
+        "file": "specs/billing-migration-runbook.md",
+        "section": "Steps"
+      },
+      "required_docs": [
+        "specs/billing-migration-runbook.md",
+        "decisions/d2-billing-provider-approval.md"
+      ],
+      "grep_baseline": null,
+      "owner_run": false,
+      "notes": "Known answer: feature flag flips any tenant back to legacy within 5 minutes (runbook step 6 'Rollback check'); d2 records the rollback constraint. Both docs must appear for full coverage."
+    },
+    {
+      "id": "pay-03",
+      "question": "Who owns the billing provider migration and when is it due?",
+      "corpus": "sample",
+      "target": {
+        "file": "decisions/d2-billing-provider-approval.md",
+        "section": null
+      },
+      "required_docs": [
+        "decisions/d2-billing-provider-approval.md",
+        "sprint12.md"
+      ],
+      "grep_baseline": null,
+      "owner_run": false,
+      "notes": "Known answer: Sarah owns it, due end of next week. d2 has owner+due; sprint12 action items repeat both. Section is null: answer is file-level metadata (Status line), any section of d2 counts."
+    },
+    {
+      "id": "pay-04",
+      "question": "Why were incoming payments excluded from the Instant Payments MVP?",
+      "corpus": "sample",
+      "target": {
+        "file": "decisions/d1-instant-payments-scope.md",
+        "section": null
+      },
+      "required_docs": [
+        "decisions/d1-instant-payments-scope.md",
+        "sprint12.md"
+      ],
+      "grep_baseline": null,
+      "owner_run": false,
+      "notes": "Known answer: reconciliation complexity — matching external bank statements, returned payments, payer bank records. d1 has the reasoning; sprint12 decision log records the same call (PRD v3 section 4.2)."
+    },
+    {
+      "id": "ai-01",
+      "question": "What are the serving tiers in router v2 and when is each used?",
+      "corpus": "sample-ai",
+      "target": {
+        "file": "specs/model-router-spec.md",
+        "section": "Tiers"
+      },
+      "required_docs": [
+        "specs/model-router-spec.md",
+        "decisions/d1-model-router-v2.md"
+      ],
+      "grep_baseline": null,
+      "owner_run": false,
+      "notes": "Known answer: small-local (short factual lookups, local-only default) vs frontier-api (multi-step reasoning, needs egress policy). Spec defines tiers; d1 records the approval + shadow-run evidence."
+    },
+    {
+      "id": "ai-02",
+      "question": "What are the eval gate thresholds for launch?",
+      "corpus": "sample-ai",
+      "target": {
+        "file": "decisions/d2-eval-gate-thresholds.md",
+        "section": null
+      },
+      "required_docs": [
+        "decisions/d2-eval-gate-thresholds.md",
+        "specs/eval-pipeline-runbook.md"
+      ],
+      "grep_baseline": null,
+      "owner_run": false,
+      "notes": "Known answer: citation accuracy >= 0.92, unsupported-claim rate <= 0.03, refusal rate <= 0.02, p95 latency <= 2.5s on reasoning slice. d2 holds the numbers; the runbook holds the gate procedure."
+    },
+    {
+      "id": "ai-03",
+      "question": "What caused the INC-114 incident and what changed afterwards?",
+      "corpus": "sample-ai",
+      "target": {
+        "file": "meetings/m2-incident-postmortem.md",
+        "section": "Why it happened"
+      },
+      "required_docs": [
+        "meetings/m2-incident-postmortem.md",
+        "decisions/d1-model-router-v2.md"
+      ],
+      "grep_baseline": null,
+      "owner_run": false,
+      "notes": "Known answer: shadow build read tier from request body instead of the policy service; 214 requests leaked to frontier for 19 min. Fixes: server-side tier derivation, egress preflight, cloud-boundary alert. d1 cross-references the postmortem."
+    },
+    {
+      "id": "ai-04",
+      "question": "Who owns the eval harness and the regression gates?",
+      "corpus": "sample-ai",
+      "target": {
+        "file": "people.md",
+        "section": null
+      },
+      "required_docs": [
+        "people.md",
+        "specs/eval-pipeline-runbook.md"
+      ],
+      "grep_baseline": null,
+      "owner_run": false,
+      "notes": "Known answer: Tomas (evals engineer). people.md ownership table; the runbook is owned by Tomas and names him for escalation. Tests retrieval of a table row + cross-doc ownership."
+    },
+    {
+      "id": "own-01",
+      "question": "Which Acme types and directions are configured in routing-config.yml?",
+      "corpus": "owner-treasury",
+      "target": {
+        "file": "routing-config.yml",
+        "section": "acme"
+      },
+      "required_docs": [
+        "routing-config.yml"
+      ],
+      "grep_baseline": null,
+      "owner_run": true,
+      "notes": "OWNER-RUN against the private treasury Go monorepo. Known-answer notes from the task brief: routing-config.yml holds Acme types/directions. Owner: confirm the section breadcrumb and required docs on first run; this is a config-by-keys split case (R33.4)."
+    },
+    {
+      "id": "own-02",
+      "question": "What reports exist and what are their filename templates and columns?",
+      "corpus": "owner-treasury",
+      "target": {
+        "file": null,
+        "section": null
+      },
+      "required_docs": [],
+      "grep_baseline": null,
+      "owner_run": true,
+      "notes": "OWNER-RUN against the private treasury monorepo. Target file + required docs intentionally blank: the owner fills in the report spec doc(s) holding filename templates and column lists on first run. Breadth case: answer spans the report inventory plus each report's template/columns."
+    },
+    {
+      "id": "own-03",
+      "question": "What is the difference between Atlas and Beacon, and what does the Equities Launch Note say?",
+      "corpus": "owner-business",
+      "target": {
+        "file": null,
+        "section": null
+      },
+      "required_docs": [],
+      "grep_baseline": null,
+      "owner_run": true,
+      "notes": "OWNER-RUN against the private Atlas-vs-Beacon / Equities-Launch-Note business docs. Target + required docs blank for the owner to fill (at least the Atlas-vs-Beacon doc and the Equities Launch Note doc). Classic breadth case: two independent docs must both surface."
+    },
+    {
+      "id": "own-04",
+      "question": "Which funding methods are supported and how is each one set up?",
+      "corpus": "owner-business",
+      "target": {
+        "file": null,
+        "section": null
+      },
+      "required_docs": [],
+      "grep_baseline": null,
+      "owner_run": true,
+      "notes": "OWNER-RUN against the private business docs holding funding methods. Target + required docs blank for the owner to fill. Depth case if one doc, breadth case if methods span docs — owner decides on first run."
+    },
+    {
+      "id": "own-05",
+      "question": "What direct debits are described and what are their key dates and terms?",
+      "corpus": "owner-pdfs",
+      "target": {
+        "file": null,
+        "section": null
+      },
+      "required_docs": [],
+      "grep_baseline": null,
+      "owner_run": true,
+      "notes": "OWNER-RUN against the private direct-debits PDFs. Target + required docs blank for the owner to fill (PDF filenames). Exercises PDF extraction + long-document sectioning; owner confirms breadcrumbs on first run."
+    }
+  ]
+}

@@ -38,14 +38,120 @@ fn item_json(id: i64, source_id: i64, title: String, path: String, text: String,
     json!({"id": id, "source_id": source_id, "title": title, "path": path, "text": text.clone(), "content": text, "is_pii": is_pii})
 }
 
-fn escape_like(s: &str) -> String {
+pub(crate) fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
+/// Slash-normalize a filesystem path: `\` → `/`, drive letter lowercased.
+/// Trailing slashes are preserved — `dir/` and `dir` differ as LIKE prefixes.
+pub(crate) fn slash_norm(p: &str) -> String {
+    let mut n = p.replace('\\', "/");
+    if n.len() >= 2 && n.as_bytes()[1] == b':' && n.as_bytes()[0].is_ascii_alphabetic() {
+        n.replace_range(0..1, &n[0..1].to_lowercase());
+    }
+    n
+}
+
+/// True for absolute filesystem prefixes: `/...`, `C:/...`, UNC `\\...`
+/// (which slash-normalizes to `//...`). Drive-relative `C:x` reads as relative.
+pub(crate) fn is_absolute_prefix(p: &str) -> bool {
+    let n = slash_norm(p);
+    n.starts_with('/') || (n.len() > 2 && n.as_bytes()[1] == b':' && n.as_bytes()[2] == b'/')
+}
+
+/// Folder source roots from stored configs: source_id → normalized root
+/// (no trailing slash; `/` survives as itself). Non-folder sources and
+/// configs without a path are skipped — absolute prefixes only resolve
+/// through folder roots.
+pub(crate) fn folder_roots(conn: &rusqlite::Connection) -> std::collections::HashMap<i64, String> {
+    let mut out = std::collections::HashMap::new();
+    let mut stmt = match conn.prepare("SELECT id, config FROM sources WHERE connector = 'folder'") {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    let rows: Vec<(i64, String)> = match stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))) {
+        Ok(m) => m.filter_map(|r| r.ok()).collect(),
+        Err(_) => return out,
+    };
+    for (sid, cfg) in rows {
+        let path = serde_json::from_str::<serde_json::Value>(&cfg)
+            .ok()
+            .and_then(|v| v.get("path").and_then(|p| p.as_str()).map(|s| s.to_string()))
+            .unwrap_or_default();
+        if path.trim().is_empty() {
+            continue;
+        }
+        let trimmed = slash_norm(path.trim()).trim_end_matches('/').to_string();
+        out.insert(sid, if trimmed.is_empty() { "/".to_string() } else { trimmed });
+    }
+    out
+}
+
+/// Resolve an absolute prefix through folder roots: one entry per matching
+/// source, with the relative remainder (`None` = the whole source — the
+/// prefix is the root itself or an ancestor of it). `source_id` scopes the
+/// candidates. Trailing slashes survive into the remainder so `dir/` keeps
+/// its LIKE precision.
+pub(crate) fn absolute_remainders(
+    roots: &std::collections::HashMap<i64, String>,
+    prefix: &str,
+    source_id: Option<i64>,
+) -> Vec<(i64, Option<String>)> {
+    let raw = slash_norm(prefix);
+    let trimmed = raw.trim_end_matches('/');
+    let p = if trimmed.is_empty() { "/" } else { trimmed };
+    let mut out = Vec::new();
+    for (sid, root) in roots {
+        if source_id.is_some_and(|want| *sid != want) {
+            continue;
+        }
+        if p == "/" || root == p || root.starts_with(&format!("{p}/")) {
+            out.push((*sid, None));
+            continue;
+        }
+        if let Some(rel) = raw.strip_prefix(&format!("{root}/")) {
+            out.push((*sid, Some(rel.to_string())));
+        }
+    }
+    out.sort_by_key(|(sid, _)| *sid);
+    out
+}
+
+/// One item against a listing/search prefix. Relative prefixes match the
+/// stored external id start (slash-normalized); absolute prefixes resolve
+/// through `absolute_remainders`, so this mirrors the listing query exactly
+/// (LIKE-prefix == case-folded `starts_with`).
+pub(crate) fn item_under_prefix(
+    external_id: &str,
+    source_id: Option<i64>,
+    roots: &std::collections::HashMap<i64, String>,
+    prefix: &str,
+) -> bool {
+    if !is_absolute_prefix(prefix) {
+        return external_id.replace('\\', "/").to_lowercase().starts_with(&slash_norm(prefix).to_lowercase());
+    }
+    let sid = match source_id {
+        Some(s) => s,
+        None => return false,
+    };
+    for (rsid, rel) in absolute_remainders(roots, prefix, Some(sid)) {
+        if rsid != sid {
+            continue;
+        }
+        return match rel {
+            None => true,
+            Some(r) => external_id.replace('\\', "/").to_lowercase().starts_with(&r.to_lowercase()),
+        };
+    }
+    false
 }
 
 /// Metadata listing over ingested items — the discovery primitive that ends
 /// id-scanning loops (1.0.24 retest #7: ~150 `GET /items/:id` probing ids
 /// 200–300 to find `reportdata/` files). `path_prefix` matches the item path
 /// start, slash-normalized so `reportdata/` also finds Windows `\` rows.
+/// Relative prefixes match the stored external id; absolute prefixes resolve
+/// through the owning folder source's root (R36.6).
 /// Metadata only (no bytes), so no provider gate — like the entities list.
 fn list_items(
     conn: &rusqlite::Connection,
@@ -54,6 +160,11 @@ fn list_items(
     limit: i64,
     offset: i64,
 ) -> (Vec<Value>, i64) {
+    if let Some(p) = path_prefix {
+        if is_absolute_prefix(p) {
+            return list_items_absolute(conn, p, source_id, limit, offset);
+        }
+    }
     let mut conds: Vec<String> = Vec::new();
     let mut params: Vec<rusqlite::types::Value> = Vec::new();
     if let Some(p) = path_prefix {
@@ -65,6 +176,48 @@ fn list_items(
         conds.push("source_id = ?".to_string());
         params.push(rusqlite::types::Value::Integer(sid));
     }
+    run_list_query(conn, conds, params, limit, offset)
+}
+
+/// Absolute-prefix listing: the prefix resolves to per-source relative
+/// remainders (`absolute_remainders`), each a `source_id` + LIKE arm. A
+/// prefix covering no root matches nothing — never everything.
+fn list_items_absolute(
+    conn: &rusqlite::Connection,
+    prefix: &str,
+    source_id: Option<i64>,
+    limit: i64,
+    offset: i64,
+) -> (Vec<Value>, i64) {
+    let roots = folder_roots(conn);
+    let mut ors: Vec<String> = Vec::new();
+    let mut params: Vec<rusqlite::types::Value> = Vec::new();
+    for (sid, rel) in absolute_remainders(&roots, prefix, source_id) {
+        match rel {
+            None => {
+                ors.push("source_id = ?".to_string());
+                params.push(rusqlite::types::Value::Integer(sid));
+            }
+            Some(r) => {
+                ors.push("(source_id = ? AND REPLACE(external_id, '\\', '/') LIKE ? ESCAPE '\\')".to_string());
+                params.push(rusqlite::types::Value::Integer(sid));
+                params.push(rusqlite::types::Value::Text(format!("{}%", escape_like(&r))));
+            }
+        }
+    }
+    if ors.is_empty() {
+        return run_list_query(conn, vec!["1 = 0".to_string()], params, limit, offset);
+    }
+    run_list_query(conn, vec![format!("({})", ors.join(" OR "))], params, limit, offset)
+}
+
+fn run_list_query(
+    conn: &rusqlite::Connection,
+    conds: Vec<String>,
+    mut params: Vec<rusqlite::types::Value>,
+    limit: i64,
+    offset: i64,
+) -> (Vec<Value>, i64) {
     let filter = if conds.is_empty() {
         String::new()
     } else {
@@ -341,5 +494,107 @@ mod tests {
             Err((s, _)) => assert_eq!(s, StatusCode::NOT_FOUND),
             Ok(_) => panic!("patch on missing item must 404"),
         }
+    }
+
+    fn seed_abs_db() -> (tempfile::TempDir, tempfile::TempDir, rusqlite::Connection, i64, i64, String) {
+        let dbdir = tempdir().unwrap();
+        let corpus = tempdir().unwrap();
+        let db_path = crate::db::resolve_db_path(&dbdir.path().to_string_lossy().to_string());
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let root = corpus.path().to_string_lossy().to_string();
+        let cfg = serde_json::json!({"path": root}).to_string();
+        conn.execute("INSERT INTO sources (name, connector, config) VALUES ('docs','folder',?1)", [cfg]).unwrap();
+        let sf: i64 = conn.query_row("SELECT id FROM sources WHERE name='docs'", [], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO sources (name, connector) VALUES ('jira','jira')", []).unwrap();
+        let sj: i64 = conn.query_row("SELECT id FROM sources WHERE name='jira'", [], |r| r.get(0)).unwrap();
+        for (sid, p) in [
+            (sf, "reportdata/a.yml"),
+            (sf, "reportdata\\win.yml"),
+            (sf, "cfg/c.yml"),
+            (sf, "report%data/x.yml"),
+            (sj, "PROJ-1"),
+        ] {
+            conn.execute(
+                "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,?2,?2,'t','h')",
+                rusqlite::params![sid, p],
+            )
+            .unwrap();
+        }
+        (dbdir, corpus, conn, sf, sj, root)
+    }
+
+    #[test]
+    fn list_items_accepts_absolute_prefixes() {
+        let (_dbdir, _corpus, conn, sf, sj, root) = seed_abs_db();
+        // The root itself lists the whole folder source (never the jira row).
+        let (items, total) = list_items(&conn, Some(&root), None, 100, 0);
+        assert_eq!(total, 4);
+        assert!(list_paths(&items).iter().all(|p| *p != "PROJ-1"));
+        // A subdirectory narrows to it, backslash rows included.
+        let sub = format!("{root}/reportdata");
+        let (items, total) = list_items(&conn, Some(&sub), None, 100, 0);
+        assert_eq!(total, 2);
+        assert_eq!(list_paths(&items), vec!["reportdata/a.yml", "reportdata\\win.yml"]);
+        // Trailing slash + backslash separators spell the same prefix.
+        let (items, total) = list_items(&conn, Some(&format!("{sub}/")), None, 100, 0);
+        assert_eq!(total, 2);
+        assert_eq!(list_paths(&items).len(), 2);
+        let (items, total) = list_items(&conn, Some(&sub.replace('/', "\\")), None, 100, 0);
+        assert_eq!(total, 2, "backslash absolute prefix must match: {}", sub);
+        assert_eq!(list_paths(&items).len(), 2);
+        // LIKE specials in the absolute tail match literally.
+        let (items, total) = list_items(&conn, Some(&format!("{root}/report%")), None, 100, 0);
+        assert_eq!(total, 1);
+        assert_eq!(list_paths(&items), vec!["report%data/x.yml"]);
+        // source_id composes: another source's root prefix finds nothing here.
+        let (_items, total) = list_items(&conn, Some(&sub), Some(sj), 100, 0);
+        assert_eq!(total, 0, "absolute prefix on a non-folder source matches nothing");
+        let (_items, total) = list_items(&conn, Some(&sub), Some(sf), 100, 0);
+        assert_eq!(total, 2);
+        // An ancestor of the root covers the whole source; an unrelated
+        // absolute path matches nothing — never everything.
+        let parent = std::path::Path::new(&root).parent().unwrap().to_string_lossy().to_string();
+        let (_items, total) = list_items(&conn, Some(&parent), Some(sf), 100, 0);
+        assert_eq!(total, 4);
+        let (_items, total) = list_items(&conn, Some("/no/such/root/anywhere"), None, 100, 0);
+        assert_eq!(total, 0);
+        let (items, total) = list_items(&conn, Some("/no/such/root/anywhere"), None, 1, 0);
+        assert_eq!(total, 0);
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn absolute_prefix_helpers() {
+        assert!(is_absolute_prefix("/a/b"));
+        assert!(is_absolute_prefix("C:/corpus"));
+        assert!(is_absolute_prefix("c:\\corpus\\sub"));
+        assert!(is_absolute_prefix("\\\\srv\\share"));
+        assert!(!is_absolute_prefix("reportdata/"));
+        assert!(!is_absolute_prefix("C:relative"));
+        assert!(!is_absolute_prefix(""));
+        assert_eq!(slash_norm("C:\\A\\b"), "c:/A/b");
+        let mut roots = std::collections::HashMap::new();
+        roots.insert(1, "/data/corpus".to_string());
+        roots.insert(2, "/data/other".to_string());
+        // Root itself + ancestor cover the whole source; segment boundaries hold.
+        assert_eq!(absolute_remainders(&roots, "/data/corpus", None), vec![(1, None)]);
+        assert_eq!(absolute_remainders(&roots, "/data", None), vec![(1, None), (2, None)]);
+        assert!(absolute_remainders(&roots, "/data/corp", None).is_empty(), "no segment-boundary bleed");
+        assert_eq!(
+            absolute_remainders(&roots, "/data/corpus/reportdata/", None),
+            vec![(1, Some("reportdata/".to_string()))]
+        );
+        assert!(absolute_remainders(&roots, "/data/corpus/x", Some(2)).is_empty());
+        // item_under_prefix mirrors the listing: relative, absolute, ancestor,
+        // boundary, case-folded LIKE parity, and missing-root reads.
+        assert!(item_under_prefix("reportdata/a.yml", Some(1), &roots, "reportdata/"));
+        assert!(!item_under_prefix("cfg/c.yml", Some(1), &roots, "reportdata/"));
+        assert!(item_under_prefix("reportdata/a.yml", Some(1), &roots, "/data/corpus/reportdata"));
+        assert!(item_under_prefix("reportdata\\a.yml", Some(1), &roots, "/data/corpus/reportdata/"));
+        assert!(item_under_prefix("cfg/c.yml", Some(1), &roots, "/data"));
+        assert!(!item_under_prefix("f", Some(1), &roots, "/data/corp"));
+        assert!(item_under_prefix("ReportData/a.yml", Some(1), &roots, "reportdata/"));
+        assert!(!item_under_prefix("reportdata/a.yml", Some(9), &roots, "/data/corpus/reportdata"));
+        assert!(!item_under_prefix("reportdata/a.yml", None, &roots, "/data/corpus/reportdata"));
     }
 }

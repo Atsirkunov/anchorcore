@@ -273,7 +273,7 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
               <div style={{ fontSize: 13 }}>
                 {j.status}
                 {j.status === "done" && j.result && (
-                  <span> — {j.result.items ?? 0} items, {j.result.entities ?? 0} entities{j.result.purged ? `, ${j.result.purged} purged` : ''}</span>
+                  <span> — {j.result.items ?? 0} items, {j.result.entities ?? 0} entities{j.result.purged ? `, ${j.result.purged} purged` : ''}{j.result.unchanged ? `, ${j.result.unchanged} unchanged` : ''}</span>
                 )}
                 {j.status === "failed" && j.error && <span style={{ color: theme.red }}> — {j.error}</span>}
               </div>

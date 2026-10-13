@@ -320,7 +320,7 @@ export type Job = {
   status: "running" | "pending" | "done" | "failed" | "cancelled";
   total: number;
   processed: number;
-  result: { items?: number; entities?: number; purged?: number };
+  result: { items?: number; entities?: number; purged?: number; unchanged?: number };
   error: string | null;
   created_at: string;
   started_at: string | null;

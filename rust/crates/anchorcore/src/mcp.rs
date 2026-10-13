@@ -109,6 +109,61 @@ fn audit_mcp(tool: &str, detail: &str) {
     }
 }
 
+/// MCP citation projection: caps bytes but says so ("unknown" backends
+/// have no content key — empty string, never truncated). R36.3 passes the
+/// parent-return shape through (`chunk_id`/`section_id`/`breadcrumb`).
+fn citation_json(c: &Value) -> Value {
+    let content = c.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let content_truncated = content.chars().count() > 4000;
+    json!({
+    "entity_id": c.get("entity_id"),
+    "item_id": c.get("item_id"),
+    "chunk_id": c.get("chunk_id"),
+    "section_id": c.get("section_id"),
+    "kind": c.get("kind").and_then(|v| v.as_str()).unwrap_or("document"),
+    "summary": c.get("summary").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>(),
+    "content": content.chars().take(4000).collect::<String>(),
+    "content_truncated": content_truncated,
+    "source_ref": c.get("source_ref").and_then(|v| v.as_str()).unwrap_or(""),
+    "path": c.get("path").and_then(|v| v.as_str()).unwrap_or(""),
+    "breadcrumb": c.get("breadcrumb").and_then(|v| v.as_str()).unwrap_or(""),
+    "item_title": c.get("item_title").and_then(|v| v.as_str()).unwrap_or(""),
+    "doc_type": c.get("doc_type").and_then(|v| v.as_str()).unwrap_or(""),
+    "env": c.get("env").and_then(|v| v.as_str()).unwrap_or("live"),
+    "conflicts_with": c.get("conflicts_with").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
+    "score": c.get("score"),
+    "snippet": c.get("snippet").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>()
+    })
+}
+
+/// MCP search-hit projection: context budget caps chunk bytes but says so
+/// ("verbatim" must not silently lose the tail — content_truncated lets the
+/// agent re-fetch the entity for the rest). R36.3 passes the parent-return
+/// shape through (`section_id`/`breadcrumb`).
+fn search_hit_json(h: &Value) -> Value {
+    let content = h.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let content_truncated = content.chars().count() > 4000;
+    json!({
+    "chunk_id": h.get("chunk_id"),
+    "entity_id": h.get("entity_id"),
+    "section_id": h.get("section_id"),
+    "kind": h.get("kind").and_then(|v| v.as_str()).unwrap_or("document"),
+    "summary": h.get("summary").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>(),
+    "content": content.chars().take(4000).collect::<String>(),
+    "content_truncated": content_truncated,
+    "source_ref": h.get("source_ref").and_then(|v| v.as_str()).unwrap_or(""),
+    "path": h.get("path").and_then(|v| v.as_str()).unwrap_or(""),
+    "breadcrumb": h.get("breadcrumb").and_then(|v| v.as_str()).unwrap_or(""),
+    "doc_type": h.get("doc_type").and_then(|v| v.as_str()).unwrap_or(""),
+    "env": h.get("env").and_then(|v| v.as_str()).unwrap_or("live"),
+    "conflicts_with": h.get("conflicts_with").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
+    "source_id": h.get("source_id"),
+    "item_id": h.get("item_id"),
+    "item_title": h.get("item_title").and_then(|v| v.as_str()).unwrap_or(""),
+    "score": h.get("score")
+    })
+}
+
 async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool, include_content: bool) -> Result<Value, String> {
     if question.trim().is_empty() {
         return Err("question must be a non-empty string".to_string());
@@ -131,38 +186,22 @@ async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool, in
     // B58: pass degradation flags through ("unknown" against an older backend).
     let mode = result.get("mode").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
     let retrieval = result.get("retrieval").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-    let citations: Vec<Value> = result.get("citations").and_then(|v| v.as_array()).cloned().unwrap_or_default().into_iter().map(|c| {
-        // Mirror search: cap citation bytes but say so ("unknown" backends
-        // have no content key — empty string, never truncated).
-        let content = c.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let content_truncated = content.chars().count() > 4000;
-        json!({
-        "entity_id": c.get("entity_id"),
-        "item_id": c.get("item_id"),
-        "kind": c.get("kind").and_then(|v| v.as_str()).unwrap_or("document"),
-        "summary": c.get("summary").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>(),
-        "content": content.chars().take(4000).collect::<String>(),
-        "content_truncated": content_truncated,
-        "source_ref": c.get("source_ref").and_then(|v| v.as_str()).unwrap_or(""),
-        "path": c.get("path").and_then(|v| v.as_str()).unwrap_or(""),
-        "item_title": c.get("item_title").and_then(|v| v.as_str()).unwrap_or(""),
-        "doc_type": c.get("doc_type").and_then(|v| v.as_str()).unwrap_or(""),
-        "env": c.get("env").and_then(|v| v.as_str()).unwrap_or("live"),
-        "conflicts_with": c.get("conflicts_with").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
-        "score": c.get("score"),
-        "snippet": c.get("snippet").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>()
-        })
-    }).collect();
+    let citations: Vec<Value> = result.get("citations").and_then(|v| v.as_array()).cloned().unwrap_or_default().into_iter().map(|c| citation_json(&c)).collect();
     Ok(json!({"answer": answer, "citations": citations, "refusal": refusal, "mode": mode, "retrieval": retrieval}))
 }
 
-async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only: bool, env: Option<&str>) -> Result<Value, String> {
-    if query.trim().is_empty() {
-        return Err("query must be a non-empty string".to_string());
-    }
-    if k < 1 || k > 50 {
-        return Err("k must be between 1 and 50".to_string());
-    }
+/// R36.6: optional `/qa/search` filters, shared by the MCP tool and its
+/// payload builder (one struct keeps both under clippy's arity lint).
+struct SearchFilterArgs<'a> {
+    env: Option<&'a str>,
+    kind: Option<&'a str>,
+    path_prefix: Option<&'a str>,
+    symbol: Option<&'a str>,
+}
+
+/// R36.6: `/qa/search` body for MCP search — filters pass through
+/// verbatim; the server normalizes (unknown kinds unfilter, like `env`).
+fn build_search_payload(query: &str, k: usize, project_id: Option<i64>, public_only: bool, filters: &SearchFilterArgs) -> Value {
     // The agent composes from these bytes, so opt back into full content
     // (server default is compact citable hits; verbatim drill-down is get_entity).
     let mut payload = json!({"query": query.trim(), "k": k, "fields": "all"});
@@ -172,34 +211,32 @@ async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only
     if public_only {
         payload["public_only"] = json!(true);
     }
-    if let Some(e) = env {
+    if let Some(e) = filters.env {
         payload["env"] = json!(e);
     }
+    if let Some(k) = filters.kind {
+        payload["kind"] = json!(k);
+    }
+    if let Some(p) = filters.path_prefix {
+        payload["path_prefix"] = json!(p);
+    }
+    if let Some(s) = filters.symbol {
+        payload["symbol"] = json!(s);
+    }
+    payload
+}
+
+async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only: bool, filters: SearchFilterArgs<'_>) -> Result<Value, String> {
+    if query.trim().is_empty() {
+        return Err("query must be a non-empty string".to_string());
+    }
+    if k < 1 || k > 50 {
+        return Err("k must be between 1 and 50".to_string());
+    }
+    let payload = build_search_payload(query, k, project_id, public_only, &filters);
     let result = http_call("POST", "/qa/search", Some(payload)).await?;
     audit_mcp("search", &format!("q={} k={} public_only={} hits={}", query.chars().take(80).collect::<String>(), k, public_only, result.get("hits").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0)));
-    let hits: Vec<Value> = result.get("hits").and_then(|v| v.as_array()).cloned().unwrap_or_default().into_iter().map(|h| {
-        // Context budget: cap chunk bytes but say so ("verbatim" must not
-        // silently lose the tail — content_truncated lets the agent re-fetch
-        // the entity for the rest).
-        let content = h.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let content_truncated = content.chars().count() > 4000;
-        json!({
-        "chunk_id": h.get("chunk_id"),
-        "entity_id": h.get("entity_id"),
-        "kind": h.get("kind").and_then(|v| v.as_str()).unwrap_or("document"),
-        "summary": h.get("summary").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>(),
-        "content": content.chars().take(4000).collect::<String>(),
-        "content_truncated": content_truncated,
-        "source_ref": h.get("source_ref").and_then(|v| v.as_str()).unwrap_or(""),
-        "path": h.get("path").and_then(|v| v.as_str()).unwrap_or(""),
-        "doc_type": h.get("doc_type").and_then(|v| v.as_str()).unwrap_or(""),
-        "env": h.get("env").and_then(|v| v.as_str()).unwrap_or("live"),
-        "conflicts_with": h.get("conflicts_with").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
-        "source_id": h.get("source_id"),
-        "item_id": h.get("item_id"),
-        "item_title": h.get("item_title").and_then(|v| v.as_str()).unwrap_or(""),
-        "score": h.get("score")
-    })}).collect();
+    let hits: Vec<Value> = result.get("hits").and_then(|v| v.as_array()).cloned().unwrap_or_default().into_iter().map(|h| search_hit_json(&h)).collect();
     let refusal = result.get("refusal").and_then(|v| v.as_str()).map(|s| s.to_string());
     let blocked = result.get("blocked").and_then(|v| v.as_u64()).unwrap_or(0);
     let retrieval = result.get("retrieval").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
@@ -300,7 +337,10 @@ fn tool_defs() -> Value {
                     "k": {"type": "integer", "default": 8, "minimum": 1, "maximum": 50},
                     "project_id": {"type": "integer"},
                     "public_only": {"type": "boolean", "description": "If true, only public sources are searched"},
-                    "env": {"type": "string", "description": "Optional env class filter: 'live' or 'test' (path- or header-derived; test fixtures rank below live hits by default, not hidden)"}
+                    "env": {"type": "string", "description": "Optional env class filter: 'live' or 'test' (path- or header-derived; test fixtures rank below live hits by default, not hidden)"},
+                    "kind": {"type": "string", "description": "Optional chunk-kind filter: comma list from document,entity,distilled (unknown values unfilter)"},
+                    "path_prefix": {"type": "string", "description": "Optional item-path prefix filter: relative (cfg/) or absolute (/data/corpus/cfg) via the owning folder source's root"},
+                    "symbol": {"type": "string", "description": "Optional code-symbol filter: keeps hits whose section title/path names the symbol"}
                 },
                 "required": ["query"]
             }
@@ -381,8 +421,13 @@ async fn handle_request(req: Request) -> Option<Response> {
                     let k = args.get("k").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
                     let pid = args.get("project_id").and_then(|v| v.as_i64());
                     let pub_only = args.get("public_only").and_then(|v| v.as_bool()).unwrap_or(false);
-                    let env = args.get("env").and_then(|v| v.as_str());
-                    tool_search(q, k, pid, pub_only, env).await
+                    let filters = SearchFilterArgs {
+                        env: args.get("env").and_then(|v| v.as_str()),
+                        kind: args.get("kind").and_then(|v| v.as_str()),
+                        path_prefix: args.get("path_prefix").and_then(|v| v.as_str()),
+                        symbol: args.get("symbol").and_then(|v| v.as_str()),
+                    };
+                    tool_search(q, k, pid, pub_only, filters).await
                 }
                 "get_entity" => {
                     let eid = args.get("entity_id").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -451,6 +496,64 @@ pub async fn run() {
             use tokio::io::AsyncWriteExt;
             let _ = stdout.write_all(format!("{}\n", out).as_bytes()).await;
             let _ = stdout.flush().await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_payload_passes_filters_through() {
+        let full = SearchFilterArgs { env: Some("live"), kind: Some("document,entity"), path_prefix: Some("cfg/"), symbol: Some("fetch_user") };
+        let v = build_search_payload("  acme ledger ", 5, Some(3), true, &full);
+        assert_eq!(v.get("query").and_then(|q| q.as_str()), Some("acme ledger"));
+        assert_eq!(v.get("k").and_then(|k| k.as_u64()), Some(5));
+        assert_eq!(v.get("fields").and_then(|f| f.as_str()), Some("all"));
+        assert_eq!(v.get("project_id").and_then(|p| p.as_i64()), Some(3));
+        assert_eq!(v.get("public_only").and_then(|p| p.as_bool()), Some(true));
+        assert_eq!(v.get("env").and_then(|e| e.as_str()), Some("live"));
+        assert_eq!(v.get("kind").and_then(|k| k.as_str()), Some("document,entity"));
+        assert_eq!(v.get("path_prefix").and_then(|p| p.as_str()), Some("cfg/"));
+        assert_eq!(v.get("symbol").and_then(|s| s.as_str()), Some("fetch_user"));
+        // Absent filters stay absent — the server reads missing as unfiltered.
+        let none = SearchFilterArgs { env: None, kind: None, path_prefix: None, symbol: None };
+        let bare = build_search_payload("q", 8, None, false, &none);
+        for key in ["project_id", "public_only", "env", "kind", "path_prefix", "symbol"] {
+            assert!(bare.get(key).is_none(), "{key} must stay absent");
+        }
+    }
+
+    #[test]
+    fn mappers_pass_parent_shape_through() {
+        // R36.3: the parent-return fields flow through both projections;
+        // legacy backends without the keys project to null/"" (never panic).
+        let h = json!({"chunk_id": 7, "section_id": 3, "breadcrumb": "A > B", "path": "A > B", "content": "bytes"});
+        let out = search_hit_json(&h);
+        assert_eq!(out.get("chunk_id").and_then(|v| v.as_i64()), Some(7));
+        assert_eq!(out.get("section_id").and_then(|v| v.as_i64()), Some(3));
+        assert_eq!(out.get("breadcrumb").and_then(|v| v.as_str()), Some("A > B"));
+        let legacy = search_hit_json(&json!({"content": "bytes"}));
+        assert!(legacy.get("section_id").is_none_or(|v| v.is_null()), "missing keys stay null");
+        assert_eq!(legacy.get("breadcrumb").and_then(|v| v.as_str()), Some(""));
+        let c = json!({"chunk_id": 7, "section_id": 3, "breadcrumb": "A > B", "content": "bytes"});
+        let cout = citation_json(&c);
+        assert_eq!(cout.get("chunk_id").and_then(|v| v.as_i64()), Some(7));
+        assert_eq!(cout.get("section_id").and_then(|v| v.as_i64()), Some(3));
+        assert_eq!(cout.get("breadcrumb").and_then(|v| v.as_str()), Some("A > B"));
+        let clegacy = citation_json(&json!({}));
+        assert!(clegacy.get("chunk_id").is_none_or(|v| v.is_null()));
+        assert_eq!(clegacy.get("breadcrumb").and_then(|v| v.as_str()), Some(""));
+    }
+
+    #[test]
+    fn search_tool_schema_advertises_filters() {
+        let defs = tool_defs();
+        let search = defs.as_array().unwrap().iter().find(|t| t.get("name").and_then(|n| n.as_str()) == Some("search")).expect("search tool");
+        let props = search.pointer("/inputSchema/properties").and_then(|p| p.as_object()).expect("properties");
+        for key in ["query", "k", "project_id", "public_only", "env", "kind", "path_prefix", "symbol"] {
+            assert!(props.contains_key(key), "schema must advertise {key}");
         }
     }
 }

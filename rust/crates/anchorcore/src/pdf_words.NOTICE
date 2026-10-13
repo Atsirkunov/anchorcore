@@ -1,0 +1,13 @@
+pdf_words.txt — vendored word list for AnchorCore's PDF split-word catcher.
+
+Source: wordfreq 3.1.1 (https://github.com/rspeer/wordfreq), file
+wordfreq/data/large_en.msgpack.gz, format "cB" v1 (frequency buckets).
+Copyright 2022 Robyn Speer. Licensed under the Apache License, Version 2.0
+(https://www.apache.org/licenses/LICENSE-2.0).
+
+Derivation: first 30,000 words in bucket (frequency) order, filtered to
+^[a-z]{2,}$ (lowercase ASCII alpha, length >= 2), deduplicated, sorted.
+29,015 words. Regenerate with the msgpack decode documented in the
+extract.rs split-word catcher (buckets d[1..] concatenated in order).
+
+Only membership is queried (fragment/join checks); frequencies are not used.

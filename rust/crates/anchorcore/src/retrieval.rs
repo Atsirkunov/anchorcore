@@ -783,21 +783,73 @@ fn leaf_keyword_search_filtered(
     exec_fts_search(conn, query, source_ids, section_ids, top_k, qa_exclude_disputed, KindScope::Leaf)
 }
 
+/// TOC summary cut (R36.7 funnel follow-up): fine heading sections let one
+/// file fill the whole cut and starve multi-file coverage (benchmark ai-03
+/// went from 4 hits across files to 1 hit in one section). Fetch wide, then
+/// admit at most 2 sections per item, 10 total — restoring ~5-file candidacy.
+const TOC_SUMMARY_FETCH: usize = 15;
+const TOC_SECTIONS_PER_ITEM: usize = 2;
+const TOC_SECTION_TOTAL: usize = 10;
+
+/// Owning item for a summary hit: the hit's own link, else the section row.
+fn item_for_section_hit(conn: &Connection, h: &Hit, sec: i64) -> Option<i64> {
+    if h.item_id.is_some() {
+        return h.item_id;
+    }
+    conn.query_row("SELECT item_id FROM sections WHERE id=?1", [sec], |r| {
+        r.get(0)
+    })
+    .ok()
+}
+
+/// Admit one section under the per-item and total caps (dup-safe: a repeat
+/// hit for an admitted section consumes no quota).
+fn admit_section(
+    per_item: &mut HashMap<Option<i64>, usize>,
+    out: &mut HashSet<i64>,
+    item: Option<i64>,
+    sec: i64,
+) {
+    if out.len() >= TOC_SECTION_TOTAL {
+        return;
+    }
+    let n = per_item.entry(item).or_insert(0);
+    if *n >= TOC_SECTIONS_PER_ITEM {
+        return;
+    }
+    if out.insert(sec) {
+        *n += 1;
+    }
+}
+
 fn extract_top_sections(conn: &Connection, summary_hits: &[Hit]) -> HashSet<i64> {
     let mut out = HashSet::new();
-    for h in summary_hits.iter().take(5) {
-        if let Some(sec) = h.section_id {
-            out.insert(sec);
-        } else if let Some(item) = h.item_id {
-            if let Ok(mut stmt) = conn.prepare("SELECT id FROM sections WHERE item_id=?1") {
-                if let Ok(rows) = stmt.query_map([item], |r| r.get::<_, i64>(0)) {
-                    for id in rows.flatten() {
-                        out.insert(id);
-                        if out.len() >= 5 {
-                            break;
-                        }
-                    }
-                }
+    let mut per_item: HashMap<Option<i64>, usize> = HashMap::new();
+    // Pass 1: section hits claim evidence-backed slots in rank order.
+    for (h, sec) in summary_hits
+        .iter()
+        .filter_map(|h| h.section_id.map(|sec| (h, sec)))
+    {
+        admit_section(&mut per_item, &mut out, item_for_section_hit(conn, h, sec), sec);
+    }
+    // Pass 2: section-less (doc) hits fill remaining capacity in doc order.
+    for h in summary_hits.iter().filter(|h| h.section_id.is_none()) {
+        let Some(item) = h.item_id else { continue };
+        if out.len() >= TOC_SECTION_TOTAL {
+            break;
+        }
+        let mut stmt = match conn.prepare("SELECT id FROM sections WHERE item_id=?1 ORDER BY id") {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let rows = match stmt.query_map([item], |r| r.get::<_, i64>(0)) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        for id in rows.flatten() {
+            admit_section(&mut per_item, &mut out, Some(item), id);
+            if out.len() >= TOC_SECTION_TOTAL {
+                break;
             }
         }
     }
@@ -814,17 +866,17 @@ pub fn toc_search(
 ) -> Vec<Hit> {
     let tag_filter = matching_tag_sections(conn, query, source_ids);
     let summary_hits = if let Some(emb) = query_emb {
-        summary_vector_search_filtered(conn, emb, source_ids, tag_filter.as_ref(), 5, qa_exclude_disputed)
+        summary_vector_search_filtered(conn, emb, source_ids, tag_filter.as_ref(), TOC_SUMMARY_FETCH, qa_exclude_disputed)
             .unwrap_or_default()
     } else {
         vec![]
     };
     let mut summary_hits = if summary_hits.is_empty() {
-        summary_keyword_search_filtered(conn, query, source_ids, tag_filter.as_ref(), 5, qa_exclude_disputed)
+        summary_keyword_search_filtered(conn, query, source_ids, tag_filter.as_ref(), TOC_SUMMARY_FETCH, qa_exclude_disputed)
     } else {
         summary_hits
     };
-    // Live sections must survive the top-5 cut: fixture summaries win BM25
+    // Live sections must survive the diversity cut: fixture summaries win BM25
     // on length norm and would otherwise prune every live section.
     prefer_live_envs(conn, &mut summary_hits, query);
     if summary_hits.is_empty() {
@@ -1127,8 +1179,10 @@ pub fn fuse_and_rank(
     // Live-first sits directly before the cut: any later score sort would
     // undo the partition, and the cut must choose from a live-led list.
     prefer_live_envs(conn, &mut fused, query);
-    let mut hits: Vec<Hit> = fused.into_iter().take(top_k).collect();
-    expand_context(conn, &mut hits, 1);
+    let hits: Vec<Hit> = fused.into_iter().take(top_k).collect();
+    // Raw ranked hits out — return-shape assembly (`parent_return`) runs
+    // once in `orchestrate`, after graph + filename boost, so same-scope
+    // merging sees the final list.
     // filter stale/disputed again (already in load, but for fused graph hits)
     hits.into_iter().filter(|h| status_ok(h.status.as_deref(), qa_exclude_disputed)).collect()
 }
@@ -1161,60 +1215,235 @@ fn append_continuation(hit: &mut Hit, extra: Vec<String>) {
     }
 }
 
-/// Section expansion stays local: a contiguous ±`EXPAND_NEIGHBORS` window
-/// around the matched chunk, capped at `ANCHOR_EXPAND_MAX_CHARS` (default
-/// 8000). Appending the whole section turned a root-only 68 KB YAML file
-/// into one ~17k-token hit; small sections still expand fully.
-const EXPAND_NEIGHBORS: usize = 2;
+/// R36.3: group-by-parent return ("match small, return big").
+///
+/// Ranking still matches small (leaf chunks), but the returned unit is the
+/// SMALLEST ANCESTOR SECTION ≤ cap containing the match (cap = existing
+/// `ANCHOR_EXPAND_MAX_CHARS`, 8 KB default) — full section bytes with every
+/// matched chunk marked and the breadcrumb attached. Hits sharing one
+/// returned ancestor merge into a single hit, which subsumes the old
+/// `expand_by_section` ±2 window + `[continued]` fragments + the cross-hit
+/// claimed set for the same-section case. Fallback when no ancestor fits
+/// (or the match is section-less, e.g. entity chunks): matched chunk +
+/// neighbors via `expand_by_item`, unchanged — including its `[continued]`
+/// form and the claimed set across fallback hits.
+///
+/// Siblings derive from (`section_id`, `id`) ordering everywhere below;
+/// stored `prev_id`/`next_id`/`span` links were considered and REJECTED
+/// (see `rust/docs/decisions.md` R36.3) — chunk ids are document order.
 const EXPAND_MAX_CHARS: usize = 8000;
 
 fn expand_max_chars() -> usize {
     std::env::var("ANCHOR_EXPAND_MAX_CHARS").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(EXPAND_MAX_CHARS)
 }
 
-fn expand_by_section(conn: &Connection, hit: &mut Hit, claimed: &mut HashSet<i64>) {
-    let sec = match hit.section_id {
-        Some(id) => id,
-        None => return,
-    };
-    let siblings = fetch_siblings(conn, "SELECT id, content FROM chunks WHERE section_id=?1 ORDER BY id", sec);
-    if siblings.is_empty() {
-        return;
-    }
-    // Contiguous window around the match, file-ordered; unknown position
-    // keeps the head (bounded by the cap below either way).
-    let window: &[(i64, String)] = match siblings.iter().position(|(id, _)| *id == hit.chunk_id) {
-        Some(i) => {
-            let start = i.saturating_sub(EXPAND_NEIGHBORS);
-            let end = (i + EXPAND_NEIGHBORS + 1).min(siblings.len());
-            &siblings[start..end]
-        }
-        None => &siblings,
-    };
-    let cap = expand_max_chars();
-    let mut used = hit.content.chars().count();
-    let mut extra = Vec::new();
-    let mut truncated = window.len() < siblings.len();
-    for (cid, content) in window {
-        if *cid == hit.chunk_id {
-            continue;
-        }
-        // A sibling living in another hit (or an earlier hit's window) is
-        // skipped and flagged — the window promise is broken either way.
-        if claimed.contains(cid) {
-            truncated = true;
-            continue;
-        }
-        used += content.chars().count() + 4;
-        if used > cap {
-            truncated = true;
+/// One ancestor candidate: identity + breadcrumb for the returned hit.
+struct SectionScope {
+    id: i64,
+    path: String,
+}
+
+/// Ancestor chain, direct section first. Empty when the section row is gone
+/// (orphan — the caller falls back). Bounded: a corrupt parent cycle must
+/// not hang retrieval.
+fn ancestor_chain(conn: &Connection, section_id: i64) -> Vec<SectionScope> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut cur = Some(section_id);
+    while let Some(id) = cur {
+        if out.len() >= 64 || !seen.insert(id) {
             break;
         }
-        claimed.insert(*cid);
-        extra.push(content.clone());
+        let row: Option<(Option<i64>, String)> = conn
+            .query_row("SELECT parent_id, path FROM sections WHERE id = ?1", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .ok();
+        let Some((parent, path)) = row else { break };
+        out.push(SectionScope { id, path });
+        cur = parent;
     }
-    append_continuation(hit, extra);
-    hit.content_truncated = truncated;
+    out
+}
+
+/// Section-subtree membership: the section itself plus all descendants.
+const SUBTREE_CTE: &str = "WITH RECURSIVE sub(id) AS (SELECT ?1 UNION ALL SELECT s.id FROM sections s JOIN sub ON s.parent_id = sub.id)";
+
+/// Leaf-chunk bytes of a section subtree (own + descendants'), document
+/// order. Summaries excluded — parents return evidence, never extracts
+/// (R32.5 leaf-only).
+fn subtree_leaf_chunks(conn: &Connection, section_id: i64) -> Vec<(i64, String)> {
+    let mut stmt = match conn.prepare(&format!(
+        "{SUBTREE_CTE} SELECT c.id, c.content FROM chunks c WHERE c.section_id IN (SELECT id FROM sub) AND c.kind IN ('document','entity','distilled') ORDER BY c.id"
+    )) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map([section_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map(|m| m.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
+/// Assembled size of a section subtree: leaf bytes plus the `"\n\n"`
+/// separators `assemble_parent` joins with. Match marks are presentation
+/// overhead and don't count against the cap.
+fn subtree_leaf_size(conn: &Connection, section_id: i64) -> usize {
+    let (sum, n): (i64, i64) = conn
+        .query_row(
+            &format!(
+                "{SUBTREE_CTE} SELECT COALESCE(SUM(LENGTH(c.content)), 0), COUNT(*) FROM chunks c WHERE c.section_id IN (SELECT id FROM sub) AND c.kind IN ('document','entity','distilled')"
+            ),
+            [section_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap_or((0, 0));
+    sum.max(0) as usize + 4 * (n.max(1) as usize - 1)
+}
+
+/// Smallest (deepest) ancestor whose subtree fits the cap — the direct
+/// section first, then up. None when even the direct section overflows.
+/// (Subtree sizes grow upward, so the walk-up is usually vacuous — but the
+/// rule is stated over ancestors and the code implements it literally.)
+fn smallest_fitting_scope(conn: &Connection, section_id: i64, chunk_id: i64, cap: usize) -> Option<SectionScope> {
+    ancestor_chain(conn, section_id)
+        .into_iter()
+        .find(|scope| subtree_leaf_size(conn, scope.id) <= cap && subtree_contains_chunk(conn, scope.id, chunk_id))
+}
+
+/// True when the chunk is a leaf member of the subtree — the fit winner
+/// must actually contain the match (a stale `section_id` falls back instead
+/// of returning a stranger's bytes).
+fn subtree_contains_chunk(conn: &Connection, section_id: i64, chunk_id: i64) -> bool {
+    conn.query_row(
+        &format!(
+            "{SUBTREE_CTE} SELECT 1 FROM chunks c WHERE c.section_id IN (SELECT id FROM sub) AND c.id = ?2 AND c.kind IN ('document','entity','distilled') LIMIT 1"
+        ),
+        rusqlite::params![section_id, chunk_id],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
+/// Match-mark format: the matched chunk's bytes sit verbatim between an
+/// open and close line naming the chunk id (greppable, LLM-legible):
+/// ```text
+/// [match 123]
+/// ...bytes...
+/// [/match 123]
+/// ```
+fn mark_open(chunk_id: i64) -> String {
+    format!("[match {}]", chunk_id)
+}
+
+fn mark_close(chunk_id: i64) -> String {
+    format!("[/match {}]", chunk_id)
+}
+
+/// Parent bytes: subtree chunks in document order, matched ones wrapped in
+/// marks, joined with blank lines. Non-matched chunks appear bare.
+fn assemble_parent(chunks: &[(i64, String)], matched: &HashSet<i64>) -> String {
+    chunks
+        .iter()
+        .map(|(id, text)| {
+            if matched.contains(id) {
+                format!("{}\n{}\n{}", mark_open(*id), text, mark_close(*id))
+            } else {
+                text.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Match-centered window on returned-parent content: centers on the primary
+/// match mark with `…` cut markers (same convention as `match_snippet`).
+/// None when the content carries no mark (fallback/entity hits) — callers
+/// keep their existing preview then.
+pub fn content_window(content: &str, chunk_id: i64, n: usize) -> Option<String> {
+    if n == 0 {
+        return Some(String::new());
+    }
+    let mark = mark_open(chunk_id);
+    let byte = content.find(&mark)?;
+    let chars: Vec<char> = content.chars().collect();
+    if chars.len() <= n {
+        return Some(content.to_string());
+    }
+    // `find` returns a char boundary (no case mapping involved), so slicing
+    // the shared prefix is safe — unlike `match_snippet`'s lowercased copy.
+    let mark_char = content[..byte].chars().count().min(chars.len());
+    let start = mark_char.saturating_sub(n / 2);
+    let end = (start + n).min(chars.len());
+    let start = end.saturating_sub(n);
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.extend(chars[start..end].iter());
+    if end < chars.len() {
+        out.push('…');
+    }
+    Some(out)
+}
+
+/// Per-hit return plan: a fitting ancestor, or the chunk+neighbors fallback.
+enum HitScope {
+    Parent(SectionScope),
+    Fallback,
+}
+
+fn plan_scope(conn: &Connection, hit: &Hit, cap: usize) -> HitScope {
+    match hit
+        .section_id
+        .and_then(|sec| smallest_fitting_scope(conn, sec, hit.chunk_id, cap))
+    {
+        Some(scope) => HitScope::Parent(scope),
+        None => HitScope::Fallback,
+    }
+}
+
+/// Hits returning one ancestor, rank order; the merged hit takes the first
+/// member's rank position.
+struct ParentGroup {
+    order: usize,
+    scope: SectionScope,
+    members: Vec<Hit>,
+}
+
+fn group_hits(planned: Vec<(usize, Hit, HitScope)>) -> (Vec<ParentGroup>, Vec<(usize, Hit)>) {
+    let mut groups: Vec<ParentGroup> = Vec::new();
+    let mut by_section: HashMap<i64, usize> = HashMap::new();
+    let mut fallbacks = Vec::new();
+    for (order, hit, scope) in planned {
+        match scope {
+            HitScope::Fallback => fallbacks.push((order, hit)),
+            HitScope::Parent(scope) => match by_section.get(&scope.id) {
+                Some(&gi) => groups[gi].members.push(hit),
+                None => {
+                    by_section.insert(scope.id, groups.len());
+                    groups.push(ParentGroup { order, scope, members: vec![hit] });
+                }
+            },
+        }
+    }
+    (groups, fallbacks)
+}
+
+/// Merged parent hit: the primary (first-ranked) member's identity, score
+/// and rank; the returned ancestor's scope, breadcrumb and bytes with every
+/// match marked. The whole section is returned, so `content_truncated` is
+/// false. Returns the assembled chunk ids for the fallback claimed set.
+fn assemble_group(conn: &Connection, group: ParentGroup) -> Option<(usize, Hit, Vec<i64>)> {
+    let mut members = group.members.into_iter();
+    let mut primary = members.next()?;
+    let chunks = subtree_leaf_chunks(conn, group.scope.id);
+    let matched: HashSet<i64> = std::iter::once(primary.chunk_id).chain(members.map(|h| h.chunk_id)).collect();
+    primary.section_id = Some(group.scope.id);
+    primary.path = group.scope.path;
+    primary.content = assemble_parent(&chunks, &matched);
+    primary.content_truncated = false;
+    let ids = chunks.iter().map(|(id, _)| *id).collect();
+    Some((group.order, primary, ids))
 }
 
 fn expand_by_item(conn: &Connection, hit: &mut Hit, window: usize, claimed: &mut HashSet<i64>) {
@@ -1252,22 +1481,49 @@ fn expand_by_item(conn: &Connection, hit: &mut Hit, window: usize, claimed: &mut
     }
 }
 
-pub fn expand_context(conn: &Connection, hits: &mut [Hit], window: usize) {
-    if window == 0 || hits.is_empty() {
-        return;
+/// R36.3 return-shape assembly: groups ranked hits by returned parent
+/// section (merging same-scope hits), assembles each parent with marks, and
+/// runs the chunk+neighbors fallback for the rest. Rank order is preserved
+/// (merged groups sit at their first member's position); scores untouched.
+///
+/// Fallback neighbors skip parent-returned bytes via the claimed set, so the
+/// same bytes never appear under two hits on one page (R32.9, kept). One
+/// accepted corner: nested scopes (hit B's returned ancestor strictly
+/// contains hit A's) assemble fully on both sides — a parent with holes
+/// would be worse than the overlap, and the case needs wildly uneven
+/// sibling sections to trigger.
+pub fn parent_return(conn: &Connection, hits: Vec<Hit>) -> Vec<Hit> {
+    if hits.is_empty() {
+        return hits;
     }
-    // Claimed across the page in rank order (seeded with the hits): a
-    // sibling pulled into an earlier hit's window is skipped — flagged — by
-    // later ones instead of repeating the same bytes under a second
-    // "[continued]" header (1.0.24 retest).
-    let mut claimed: HashSet<i64> = hits.iter().map(|h| h.chunk_id).collect();
-    for h in hits.iter_mut() {
-        if h.section_id.is_some() {
-            expand_by_section(conn, h, &mut claimed);
-        } else {
-            expand_by_item(conn, h, window, &mut claimed);
+    let cap = expand_max_chars();
+    let planned: Vec<(usize, Hit, HitScope)> = hits
+        .into_iter()
+        .enumerate()
+        .map(|(order, hit)| {
+            let scope = plan_scope(conn, &hit, cap);
+            (order, hit, scope)
+        })
+        .collect();
+    let (groups, fallbacks) = group_hits(planned);
+    let mut claimed: HashSet<i64> = HashSet::new();
+    let mut ordered: Vec<(usize, Hit)> = Vec::new();
+    for group in groups {
+        if let Some((order, hit, ids)) = assemble_group(conn, group) {
+            claimed.extend(ids);
+            claimed.insert(hit.chunk_id);
+            ordered.push((order, hit));
         }
     }
+    for (_, hit) in &fallbacks {
+        claimed.insert(hit.chunk_id);
+    }
+    for (order, mut hit) in fallbacks {
+        expand_by_item(conn, &mut hit, 1, &mut claimed);
+        ordered.push((order, hit));
+    }
+    ordered.sort_by_key(|(order, _)| *order);
+    ordered.into_iter().map(|(_, hit)| hit).collect()
 }
 
 /// Test-env markers matched as whole path segments — a substring match
@@ -1481,10 +1737,11 @@ fn first_chunk_for_item(conn: &Connection, item_id: i64) -> Option<i64> {
 /// Explicit filename mentions surface their file: FTS indexes chunk
 /// content, not filenames, so without this a filename in the query matches
 /// entity text instead of the file. Appends up to 3 matched-item chunks
-/// (with local expansion), ranked above fused hits — an explicit mention is
-/// the strongest intent signal. R32.1: the surfaced chunk is the item's best
-/// content match for the rest of the query (file head only when nothing
-/// matches) — expansion then centers on the match. No-op when nothing matches.
+/// (raw — `parent_return` assembles them with the rest, merging a boosted
+/// chunk into an already-returned section), ranked above fused hits — an
+/// explicit mention is the strongest intent signal. R32.1: the surfaced
+/// chunk is the item's best content match for the rest of the query (file
+/// head only when nothing matches). No-op when nothing matches.
 pub fn filename_boost(conn: &Connection, hits: &mut Vec<Hit>, query: &str) {
     let names = filename_tokens(query);
     if names.is_empty() {
@@ -1513,14 +1770,8 @@ pub fn filename_boost(conn: &Connection, hits: &mut Vec<Hit>, query: &str) {
     }
     let top = hits.iter().map(|h| h.score).fold(0.0f64, f64::max);
     let mut boosted = load_hits_filtered(conn, &fresh, None, None, false);
-    let mut claimed: HashSet<i64> = present.into_iter().chain(fresh.iter().copied()).collect();
     for h in boosted.iter_mut() {
         h.score = top + 1.0;
-        if h.section_id.is_some() {
-            expand_by_section(conn, h, &mut claimed);
-        } else {
-            expand_by_item(conn, h, 1, &mut claimed);
-        }
     }
     hits.extend(boosted);
     sort_hits(hits);
@@ -1715,106 +1966,136 @@ mod tests {
         assert!(status_ok(Some("unverified"), true));
     }
 
+    fn summary_hit(chunk_id: i64, sid: i64, item: i64, sec: Option<i64>) -> Hit {
+        Hit { chunk_id, entity_id: None, item_id: Some(item), source_id: Some(sid), section_id: sec, path: String::new(), score: 1.0, content: String::new(), source_ref: String::new(), is_pii: false, status: None, content_truncated: false }
+    }
+
     #[test]
-    fn harness_expand_context_section_aware() {
+    fn toc_summary_cut_diversifies_across_items() {
+        // R36.7 funnel follow-up: one file's fine sections must not fill the
+        // cut and starve multi-file coverage (benchmark ai-03).
         let (_dir, conn) = harness_db();
-        let sid = insert_source(&conn, "s_expand", "internal");
-        let iid = insert_item(&conn, sid, "doc_expand");
-        // create sections
+        let sid = insert_source(&conn, "s-div", "internal");
+        let a = insert_item(&conn, sid, "a.md");
+        let b = insert_item(&conn, sid, "b.md");
+        let a_secs: Vec<i64> = (0..4)
+            .map(|i| insert_section(&conn, a, None, 1, &format!("a{i}"), &format!("a > a{i}")))
+            .collect();
+        let b_sec = insert_section(&conn, b, None, 1, "b0", "b > b0");
+        // rank order: all of A's sections outrank B's
+        let mut hits: Vec<Hit> = a_secs
+            .iter()
+            .enumerate()
+            .map(|(i, s)| summary_hit(100 + i as i64, sid, a, Some(*s)))
+            .collect();
+        hits.push(summary_hit(200, sid, b, Some(b_sec)));
+        let top = extract_top_sections(&conn, &hits);
+        assert!(top.contains(&b_sec), "B's section survives A's sweep");
+        assert_eq!(top.iter().filter(|s| a_secs.contains(s)).count(), 2, "A capped at 2");
+    }
+
+    #[test]
+    fn toc_summary_cut_doc_hit_fills_remaining_capacity() {
+        // Section-less (doc) hits run second: evidence-backed section slots
+        // win, doc expansion fills what the caps leave.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s-div2", "internal");
+        let a = insert_item(&conn, sid, "a.md");
+        let secs: Vec<i64> = (0..3)
+            .map(|i| insert_section(&conn, a, None, 1, &format!("s{i}"), &format!("a > s{i}")))
+            .collect();
+        // doc hit ranked above the item's own section hit for secs[2]
+        let hits = vec![
+            summary_hit(300, sid, a, None),
+            summary_hit(301, sid, a, Some(secs[2])),
+        ];
+        let top = extract_top_sections(&conn, &hits);
+        assert!(top.contains(&secs[2]), "ranked section keeps its slot");
+        assert!(top.contains(&secs[0]), "doc expansion fills in doc order");
+        assert_eq!(top.len(), 2, "per-item cap holds across passes");
+    }
+
+    fn insert_section(conn: &rusqlite::Connection, item_id: i64, parent: Option<i64>, level: i64, title: &str, path: &str) -> i64 {
         conn.execute(
-            "INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,1,'Billing','Billing')",
-            rusqlite::params![iid],
+            "INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,?2,?3,?4,?5)",
+            rusqlite::params![item_id, parent, level, title, path],
         )
         .unwrap();
-        let sec1 = conn.last_insert_rowid();
+        conn.last_insert_rowid()
+    }
+    fn insert_section_chunk(conn: &rusqlite::Connection, item_id: i64, section_id: i64, path: &str, content: &str) -> i64 {
         conn.execute(
-            "INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,1,'Auth','Auth')",
-            rusqlite::params![iid],
+            "INSERT INTO chunks (item_id, section_id, level, path, content, source_ref, created_at) VALUES (?1,?2,1,?3,?4,'ref',datetime('now'))",
+            rusqlite::params![item_id, section_id, path, content],
         )
         .unwrap();
-        let _sec2 = conn.last_insert_rowid();
-        // chunks in sec1 - whole subsection should be returned via expand_by_section
-        conn.execute(
-            "INSERT INTO chunks (item_id, section_id, level, path, content, source_ref, created_at) VALUES (?1,?2,1,'Billing',?3,'ref',datetime('now'))",
-            rusqlite::params![iid, sec1, "Billing part1 content"],
-        )
-        .unwrap();
-        let c1 = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO chunks (item_id, section_id, level, path, content, source_ref, created_at) VALUES (?1,?2,1,'Billing',?3,'ref',datetime('now'))",
-            rusqlite::params![iid, sec1, "Billing part2 sibling"],
-        )
-        .unwrap();
-        let c2 = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO chunks (item_id, section_id, level, path, content, source_ref, created_at) VALUES (?1,?2,1,'Billing',?3,'ref',datetime('now'))",
-            rusqlite::params![iid, sec1, "Billing part3 extra"],
-        )
-        .unwrap();
-        let _c3 = conn.last_insert_rowid();
-        // hit in sec1
-        let mut hits = vec![Hit {
-            chunk_id: c1,
+        conn.last_insert_rowid()
+    }
+    fn mk_hit(cid: i64, iid: i64, sid: i64, sec: Option<i64>, path: &str, content: &str, score: f64) -> Hit {
+        Hit {
+            chunk_id: cid,
             entity_id: None,
             item_id: Some(iid),
             source_id: Some(sid),
-            section_id: Some(sec1),
-            path: "Billing".to_string(),
-            score: 1.0,
-            content: "Billing part1 content".into(),
+            section_id: sec,
+            path: path.to_string(),
+            score,
+            content: content.to_string(),
             source_ref: "ref".into(),
             is_pii: false,
             status: None,
             content_truncated: false,
-        }];
-        // sibling c2 should be included via expand_by_section (whole subsection)
-        let _ = c2; // silence unused
-        expand_context(&conn, &mut hits, 1);
-        assert!(
-            hits[0].content.contains("Billing part2 sibling") || hits[0].content.contains("Billing part3 extra"),
-            "section-aware expand should include whole subsection, got: {}",
-            hits[0].content
+        }
+    }
+
+    #[test]
+    fn parent_return_groups_by_section_and_marks_matches() {
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_pr", "internal");
+        let iid = insert_item(&conn, sid, "doc");
+        let sec_bill = insert_section(&conn, iid, None, 1, "Billing", "Billing");
+        let sec_auth = insert_section(&conn, iid, None, 1, "Auth", "Auth");
+        let b1 = insert_section_chunk(&conn, iid, sec_bill, "Billing", "Billing part1 content");
+        let b2 = insert_section_chunk(&conn, iid, sec_bill, "Billing", "Billing part2 sibling");
+        let b3 = insert_section_chunk(&conn, iid, sec_bill, "Billing", "Billing part3 extra");
+        let a1 = insert_section_chunk(&conn, iid, sec_auth, "Auth", "Auth only chunk");
+        // Two matches in Billing merge into one parent hit; Auth stays separate.
+        let out = parent_return(
+            &conn,
+            vec![
+                mk_hit(b1, iid, sid, Some(sec_bill), "Billing", "Billing part1 content", 9.0),
+                mk_hit(a1, iid, sid, Some(sec_auth), "Auth", "Auth only chunk", 8.0),
+                mk_hit(b2, iid, sid, Some(sec_bill), "Billing", "Billing part2 sibling", 7.0),
+            ],
         );
-        // also test fallback to item when section_id is None still does ±1
-        conn.execute(
-            "INSERT INTO chunks (item_id, content, source_ref, created_at) VALUES (?1,?2,'ref',datetime('now'))",
-            rusqlite::params![iid, "item-level chunk A"],
-        )
-        .unwrap();
-        let ca = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO chunks (item_id, content, source_ref, created_at) VALUES (?1,?2,'ref',datetime('now'))",
-            rusqlite::params![iid, "item-level chunk B win"],
-        )
-        .unwrap();
-        let cb = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO chunks (item_id, content, source_ref, created_at) VALUES (?1,?2,'ref',datetime('now'))",
-            rusqlite::params![iid, "item-level chunk C"],
-        )
-        .unwrap();
-        let _cc = conn.last_insert_rowid();
-        let mut hits2 = vec![Hit {
-            chunk_id: cb,
-            entity_id: None,
-            item_id: Some(iid),
-            source_id: Some(sid),
-            section_id: None,
-            path: String::new(),
-            score: 1.0,
-            content: "item-level chunk B win".into(),
-            source_ref: "ref".into(),
-            is_pii: false,
-            status: None,
-            content_truncated: false,
-        }];
+        assert_eq!(out.len(), 2);
+        // Merged group sits at its first member's rank, primary identity kept.
+        assert_eq!(out[0].chunk_id, b1);
+        assert_eq!(out[0].item_id, Some(iid));
+        assert_eq!(out[0].score, 9.0);
+        assert_eq!(out[0].section_id, Some(sec_bill));
+        assert_eq!(out[0].path, "Billing");
+        assert!(!out[0].content_truncated, "whole section returned");
+        for text in ["Billing part1 content", "Billing part2 sibling", "Billing part3 extra"] {
+            assert!(out[0].content.contains(text), "parent must hold {text}");
+        }
+        assert!(out[0].content.contains(&format!("[match {}]", b1)));
+        assert!(out[0].content.contains(&format!("[/match {}]", b1)));
+        assert!(out[0].content.contains(&format!("[match {}]", b2)), "every match marked, got:\n{}", out[0].content);
+        assert!(!out[0].content.contains(&format!("[match {}]", b3)), "non-matches stay bare");
+        assert!(!out[0].content.contains("[continued]"), "parent return has no continued fragments");
+        assert_eq!(out[1].chunk_id, a1);
+        assert_eq!(out[1].section_id, Some(sec_auth));
+        assert!(out[1].content.contains(&format!("[match {}]", a1)));
+        // Section-less hits still fall back to matched chunk + neighbors.
+        let ca = insert_chunk(&conn, Some(iid), None, "item-level chunk A");
+        let cb = insert_chunk(&conn, Some(iid), None, "item-level chunk B win");
+        let _cc = insert_chunk(&conn, Some(iid), None, "item-level chunk C");
         let _ = ca;
-        expand_context(&conn, &mut hits2, 1);
-        // should have expanded via expand_by_item ±1
-        assert!(
-            hits2[0].content.contains("item-level chunk"),
-            "item fallback expand should include neighbor"
-        );
+        let out2 = parent_return(&conn, vec![mk_hit(cb, iid, sid, None, "", "item-level chunk B win", 1.0)]);
+        assert_eq!(out2.len(), 1);
+        assert!(out2[0].content.contains("item-level chunk A"), "fallback must include neighbor, got: {}", out2[0].content);
+        assert!(out2[0].content.contains("[continued]"), "fallback keeps the continued form");
     }
 
     #[test]
@@ -1983,90 +2264,267 @@ mod tests {
     }
 
     #[test]
-    fn expand_by_section_bounds_giant_sections() {
-        // 10-chunk section (a root-only YAML file): the hit keeps a ±2
-        // window around the match, drops the rest, and flags truncation —
-        // instead of one ~17k-token whole-file hit.
+    fn parent_return_falls_back_when_no_ancestor_fits() {
+        // 10-chunk section over the 8 KB default cap (a root-only YAML
+        // file): no ancestor fits, so the hit falls back to matched chunk +
+        // neighbors (expand_by_item ±1) with the truncation flag — never a
+        // giant whole-section hit, and never a stranger's bytes.
         let (_dir, conn) = harness_db();
         let sid = insert_source(&conn, "s_big", "internal");
         let iid = insert_item(&conn, sid, "big");
-        conn.execute(
-            "INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,0,'','')",
-            rusqlite::params![iid],
-        )
-        .unwrap();
-        let sec = conn.last_insert_rowid();
+        let sec = insert_section(&conn, iid, None, 0, "", "");
         let mut cids = Vec::new();
+        let mut bodies = Vec::new();
         for i in 0..10 {
-            conn.execute(
-                "INSERT INTO chunks (item_id, section_id, level, path, content, source_ref, created_at) VALUES (?1,?2,0,'',?3,'ref',datetime('now'))",
-                rusqlite::params![iid, sec, format!("segment{:02} body text", i)],
-            )
-            .unwrap();
-            cids.push(conn.last_insert_rowid());
+            let body = format!("segment{:02} {}", i, "body text ".repeat(120));
+            bodies.push(body.clone());
+            cids.push(insert_section_chunk(&conn, iid, sec, "", &body));
         }
-        let mut hits = vec![Hit { chunk_id: cids[5], entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: Some(sec), path: String::new(), score: 1.0, content: "segment05 body text".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false }];
-        expand_context(&conn, &mut hits, 1);
-        assert!(hits[0].content_truncated, "dropped siblings must be flagged");
-        for i in [3, 4, 5, 6, 7] {
-            assert!(hits[0].content.contains(&format!("segment{:02}", i)), "window must hold segment{:02}", i);
+        let out = parent_return(&conn, vec![mk_hit(cids[5], iid, sid, Some(sec), "", &bodies[5], 1.0)]);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].content_truncated, "dropped neighbors must be flagged");
+        assert!(out[0].content.contains("[continued]"), "fallback keeps the continued form");
+        assert!(!out[0].content.contains("[match "), "fallback carries no marks");
+        for i in [4, 5, 6] {
+            assert!(out[0].content.contains(&format!("segment{:02}", i)), "window must hold segment{:02}", i);
         }
-        for i in [0, 1, 2, 8, 9] {
-            assert!(!hits[0].content.contains(&format!("segment{:02}", i)), "segment{:02} must be cut", i);
+        for i in [0, 1, 2, 3, 7, 8, 9] {
+            assert!(!out[0].content.contains(&format!("segment{:02}", i)), "segment{:02} must be cut", i);
         }
+        assert_eq!(out[0].section_id, Some(sec), "fallback keeps the direct section");
     }
 
     #[test]
-    fn expansion_claims_siblings_across_hits() {
-        // R32.9: adjacent hits expanded independently repeated the same
-        // sibling bytes under two "[continued]" headers (1.0.24 retest) —
-        // the first hit (rank order) claims the window, later hits skip
-        // what's claimed and flag the gap.
+    fn parent_return_merges_same_section_without_repeating_bytes() {
+        // R36.3 subsumes R32.9's claimed set for the same-section case:
+        // adjacent matches merge into one parent hit, so shared bytes appear
+        // once by construction instead of once-per-window.
         let (_dir, conn) = harness_db();
         let sid = insert_source(&conn, "s_claim", "internal");
         let iid = insert_item(&conn, sid, "doc");
-        conn.execute(
-            "INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,1,'S','S')",
-            [iid],
-        )
-        .unwrap();
-        let sec = conn.last_insert_rowid();
+        let sec = insert_section(&conn, iid, None, 1, "S", "S");
         let mut cids = Vec::new();
         for i in 0..5 {
-            conn.execute(
-                "INSERT INTO chunks (item_id, section_id, level, path, content, source_ref, created_at) VALUES (?1,?2,1,'S',?3,'ref',datetime('now'))",
-                rusqlite::params![iid, sec, format!("segment{:02} body", i)],
-            )
-            .unwrap();
-            cids.push(conn.last_insert_rowid());
+            cids.push(insert_section_chunk(&conn, iid, sec, "S", &format!("segment{:02} body", i)));
         }
-        let mk = |idx: usize| Hit {
-            chunk_id: cids[idx],
-            entity_id: None,
-            item_id: Some(iid),
-            source_id: Some(sid),
-            section_id: Some(sec),
-            path: "S".to_string(),
-            score: 10.0 - idx as f64,
-            content: format!("segment{:02} body", idx),
-            source_ref: "ref".into(),
-            is_pii: false,
-            status: None,
-            content_truncated: false,
-        };
-        let mut hits = vec![mk(1), mk(2)];
-        expand_context(&conn, &mut hits, 1);
-        let combined = format!("{}\n{}", hits[0].content, hits[1].content);
-        for i in [0, 3, 4] {
+        let out = parent_return(
+            &conn,
+            vec![
+                mk_hit(cids[1], iid, sid, Some(sec), "S", "segment01 body", 9.0),
+                mk_hit(cids[2], iid, sid, Some(sec), "S", "segment02 body", 8.0),
+            ],
+        );
+        assert_eq!(out.len(), 1, "same-section matches merge");
+        for i in 0..5 {
             assert_eq!(
-                combined.matches(&format!("segment{:02}", i)).count(),
+                out[0].content.matches(&format!("segment{:02}", i)).count(),
                 1,
                 "segment{:02} must appear exactly once, got:\n{}",
                 i,
-                combined
+                out[0].content
             );
         }
-        assert!(hits[1].content_truncated, "skipped-as-claimed must be flagged");
+        assert!(!out[0].content_truncated);
+    }
+
+    #[test]
+    fn parent_return_fallback_skips_parent_returned_bytes() {
+        // The claimed set survives for the fallback path: a fallback hit
+        // whose ±1 neighbors overlap an already-returned parent skips the
+        // claimed bytes and flags the gap — the same bytes never appear
+        // under two hits on one page.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_mix", "internal");
+        let iid = insert_item(&conn, sid, "doc");
+        let small = insert_section(&conn, iid, None, 1, "S", "S");
+        let s1 = insert_section_chunk(&conn, iid, small, "S", "small one");
+        let s2 = insert_section_chunk(&conn, iid, small, "S", "small two");
+        let big = insert_section(&conn, iid, None, 1, "T", "T");
+        let mut tids = Vec::new();
+        for i in 0..10 {
+            tids.push(insert_section_chunk(&conn, iid, big, "T", &format!("huge{:02} {}", i, "padding ".repeat(150))));
+        }
+        // Rank 1 returns the small parent; rank 2 (giant section) falls back.
+        // Item id order is s1, s2, t0..t9, so t0's ±1 window is [s2, t0, t1]
+        // and s2 is already claimed by the parent hit.
+        let out = parent_return(
+            &conn,
+            vec![
+                mk_hit(s1, iid, sid, Some(small), "S", "small one", 9.0),
+                mk_hit(tids[0], iid, sid, Some(big), "T", "huge00", 8.0),
+            ],
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].chunk_id, s1);
+        assert!(out[0].content.contains("small two"));
+        assert_eq!(out[1].chunk_id, tids[0]);
+        assert!(!out[1].content.contains("small two"), "claimed bytes must be skipped, got: {}", out[1].content.chars().take(200).collect::<String>());
+        assert!(out[1].content_truncated, "skipped-as-claimed must be flagged");
+        let _ = s2;
+    }
+
+    #[test]
+    fn parent_return_picks_smallest_fitting_ancestor() {
+        // Three-level tree: a match in a fitting leaf returns the leaf
+        // (tightest scope) with the leaf breadcrumb — sibling subtrees stay
+        // out, ancestors are candidates only when the direct section
+        // overflows (which, sizes growing upward, means falling back).
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_nest", "internal");
+        let iid = insert_item(&conn, sid, "doc");
+        let root = insert_section(&conn, iid, None, 0, "Doc", "Doc");
+        let mid = insert_section(&conn, iid, Some(root), 1, "Mid", "Doc > Mid");
+        let leaf = insert_section(&conn, iid, Some(mid), 2, "Leaf", "Doc > Mid > Leaf");
+        let other = insert_section(&conn, iid, Some(root), 1, "Other", "Doc > Other");
+        let l1 = insert_section_chunk(&conn, iid, leaf, "Doc > Mid > Leaf", "leaf match bytes");
+        insert_section_chunk(&conn, iid, leaf, "Doc > Mid > Leaf", "leaf sibling bytes");
+        insert_section_chunk(&conn, iid, other, "Doc > Other", "other branch bytes");
+        let _ = mid;
+        let out = parent_return(&conn, vec![mk_hit(l1, iid, sid, Some(leaf), "Doc > Mid > Leaf", "leaf match bytes", 5.0)]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].section_id, Some(leaf), "tightest fitting scope wins");
+        assert_eq!(out[0].path, "Doc > Mid > Leaf");
+        assert!(out[0].content.contains("leaf sibling bytes"));
+        assert!(!out[0].content.contains("other branch bytes"), "sibling subtrees excluded");
+        assert!(out[0].content.contains(&format!("[match {}]", l1)));
+        assert!(!out[0].content_truncated);
+    }
+
+    #[test]
+    fn parent_return_returns_subtree_without_summaries() {
+        // A mid-level match returns own + descendants' leaf bytes in
+        // document order; summary extracts never leak into parents (R32.5).
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_sub", "internal");
+        let iid = insert_item(&conn, sid, "doc");
+        let mid = insert_section(&conn, iid, None, 1, "M", "M");
+        let leaf = insert_section(&conn, iid, Some(mid), 2, "L", "M > L");
+        let m1 = insert_section_chunk(&conn, iid, mid, "M", "mid match bytes");
+        insert_section_chunk(&conn, iid, leaf, "M > L", "leaf descendant bytes");
+        conn.execute(
+            "INSERT INTO chunks (item_id, section_id, kind, level, path, content, source_ref, created_at) VALUES (?1,?2,'section_summary',1,'M',?3,'ref',datetime('now'))",
+            rusqlite::params![iid, mid, "mid summary extract"],
+        )
+        .unwrap();
+        let out = parent_return(&conn, vec![mk_hit(m1, iid, sid, Some(mid), "M", "mid match bytes", 5.0)]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].section_id, Some(mid));
+        let body = &out[0].content;
+        assert!(body.contains("leaf descendant bytes"), "descendants included, got:\n{body}");
+        assert!(!body.contains("mid summary extract"), "summaries excluded, got:\n{body}");
+        assert!(body.find("mid match bytes").unwrap() < body.find("leaf descendant bytes").unwrap(), "document order, got:\n{body}");
+    }
+
+    #[test]
+    fn parent_return_walks_up_to_the_containing_ancestor() {
+        // Stale section pointers resolve upward: the hit names a child
+        // section, but the chunk lives in the parent — the walk skips the
+        // non-containing child and returns the containing parent.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_walk", "internal");
+        let iid = insert_item(&conn, sid, "doc");
+        let parent = insert_section(&conn, iid, None, 1, "P", "P");
+        let child = insert_section(&conn, iid, Some(parent), 2, "C", "P > C");
+        let x = insert_section_chunk(&conn, iid, parent, "P", "parent-held match bytes");
+        insert_section_chunk(&conn, iid, child, "P > C", "child bytes");
+        let out = parent_return(&conn, vec![mk_hit(x, iid, sid, Some(child), "P > C", "parent-held match bytes", 5.0)]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].section_id, Some(parent), "non-containing child skipped");
+        assert_eq!(out[0].path, "P");
+        assert!(out[0].content.contains(&format!("[match {}]", x)));
+        assert!(out[0].content.contains("child bytes"), "parent subtree returned whole");
+    }
+
+    #[test]
+    fn parent_return_nested_scopes_assemble_fully() {
+        // Accepted corner: hit B's returned ancestor strictly contains hit
+        // A's — both assemble fully (a parent with holes would be worse
+        // than the overlap).
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_nested", "internal");
+        let iid = insert_item(&conn, sid, "doc");
+        let root = insert_section(&conn, iid, None, 0, "R", "R");
+        let kid = insert_section(&conn, iid, Some(root), 1, "K", "R > K");
+        let r1 = insert_section_chunk(&conn, iid, root, "R", "root match bytes");
+        let k1 = insert_section_chunk(&conn, iid, kid, "R > K", "kid match bytes");
+        let out = parent_return(
+            &conn,
+            vec![
+                mk_hit(k1, iid, sid, Some(kid), "R > K", "kid match bytes", 9.0),
+                mk_hit(r1, iid, sid, Some(root), "R", "root match bytes", 8.0),
+            ],
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].section_id, Some(kid));
+        assert_eq!(out[1].section_id, Some(root));
+        assert!(out[1].content.contains("kid match bytes"), "nested parent assembles fully, got:\n{}", out[1].content);
+        assert!(out[1].content.contains(&format!("[match {}]", r1)));
+        assert!(!out[1].content.contains(&format!("[match {}]", k1)), "only B's own match is marked in B");
+    }
+
+    #[test]
+    fn parent_return_entity_and_orphan_hits_fall_back() {
+        // Entity chunks (section-less) keep their bytes unmarked; a hit
+        // naming a deleted section falls back to chunk + neighbors instead
+        // of returning a stranger's bytes.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_eo", "internal");
+        let iid = insert_item(&conn, sid, "doc");
+        let eid = insert_entity(&conn, iid, "some decision", "unverified", "");
+        conn.execute(
+            "INSERT INTO chunks (entity_id, kind, source_ref, content, created_at) VALUES (?1,'entity','ref','entity match bytes',datetime('now'))",
+            [eid],
+        )
+        .unwrap();
+        let ecid = conn.last_insert_rowid();
+        let out = parent_return(
+            &conn,
+            vec![Hit {
+                chunk_id: ecid,
+                entity_id: Some(eid),
+                item_id: Some(iid),
+                source_id: Some(sid),
+                section_id: None,
+                path: String::new(),
+                score: 1.0,
+                content: "entity match bytes".into(),
+                source_ref: "ref".into(),
+                is_pii: false,
+                status: Some("unverified".into()),
+                content_truncated: false,
+            }],
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].content, "entity match bytes");
+        assert!(!out[0].content.contains("[match "), "entity hits carry no marks");
+        // Orphan: section row deleted after the hit was planned.
+        let sec = insert_section(&conn, iid, None, 1, "Gone", "Gone");
+        let g1 = insert_section_chunk(&conn, iid, sec, "Gone", "orphan match bytes");
+        let g2 = insert_section_chunk(&conn, iid, sec, "Gone", "orphan neighbor bytes");
+        conn.execute("DELETE FROM sections WHERE id = ?1", [sec]).unwrap();
+        let out2 = parent_return(&conn, vec![mk_hit(g1, iid, sid, Some(sec), "Gone", "orphan match bytes", 1.0)]);
+        assert_eq!(out2.len(), 1);
+        assert!(out2[0].content.contains("orphan neighbor bytes"), "orphan falls back to neighbors, got: {}", out2[0].content);
+        assert!(!out2[0].content.contains("[match "), "orphan fallback carries no marks");
+        let _ = (g2, ecid);
+    }
+
+    #[test]
+    fn content_window_centers_on_the_mark() {
+        let content = format!("{}[match 7]\nneedle bytes here\n[/match 7]{}", "ab ".repeat(500), " cd".repeat(500));
+        let w = content_window(&content, 7, 100).expect("marked content must window");
+        assert!(w.contains("[match 7]"), "window must hold the mark: {w}");
+        assert!(w.contains("needle bytes here"));
+        assert!(w.starts_with('…') && w.ends_with('…'));
+        assert_eq!(w.chars().count(), 102);
+        // Wrong chunk id → no mark → None.
+        assert!(content_window(&content, 8, 100).is_none());
+        // Unmarked content → None (match_snippet stays the fallback).
+        assert!(content_window(&"plain content here ".repeat(20), 7, 100).is_none());
+        // Short marked content passes through whole.
+        let short = "[match 7]\ntiny\n[/match 7]";
+        assert_eq!(content_window(short, 7, 100).as_deref(), Some(short));
+        assert_eq!(content_window(&content, 7, 0).as_deref(), Some(""));
     }
 
     #[test]
