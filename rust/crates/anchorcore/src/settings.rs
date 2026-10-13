@@ -448,7 +448,7 @@ async fn test_classifier(settings: &SettingsService) -> Value {
         .get("classifier_base_url", None)
         .or_else(|| settings.get("ollama_base_url", None))
         .unwrap_or_else(|| "http://localhost:11434".to_string());
-    let is_local = base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1");
+    let is_local = crate::common::provider_is_local(&base);
     let api_key = settings.get("classifier_api_key", None).unwrap_or_default();
     if !is_local && api_key.is_empty() {
         return serde_json::json!({"ok": false, "provider": "classifier", "message": "API key required for a cloud classifier provider"});
@@ -483,7 +483,7 @@ async fn test_embedder(settings: &SettingsService) -> Value {
         .get("embed_base_url", None)
         .or_else(|| settings.get("ollama_base_url", None))
         .unwrap_or_else(|| "http://localhost:11434".to_string());
-    let is_local = base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1");
+    let is_local = crate::common::provider_is_local(&base);
     let api_key = settings.get("embed_api_key", None).unwrap_or_default();
     if !is_local && api_key.is_empty() {
         return serde_json::json!({"ok": false, "provider": "embedder", "message": "API key required for a cloud embedding provider"});
@@ -517,7 +517,7 @@ async fn test_answer(settings: &SettingsService) -> Value {
     if base.is_empty() {
         return serde_json::json!({"ok": false, "provider": "answer", "message": "no answer base URL configured"});
     }
-    let is_local = base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1");
+    let is_local = crate::common::provider_is_local(&base);
     let api_key = settings.get("answer_api_key", None).unwrap_or_default();
     if !is_local && api_key.is_empty() {
         return serde_json::json!({"ok": false, "provider": "answer", "message": "API key required for this provider"});

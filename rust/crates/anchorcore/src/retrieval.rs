@@ -150,6 +150,18 @@ impl Hit {
     }
 }
 
+/// Parse `chunks.created_at`: writers store SQLite `CURRENT_TIMESTAMP`
+/// (`%Y-%m-%d %H:%M:%S` UTC), not RFC 3339. Without the fallback the parse
+/// always fails and age decay silently returns 1.0 (F-10).
+fn parse_created_at(v: &str) -> Option<DateTime<Utc>> {
+    if let Ok(d) = DateTime::parse_from_rfc3339(v) {
+        return Some(d.with_timezone(&Utc));
+    }
+    chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%d %H:%M:%S")
+        .ok()
+        .map(|n| n.and_utc())
+}
+
 /// Mirrors `answer_engine.py:115` _age_decay
 pub fn age_decay(created_at: Option<DateTime<Utc>>, halflife_days: f64, now: DateTime<Utc>) -> f64 {
     let Some(ts) = created_at else { return 1.0 };
@@ -490,9 +502,11 @@ fn hits_from_ranks(
     out
 }
 
-/// Single FTS implementation for every scope. Base scope is the leaf join
-/// shape — equivalent to the old `chunks_fts`-only query (`rowid` == chunk
-/// id) while guaranteeing the chunk row exists and is a leaf kind.
+/// Single FTS implementation for every scope. Source/section filters are
+/// pushed into the SQL — mirroring `exec_vec_search` — so `LIMIT` applies
+/// to the scoped candidate set, not the global BM25 ranking (F-04: the old
+/// fetch-then-filter order starved project/public/TOC-scoped searches).
+/// The in-memory pass in `hits_from_ranks` stays as the final authority.
 fn exec_fts_search(
     conn: &Connection,
     query: &str,
@@ -503,20 +517,35 @@ fn exec_fts_search(
     scope: KindScope,
 ) -> Vec<Hit> {
     let Some(match_q) = fts_match_query(query) else { return vec![] };
+    if let Some(ids) = section_ids {
+        if ids.is_empty() && scope.empty_section_is_empty() {
+            return vec![];
+        }
+    }
     let limit = (top_k * CANDIDATE_MULT) as i64;
+    // Same join shape as the vec0 leg (1:1 per FTS row — the LEFT JOINs
+    // can't multiply rows, so ORDER BY rank LIMIT stays correct).
     let mut sql = String::from(
-        "SELECT c.id, bm25(chunks_fts) AS rank FROM chunks_fts JOIN chunks c ON c.id=chunks_fts.rowid WHERE chunks_fts MATCH :q",
+        "SELECT c.id, bm25(chunks_fts) AS rank FROM chunks_fts \
+         JOIN chunks c ON c.id=chunks_fts.rowid \
+         LEFT JOIN entities e ON e.id = c.entity_id \
+         LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
+         WHERE chunks_fts MATCH ?",
     );
+    let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Text(match_q)];
+    append_source_filter(&mut sql, &mut params, source_ids);
+    append_section_filter(&mut sql, &mut params, section_ids, scope.include_entities());
     if let Some(clause) = scope.kind_clause() {
         sql.push_str(clause);
     }
-    sql.push_str(" ORDER BY rank LIMIT :limit");
+    sql.push_str(" ORDER BY rank LIMIT ?");
+    params.push(rusqlite::types::Value::Integer(limit));
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return vec![],
     };
     let rows: Vec<(i64, f64)> = match stmt
-        .query_map(rusqlite::named_params! { ":q": match_q, ":limit": limit }, |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_map(rusqlite::params_from_iter(params.iter()), |r| Ok((r.get(0)?, r.get(1)?)))
         .and_then(|m| m.collect())
     {
         Ok(v) => v,
@@ -908,83 +937,6 @@ pub fn toc_search(
     hits
 }
 
-type HitRow9 = (i64, Option<i64>, Option<i64>, String, String, i64, Option<String>, Option<i64>, Option<i64>);
-
-fn row9(r: &rusqlite::Row) -> rusqlite::Result<HitRow9> {
-    Ok((
-        r.get::<_, i64>(0)?,
-        r.get::<_, Option<i64>>(1)?,
-        r.get::<_, Option<i64>>(2)?,
-        r.get::<_, String>(3)?,
-        r.get::<_, String>(4)?,
-        r.get::<_, i64>(5)?,
-        r.get::<_, Option<String>>(6)?,
-        r.get::<_, Option<i64>>(7)?,
-        r.get::<_, Option<i64>>(8)?,
-    ))
-}
-
-fn fallback_hit_from_row9(row: HitRow9, source_ids: Option<&HashSet<i64>>, qa_exclude_disputed: bool) -> Option<Hit> {
-    // R32.2: col 8 is the effective item (entity chunks resolve via e.item_id).
-    let (cid, eid, _iid, content, source_ref, is_pii, status, sid, eff) = row;
-    let iid = eff;
-    // Fallback lists every chunk, so a missing source always filters out (stricter
-    // than make_hit's pass-through, which only applies to scoped searches).
-    if !status_ok(status.as_deref(), qa_exclude_disputed) {
-        return None;
-    }
-    if let Some(filter) = source_ids {
-        let s = sid?;
-        if !filter.contains(&s) {
-            return None;
-        }
-    }
-    make_hit(cid, eid, iid, content, source_ref, is_pii, status, sid, None, String::new(), source_ids, None, qa_exclude_disputed)
-}
-
-pub fn keyword_fallback(
-    conn: &Connection,
-    source_ids: Option<&HashSet<i64>>,
-    top_k: usize,
-    qa_exclude_disputed: bool,
-) -> Vec<Hit> {
-    // Leaf kinds only: summaries are created last, so an unfiltered
-    // `ORDER BY created_at DESC` fallback returns extracts, not evidence.
-    let mut sql = String::from(
-        "SELECT c.id, c.entity_id, c.item_id, c.content, c.source_ref, c.is_pii, e.status, i.source_id, COALESCE(c.item_id, e.item_id) \
-         FROM chunks c \
-         LEFT JOIN entities e ON e.id = c.entity_id \
-         LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
-         WHERE c.kind IN ('document','entity','distilled')",
-    );
-    let mut params: Vec<rusqlite::types::Value> = vec![];
-    if let Some(ids) = source_ids {
-        if !ids.is_empty() {
-            sql.push_str(&format!(" AND i.source_id IN ({})", placeholders(ids.len())));
-            for id in ids {
-                params.push(rusqlite::types::Value::Integer(*id));
-            }
-        }
-    }
-    sql.push_str(" ORDER BY c.created_at DESC LIMIT ?");
-    params.push(rusqlite::types::Value::Integer(top_k as i64));
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(_) => return vec![],
-    };
-    let rows = match stmt.query_map(rusqlite::params_from_iter(params.iter()), row9) {
-        Ok(m) => m,
-        Err(_) => return vec![],
-    };
-    let mut out = Vec::new();
-    for row in rows.flatten() {
-        if let Some(h) = fallback_hit_from_row9(row, source_ids, qa_exclude_disputed) {
-            out.push(h);
-        }
-    }
-    out
-}
-
 pub fn who_knows_search(
     conn: &Connection,
     query: &str,
@@ -1146,7 +1098,7 @@ pub fn fuse_and_rank(
             }) {
                 for row in rows.flatten() {
                     let (id, s) = row;
-                    let dt = s.and_then(|v| DateTime::parse_from_rfc3339(&v).ok()).map(|d| d.with_timezone(&Utc));
+                    let dt = s.as_deref().and_then(parse_created_at);
                     map.insert(id, dt);
                 }
             }
@@ -2620,11 +2572,6 @@ mod tests {
         let kw = keyword_search_filtered(&conn, "treasury report types", None, None, 5, true);
         assert!(kw.iter().any(|h| h.chunk_id == leaf), "leaf must match");
         assert!(!kw.iter().any(|h| h.chunk_id == doc_sum), "doc_summary must not surface as a hit");
-        // The fallback lists newest-first; summaries are created last, so an
-        // unfiltered fallback returns extracts before evidence.
-        let fb = keyword_fallback(&conn, None, 5, true);
-        assert!(fb.iter().any(|h| h.chunk_id == leaf), "fallback must keep leaves");
-        assert!(!fb.iter().any(|h| h.chunk_id == doc_sum), "fallback must not return extracts");
     }
 
     #[test]
@@ -2679,6 +2626,64 @@ mod tests {
         demote_test_envs(&conn, &mut hits, "which treasury routes are supported");
         assert_eq!(hits[0].score, 5.0, "test entity row must demote");
         assert_eq!(hits[1].score, 10.0, "live entity row untouched");
+    }
+
+    #[test]
+    fn fts_scoping_survives_global_limit_cutoff() {
+        // F-04: LIMIT used to apply before source/section filtering, so a
+        // scoped match ranked below the global cut-off never surfaced.
+        // Twelve high-TF chunks in the big source crowd one low-TF chunk in
+        // the small source out of a top-1 (LIMIT 10) global fetch.
+        let (_dir, conn) = harness_db();
+        let big = insert_source(&conn, "s_big", "internal");
+        let small = insert_source(&conn, "s_small", "internal");
+        let big_item = insert_item(&conn, big, "bigdoc");
+        for _ in 0..12 {
+            insert_chunk(&conn, Some(big_item), None, "alpha alpha alpha alpha alpha");
+        }
+        let small_item = insert_item(&conn, small, "smalldoc");
+        let target = insert_chunk(&conn, Some(small_item), None, "alpha omega psi chi phi");
+        // unscoped sanity: FTS finds the term at all
+        assert!(!keyword_search(&conn, "alpha", None, 1, true).is_empty());
+        // project scope: the small source's only match must surface
+        let scoped = keyword_search(&conn, "alpha", Some(&HashSet::from([small])), 1, true);
+        assert!(scoped.iter().any(|h| h.chunk_id == target), "scoped hit missing: {:?}", scoped.iter().map(|h| h.chunk_id).collect::<Vec<_>>());
+        // section fence (TOC leaf shape): same guarantee via section_ids
+        conn.execute("INSERT INTO sections (item_id) VALUES (?1)", [small_item]).unwrap();
+        let sec: i64 = conn.last_insert_rowid();
+        conn.execute("UPDATE chunks SET section_id = ?1 WHERE id=?2", rusqlite::params![sec, target]).unwrap();
+        let fenced = keyword_search_filtered(&conn, "alpha", None, Some(&HashSet::from([sec])), 1, true);
+        assert!(fenced.iter().any(|h| h.chunk_id == target));
+        let empty = keyword_search_filtered(&conn, "alpha", None, Some(&HashSet::from([sec + 999])), 1, true);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn fuse_and_rank_decays_sqlite_timestamps() {
+        // F-10: writers store SQLite `CURRENT_TIMESTAMP`, not RFC 3339 —
+        // decay must apply to real rows, not silently return 1.0.
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_age", "internal");
+        let old = insert_item(&conn, sid, "old");
+        let fresh = insert_item(&conn, sid, "fresh");
+        conn.execute("UPDATE ingested_items SET external_id='cfg/treasury-old.md' WHERE id=?1", [old]).unwrap();
+        conn.execute("UPDATE ingested_items SET external_id='cfg/treasury-fresh.md' WHERE id=?1", [fresh]).unwrap();
+        let c_old = insert_chunk(&conn, Some(old), None, "old treasury routes alfa content");
+        let c_fresh = insert_chunk(&conn, Some(fresh), None, "fresh treasury routes beta content");
+        conn.execute("UPDATE chunks SET created_at = datetime('now','-365 days') WHERE id=?1", [c_old]).unwrap();
+        let mk = |cid: i64, iid: i64, content: &str| Hit {
+            chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None,
+            path: String::new(), score: 10.0, content: content.into(), source_ref: "ref".into(),
+            is_pii: false, status: Some("unverified".into()), content_truncated: false,
+        };
+        let out = fuse_and_rank(&conn, None, Some(vec![mk(c_old, old, "old treasury"), mk(c_fresh, fresh, "fresh treasury")]), 1.0, 365.0, 3, 10, true, "treasury routes");
+        assert_eq!(out.len(), 2);
+        let s_old = out.iter().find(|h| h.chunk_id == c_old).unwrap().score;
+        let s_fresh = out.iter().find(|h| h.chunk_id == c_fresh).unwrap().score;
+        assert!((s_old - 5.0).abs() < 0.05, "year-old chunk must decay ~x0.5 at 365d halflife, got {}", s_old);
+        assert!((s_fresh - 10.0).abs() < 0.05, "fresh chunk must keep full score, got {}", s_fresh);
     }
 
     #[test]

@@ -694,16 +694,10 @@ fn orchestrate(
         if hits.is_empty() { None } else { Some(hits) }
     });
     let keyword_hits = retrieval::keyword_search(conn, query, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed);
-    let evidence = if keyword_hits.is_empty() {
-        if vector_hits.is_none() {
-            retrieval::keyword_fallback(conn, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed)
-        } else {
-            vec![]
-        }
-    } else {
-        keyword_hits
-    };
-    let keyword_opt = if evidence.is_empty() { None } else { Some(evidence) };
+    // F-07: no newest-documents fallback — a no-match query must surface as
+    // empty evidence (ask answers mode "none", search returns no hits), not
+    // as cited "evidence" that never mentions the question.
+    let keyword_opt = if keyword_hits.is_empty() { None } else { Some(keyword_hits) };
     let hits = retrieval::fuse_and_rank(
         conn,
         vector_hits,
@@ -1151,7 +1145,7 @@ async fn rewrite_followup(settings: &SettingsService, question: &str, history: &
     // B30: don't rewrite to untrusted cloud — Python returns None when no key and non-local
     let base = settings.get("answer_base_url", None).unwrap_or_default();
     let key = settings.get("answer_api_key", None).unwrap_or_default();
-    let is_local = base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1");
+    let is_local = crate::common::provider_is_local(&base);
     // if no history or same as question, skip
     let transcript = history.iter().rev().take(6).rev().map(turn_text).collect::<Vec<_>>().join("\n");
     if transcript.is_empty() {
@@ -1175,7 +1169,7 @@ async fn rewrite_followup(settings: &SettingsService, question: &str, history: &
 async fn generate_answer(settings: &SettingsService, question: &str, context: &str, history: &[AskTurn]) -> (String, bool) {
     let base = settings.get("answer_base_url", None).unwrap_or_else(|| "https://api.openai.com/v1".to_string());
     let key = settings.get("answer_api_key", None).unwrap_or_default();
-    let is_local = base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1");
+    let is_local = crate::common::provider_is_local(&base);
     if !is_local && key.is_empty() {
         return (format!("Answer for: {}\n\n[No model key configured. Matching context:]\n\n{}", question, context.chars().take(1500).collect::<String>()), false);
     }
@@ -1255,7 +1249,7 @@ mod tests {
             )
             .unwrap();
         }
-        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let store = crate::secrets::SecretStore::new_no_keyring(dir.path().join("secrets.enc"));
         let settings = Arc::new(SettingsService::new(store));
         settings.set_data_dir(dir.path());
         // Hermetic embeddings: closed port refuses instantly, so tests run
@@ -1432,6 +1426,25 @@ mod tests {
         assert_eq!(res.retrieval, "keyword_only");
         assert!(res.answer.contains("No model key"), "answer: {}", res.answer.chars().take(120).collect::<String>());
         assert!(res.refusal.is_none());
+    }
+
+    #[tokio::test]
+    async fn ask_no_match_returns_none_without_citations() {
+        // F-07: a question matching nothing must not be answered from the
+        // newest documents — no evidence, no citations, mode "none"
+        // (search likewise returns no hits).
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("embed_base_url", "http://127.0.0.1:9", &conn).unwrap();
+        let req = AskRequest { question: "xqzt blorpt wumpus".to_string(), history: None, project_id: None, public_only: None, include_content: None };
+        let res = ask(&settings, &embedder, req, &data_dir).await;
+        assert_eq!(res.mode, "none");
+        assert!(res.citations.is_empty(), "no-match ask must cite nothing");
+        assert_eq!(res.retrieval, "keyword_only");
+        let sreq = SearchRequest { query: "xqzt blorpt wumpus".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None };
+        let sres = search(&settings, &embedder, sreq, &data_dir).await;
+        assert!(sres.hits.is_empty(), "no-match search must return no hits");
     }
 
     #[tokio::test]
@@ -1746,7 +1759,7 @@ mod tests {
         )
         .unwrap();
         mk_chunk(code_iid, "acme ledger zeta flat");
-        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let store = crate::secrets::SecretStore::new_no_keyring(dir.path().join("secrets.enc"));
         let settings = Arc::new(SettingsService::new(store));
         settings.set_data_dir(dir.path());
         settings.set("embed_base_url", "http://127.0.0.1:9", &conn).unwrap();
@@ -1929,7 +1942,7 @@ mod tests {
             )
             .unwrap();
         }
-        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let store = crate::secrets::SecretStore::new_no_keyring(dir.path().join("secrets.enc"));
         let settings = Arc::new(SettingsService::new(store));
         settings.set_data_dir(dir.path());
         settings.set("embed_base_url", "http://127.0.0.1:9", &conn).unwrap();

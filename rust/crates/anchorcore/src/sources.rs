@@ -246,6 +246,12 @@ pub async fn delete_handler(State(state): State<AppState>, Path(source_id): Path
         // FK cascade will delete items/entities/chunks/jobs via ON DELETE CASCADE, but we also need to clean project_sources
         let _ = conn.execute("DELETE FROM project_sources WHERE source_id=?1", [source_id]);
         let _ = conn.execute("DELETE FROM sources WHERE id=?1", [source_id]);
+        // F-09: credentials live in the SecretStore, outside the FK cascade —
+        // without this a recycled id inherits the deleted source's secrets.
+        let secret_store = secret_store(&data_dir);
+        for &field in SECRET_FIELDS {
+            secret_store.delete(&crate::secrets::source_secret_key(source_id, field));
+        }
         // Flag the removal: hard-delete the data (privacy product — delete means
         // delete), but keep an audit row with what was removed and when.
         let detail = format!("deleted source '{}' (id {}); cascaded {} items (+entities/chunks) and {} jobs", name, source_id, items, jobs);
@@ -345,4 +351,60 @@ async fn sync_inner(state: AppState, source_id: i64, force: bool) -> Result<(Sta
         stmt.query_row([job_id], |r| job_json(r)).unwrap()
     }).await.unwrap();
     Ok((StatusCode::ACCEPTED, Json(job_val)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn delete_removes_stored_secrets() {
+        // F-09: deleting a source must purge its SecretStore credentials, or
+        // a recycled id resurrects them (`***set***` on a source that never
+        // had them). Handlers build their own stores, so hermeticity needs
+        // the env var under the shared secrets lock.
+        let _lock = crate::secrets::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("ANCHOR_SECRETS_NO_KEYRING").ok();
+        std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", "1");
+
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config) VALUES ('jira','jira','{}')", []).unwrap();
+        let sid: i64 = conn.query_row("SELECT id FROM sources", [], |r| r.get(0)).unwrap();
+        let store = secret_store(&data_dir);
+        store.set(&crate::secrets::source_secret_key(sid, "token"), "tok123");
+        drop(conn);
+
+        let settings = Arc::new(crate::settings::SettingsService::new(secret_store(&data_dir)));
+        settings.set_data_dir(dir.path());
+        let state = crate::health::AppState {
+            data_dir: data_dir.clone(),
+            settings: settings.clone(),
+            jobs: crate::jobs::JobManager::new(),
+            csrf_token: "test".to_string(),
+            embedder: Arc::new(crate::embedder::Embedder::new(settings)),
+        };
+        let res = delete_handler(State(state.clone()), Path(sid)).await;
+        assert!(res.is_ok());
+        assert_eq!(store.get(&crate::secrets::source_secret_key(sid, "token")), None);
+
+        // A recycled id must not resurrect the token: the next source reuses
+        // the deleted id when it was the only row.
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config) VALUES ('fresh','folder','{}')", []).unwrap();
+        let fresh: i64 = conn.query_row("SELECT id FROM sources", [], |r| r.get(0)).unwrap();
+        assert_eq!(fresh, sid);
+        drop(conn);
+        let cfg = config_handler(State(state), Path(fresh)).await.unwrap().0;
+        assert!(cfg.get("token").is_none(), "recycled id must show no token, got {}", cfg);
+
+        match prev {
+            Some(v) => std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", v),
+            None => std::env::remove_var("ANCHOR_SECRETS_NO_KEYRING"),
+        }
+    }
 }

@@ -184,14 +184,18 @@ impl Scheduler {
     }
 
     /// Embed NULL-vector chunks in ascending-id batches until none remain.
-    /// Deliberately ungated (no IDF gate): this is the safety net that
-    /// drains `pending_embeddings`, and ingest already applied the trust
-    /// gates. A failed batch logs + records a system_event and stops; the
-    /// caller retries (see `backfill_with_retry`). Returns
-    /// `(embedded, failed)`.
+    /// Deliberately IDF-ungated: this is the safety net that drains
+    /// `pending_embeddings`. It is NOT trust-ungated (F-02): gated chunks
+    /// are NULL *because* ingest refused them, so an untrusted provider
+    /// skips sensitive/pii-labeled chunks (see `backfill_batch`). A failed
+    /// batch logs + records a system_event and stops; the caller retries
+    /// (see `backfill_with_retry`). Returns `(embedded, failed)`.
     pub async fn backfill_once(&self) -> (usize, bool) {
         let mut embedded = 0usize;
         let mut failed = false;
+        if !self.embedder.cloud_trusted() {
+            tracing::info!("embedding backfill: provider untrusted — label-gated chunks stay pending");
+        }
         loop {
             match self.backfill_batch().await {
                 Ok((n, more)) => {
@@ -215,12 +219,33 @@ impl Scheduler {
         (embedded, failed)
     }
 
+    /// Batch-selection SQL (F-02): a trusted provider drains every NULL
+    /// chunk; an untrusted one excludes sensitive/pii-labeled chunks via the
+    /// item→source join (unlabeled/orphan chunks still drain, matching
+    /// ingest, where only a sensitive label gates).
+    fn backfill_select_sql(trusted: bool) -> &'static str {
+        if trusted {
+            "SELECT id, content FROM chunks WHERE embedding IS NULL ORDER BY id LIMIT ?1"
+        } else {
+            "SELECT c.id, c.content FROM chunks c \
+             LEFT JOIN entities e ON e.id = c.entity_id \
+             LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
+             LEFT JOIN sources s ON s.id = i.source_id \
+             WHERE c.embedding IS NULL AND COALESCE(s.label,'') NOT IN ('sensitive','pii') \
+             ORDER BY c.id LIMIT ?1"
+        }
+    }
+
     async fn backfill_batch(&self) -> Result<(usize, bool), String> {
         let data_dir = self.data_dir.clone();
-        let batch: Vec<(i64, String)> = run_db(&data_dir, |conn| {
-            let mut stmt = conn
-                .prepare("SELECT id, content FROM chunks WHERE embedding IS NULL ORDER BY id LIMIT ?1")
-                .map_err(|e| e.to_string())?;
+        // F-02: gated chunks are NULL *because* ingest refused them — NULL
+        // alone can't tell them from merely-failed chunks. When the embed
+        // provider is untrusted, exclude sensitive/pii-labeled chunks so the
+        // backfill doesn't defeat the source label. Ordinary sources still
+        // drain ungated (no IDF gate here — that stays the safety net).
+        let trusted = self.embedder.cloud_trusted();
+        let batch: Vec<(i64, String)> = run_db(&data_dir, move |conn| {
+            let mut stmt = conn.prepare(Self::backfill_select_sql(trusted)).map_err(|e| e.to_string())?;
             let rows = stmt
                 .query_map([BACKFILL_BATCH as i64], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
                 .map_err(|e| e.to_string())?;
@@ -325,6 +350,131 @@ mod tests {
             }
         });
         (port, hits)
+    }
+
+    /// F-02 trust tests share one DB shape: one ordinary + one sensitive
+    /// source, each with a single NULL-embedding chunk.
+    fn seed_mixed_labels(dir: &tempfile::TempDir) -> (rusqlite::Connection, i64, i64) {
+        let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, label) VALUES ('ord','folder','{}','internal')", []).unwrap();
+        let ord = conn.last_insert_rowid();
+        conn.execute("INSERT INTO sources (name, connector, config, label) VALUES ('sen','folder','{}','sensitive')", []).unwrap();
+        let sen = conn.last_insert_rowid();
+        for (sid, ext) in [(ord, "o.md"), (sen, "s.md")] {
+            conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,?2,'t','x','h')", rusqlite::params![sid, ext]).unwrap();
+            let iid = conn.last_insert_rowid();
+            conn.execute("INSERT INTO chunks (item_id, kind, source_ref, content) VALUES (?1,'document','r','backfill label gate check content')", [iid]).unwrap();
+        }
+        (conn, ord, sen)
+    }
+
+    fn seed_single_label(dir: &tempfile::TempDir, label: &str) -> rusqlite::Connection {
+        let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, label) VALUES ('s','folder','{}',?1)", [label]).unwrap();
+        let sid = conn.last_insert_rowid();
+        conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,'a.md','t','x','h')", [sid]).unwrap();
+        let iid = conn.last_insert_rowid();
+        conn.execute("INSERT INTO chunks (item_id, kind, source_ref, content) VALUES (?1,'document','r','backfill label gate check content')", [iid]).unwrap();
+        conn
+    }
+
+    fn backfill_sched(dir: &tempfile::TempDir, conn: &rusqlite::Connection, embed_base_url: &str) -> (std::sync::Arc<Scheduler>, std::sync::Arc<crate::embedder::Embedder>) {
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let svc = std::sync::Arc::new(crate::settings::SettingsService::new(store));
+        svc.set_data_dir(dir.path());
+        svc.set("embed_base_url", embed_base_url, conn).unwrap();
+        let embedder = std::sync::Arc::new(crate::embedder::Embedder::new(svc.clone()));
+        let sched = Scheduler::new(JobManager::new(), dir.path().to_string_lossy().to_string(), svc, embedder.clone());
+        (sched, embedder)
+    }
+
+    /// Hold while a test depends on provider trust: ambient
+    /// ANCHOR_CLOUD_TRUST/TRUSTED_PROVIDERS on a dev machine must not flip
+    /// the branch. Restores on drop while the lock is still held (fields
+    /// drop after `drop()` runs, `_lock` last).
+    struct TrustEnvGuard {
+        prev_trust: Option<String>,
+        prev_allow: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TrustEnvGuard {
+        fn clean() -> Self {
+            let lock = crate::common::TRUST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prev_trust = std::env::var("ANCHOR_CLOUD_TRUST").ok();
+            let prev_allow = std::env::var("ANCHOR_TRUSTED_PROVIDERS").ok();
+            std::env::remove_var("ANCHOR_CLOUD_TRUST");
+            std::env::remove_var("ANCHOR_TRUSTED_PROVIDERS");
+            Self { prev_trust, prev_allow, _lock: lock }
+        }
+    }
+
+    impl Drop for TrustEnvGuard {
+        fn drop(&mut self) {
+            match &self.prev_trust {
+                Some(v) => std::env::set_var("ANCHOR_CLOUD_TRUST", v),
+                None => std::env::remove_var("ANCHOR_CLOUD_TRUST"),
+            }
+            match &self.prev_allow {
+                Some(v) => std::env::set_var("ANCHOR_TRUSTED_PROVIDERS", v),
+                None => std::env::remove_var("ANCHOR_TRUSTED_PROVIDERS"),
+            }
+        }
+    }
+
+    #[test]
+    fn backfill_select_sql_excludes_gated_labels_when_untrusted() {
+        // F-02 predicate level: the untrusted batch query must return only
+        // the ordinary chunk; the trusted query returns both.
+        let dir = tempdir().unwrap();
+        let (conn, ord, sen) = seed_mixed_labels(&dir);
+        let run = |trusted: bool| {
+            conn.prepare(Scheduler::backfill_select_sql(trusted))
+                .unwrap()
+                .query_map([64i64], |r| r.get::<_, i64>(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect::<Vec<_>>()
+        };
+        let ord_chunk: i64 = conn.query_row("SELECT c.id FROM chunks c JOIN ingested_items i ON i.id=c.item_id WHERE i.source_id=?1", [ord], |r| r.get(0)).unwrap();
+        let sen_chunk: i64 = conn.query_row("SELECT c.id FROM chunks c JOIN ingested_items i ON i.id=c.item_id WHERE i.source_id=?1", [sen], |r| r.get(0)).unwrap();
+        assert_eq!(run(false), vec![ord_chunk]);
+        assert_eq!(run(true), vec![ord_chunk, sen_chunk]);
+    }
+
+    #[tokio::test]
+    async fn backfill_once_skips_gated_without_request() {
+        // F-02 wiring level: sensitive-only DB + untrusted provider. No mock
+        // server exists — any HTTP attempt fails — so (0, false) proves the
+        // gated chunk was never selected, and it stays NULL.
+        let _tg = TrustEnvGuard::clean();
+        let dir = tempdir().unwrap();
+        let conn = seed_single_label(&dir, "sensitive");
+        let (sched, embedder) = backfill_sched(&dir, &conn, "https://untrusted.example.invalid/");
+        assert!(!embedder.cloud_trusted());
+        let (embedded, failed) = sched.backfill_once().await;
+        assert_eq!((embedded, failed), (0, false));
+        let pending: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(pending, 1, "sensitive chunk must stay NULL");
+    }
+
+    #[tokio::test]
+    async fn backfill_once_attempts_ordinary_on_untrusted() {
+        // F-02 ordinary half: an ordinary chunk under an untrusted provider
+        // must still be selected — the attempt against a closed port fails,
+        // and that failure is the proof of selection. (A live end-to-end
+        // embed under an untrusted URL is untestable hermetically: any
+        // reachable test server is loopback, which trust blesses.)
+        let _tg = TrustEnvGuard::clean();
+        let dir = tempdir().unwrap();
+        let conn = seed_single_label(&dir, "internal");
+        let (sched, embedder) = backfill_sched(&dir, &conn, "http://0.0.0.0:9");
+        assert!(!embedder.cloud_trusted());
+        let (embedded, failed) = sched.backfill_once().await;
+        assert_eq!(embedded, 0);
+        assert!(failed, "ordinary chunk must be attempted (closed port => failure)");
     }
 
     #[tokio::test]

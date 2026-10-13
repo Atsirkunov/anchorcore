@@ -55,12 +55,11 @@ impl Embedder {
     }
 
     fn provider_is_local(&self) -> bool {
-        let u = self.base_url();
-        u.starts_with("http://localhost") || u.starts_with("http://127.0.0.1")
+        crate::common::provider_is_local(&self.base_url())
     }
 
     /// Whether a remote embedder is trusted (B39/B30). Local is always trusted.
-    fn cloud_trusted(&self) -> bool {
+    pub(crate) fn cloud_trusted(&self) -> bool {
         crate::common::provider_trusted(&self.base_url())
     }
 

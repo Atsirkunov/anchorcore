@@ -51,7 +51,7 @@ fn answer_provider(settings: &SettingsService) -> Value {
         .get("answer_base_url", None)
         .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
     let key = settings.get("answer_api_key", None).unwrap_or_default();
-    if base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1") {
+    if crate::common::provider_is_local(&base) {
         Value::String("ollama".to_string())
     } else if !key.trim().is_empty() {
         Value::String("configured".to_string())
