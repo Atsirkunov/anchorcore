@@ -31,11 +31,102 @@ pub struct ListQuery {
     pub offset: Option<i64>,
 }
 
-fn item_json(id: i64, source_id: i64, title: String, path: String, text: String, is_pii: bool) -> Value {
+fn item_json(id: i64, source_id: i64, title: String, path: String, text: String, is_pii: bool, pdf_quality: Option<String>) -> Value {
     // `content` aliases `text`: every content-carrying payload exposes
     // `content` (search hits, citations), so item reads do too (1.0.24
     // retest #8). `text` stays the canonical key for backward compat.
-    json!({"id": id, "source_id": source_id, "title": title, "path": path, "text": text.clone(), "content": text, "is_pii": is_pii})
+    // `pdf_quality` (R36.10) is null for every non-PDF and clean PDF.
+    json!({"id": id, "source_id": source_id, "title": title, "path": path, "text": text.clone(), "content": text, "is_pii": is_pii, "pdf_quality": pdf_quality})
+}
+
+/// R36.10 item-level PDF quality flag: `suspect` when the stored text trips
+/// the spacing detector right now (current state wins — a repair that left
+/// damage still reads damaged), `repaired` when a split-word repair event
+/// matches this file and the text is clean, else null. Derived at read
+/// time — no migration, retroactive to rows synced before this change.
+fn pdf_quality_for(
+    conn: &rusqlite::Connection,
+    source_id: i64,
+    title: &str,
+    external_id: &str,
+    text: &str,
+) -> Option<String> {
+    if !item_is_pdf(title, external_id) {
+        return None;
+    }
+    if crate::extract::pdf_spacing_suspect(text) {
+        return Some("suspect".to_string());
+    }
+    if repair_hit(&folder_roots(conn), &repair_details_by_source(conn, &[source_id]), source_id, external_id) {
+        return Some("repaired".to_string());
+    }
+    None
+}
+
+fn item_is_pdf(title: &str, external_id: &str) -> bool {
+    crate::extract::is_pdf_filename(title) || crate::extract::is_pdf_filename(external_id)
+}
+
+/// Repair-event details (`'pdf split-word repair'` rows) grouped by source —
+/// one query for the detail view or a whole listing page.
+fn repair_details_by_source(
+    conn: &rusqlite::Connection,
+    source_ids: &[i64],
+) -> std::collections::HashMap<i64, Vec<String>> {
+    let mut out: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+    if source_ids.is_empty() {
+        return out;
+    }
+    let sql = format!(
+        "SELECT source_id, detail FROM system_events WHERE message = 'pdf split-word repair' AND source_id IN ({})",
+        crate::common::placeholders(source_ids.len())
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(source_ids.iter()), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default()))
+    }) {
+        for (sid, detail) in rows.flatten() {
+            out.entry(sid).or_default().push(detail);
+        }
+    }
+    out
+}
+
+/// True when a repair event names this item's file: the event label is the
+/// absolute extraction path, matched exactly against the owning folder root
+/// joined with the external id (slash-normalized, so Windows `\` labels
+/// match; a moved root degrades to no match, never to a wrong file's flag).
+/// `root` must already be canonicalized (see `repair_hit`) — the label is.
+fn repair_matches(detail: &str, root: &str, external_id: &str) -> bool {
+    let label = match detail.split_once(": split-word suspects ") {
+        Some((label, _)) => label,
+        None => return false,
+    };
+    slash_norm(label) == slash_norm(&format!("{root}/{external_id}"))
+}
+
+fn repair_hit(
+    roots: &std::collections::HashMap<i64, String>,
+    events: &std::collections::HashMap<i64, Vec<String>>,
+    source_id: i64,
+    external_id: &str,
+) -> bool {
+    let root = match roots.get(&source_id) {
+        Some(r) => r,
+        None => return false,
+    };
+    let details = match events.get(&source_id) {
+        Some(d) => d,
+        None => return false,
+    };
+    // The connector canonicalizes its root (`folder.rs`), so event labels
+    // are canonical while the stored config may hold a symlinked form
+    // (`/tmp` → `/private/tmp` on macOS). Canonicalize to compare.
+    let canon = std::fs::canonicalize(root).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| root.clone());
+    details.iter().any(|d| repair_matches(d, &canon, external_id))
 }
 
 pub(crate) fn escape_like(s: &str) -> String {
@@ -240,19 +331,92 @@ fn run_list_query(
         Ok(s) => s,
         Err(_) => return (vec![], total),
     };
-    let rows = stmt
+    let tuples: Vec<(i64, i64, String, String, bool)> = stmt
         .query_map(rusqlite::params_from_iter(params.iter()), |r| {
-            Ok(json!({
-                "id": r.get::<_, i64>(0)?,
-                "source_id": r.get::<_, i64>(1)?,
-                "title": r.get::<_, String>(2)?,
-                "path": r.get::<_, String>(3)?,
-                "is_pii": r.get::<_, i64>(4)? != 0,
-            }))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)? != 0,
+            ))
         })
         .map(|m| m.filter_map(|r| r.ok()).collect())
         .unwrap_or_default();
+    // R36.10: listing rows carry the PDF flag; texts load in one batched
+    // query over the page's PDF rows only (metadata listing stays byte-free
+    // for everything else).
+    let flags = pdf_flags_for_page(conn, &tuples);
+    let rows = tuples
+        .into_iter()
+        .map(|(id, sid, title, path, is_pii)| {
+            json!({
+                "id": id,
+                "source_id": sid,
+                "title": title,
+                "path": path,
+                "is_pii": is_pii,
+                "pdf_quality": flags.get(&id).cloned(),
+            })
+        })
+        .collect();
     (rows, total)
+}
+
+/// Listing-page flags in three batched queries (texts, roots, repair
+/// events) over the page's PDF rows only. Same precedence as the detail
+/// view: current-state `suspect` wins over a historical `repaired`.
+fn pdf_flags_for_page(
+    conn: &rusqlite::Connection,
+    rows: &[(i64, i64, String, String, bool)],
+) -> std::collections::HashMap<i64, String> {
+    let mut out: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    let pdfs: Vec<(i64, i64, String)> = rows
+        .iter()
+        .filter(|(_, _, title, path, _)| item_is_pdf(title, path))
+        .map(|(id, sid, _, path, _)| (*id, *sid, path.clone()))
+        .collect();
+    if pdfs.is_empty() {
+        return out;
+    }
+    let ids: Vec<i64> = pdfs.iter().map(|(id, _, _)| *id).collect();
+    let texts = pdf_texts_for(conn, &ids);
+    let mut sids: Vec<i64> = pdfs.iter().map(|(_, sid, _)| *sid).collect();
+    sids.sort();
+    sids.dedup();
+    let roots = folder_roots(conn);
+    let events = repair_details_by_source(conn, &sids);
+    for (id, sid, path) in &pdfs {
+        if texts.get(id).is_some_and(|t| crate::extract::pdf_spacing_suspect(t)) {
+            out.insert(*id, "suspect".to_string());
+        } else if repair_hit(&roots, &events, *sid, path) {
+            out.insert(*id, "repaired".to_string());
+        }
+    }
+    out
+}
+
+fn pdf_texts_for(conn: &rusqlite::Connection, ids: &[i64]) -> std::collections::HashMap<i64, String> {
+    let mut out: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    if ids.is_empty() {
+        return out;
+    }
+    let sql = format!(
+        "SELECT id, text FROM ingested_items WHERE id IN ({})",
+        crate::common::placeholders(ids.len())
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default()))
+    }) {
+        for (id, text) in rows.flatten() {
+            out.insert(id, text);
+        }
+    }
+    out
 }
 
 pub async fn list_handler(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Json<Value> {
@@ -286,7 +450,10 @@ fn fetch_item(conn: &rusqlite::Connection, item_id: i64) -> Option<Value> {
             },
         )
         .ok();
-    row.map(|(id, sid, title, path, text, is_pii)| item_json(id, sid, title, path, text, is_pii))
+    row.map(|(id, sid, title, path, text, is_pii)| {
+        let pdf_quality = pdf_quality_for(conn, sid, &title, &path, &text);
+        item_json(id, sid, title, path, text, is_pii, pdf_quality)
+    })
 }
 
 pub async fn get_handler(
@@ -381,6 +548,144 @@ mod tests {
         assert_eq!(v.get("content").and_then(|x| x.as_str()), Some("ACME_FEE: x"), "`content` aliases `text` (hits/citations parity)");
         assert_eq!(v.get("is_pii").and_then(|x| x.as_bool()), Some(false), "new items default unmarked");
         assert!(fetch_item(&conn, iid + 99).is_none(), "missing item reads as None (404)");
+        assert!(v.get("pdf_quality").is_some_and(|q| q.is_null()), "non-PDF rows carry a null flag");
+    }
+
+    /// Shredded spacing that trips the detector (same join shapes as the
+    /// extractor's shredded fixture, enough suspects to clear the floor).
+    fn shredded_text() -> String {
+        "Cancellati ons and Correcti ons with noti fi cati ons for processi ng of subscripti ons and installati on guides".to_string()
+    }
+
+    fn seed_pdf_db() -> (tempfile::TempDir, rusqlite::Connection, i64, i64, i64) {
+        let dir = tempdir().unwrap();
+        let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute(
+            "INSERT INTO sources (name, connector, config) VALUES ('s','folder','{\"path\": \"/docs\"}')",
+            [],
+        )
+        .unwrap();
+        let sid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,'bad.pdf','bad.pdf',?2,'h')",
+            rusqlite::params![sid, shredded_text()],
+        )
+        .unwrap();
+        let bad = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,'good.pdf','good.pdf','Cancellations and notifications for processing.','h')",
+            [sid],
+        )
+        .unwrap();
+        let good = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,'n.md','n.md','plain words','h')",
+            [sid],
+        )
+        .unwrap();
+        let md = conn.last_insert_rowid();
+        (dir, conn, bad, good, md)
+    }
+
+    #[test]
+    fn fetch_item_pdf_quality_suspect_and_null() {
+        let (_dir, conn, bad, good, md) = seed_pdf_db();
+        let v = fetch_item(&conn, bad).expect("seeded pdf must fetch");
+        assert_eq!(v.get("pdf_quality").and_then(|q| q.as_str()), Some("suspect"), "shredded stored text flags");
+        let v = fetch_item(&conn, good).expect("seeded pdf must fetch");
+        assert!(v.get("pdf_quality").is_some_and(|q| q.is_null()), "clean PDF without a repair event reads null");
+        let v = fetch_item(&conn, md).expect("seeded md must fetch");
+        assert!(v.get("pdf_quality").is_some_and(|q| q.is_null()), "non-PDF never scores");
+    }
+
+    #[test]
+    fn fetch_item_pdf_quality_repaired_needs_matching_event() {
+        let (_dir, conn, bad, good, _md) = seed_pdf_db();
+        let sid: i64 = conn.query_row("SELECT source_id FROM ingested_items WHERE id=?1", [good], |r| r.get(0)).unwrap();
+        // A repair event for another file must not flag this one.
+        conn.execute(
+            "INSERT INTO system_events (component, level, source_id, message, detail) VALUES ('pipeline','warning',?1,'pdf split-word repair','/docs/other.pdf: split-word suspects 9/100 tokens, repair pass 1 (repaired)')",
+            [sid],
+        )
+        .unwrap();
+        let v = fetch_item(&conn, good).unwrap();
+        assert!(v.get("pdf_quality").is_some_and(|q| q.is_null()), "another file's event must not match");
+        // The matching event flips the clean PDF to repaired …
+        conn.execute(
+            "INSERT INTO system_events (component, level, source_id, message, detail) VALUES ('pipeline','warning',?1,'pdf split-word repair','/docs/good.pdf: split-word suspects 9/100 tokens, repair pass 1 (repaired)')",
+            [sid],
+        )
+        .unwrap();
+        let v = fetch_item(&conn, good).unwrap();
+        assert_eq!(v.get("pdf_quality").and_then(|q| q.as_str()), Some("repaired"));
+        // … but current-state damage wins over history.
+        conn.execute(
+            "INSERT INTO system_events (component, level, source_id, message, detail) VALUES ('pipeline','warning',?1,'pdf split-word repair','/docs/bad.pdf: split-word suspects 9/100 tokens, repair pass 1 (repaired)')",
+            [sid],
+        )
+        .unwrap();
+        let v = fetch_item(&conn, bad).unwrap();
+        assert_eq!(v.get("pdf_quality").and_then(|q| q.as_str()), Some("suspect"), "damage now beats repair then");
+    }
+
+    #[test]
+    fn repair_label_matching_is_exact_and_slash_normalized() {
+        assert!(repair_matches("/docs/r.pdf: split-word suspects 9/100 tokens, repair pass 1 (repaired)", "/docs", "r.pdf"));
+        assert!(repair_matches("C:\\docs\\r.pdf: split-word suspects 9/100 tokens, repair pass 1 (repaired)", "C:\\docs", "r.pdf"));
+        assert!(!repair_matches("/docs/r.pdf: split-word suspects 9/100 tokens, repair pass 1 (repaired)", "/docs", "other.pdf"));
+        assert!(!repair_matches("/docs/sub/r.pdf: split-word suspects 9/100 tokens, repair pass 1 (repaired)", "/docs", "r.pdf"), "a longer path must not suffix-match");
+        assert!(!repair_matches("not an event detail", "/docs", "r.pdf"));
+    }
+
+    /// Live-probe regression: the connector canonicalizes its root, so the
+    /// event label holds the real path while the config may hold a symlinked
+    /// one (`/tmp` → `/private/tmp`). The flag must still match.
+    #[cfg(unix)]
+    #[test]
+    fn fetch_item_pdf_quality_matches_symlinked_root() {
+        let target = tempdir().unwrap();
+        let linkdir = tempdir().unwrap();
+        let link = linkdir.path().join("docslink");
+        std::os::unix::fs::symlink(target.path(), &link).unwrap();
+        let dir = tempdir().unwrap();
+        let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let cfg = serde_json::json!({"path": link.to_string_lossy()}).to_string();
+        conn.execute("INSERT INTO sources (name, connector, config) VALUES ('s','folder',?1)", [cfg]).unwrap();
+        let sid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,'r.pdf','r.pdf','Cancellations and notifications.','h')",
+            [sid],
+        )
+        .unwrap();
+        let iid = conn.last_insert_rowid();
+        let canon = std::fs::canonicalize(target.path()).unwrap();
+        let detail = format!("{}: split-word suspects 9/25 tokens, repair pass 0 (repaired)", canon.join("r.pdf").display());
+        conn.execute(
+            "INSERT INTO system_events (component, level, source_id, message, detail) VALUES ('pipeline','warning',?1,'pdf split-word repair',?2)",
+            rusqlite::params![sid, detail],
+        )
+        .unwrap();
+        let v = fetch_item(&conn, iid).unwrap();
+        assert_eq!(v.get("pdf_quality").and_then(|q| q.as_str()), Some("repaired"), "symlinked config root must match the canonical label");
+    }
+
+    #[test]
+    fn list_items_carries_pdf_quality() {
+        let (_dir, conn, bad, good, md) = seed_pdf_db();
+        let (items, total) = list_items(&conn, None, None, 100, 0);
+        assert_eq!(total, 3);
+        let flag = |id: i64| {
+            items
+                .iter()
+                .find(|v| v.get("id").and_then(|x| x.as_i64()) == Some(id))
+                .and_then(|v| v.get("pdf_quality").cloned())
+        };
+        assert_eq!(flag(bad).and_then(|q| q.as_str().map(|s| s.to_string())), Some("suspect".to_string()));
+        assert!(flag(good).is_some_and(|q| q.is_null()));
+        assert!(flag(md).is_some_and(|q| q.is_null()));
+        assert!(items.iter().all(|v| v.get("text").is_none() && v.get("content").is_none()), "listing stays metadata-only");
     }
 
     fn seed_list_db() -> (tempfile::TempDir, rusqlite::Connection, i64, i64) {
