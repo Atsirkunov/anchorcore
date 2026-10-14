@@ -92,7 +92,7 @@ pub struct SearchRequest {
     /// chunk bytes by this name. `fields` remains the canonical selector.
     pub include_content: Option<bool>,
     /// R32.4: env filter — "live" or "test" (case-insensitive). Anything
-    /// else (or absent) means unfiltered; demotion still orders the mix.
+    /// else (or absent) means unfiltered; live-first still orders the mix.
     pub env: Option<String>,
     /// R36.6: chunk-kind filter — comma list from
     /// `document,entity,distilled,section_summary,doc_summary`
@@ -604,32 +604,11 @@ fn project_scope(conn: &Connection, project_id: Option<i64>, public_only: bool) 
     scope
 }
 
-fn apply_graph(
-    conn: &Connection,
-    hits: Vec<crate::retrieval::Hit>,
-    scope: Option<&HashSet<i64>>,
-    cfg: &RetrievalConfig,
-    query: &str,
-) -> Vec<crate::retrieval::Hit> {
-    let mut hits = hits;
-    let graph_hits = retrieval::graph_expand(conn, &hits, scope, 2, 3, cfg.qa_exclude_disputed);
-    if !graph_hits.is_empty() {
-        let lists = vec![hits, graph_hits];
-        hits = retrieval::fuse_evidence(lists, vec![1.0, 0.5]);
-        // R32.3: graph neighbors enter through a second RRF — demote the
-        // fused set (fixture neighbors sink) before the cut.
-        retrieval::demote_test_envs(conn, &mut hits, query);
-        retrieval::sort_hits(&mut hits);
-        // R32.7: multiplier alone never reorders — partition live-first.
-        retrieval::prefer_live_envs(conn, &mut hits, query);
-        hits.truncate(cfg.top_k);
-    }
-    hits
-}
-
 /// TOC coarse-to-fine precision path unioned with a discounted flat hybrid
 /// recall floor (TOC fencing can hide mid-body signals from leaf search),
-/// flat-only fallback when TOC is empty, then graph.
+/// flat-only fallback when TOC is empty. R33.3: no graph leg — entity
+/// neighbors are entity chunks, and entities never enter retrieval (D2
+/// option (a)); `graph_expand` stays for the entity-lookup flows' tests.
 fn orchestrate(
     conn: &Connection,
     query: &str,
@@ -651,7 +630,7 @@ fn orchestrate(
         // excludes the whole file). Union unfiltered hybrid legs UNDERNEATH
         // the TOC ranking (discounted: precision-first, recall-floor), so TOC
         // can never underperform flat. Single fused list into fuse_and_rank
-        // keeps all downstream behavior (demote/dedupe/live-first/cut).
+        // keeps all downstream behavior (dedupe/live-first/cut).
         let floor_vec = query_embedding.as_ref().and_then(|emb| {
             let hits = retrieval::vector_search(conn, emb, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed);
             if hits.is_empty() { None } else { Some(hits) }
@@ -669,9 +648,9 @@ fn orchestrate(
             weights.push(0.5);
         }
         let fused = retrieval::rrf_fuse_multi(lists, weights);
-        // R32.3: no pre-fusion demote — scores are fused by rank (RRF), so
-        // demotion runs inside fuse_and_rank, after fusion, before the cut.
-        let hits = retrieval::fuse_and_rank(
+        // Env ordering is the live-first partition inside fuse_and_rank
+        // (R33.3: the R32.3 score multiplier is retired — RRF fuses by rank).
+        let mut hits = retrieval::fuse_and_rank(
             conn,
             Some(fused),
             None,
@@ -682,10 +661,9 @@ fn orchestrate(
             cfg.qa_exclude_disputed,
             query,
         );
-        let mut hits = apply_graph(conn, hits, scope.as_ref(), cfg, query);
         retrieval::filename_boost(conn, &mut hits, query);
         // R36.3: return-shape assembly runs once, over the final ranked
-        // list, so same-scope merging sees graph + boosted hits too.
+        // list, so same-scope merging sees boosted hits too.
         return retrieval::parent_return(conn, hits);
     }
     // R8.1: hybrid search — vector + keyword
@@ -698,7 +676,7 @@ fn orchestrate(
     // empty evidence (ask answers mode "none", search returns no hits), not
     // as cited "evidence" that never mentions the question.
     let keyword_opt = if keyword_hits.is_empty() { None } else { Some(keyword_hits) };
-    let hits = retrieval::fuse_and_rank(
+    let mut hits = retrieval::fuse_and_rank(
         conn,
         vector_hits,
         keyword_opt,
@@ -709,7 +687,6 @@ fn orchestrate(
         cfg.qa_exclude_disputed,
         query,
     );
-    let mut hits = apply_graph(conn, hits, scope.as_ref(), cfg, query);
     retrieval::filename_boost(conn, &mut hits, query);
     // R36.3: return-shape assembly runs once, over the final ranked list.
     retrieval::parent_return(conn, hits)
@@ -1077,7 +1054,7 @@ fn search_sync_inner(
 ) -> Vec<crate::retrieval::Hit> {
     let scope = project_scope(conn, project_id, public_only);
     // Widen the pool when filtering: cuts run after ranking, so the fetch
-    // must survive them (demote-only ranking keeps fixtures in play).
+    // must survive them (live-first ranking keeps fixtures in play).
     let fetch_k = if filters.any() { (k * 5).clamp(k, 50) } else { k };
     let cfg = RetrievalConfig::from_env_with_top_k(fetch_k);
     let hits = orchestrate(conn, query, query_embedding, scope, &cfg);
@@ -1586,10 +1563,11 @@ mod tests {
 
     #[tokio::test]
     async fn search_env_filter_orders_and_cuts_by_class() {
-        // R32.2–R32.4 end to end: a live doc chunk plus a test entity row
-        // (production shape) sharing the query terms. Plain search orders
-        // live first; env=live/test cuts to one class; every hit carries an
-        // item_id and an env class.
+        // R33.3 end to end (was R32.2–R32.4 with a test entity row): a live
+        // doc chunk plus a test doc chunk sharing the query terms. Plain
+        // search orders live first; env=live/test cuts to one class; every
+        // hit carries an item_id and an env class. A test entity row sits
+        // in the DB sharing the terms and must never surface.
         let (dir, conn, settings) = seed_gate_db();
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
@@ -1612,6 +1590,11 @@ mod tests {
         )
         .unwrap();
         let test_iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE external_id='cfg/payment-routes.test.yml'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO chunks (item_id, source_ref, content) VALUES (?1,'payment-routes.test.yml','test treasury routes content')",
+            [test_iid],
+        )
+        .unwrap();
         conn.execute("INSERT INTO entities (item_id, kind, summary) VALUES (?1,'decision','test treasury routes content')", [test_iid]).unwrap();
         let eid: i64 = conn.last_insert_rowid();
         conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content) VALUES (?1,'entity','payment-routes.test.yml','test treasury routes content')", [eid]).unwrap();
@@ -1631,12 +1614,13 @@ mod tests {
             symbol: None,
         };
         let plain = search(&settings, &embedder, mk(None), &data_dir).await;
-        assert_eq!(plain.hits.len(), 2, "both classes match the shared terms");
+        assert_eq!(plain.hits.len(), 2, "both classes match the shared terms; the entity row stays out");
         assert!(plain.hits.iter().all(|h| h.item_id.is_some()), "every hit drills into its item");
-        assert_eq!(plain.hits[0].env, "live", "post-RRF demotion must surface the live chunk first");
+        assert!(plain.hits.iter().all(|h| h.entity_id.is_none()), "no entity rows in retrieval");
+        assert_eq!(plain.hits[0].env, "live", "live-first must surface the live chunk first");
         assert_eq!(plain.hits[0].item_id, Some(live_iid));
         assert_eq!(plain.hits[1].env, "test");
-        assert_eq!(plain.hits[1].item_id, Some(test_iid), "entity rows resolve their item end to end");
+        assert_eq!(plain.hits[1].item_id, Some(test_iid));
 
         let live_only = search(&settings, &embedder, mk(Some("live")), &data_dir).await;
         assert_eq!(live_only.hits.len(), 1);
@@ -1708,7 +1692,8 @@ mod tests {
     }
 
     /// Six chunks sharing the query terms `acme ledger`: doc chunks on
-    /// `cfg/a.yml` + `docs/b.md`, an entity chunk on the cfg item, and three
+    /// `cfg/a.yml` + `docs/b.md`, an entity chunk on the cfg item (seeded
+    /// but never retrievable since R33.3 — the exclusion proof), and three
     /// chunks on `src/code.py` (symbol section, other section, flat).
     fn seed_filter_db() -> (tempfile::TempDir, Connection, Arc<SettingsService>, String) {
         let dir = tempdir().unwrap();
@@ -1790,17 +1775,16 @@ mod tests {
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         let plain = search(&settings, &embedder, filter_req("acme ledger", None, None, None), &data_dir).await;
-        assert_eq!(plain.hits.len(), 6, "all six seeded chunks match the shared terms");
+        assert_eq!(plain.hits.len(), 5, "five document chunks match; the seeded entity chunk stays out");
         let docs = search(&settings, &embedder, filter_req("acme ledger", Some("document"), None, None), &data_dir).await;
         assert_eq!(docs.hits.len(), 5);
         assert!(docs.hits.iter().all(|h| h.entity_id.is_none()));
         let ents = search(&settings, &embedder, filter_req("acme ledger", Some("ENTITY"), None, None), &data_dir).await;
-        assert_eq!(ents.hits.len(), 1);
-        assert!(ents.hits[0].entity_id.is_some());
+        assert!(ents.hits.is_empty(), "R33.3: entities never enter retrieval, so kind=entity matches nothing");
         let both = search(&settings, &embedder, filter_req("acme ledger", Some("document,entity"), None, None), &data_dir).await;
-        assert_eq!(both.hits.len(), 6, "comma list unions");
+        assert_eq!(both.hits.len(), 5, "comma list unions over the document pool");
         let bogus = search(&settings, &embedder, filter_req("acme ledger", Some("banana"), None, None), &data_dir).await;
-        assert_eq!(bogus.hits.len(), 6, "unknown kind means unfiltered, like env");
+        assert_eq!(bogus.hits.len(), 5, "unknown kind means unfiltered, like env");
         let summaries = search(&settings, &embedder, filter_req("acme ledger", Some("section_summary"), None, None), &data_dir).await;
         assert!(summaries.hits.is_empty(), "known-but-absent kind matches nothing");
     }
@@ -1811,14 +1795,14 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
-        // Relative: the cfg item's doc chunk AND its entity chunk (paths
-        // resolve through the entity's item).
+        // Relative: the cfg item's doc chunk only (its entity chunk stays
+        // out of retrieval since R33.3).
         let rel = search(&settings, &embedder, filter_req("acme ledger", None, Some("cfg/"), None), &data_dir).await;
-        assert_eq!(rel.hits.len(), 2);
+        assert_eq!(rel.hits.len(), 1);
         assert!(rel.hits.iter().all(|h| h.item_title == "cfg/a.yml"));
         // Absolute through the folder root spells the same cut.
         let abs = search(&settings, &embedder, filter_req("acme ledger", None, Some(&format!("{root}/cfg")), None), &data_dir).await;
-        assert_eq!(abs.hits.len(), 2);
+        assert_eq!(abs.hits.len(), 1);
         assert!(abs.hits.iter().all(|h| h.item_title == "cfg/a.yml"));
         let none = search(&settings, &embedder, filter_req("acme ledger", None, Some("/no/such/root"), None), &data_dir).await;
         assert!(none.hits.is_empty());
@@ -1850,13 +1834,12 @@ mod tests {
         let both = search(&settings, &embedder, filter_req("acme ledger", Some("document"), None, Some("fetch_user")), &data_dir).await;
         assert_eq!(both.hits.len(), 1);
         assert!(both.hits[0].entity_id.is_none());
-        // entity ∩ symbol: entity chunks have no section — empty intersection.
+        // entity ∩ symbol: entities never enter retrieval — empty intersection.
         let empty = search(&settings, &embedder, filter_req("acme ledger", Some("entity"), None, Some("fetch_user")), &data_dir).await;
         assert!(empty.hits.is_empty());
-        // kind ∩ path: the cfg entity chunk is the only entity under cfg/.
+        // kind ∩ path: kind=entity matches nothing anywhere since R33.3.
         let cfg_ent = search(&settings, &embedder, filter_req("acme ledger", Some("entity"), Some("cfg/"), None), &data_dir).await;
-        assert_eq!(cfg_ent.hits.len(), 1);
-        assert!(cfg_ent.hits[0].entity_id.is_some());
+        assert!(cfg_ent.hits.is_empty());
         // Absolute prefix ∩ symbol: the symbol chunk lives under src/.
         let abs_sym = search(
             &settings,
@@ -1906,10 +1889,9 @@ mod tests {
         // env=test empties the all-live seed under any combination.
         let tst = search(&settings, &embedder, req(Some("test"), Some("document"), None, None), &data_dir).await;
         assert!(tst.hits.is_empty());
-        // kind ∩ env: the cfg entity chunk is the only live entity.
+        // kind ∩ env: kind=entity matches nothing since R33.3.
         let ent = search(&settings, &embedder, req(Some("live"), Some("entity"), None, None), &data_dir).await;
-        assert_eq!(ent.hits.len(), 1);
-        assert!(ent.hits[0].entity_id.is_some());
+        assert!(ent.hits.is_empty());
     }
 
     /// Parent-return seed: one `docs/billing.md` item with a two-section
@@ -2069,5 +2051,50 @@ mod tests {
         assert!(!s.contains("tungsten early"), "terms outside the mark don't pull the window");
         // Unmarked content keeps match_snippet behavior.
         assert_eq!(hit_preview("plain content", "zzz", 1, 50), crate::retrieval::match_snippet("plain content", "zzz", 50));
+    }
+
+    #[test]
+    fn orchestrate_never_returns_entity_hits() {
+        // R33.3: end of the retrieval stack — a one-line entity paraphrase
+        // matching every term plus a linked neighbor (graph bait) must both
+        // stay out of ask/search evidence; the document chunk cites alone.
+        let dir = tempdir().unwrap();
+        let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (connector, name) VALUES ('folder','ordinary')", []).unwrap();
+        let sid: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h','note.md','docs/note.md','tungsten ledger body')",
+            [sid],
+        )
+        .unwrap();
+        let iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE title='note.md'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO chunks (item_id, source_ref, content) VALUES (?1,'note.md','tungsten ledger document body words')",
+            [iid],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO entities (item_id, kind, summary) VALUES (?1,'decision','tungsten ledger')", [iid]).unwrap();
+        let e1: i64 = conn.last_insert_rowid();
+        conn.execute("INSERT INTO entities (item_id, kind, summary) VALUES (?1,'note','tungsten ledger neighbor')", [iid]).unwrap();
+        let e2: i64 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO chunks (entity_id, kind, source_ref, content) VALUES (?1,'entity','note.md','tungsten ledger')",
+            [e1],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?2,'related')",
+            rusqlite::params![e1, e2],
+        )
+        .unwrap();
+        let cfg = RetrievalConfig::from_env_with_top_k(8);
+        let hits = orchestrate(&conn, "tungsten ledger", None, None, &cfg);
+        assert!(!hits.is_empty(), "the document chunk must still match");
+        assert!(
+            hits.iter().all(|h| h.entity_id.is_none()),
+            "no entity chunk — direct or graph neighbor — may surface: {:?}",
+            hits.iter().map(|h| (h.chunk_id, h.entity_id)).collect::<Vec<_>>()
+        );
     }
 }
