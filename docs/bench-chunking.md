@@ -159,3 +159,13 @@ content instead of paraphrase. Tokens/question rose (~5.3k → ~6.8k
 est) for the same reason — full bytes replaced one-liners, so
 up-with-held-recall is the expected R33.3 signature, mirroring the
 R36.3 per-hit-bytes note.
+
+**R36.10 (page breadcrumbs + PDF quality flag, branch rust/R36.10
+2036372, 2026-10-14): no score change — 6/8 depth, 6/8 coverage, same
+misses (pay-02, pay-03).** Expected: the runnable corpora contain no
+PDFs and the page plan is gated on extraction markers, so non-PDF
+chunking is byte-identical (verified: identical document-chunk paths
+across runs). Observed token/hit-order movement is entity-rank noise —
+a repeat run on the same binary churns the same questions. PDF corpora
+(`owner-pdfs`) will show `(p. N)` breadcrumb suffixes on re-sync; that
+question stays owner-run.
