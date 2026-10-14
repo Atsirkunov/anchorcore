@@ -1,5 +1,7 @@
 # R31.1 — Entities + Review confusion audit and redesign proposal
 
+> Status: plan — audit + redesign proposal; see `rust/BACKLOG.md` for whether it landed.
+
 > Live audit run 2026-10-13: release binary on port 8271, fresh temp data dir,
 > folder source over the repo `sample/` corpus (10 docs → 10 items, 24 entities),
 > Ollama reachable (LLM classify path). No code changed.

@@ -40,8 +40,8 @@ Migrations: `rust/crates/anchorcore/migrations/11_sections.sql`,
 4. Re-syncing a document replaces its sections and chunks in one transaction;
    unchanged sections are hash-skipped like classifier windows.
 
-PII-flagged content never reaches cloud embedding here either — the same
-`is_pii` gate as the rest of the pipeline.
+Sources labeled `sensitive` skip cloud embedding here too — source labels
+are the trust boundary for the whole pipeline.
 
 ## 4. Retrieval — coarse-to-fine
 

@@ -1,5 +1,7 @@
 # AnchorCore — Product Plan (v1.0)
 
+> Status: plan — the living product/backlog narrative (canonical for scope); current engineering status is in `rust/BACKLOG.md`.
+
 > **Working thesis:** The winning layer of the AI stack is not another model — it is the system that gives any AI model the right context, at the right time, with trust and provenance.
 >
 > **Positioning:** *"Connect your knowledge to any AI model."*
@@ -781,7 +783,7 @@ clean, secure design that aren't written down yet.
 
 **Scope:** design session with the owner → record decisions: auth model,
 per-user/per-workspace isolation, secrets handling, billing hooks, what runs
-where. Update `hosting.md` + `v2v3-scope.md` with the outcome.
+where. Update `hosted-cloud-plan.md` + `v2v3-scope.md` with the outcome.
 
 **DoD:** design doc merged; hosting backlog updated from it.
 
@@ -1111,7 +1113,7 @@ R10.7 itself noted the Rust-against-a-SQLite-volume shape as the alternative.
   one-liner. Any Compose-with-Postgres file moves to a clearly labeled
   hosted-cloud variant (B49), outside the Team quickstart.
 - Doc consistency pass in the same commit: `hosting/README.md` (currently
-  "skeleton … stays Python, R10.7"), `docs/hosting.md`, `docs/architecture.md`,
+  "skeleton … stays Python, R10.7"), `docs/hosted-cloud-plan.md`, `docs/architecture.md`,
   `README.md:35,64,82`, `rust/README.md`, `docs/v2v3-scope.md` (D9/ops shape) —
   Team = one container; Postgres only in the Hosted-cloud row.
 - CI + release: build and publish the image on `v*` tags to GHCR
@@ -1247,7 +1249,7 @@ Explicit order — v1 core, hardening, scale and the website are DONE (v1.0.10�
 | 7 | B45 Slack | **P2** | export-ZIP import local (free); live connector = Teams/hosted feature |
 | — | B47 deploy website | ✅ DONE | live at anchorcore.dev (Cloudflare Workers Static Assets) |
 | 10 | B48 end-to-end test | **P1** | Windows §1 + MCP §2 PASS (simulated-clean); Mac §3 + Docker §4 await owner |
-| 11 | B49 hosted design | **P2** | owner design session → decisions in hosting.md/v2v3 |
+| 11 | B49 hosted design | **P2** | owner design session → decisions in hosted-cloud-plan.md/v2v3 |
 | 12 | B50 sample corpus in releases | **P1** | wizard sample path dead on release installs (from B48) |
 | 13 | B51 console feedback for exe | **P2** | windowed exe silent in terminal runs (from B48) |
 | — | B52 onboarding Ollama probe | ✅ DONE (via B54) | real probe + install guidance in wizard |

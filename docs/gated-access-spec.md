@@ -1,7 +1,8 @@
 # Gated access spec — deterministic reads (BYOM) + team consumer gating
 
-Status: Part A (Phase 1) shipped on main; Part B is backlog. Goal: users
-work with their favorite model (Claude, ChatGPT, local) over MCP with
+> Status: plan — Part A shipped in reduced form (source-label gate on `/qa` + `/qa/search` only); Part B is backlog; the `?gate=provider` design was retired by R35.1 — see `rust/BACKLOG.md`. Body below is design history.
+
+Goal: users work with their favorite model (Claude, ChatGPT, local) over MCP with
 zero-copy-paste friction, while two orthogonal policies hold:
 (1) sensitive data never goes to unapproved *providers*, (2) data never goes to
 unauthorized *humans*. Enforcement is deterministic — no LLM in the policy loop.

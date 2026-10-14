@@ -51,7 +51,7 @@ Team and commercial use requires a paid license.
 
 - [Product Plan](./docs/product-plan.md) — what we're building, for whom, and why (+ full backlog)
 - [Architecture](./docs/architecture.md) — system view + architecture diagram
-- [Packaging](./docs/packaging.md) — Rust binary + MCP sidecar zips for Windows, macOS and Linux
+- [Packaging](./docs/packaging.md) — Rust binary for Windows, macOS and Linux (`anchorcore mcp` mode in the same binary)
 - [Releasing](./docs/releasing.md) — release checklist: tag → CI builds all platform zips
 - [Agent connectivity (MCP)](./docs/mcp.md) - how harnesses (Claude Code, Codex, opencode, Cursor) use the memory
 - [Backup, export & device migration](./docs/backup.md) - portable `.anchorcore-backup` archives, secrets model, CLI + UI walkthrough
@@ -62,11 +62,14 @@ Team and commercial use requires a paid license.
 - [Design system](./docs/design-system.md) — color tokens, typography, messaging, website approach (single source for app + site)
 - [Rust port evaluation](./docs/rust-port.md) — is a Rust backend worth it? (distribution vs LLM latency)
 - [Sample dataset guide](./docs/sample-dataset.md) — what the demo corpus exercises
+- [REST API guide](./docs/guides/rest-api.md) — connect any JSON list API as a source
+- [Obsidian vault guide](./docs/guides/obsidian-vault.md) — point AnchorCore at a vault folder
+- [Docs index](./docs/README.md) — every doc classified: current / plans / historical / release notes
 
 ## Project layout
 
 ```
-rust/       Rust service (Axum) — connectors, ingestion, classification, RAG Q&A — shipped artifact (1.0.20, single source rust/Cargo.toml)
+rust/       Rust service (Axum) — connectors, ingestion, classification, RAG Q&A — shipped artifact (single source rust/Cargo.toml; version: see docs/release-notes/)
 frontend/   React SPA (Vite) — Ask, Sources, Entities, Review, Settings, System
 sample/     Mini-company demo corpus — connect it as a folder source
             (guide: docs/sample-dataset.md)
@@ -119,7 +122,7 @@ Each section: provider dropdown, API key, base URL, model, **Test connection**.
 ## How knowledge is built
 
 ```
-Sources (folder, Jira) -> extract text -> clean -> chunk -> classify -> entities + window context
+Sources (folder, Drive, Jira, Linear, REST) -> extract text -> clean -> chunk -> classify -> entities + window context
                                           -> embed chunks (sqlite-vec)
                                           -> FTS5 keyword index (chunks_fts)
                                           -> (Phase 14) section tree + summary nodes + tags
@@ -147,10 +150,7 @@ Sources (folder, Jira) -> extract text -> clean -> chunk -> classify -> entities
   thread phrased it as "what's the timeout?". An IDF gate (`0.15` signal) skips low-signal
   filler from vector search (it stays keyword-findable in FTS5).
 
-**Retrieval (B12/B12.1):** chunks are cleaned then split at section headings; Q&A fuses vector search (sqlite-vec `vec_chunks` vec0, `k=top_k*4`) with FTS5 bm25 via **RRF** (`score=Σ w/(60+rank)`, `k=60`), then age decay `0.5^(age/halflife)`, per-item diversity cap (3, relaxed for single-file corpora), `±1` neighbor `expand_context`, and near-duplicate dedupe. Config:
-`ANCHOR_RETRIEVAL_KEYWORD_WEIGHT` (1.0), `ANCHOR_RETRIEVAL_MAX_PER_SOURCE` (3),
-`ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS` (365), `ANCHOR_RETRIEVAL_CONTEXT_WINDOW`
-(1). Planner picks `hybrid` + `who_knows`; graph walk (B32) adds 1–2 hop related entities.
+**Retrieval:** Q&A fuses vector search (sqlite-vec) with FTS5 keyword search via **RRF**, then age decay, per-item diversity cap, context expansion, and near-duplicate dedupe. A planner picks `hybrid` + `who_knows` per query, and a graph walk adds 1–2 hop related entities. Full detail: [architecture.md §4](./docs/architecture.md#4-data-flow--qa) + [hierarchical-toc.md](./docs/guides/hierarchical-toc.md).
 
 **Scale — hierarchical TOC (Phase 14, shipped in 1.0.12):** flat chunks don't scale to 150k+ chunks (5k docs, `scripts/build_business_corpus.py`). Before, `chunk_document` derived `sections` then discarded the tree — no `section_id`/`path`/`level`. Now `sections` (parent/level/path/summary + `summary_embedding`) + dynamic `tags`/`chunk_tags` (reuse if `cosine>0.82` else create) are persisted (`migrations/11_sections.sql`, `12_tags.sql`). Retrieval is coarse-to-fine: TOC/tag SQL prune → summary-node vector search (~5k sections) → leaf vec0 `WHERE c.section_id IN (:top5)` within winning sections (`retrieval.rs:836` `toc_search`), avoiding flat `vector_search_scan` fallback. Endpoints `GET /sections?item_id=&source_id=`, `GET /sections/:id/chunks`, `GET /tags`, `GET /tags/:id/chunks`; UI shows `path` breadcrumb `Art 12 › 12.3` + tag chips + `tag_reuse_threshold` in Settings. See `docs/architecture.md:3` + `docs/guides/hierarchical-toc.md` + `rust/BACKLOG.md:Phase 14`.
 
@@ -185,7 +185,7 @@ resets the thread.
 
 ## API surface (v1 — one binary: SQLite everywhere; the Team image runs this same app)
 
-- `POST /sources` — connect a folder (path, `label` internal|public|sensitive|pii B39) or Jira (base_url, email, token, project)
+- `POST /sources` — connect a folder (path), Drive, Jira (base_url, email, token, project), Linear, or generic REST source (`label` internal|public|sensitive, B39)
 - `GET /sources/{id}/config` — source config (secrets masked) — shown as folder path / Jira details in the Sources tab
 - `POST /sources/{id}/sync`, `POST /sources/{id}/reclassify` — run ingestion now (returns 202 + job id)
 - `GET /sources/jobs`, `GET /sources/jobs/{id}`, `GET /sources/jobs/running` — job progress + history (running/done/failed/cancelled)
@@ -196,7 +196,6 @@ resets the thread.
 - `GET /review/low-confidence`, `GET /review/duplicates` (paginated `limit`/`offset`/`kind` B38), `POST /review/merge` — review queue (entities carry `window_text` for review context)
 - `POST /qa` — ask (optionally with `history` turns, `project_id` scope, `public_only` B30), get answer with section-level citations; `POST /qa/public` — share-safe, public sources only (B30)
 - `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`, `GET /projects/default` — project bundles for scoped search
-- `GET /pii/config`, `PUT /pii/config`, `GET /pii/review`, `POST /pii/review/{id}`, `POST /pii/scan/{source}`, `GET /pii/item/{id}` — PII config + review (B30, Direct= pii / Indirect= sensitive, source-level for v1)
  - `GET /auth/status`, `POST /auth/signup`, `POST /auth/login`, `GET /auth/me` — hosted auth (B40, `ANCHOR_AUTH_SECRET` enables JWT; local stays no-auth)
  - `GET /settings`, `PUT /settings` — runtime model config (`tag_reuse_threshold` 0.82, `PUT` persists to `app_settings`, `tags.rs:50` reads env `ANCHOR_TAG_REUSE_THRESHOLD` → DB fallback)
  - `POST /settings/test-connection` — verify ollama/classifier/embedder/answer providers
@@ -207,15 +206,15 @@ resets the thread.
 
 | Table | Notes |
 |---|---|
-| `sources` / `ingested_items` | connectors; items carry `doc_type` + `window_hashes` (cheap reclassify) + `distill_hashes` (B18); `sources.label` B39 (internal|public|sensitive|pii) |
+| `sources` / `ingested_items` | connectors; items carry `doc_type` + `window_hashes` (cheap reclassify) + `distill_hashes` (B18); `sources.label` B39 (internal|public|sensitive) |
 | `projects` / `project_sources` | source bundles for scoped search (B15) |
 | `entities` | kinds decision/document/action/note; `window_text`/`window_index` = classifier input; status verified/disputed/stale |
 | `relationships` | typed links (supersedes/depends_on/owns/blocks) |
-| `chunks` | `kind` = document/entity/distilled (+ section_summary/doc_summary Phase 14); `section_id`/`level`/`path` (Phase 14); `is_pii` + `pii_categories` (B30); embeddings (float32 blobs); FTS5 `chunks_fts` + vec0 `vec_chunks` (B33) kept in sync by triggers (SQLite-only; in-code scan fallback) |
+| `chunks` | `kind` = document/entity/distilled (+ section_summary/doc_summary Phase 14); `section_id`/`level`/`path` (Phase 14); legacy `is_pii`/`pii_categories` columns (unwritten since R35.1 — auto-flagging removed); embeddings (float32 blobs); FTS5 `chunks_fts` + vec0 `vec_chunks` (B33) kept in sync by triggers (SQLite-only; in-code scan fallback) |
 | `sections` / `tags` / `chunk_tags` | Phase 14: hierarchical TOC (`sections` parent/level/path/summary + `summary_embedding`) + dynamic taxonomy (`tags` embedding + count, many:many via `chunk_tags`; reuse if `cosine>0.82` else create) |
 | `chunks_fts` / `vec_chunks` | FTS5 keyword index / vec0 cosine index (SQLite), triggers sync; in-code cosine scan when vec0 is unavailable |
 | `merge_actions` | duplicate proposals + decisions |
 | `jobs` | sync/reclassify progress + history |
 | `system_events` | structured error/audit trail |
-| `app_settings` | runtime overrides (secrets live in the OS keychain, not here; PII custom words/disabled categories B30) |
+| `app_settings` | runtime overrides (secrets live in the OS keychain, not here) |
 | `users` | hosted auth (B40, email unique, pbkdf2 hash) — local stays single-user no-auth |

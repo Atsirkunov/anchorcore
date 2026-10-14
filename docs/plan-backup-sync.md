@@ -26,7 +26,7 @@ Goals, in order:
    file copy.
 4. **A privacy-preserving path to multi-device sync** under the future hosted
    tier: the server must be *structurally* unable to read user content.
-5. **GDPR Art. 20 portability** for the hosted tier — `hosting.md:68` already
+5. **GDPR Art. 20 portability** for the hosted tier — `hosted-cloud-plan.md` (Security posture) already
    lists export/delete as a blocker before the first EU customer.
 
 Non-goals (explicit): real-time collaboration, per-user ACL sync (see
@@ -251,7 +251,7 @@ export design doesn't inherit the weakness.
 |---|---|---|---|
 | **A** | uid migration, export/import engine, secrets bundle, CLI, UI card, docs | `rust/BACKLOG.md` Phase 25 (R25.1–R25.7) | this plan accepted |
 | **B** | encrypted folder packs (op log, merge, key handling) | new phase after Phase A ships | decisions §8 confirmed by a 2-device walkthrough |
-| **C** | hosted/Team relay + device pairing/revocation + R2 | new phase; `docs/hosting.md` + `v2v3-scope.md` updates | B validated; B49 cloud groundwork |
+| **C** | hosted/Team relay + device pairing/revocation + R2 | new phase; `docs/hosted-cloud-plan.md` + `v2v3-scope.md` updates | B validated; B49 cloud groundwork |
 
 ## 10. Acceptance scripts (run on Windows + macOS)
 
@@ -294,5 +294,5 @@ server log; revoking a device stops it from decrypting new epochs.
 
 *Companion docs: [product-plan.md](./product-plan.md) (B61),
 [v2v3-scope.md](./v2v3-scope.md) (§3 hosting, §4 sharing),
-[hosting.md](./hosting.md) (backups, GDPR), [architecture.md](./architecture.md)
+[hosted-cloud-plan.md](./hosted-cloud-plan.md) (backups, GDPR), [architecture.md](./architecture.md)
 (data model), [gated-access-spec.md](./gated-access-spec.md) (team ACLs).*
