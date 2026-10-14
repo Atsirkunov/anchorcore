@@ -37,8 +37,8 @@ after that).
 
 Two things in here are deliberate test content, not mistakes: the same
 decision appears twice (in `sprint12.md` and `d1`), and one meeting note
-contradicts another. They exist so you can try the Review tab's duplicate
-merging and dispute flow.
+contradicts another. They exist so you can try the Entities tab's duplicate
+merging and dispute flow (Needs a look + Possible doubles).
 
 ## Things to try (in the Ask tab)
 
@@ -51,7 +51,7 @@ merging and dispute flow.
 - "show the movements for it" — the follow-up is understood from context.
 - "and what happens if delivery fails?" — answered from the rollback note.
 
-**3. Review tab**
+**3. Review flows (in the Entities tab)**
 - Low confidence: an open question from the retro shows up for review.
 - Duplicates: the twice-recorded decision is there to try merging.
 - Disputed: dispute the contradicting claim, and answers stop citing it.

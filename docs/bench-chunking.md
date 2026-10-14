@@ -169,3 +169,16 @@ across runs). Observed token/hit-order movement is entity-rank noise —
 a repeat run on the same binary churns the same questions. PDF corpora
 (`owner-pdfs`) will show `(p. N)` breadcrumb suffixes on re-sync; that
 question stays owner-run.
+
+R33.6 phase 2 (buckets, branch rust/R33.6-phase2 d4f9261, 2026-10-14):
+**6/8 + 6/8, totals identical.** Only move is pay-01 section@5 y→n — an
+adjacent tie swap (scores equal to 3 decimals) from the changed
+entity/distilled population shifting FTS-IDF (AFTER indexes 85 distilled
+chunks vs 0 before — record files distill now); file@5 and coverage@5
+unaffected. Same-binary reruns reproduce exactly — a systematic
+second-order effect, not a retrieval regression.
+
+R33.5 (exact-string search, branch rust/R33.5 a11a3e6, 2026-10-14):
+**6/8 + 6/8, per-question identical** (strict JSON diff clean modulo
+fresh-DB chunk_ids) — the exact leg is additive; hybrid untouched,
+score-neutral as required.
