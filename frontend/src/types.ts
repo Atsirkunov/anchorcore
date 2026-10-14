@@ -186,7 +186,9 @@ export type FolderListing = {
 export type Entity = {
   id: number;
   item_id: number;
-  kind: "decision" | "document" | "action" | "note";
+  /** Open set: decision/action/note (+ legacy document rows) and anything else
+   *  the backend sends — render via entityLabels.kindLabel, never a closed union. */
+  kind: string;
   summary: string;
   reasoning: string;
   confidence: number;
