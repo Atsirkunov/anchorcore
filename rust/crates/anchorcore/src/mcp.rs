@@ -132,6 +132,8 @@ fn citation_json(c: &Value) -> Value {
     "env": c.get("env").and_then(|v| v.as_str()).unwrap_or("live"),
     "conflicts_with": c.get("conflicts_with").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
     "score": c.get("score"),
+    "line_start": c.get("line_start").and_then(|v| v.as_i64()).unwrap_or(0),
+    "line_end": c.get("line_end").and_then(|v| v.as_i64()).unwrap_or(0),
     "snippet": c.get("snippet").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>()
     })
 }
@@ -160,6 +162,8 @@ fn search_hit_json(h: &Value) -> Value {
     "source_id": h.get("source_id"),
     "item_id": h.get("item_id"),
     "item_title": h.get("item_title").and_then(|v| v.as_str()).unwrap_or(""),
+    "line_start": h.get("line_start").and_then(|v| v.as_i64()).unwrap_or(0),
+    "line_end": h.get("line_end").and_then(|v| v.as_i64()).unwrap_or(0),
     "score": h.get("score")
     })
 }
