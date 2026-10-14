@@ -260,9 +260,12 @@ fn vec_chunk_count(conn: &Connection) -> i64 {
 
 // --- R15.1: shared search helpers (single implementation for every scope) ---
 
-/// Which chunk kinds a search covers. Base vec/FTS search = leaf kinds:
+/// Which chunk kinds a search covers. Base vec/FTS search = leaf chunks:
 /// summaries are TOC coarse-stage internals — a `doc_summary` surfacing as a
 /// final hit is a one-line extract masquerading as evidence (1.0.24 retest).
+/// R33.3: the leaf pool is document chunks only — entity/distilled paraphrase
+/// rows no longer compete with content in RRF (D2 option (a): entities never
+/// enter retrieval; lookup/related/who_knows/conflicts/review are unchanged).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KindScope {
     Summary,
@@ -273,18 +276,13 @@ impl KindScope {
     fn kind_clause(&self) -> Option<&'static str> {
         match self {
             KindScope::Summary => Some(" AND c.kind IN ('section_summary','doc_summary')"),
-            KindScope::Leaf => Some(" AND c.kind IN ('document','entity','distilled')"),
+            KindScope::Leaf => Some(" AND c.kind IN ('document')"),
         }
     }
 
     /// Leaf treats `Some({})` as no-match; summary treats it as no-prune.
     fn empty_section_is_empty(&self) -> bool {
         !matches!(self, KindScope::Summary)
-    }
-
-    /// Leaf scope keeps entity chunks (NULL section_id) — R14.6 fix.
-    fn include_entities(&self) -> bool {
-        matches!(self, KindScope::Leaf)
     }
 }
 
@@ -305,25 +303,19 @@ fn append_source_filter(
     }
 }
 
-/// `include_entities`: leaf scope keeps entity chunks (NULL section_id) — R14.6 fix.
+/// Section fence for TOC leaf search. R33.3: the R14.6 `OR c.entity_id IS NOT
+/// NULL` bypass is gone with the entity leaf pool — the fence applies
+/// uniformly, so every leaf hit lives in an admitted section.
 fn append_section_filter(
     sql: &mut String,
     params: &mut Vec<rusqlite::types::Value>,
     section_ids: Option<&HashSet<i64>>,
-    include_entities: bool,
 ) {
     if let Some(ids) = section_ids {
         if ids.is_empty() {
             return;
         }
-        if include_entities {
-            sql.push_str(&format!(
-                " AND (c.section_id IN ({}) OR c.entity_id IS NOT NULL)",
-                placeholders(ids.len())
-            ));
-        } else {
-            sql.push_str(&format!(" AND c.section_id IN ({})", placeholders(ids.len())));
-        }
+        sql.push_str(&format!(" AND c.section_id IN ({})", placeholders(ids.len())));
         for id in ids {
             params.push(rusqlite::types::Value::Integer(*id));
         }
@@ -334,9 +326,9 @@ pub(crate) fn sort_hits(hits: &mut Vec<Hit>) {
     hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
 }
 
-/// FTS/vec0 over-fetch multiplier: short fixture rows crowd long live docs
+/// FTS/vec0 over-fetch multiplier: short fixture chunks crowd long live docs
 /// out of a small candidate pool on BM25 length norm (1.0.24 retest) —
-/// demotion can only promote what was fetched.
+/// live-first can only promote what was fetched.
 const CANDIDATE_MULT: usize = 10;
 
 /// vec0 distance → score; mirrors the `0.2` floor used by every vec path.
@@ -349,8 +341,8 @@ fn vec_score_from_distance(distance: f64) -> Option<f64> {
 }
 
 /// Single Hit constructor + filter. All loaders go through here:
-/// `status_ok` gate, source scoping, section scoping (entity chunks without a
-/// section pass — R14.6 fix for test_disputed_entity_stops_being_cited).
+/// `status_ok` gate, source scoping, section scoping (uniform since R33.3 —
+/// the R14.6 entity pass-through left with the entity leaf pool).
 #[allow(clippy::too_many_arguments)]
 fn make_hit(
     cid: i64,
@@ -378,12 +370,9 @@ fn make_hit(
         }
     }
     if let Some(filter) = section_ids {
-        // entity chunks have no section_id — let them pass (R14.6 fix for test_disputed_entity_stops_being_cited)
-        if eid.is_none() {
-            match sec {
-                Some(sid) if filter.contains(&sid) => {}
-                _ => return None,
-            }
+        match sec {
+            Some(sid) if filter.contains(&sid) => {}
+            _ => return None,
         }
     }
     Some(Hit {
@@ -429,8 +418,8 @@ fn hits_from_distances(
     out
 }
 
-/// Single vec0 implementation for every scope (empty-section and
-/// entity-inclusion rules come from `scope` — see `KindScope`).
+/// Single vec0 implementation for every scope (empty-section and kind
+/// rules come from `scope` — see `KindScope`).
 fn exec_vec_search(
     conn: &Connection,
     query_emb: &[f32],
@@ -459,7 +448,7 @@ fn exec_vec_search(
     );
     let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Text(q_json)];
     append_source_filter(&mut sql, &mut params, source_ids);
-    append_section_filter(&mut sql, &mut params, section_ids, scope.include_entities());
+    append_section_filter(&mut sql, &mut params, section_ids);
     if let Some(clause) = scope.kind_clause() {
         sql.push_str(clause);
     }
@@ -534,7 +523,7 @@ fn exec_fts_search(
     );
     let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Text(match_q)];
     append_source_filter(&mut sql, &mut params, source_ids);
-    append_section_filter(&mut sql, &mut params, section_ids, scope.include_entities());
+    append_section_filter(&mut sql, &mut params, section_ids);
     if let Some(clause) = scope.kind_clause() {
         sql.push_str(clause);
     }
@@ -656,12 +645,12 @@ fn load_chunks_with_embedding_filtered(
     section_ids: Option<&HashSet<i64>>,
     qa_exclude_disputed: bool,
 ) -> Vec<Hit> {
-    // Leaf kinds only — the scan path must match the vec0 path (R32.6).
+    // Document chunks only — the scan path must match the vec0 path (R33.3).
     let sql = "SELECT c.id, c.entity_id, COALESCE(c.item_id, e.item_id), c.content, c.source_ref, c.is_pii, e.status, i.source_id, c.section_id, c.path \
                FROM chunks c \
                LEFT JOIN entities e ON e.id = c.entity_id \
                LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
-               WHERE c.embedding IS NOT NULL AND c.kind IN ('document','entity','distilled')";
+               WHERE c.embedding IS NOT NULL AND c.kind IN ('document')";
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(_) => return vec![],
@@ -1108,10 +1097,10 @@ pub fn fuse_and_rank(
             h.score *= age_decay(created, halflife_days, now);
         }
     }
-    // R32.3: demote AFTER fusion — RRF ranks ignore scores, so demoting the
-    // input lists never reordered hybrid results (1.0.24 retest: scores
-    // dropped but the live file still never surfaced).
-    demote_test_envs(conn, &mut fused, query);
+    // R33.3: no score demotion — the R32.3 ×0.5 multiplier retired with the
+    // entity leaf pool (it never reordered on its own; RRF ranks ignore
+    // scores). Env ordering is the `prefer_live_envs` partition before the
+    // cut below.
     sort_hits(&mut fused);
     // diversity cap per item
     if max_per_source>0 {
@@ -1222,11 +1211,11 @@ fn ancestor_chain(conn: &Connection, section_id: i64) -> Vec<SectionScope> {
 const SUBTREE_CTE: &str = "WITH RECURSIVE sub(id) AS (SELECT ?1 UNION ALL SELECT s.id FROM sections s JOIN sub ON s.parent_id = sub.id)";
 
 /// Leaf-chunk bytes of a section subtree (own + descendants'), document
-/// order. Summaries excluded — parents return evidence, never extracts
-/// (R32.5 leaf-only).
+/// order. Document chunks only — parents return evidence, never extracts
+/// (R32.5) or entity paraphrase (R33.3).
 fn subtree_leaf_chunks(conn: &Connection, section_id: i64) -> Vec<(i64, String)> {
     let mut stmt = match conn.prepare(&format!(
-        "{SUBTREE_CTE} SELECT c.id, c.content FROM chunks c WHERE c.section_id IN (SELECT id FROM sub) AND c.kind IN ('document','entity','distilled') ORDER BY c.id"
+        "{SUBTREE_CTE} SELECT c.id, c.content FROM chunks c WHERE c.section_id IN (SELECT id FROM sub) AND c.kind IN ('document') ORDER BY c.id"
     )) {
         Ok(s) => s,
         Err(_) => return vec![],
@@ -1243,7 +1232,7 @@ fn subtree_leaf_size(conn: &Connection, section_id: i64) -> usize {
     let (sum, n): (i64, i64) = conn
         .query_row(
             &format!(
-                "{SUBTREE_CTE} SELECT COALESCE(SUM(LENGTH(c.content)), 0), COUNT(*) FROM chunks c WHERE c.section_id IN (SELECT id FROM sub) AND c.kind IN ('document','entity','distilled')"
+                "{SUBTREE_CTE} SELECT COALESCE(SUM(LENGTH(c.content)), 0), COUNT(*) FROM chunks c WHERE c.section_id IN (SELECT id FROM sub) AND c.kind IN ('document')"
             ),
             [section_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
@@ -1268,7 +1257,7 @@ fn smallest_fitting_scope(conn: &Connection, section_id: i64, chunk_id: i64, cap
 fn subtree_contains_chunk(conn: &Connection, section_id: i64, chunk_id: i64) -> bool {
     conn.query_row(
         &format!(
-            "{SUBTREE_CTE} SELECT 1 FROM chunks c WHERE c.section_id IN (SELECT id FROM sub) AND c.id = ?2 AND c.kind IN ('document','entity','distilled') LIMIT 1"
+            "{SUBTREE_CTE} SELECT 1 FROM chunks c WHERE c.section_id IN (SELECT id FROM sub) AND c.id = ?2 AND c.kind IN ('document') LIMIT 1"
         ),
         rusqlite::params![section_id, chunk_id],
         |_| Ok(()),
@@ -1507,8 +1496,8 @@ fn has_header_marker(head: &str) -> bool {
 }
 
 /// Chunk → (item file path, item text head), batched (entity chunks resolve
-/// via their entity). One query feeds demotion, live-first and the `env`
-/// field so all three always agree on the class.
+/// via their entity). One query feeds live-first and the `env` field so
+/// both always agree on the class.
 fn chunk_item_env(conn: &Connection, chunk_ids: &[i64]) -> HashMap<i64, (String, String)> {
     let mut out = HashMap::new();
     if chunk_ids.is_empty() {
@@ -1536,9 +1525,10 @@ fn chunk_item_env(conn: &Connection, chunk_ids: &[i64]) -> HashMap<i64, (String,
 /// score gaps. A multiplicative demotion cannot do this on its own —
 /// single-list BM25 scores span several × on length norm alone, so halving
 /// never reorders ("scores halved but the order didn't change", 1.0.24
-/// retest). Stable within each class, so relevance still orders live-vs-live
-/// and test-vs-test. Same guards as `demote_test_envs` (query exemption,
-/// `ANCHOR_TEST_ENV_DEMOTE=1.0` disables).
+/// retest) — the R32.3 multiplier retired in R33.3 and this partition is the
+/// only env ordering left. Stable within each class, so relevance still
+/// orders live-vs-live and test-vs-test. Guards: queries naming test files
+/// are exempt, `ANCHOR_TEST_ENV_DEMOTE=1.0` disables.
 pub fn prefer_live_envs(conn: &Connection, hits: &mut Vec<Hit>, query: &str) {
     if hits.len() < 2 || has_env_marker(query) {
         return;
@@ -1563,32 +1553,6 @@ pub fn prefer_live_envs(conn: &Connection, hits: &mut Vec<Hit>, query: &str) {
     *hits = live;
 }
 
-/// Demote test-env files (`.test.yml`, `/sandbox/`, …) when the query does
-/// not ask about them: without this, short entity rows from test fixtures
-/// outrank the live documents on BM25 length norm and the live file never
-/// surfaces. Multiplicative and uniform (`ANCHOR_TEST_ENV_DEMOTE`, default
-/// 0.5, 1.0 disables) so ordering within each env class is preserved.
-/// Ordering across classes is `prefer_live_envs` (a multiplier alone never
-/// reorders single-list BM25 gaps).
-pub fn demote_test_envs(conn: &Connection, hits: &mut [Hit], query: &str) {
-    if hits.is_empty() || has_env_marker(query) {
-        return;
-    }
-    let factor = test_env_factor();
-    if !(0.0..1.0).contains(&factor) {
-        return;
-    }
-    let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
-    let env = chunk_item_env(conn, &ids);
-    for h in hits.iter_mut() {
-        if let Some((p, head)) = env.get(&h.chunk_id) {
-            if env_for_item(p, head) == "test" {
-                h.score *= factor;
-            }
-        }
-    }
-}
-
 /// Path-derived environment class: "test" when the item path carries a
 /// test-env marker, else "live".
 pub fn env_for_path(path: &str) -> &'static str {
@@ -1601,8 +1565,8 @@ pub fn env_for_path(path: &str) -> &'static str {
 
 /// Item environment class: path markers, or fixture-grade vocabulary in the
 /// file head (first 1 KB) for paths without markers. Backs the `env`
-/// hit/citation field + filter (R32.4) and the demotion paths — every caller
-/// classifies through here so the field and the ordering never disagree.
+/// hit/citation field + filter (R32.4) and the live-first partition — every
+/// caller classifies through here so the field and the ordering never disagree.
 pub fn env_for_item(path: &str, text_head: &str) -> &'static str {
     if has_env_marker(path) || has_header_marker(text_head) {
         "test"
@@ -1661,12 +1625,12 @@ fn named_item_ids(conn: &Connection, names: &[String]) -> Vec<i64> {
 }
 
 /// Best content-matching chunk of one item for an FTS match expression.
-/// Document/distilled only — a named file must surface bytes, never its
-/// one-line summary extract.
+/// Document only — a named file must surface bytes, never a one-line
+/// summary extract or paraphrase (R33.3 leaf rule).
 fn best_chunk_for_item(conn: &Connection, item_id: i64, match_q: &str) -> Option<i64> {
     let mut stmt = conn
         .prepare(
-            "SELECT c.id FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid WHERE chunks_fts MATCH ? AND c.item_id = ? AND c.kind IN ('document','distilled') ORDER BY bm25(chunks_fts) LIMIT 1",
+            "SELECT c.id FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid WHERE chunks_fts MATCH ? AND c.item_id = ? AND c.kind IN ('document') ORDER BY bm25(chunks_fts) LIMIT 1",
         )
         .ok()?;
     let rows: Vec<i64> = stmt
@@ -1679,7 +1643,7 @@ fn best_chunk_for_item(conn: &Connection, item_id: i64, match_q: &str) -> Option
 
 fn first_chunk_for_item(conn: &Connection, item_id: i64) -> Option<i64> {
     conn.query_row(
-        "SELECT id FROM chunks WHERE item_id = ?1 AND kind IN ('document','distilled') ORDER BY id LIMIT 1",
+        "SELECT id FROM chunks WHERE item_id = ?1 AND kind IN ('document') ORDER BY id LIMIT 1",
         [item_id],
         |r| r.get(0),
     )
@@ -1687,13 +1651,14 @@ fn first_chunk_for_item(conn: &Connection, item_id: i64) -> Option<i64> {
 }
 
 /// Explicit filename mentions surface their file: FTS indexes chunk
-/// content, not filenames, so without this a filename in the query matches
-/// entity text instead of the file. Appends up to 3 matched-item chunks
-/// (raw — `parent_return` assembles them with the rest, merging a boosted
-/// chunk into an already-returned section), ranked above fused hits — an
-/// explicit mention is the strongest intent signal. R32.1: the surfaced
-/// chunk is the item's best content match for the rest of the query (file
-/// head only when nothing matches). No-op when nothing matches.
+/// content, not filenames, so a filename in the query otherwise matches
+/// nothing at all. Appends up to 3 matched-item chunks (raw —
+/// `parent_return` assembles them with the rest, merging a boosted chunk
+/// into an already-returned section), ranked above fused hits — an explicit
+/// mention is the strongest intent signal. R32.1: the surfaced chunk is the
+/// item's best content match for the rest of the query (file head only when
+/// nothing matches). No-op when nothing matches. Kept in R33.3: the leaf
+/// pool never sees filenames, so no filter subsumes the bare-filename case.
 pub fn filename_boost(conn: &Connection, hits: &mut Vec<Hit>, query: &str) {
     let names = filename_tokens(query);
     if names.is_empty() {
@@ -2480,7 +2445,10 @@ mod tests {
     }
 
     #[test]
-    fn demote_test_envs_ranking_exemption_and_knob() {
+    fn live_first_partition_exemption_knob_and_markers() {
+        // R33.3: the R32.3 score multiplier is retired — the partition is the
+        // only env ordering. Guards (query exemption, kill knob, segment
+        // matching) move here so they stay pinned.
         let _guard = TEST_ENV_LOCK.lock().unwrap();
         std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
         let (_dir, conn) = harness_db();
@@ -2492,20 +2460,20 @@ mod tests {
         let c_live = insert_chunk(&conn, Some(live), None, "live treasury routes content");
         let c_test = insert_chunk(&conn, Some(tst), None, "test treasury routes content");
         let mk = |cid: i64, iid: i64| Hit { chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 10.0, content: "x".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false };
-        // Default: the test file is demoted, the live file untouched.
+        // Default: the test file sinks below the live file, scores untouched.
         let mut hits = vec![mk(c_test, tst), mk(c_live, live)];
-        demote_test_envs(&conn, &mut hits, "which treasury routes are supported");
-        assert_eq!(hits[0].score, 5.0);
-        assert_eq!(hits[1].score, 10.0);
-        // Exemption: a query about test files demotes nothing.
-        let mut hits2 = vec![mk(c_test, tst)];
-        demote_test_envs(&conn, &mut hits2, "what is in the test file");
-        assert_eq!(hits2[0].score, 10.0);
+        prefer_live_envs(&conn, &mut hits, "which treasury routes are supported");
+        assert_eq!(hits.iter().map(|h| h.chunk_id).collect::<Vec<_>>(), vec![c_live, c_test]);
+        assert!(hits.iter().all(|h| h.score == 10.0), "partition orders, never rescores");
+        // Exemption: a query about test files keeps fixture order.
+        let mut hits2 = vec![mk(c_test, tst), mk(c_live, live)];
+        prefer_live_envs(&conn, &mut hits2, "what is in the test file");
+        assert_eq!(hits2[0].chunk_id, c_test);
         // Knob off: nothing moves.
         std::env::set_var("ANCHOR_TEST_ENV_DEMOTE", "1.0");
-        let mut hits3 = vec![mk(c_test, tst)];
-        demote_test_envs(&conn, &mut hits3, "which treasury routes are supported");
-        assert_eq!(hits3[0].score, 10.0);
+        let mut hits3 = vec![mk(c_test, tst), mk(c_live, live)];
+        prefer_live_envs(&conn, &mut hits3, "which treasury routes are supported");
+        assert_eq!(hits3[0].chunk_id, c_test);
         std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
         // Segment matching, not substring: "latest" and "contest" survive.
         assert!(!has_env_marker("reports/latest.yml"));
@@ -2598,10 +2566,10 @@ mod tests {
     }
 
     #[test]
-    fn demote_test_envs_covers_entity_rows() {
-        // R32.3: production entity chunks (entity_id only, no item_id) resolve
-        // their item's path via the entity — the retest's 36-char fixture
-        // rows must demote exactly like document chunks.
+    fn live_first_partition_covers_entity_hits() {
+        // R33.3: production entity chunks (entity_id only, no item_id) still
+        // resolve their item's path via the entity — env classification stays
+        // kind-agnostic even though entity rows no longer reach retrieval.
         let _guard = TEST_ENV_LOCK.lock().unwrap();
         std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
         let (_dir, conn) = harness_db();
@@ -2623,9 +2591,8 @@ mod tests {
         let (c_test, e_test) = mk_ent_chunk(tst, "test direction supported");
         let mk = |cid: i64, eid: i64| Hit { chunk_id: cid, entity_id: Some(eid), item_id: None, source_id: Some(sid), section_id: None, path: String::new(), score: 10.0, content: "x".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false };
         let mut hits = vec![mk(c_test, e_test), mk(c_live, e_live)];
-        demote_test_envs(&conn, &mut hits, "which treasury routes are supported");
-        assert_eq!(hits[0].score, 5.0, "test entity row must demote");
-        assert_eq!(hits[1].score, 10.0, "live entity row untouched");
+        prefer_live_envs(&conn, &mut hits, "which treasury routes are supported");
+        assert_eq!(hits.iter().map(|h| h.chunk_id).collect::<Vec<_>>(), vec![c_live, c_test], "test entity row must sink like a document chunk");
     }
 
     #[test]
@@ -2687,10 +2654,10 @@ mod tests {
     }
 
     #[test]
-    fn fuse_and_rank_demotes_after_rrf_before_truncate() {
-        // R32.3: RRF ranks ignore scores, so pre-fusion demotion never
-        // reordered hybrid results — the live file must win a top-1 cut even
-        // when the fixture row outranks it in both input lists.
+    fn fuse_and_rank_partitions_live_before_truncate() {
+        // R33.3: the score multiplier is retired — the live-first partition
+        // sits directly before the cut, so the live file still wins top-1
+        // even when the fixture chunk outranks it in both input lists.
         let _guard = TEST_ENV_LOCK.lock().unwrap();
         std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
         let (_dir, conn) = harness_db();
@@ -2700,41 +2667,36 @@ mod tests {
         conn.execute("UPDATE ingested_items SET external_id='cfg/routing-config.yml' WHERE id=?1", [live]).unwrap();
         conn.execute("UPDATE ingested_items SET external_id='cfg/payment-routes.test.yml' WHERE id=?1", [tst]).unwrap();
         let c_live = insert_chunk(&conn, Some(live), None, "live treasury routes acme content here");
-        let eid = insert_entity(&conn, tst, "test direction supported", "unverified", "");
-        conn.execute(
-            "INSERT INTO chunks (entity_id, kind, source_ref, content, created_at) VALUES (?1,'entity','ref','test direction supported',datetime('now'))",
-            [eid],
-        )
-        .unwrap();
-        let c_test = conn.last_insert_rowid();
-        let mk = |cid: i64, eid: Option<i64>, iid: i64, score: f64, content: &str| Hit {
-            chunk_id: cid, entity_id: eid, item_id: Some(iid), source_id: Some(sid), section_id: None,
+        let c_test = insert_chunk(&conn, Some(tst), None, "test treasury routes content here");
+        let mk = |cid: i64, iid: i64, score: f64, content: &str| Hit {
+            chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None,
             path: String::new(), score, content: content.into(), source_ref: "ref".into(),
             is_pii: false, status: Some("unverified".into()), content_truncated: false,
         };
         let lists = || {
             (
-                vec![mk(c_test, Some(eid), tst, 9.0, "test direction supported"), mk(c_live, None, live, 5.0, "live treasury routes acme content here")],
-                vec![mk(c_test, Some(eid), tst, 8.0, "test direction supported"), mk(c_live, None, live, 4.0, "live treasury routes acme content here")],
+                vec![mk(c_test, tst, 9.0, "test treasury routes content here"), mk(c_live, live, 5.0, "live treasury routes acme content here")],
+                vec![mk(c_test, tst, 8.0, "test treasury routes content here"), mk(c_live, live, 4.0, "live treasury routes acme content here")],
             )
         };
         let (v, k) = lists();
         let fused = fuse_and_rank(&conn, Some(v), Some(k), 1.0, 365.0, 3, 1, true, "treasury routes");
         assert_eq!(fused.len(), 1);
-        assert_eq!(fused[0].chunk_id, c_live, "post-RRF demotion must surface the live chunk");
+        assert_eq!(fused[0].chunk_id, c_live, "live-first partition must surface the live chunk");
         // Exemption preserved: a query about test files keeps fixture order.
         let (v2, k2) = lists();
         let fused2 = fuse_and_rank(&conn, Some(v2), Some(k2), 1.0, 365.0, 3, 1, true, "what is in the test file");
         assert_eq!(fused2.len(), 1);
-        assert_eq!(fused2[0].chunk_id, c_test, "env-marker queries must not demote");
+        assert_eq!(fused2[0].chunk_id, c_test, "env-marker queries must not partition");
     }
 
     #[test]
     fn live_first_partition_beats_bm25_length_gap() {
-        // R32.7, the 1.0.24 retest shape: a long live chunk vs short fixture
-        // entity rows sharing one rare token. The fixture rows win BM25 by
-        // several × on length norm alone, so halving never reorders — live
-        // must still win top-1 through the partition.
+        // R32.7, the 1.0.24 retest shape: a long live chunk vs a short
+        // fixture chunk sharing one rare token. The fixture wins BM25 by
+        // several × on length norm alone — live must still win top-1
+        // through the partition. R33.3: the gap is doc-vs-doc now; the
+        // fixture's entity row sits in the DB and must never surface.
         let _guard = TEST_ENV_LOCK.lock().unwrap();
         std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
         let (_dir, conn) = harness_db();
@@ -2745,17 +2707,20 @@ mod tests {
         conn.execute("UPDATE ingested_items SET external_id='cfg/payment-routes.test.yml' WHERE id=?1", [tst]).unwrap();
         let live_text = format!("treasury config {} acme", "padding ".repeat(300));
         let c_live = insert_chunk(&conn, Some(live), None, &live_text);
-        let eid = insert_entity(&conn, tst, "acme fixture row", "unverified", "");
+        let c_test = insert_chunk(&conn, Some(tst), None, "acme fixture row");
+        let eid = insert_entity(&conn, tst, "acme fixture entity row", "unverified", "");
         conn.execute(
-            "INSERT INTO chunks (entity_id, kind, source_ref, content, created_at) VALUES (?1,'entity','ref','acme fixture row',datetime('now'))",
+            "INSERT INTO chunks (entity_id, kind, source_ref, content, created_at) VALUES (?1,'entity','ref','acme fixture entity row',datetime('now'))",
             [eid],
         )
         .unwrap();
-        let c_test = conn.last_insert_rowid();
-        // Sanity: raw FTS ranks the short fixture row first (the BM25 gap).
+        let c_ent = conn.last_insert_rowid();
+        // Sanity: raw FTS ranks the short fixture chunk first (the BM25
+        // gap) and never the entity row.
         let kw = keyword_search_filtered(&conn, "acme", None, None, 8, true);
         assert_eq!(kw.len(), 2);
-        assert_eq!(kw[0].chunk_id, c_test, "fixture row must lead pre-partition (else no gap to prove)");
+        assert_eq!(kw[0].chunk_id, c_test, "fixture chunk must lead pre-partition (else no gap to prove)");
+        assert!(!kw.iter().any(|h| h.chunk_id == c_ent), "entity row must not enter the leaf pool");
         // Single-list keyword path: live wins top-1 despite the gap.
         let fused = fuse_and_rank(&conn, None, Some(kw), 1.0, 365.0, 3, 1, true, "treasury acme");
         assert_eq!(fused.len(), 1);
@@ -2837,5 +2802,122 @@ mod tests {
         let mut hits2 = vec![mk_other()];
         filename_boost(&conn, &mut hits2, "treasury routes?");
         assert_eq!(hits2.len(), 1);
+    }
+
+    #[test]
+    fn leaf_pool_excludes_entity_and_distilled_chunks() {
+        // R33.3 core: the FTS leaf leg returns document chunks only — a
+        // one-line entity paraphrase matching every term must not outrank
+        // (or even join) the content it was extracted from.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_leaf", "internal");
+        let iid = insert_item(&conn, sid, "doc");
+        let doc = insert_chunk(&conn, Some(iid), None, "tungsten ledger alpha content here with body words");
+        let eid = insert_entity(&conn, iid, "tungsten ledger alpha entity", "unverified", "");
+        conn.execute(
+            "INSERT INTO chunks (entity_id, kind, source_ref, content, created_at) VALUES (?1,'entity','ref','tungsten ledger alpha entity',datetime('now'))",
+            [eid],
+        )
+        .unwrap();
+        let ent = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO chunks (item_id, kind, source_ref, content, created_at) VALUES (?1,'distilled','ref','tungsten ledger alpha distilled',datetime('now'))",
+            [iid],
+        )
+        .unwrap();
+        let dist = conn.last_insert_rowid();
+        let kw = keyword_search_filtered(&conn, "tungsten ledger alpha", None, None, 8, true);
+        let ids: Vec<i64> = kw.iter().map(|h| h.chunk_id).collect();
+        assert_eq!(ids, vec![doc], "leaf pool must hold only the document chunk, got {ids:?} (entity={ent} distilled={dist})");
+    }
+
+    #[test]
+    fn leaf_section_fence_excludes_entity_chunks() {
+        // R33.3: the R14.6 `OR c.entity_id IS NOT NULL` bypass is gone — a
+        // section fence admits only chunks inside admitted sections.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_fence", "internal");
+        let iid = insert_item(&conn, sid, "doc");
+        let sec = insert_section(&conn, iid, None, 1, "Billing", "Billing");
+        let other = insert_section(&conn, iid, None, 1, "Auth", "Auth");
+        let inside = insert_section_chunk(&conn, iid, sec, "Billing", "tungsten ledger beta inside content");
+        insert_section_chunk(&conn, iid, other, "Auth", "tungsten ledger beta outside content");
+        let eid = insert_entity(&conn, iid, "tungsten ledger beta entity", "unverified", "");
+        conn.execute(
+            "INSERT INTO chunks (entity_id, kind, source_ref, content, created_at) VALUES (?1,'entity','ref','tungsten ledger beta entity',datetime('now'))",
+            [eid],
+        )
+        .unwrap();
+        let ent = conn.last_insert_rowid();
+        let kw = keyword_search_filtered(&conn, "tungsten ledger beta", None, Some(&HashSet::from([sec])), 8, true);
+        let ids: Vec<i64> = kw.iter().map(|h| h.chunk_id).collect();
+        assert_eq!(ids, vec![inside], "fenced leaf must hold only the in-section document chunk, got {ids:?} (entity={ent})");
+    }
+
+    #[test]
+    fn leaf_scan_excludes_entity_chunks() {
+        // R33.3: the vector-scan fallback leg matches the vec0/FTS legs —
+        // document chunks only, even when an entity row embeds identically.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_scan", "internal");
+        let iid = insert_item(&conn, sid, "doc");
+        let doc = insert_chunk(&conn, Some(iid), None, "tungsten ledger gamma content here");
+        let eid = insert_entity(&conn, iid, "tungsten ledger gamma entity", "unverified", "");
+        conn.execute(
+            "INSERT INTO chunks (entity_id, kind, source_ref, content, created_at) VALUES (?1,'entity','ref','tungsten ledger gamma entity',datetime('now'))",
+            [eid],
+        )
+        .unwrap();
+        let ent = conn.last_insert_rowid();
+        let dim: usize = std::env::var("ANCHOR_EMBED_DIM").ok().and_then(|v| v.parse().ok()).unwrap_or(768);
+        let emb = vec![0.25f32; dim];
+        let blob: Vec<u8> = emb.iter().flat_map(|f| f.to_le_bytes()).collect();
+        conn.execute("UPDATE chunks SET embedding = ?1 WHERE id = ?2", rusqlite::params![blob, doc]).unwrap();
+        conn.execute("UPDATE chunks SET embedding = ?1 WHERE id = ?2", rusqlite::params![blob, ent]).unwrap();
+        let hits = vector_search_filtered(&conn, &emb, None, None, 8, true);
+        let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+        assert_eq!(ids, vec![doc], "scan leg must hold only the document chunk, got {ids:?} (entity={ent})");
+    }
+
+    #[test]
+    fn treasury_shape_passes_without_patches() {
+        // R33.3 subsumption proof (1.0.24 treasury-monorepo retest shape):
+        // the live routing config is long, the fixture file overlaps on
+        // terms, and a 3-term entity row sits in the DB. The RAW leaf leg —
+        // no filename boost, no demotion, no live-first partition — must
+        // rank the live document first on term merit alone. Pre-R33.3 the
+        // short entity row won this query on BM25 length norm.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_tr", "internal");
+        let live = insert_item(&conn, sid, "live");
+        let tst = insert_item(&conn, sid, "tst");
+        conn.execute("UPDATE ingested_items SET external_id='cfg/routing-config.yml' WHERE id=?1", [live]).unwrap();
+        conn.execute("UPDATE ingested_items SET external_id='cfg/payment-routes.test.yml' WHERE id=?1", [tst]).unwrap();
+        // Standalone `acme` token: FTS matches whole tokens, so `ACME_FEE`
+        // alone would not match the query term — the live file genuinely
+        // matches all three terms, the fixture only two.
+        let live_text = format!(
+            "treasury routes live acme config {} ACME_FEE settlement lines {} end",
+            "padding ".repeat(120),
+            "filler ".repeat(120)
+        );
+        let c_live = insert_chunk(&conn, Some(live), None, &live_text);
+        let fixture_text = format!("treasury routes fixture content {} end", "padding ".repeat(80));
+        let c_fixture = insert_chunk(&conn, Some(tst), None, &fixture_text);
+        let eid = insert_entity(&conn, tst, "treasury routes acme fixture row", "unverified", "");
+        conn.execute(
+            "INSERT INTO chunks (entity_id, kind, source_ref, content, created_at) VALUES (?1,'entity','ref','treasury routes acme fixture row',datetime('now'))",
+            [eid],
+        )
+        .unwrap();
+        let c_ent = conn.last_insert_rowid();
+        // Sanity: the entity row matches every query term (pre-fix winner).
+        let ent_content: String = conn.query_row("SELECT content FROM chunks WHERE id=?1", [c_ent], |r| r.get(0)).unwrap();
+        assert!(["treasury", "routes", "acme"].iter().all(|t| ent_content.contains(t)));
+        let kw = keyword_search_filtered(&conn, "treasury routes acme", None, None, 8, true);
+        let ids: Vec<i64> = kw.iter().map(|h| h.chunk_id).collect();
+        assert_eq!(ids.len(), 2, "only the two document chunks compete, got {ids:?}");
+        assert_eq!(ids[0], c_live, "live config must lead on term merit without any patch");
+        assert_eq!(ids[1], c_fixture);
     }
 }
