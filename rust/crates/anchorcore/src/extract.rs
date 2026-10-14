@@ -405,6 +405,8 @@ pub struct PdfQualityNote {
 }
 
 impl PdfQualityNote {
+    /// Event-detail shape; `items.rs::repair_matches` parses the `{file}:`
+    /// label half back out for the R36.10 item flag — keep the separator.
     pub fn summary(&self) -> String {
         let alt = self.alt_splits.map(|n| n.to_string()).unwrap_or_else(|| "failed".to_string());
         let decision = if self.used_alternate { "repaired" } else { "kept-standard" };
@@ -421,7 +423,11 @@ impl PdfQualityNote {
 /// output is kept unless the detector trips, in which case a flow-layout
 /// re-extraction runs and the better-scoring text wins (ties keep standard).
 fn extract_pdf_labeled(bytes: &[u8], label: &str) -> Result<(String, Option<PdfQualityNote>), String> {
-    let std = pdf_extract::extract_text_from_mem(bytes).map_err(|e| format!("pdf extract: {e}"))?;
+    // R36.10: per-page extraction so page markers ride both candidates —
+    // the pipeline turns them into breadcrumb page numbers. Markers are
+    // detector-neutral (`page` is a known word, digits never count).
+    let pages = pdf_extract::extract_text_from_mem_by_pages(bytes).map_err(|e| format!("pdf extract: {e}"))?;
+    let std = join_pdf_pages(&pages);
     let (std_splits, tokens) = split_suspects(&std);
     if !pdf_trips_detector(std_splits, tokens) {
         return Ok((std, None));
@@ -450,6 +456,67 @@ fn extract_pdf_labeled(bytes: &[u8], label: &str) -> Result<(String, Option<PdfQ
             Ok((std, Some(note)))
         }
     }
+}
+
+/// R36.10 page markers: every non-blank PDF page opens with its own
+/// `[page N]` line (1-based file numbering, gaps kept — a skipped blank
+/// page still counts). The shape survives B12 cleaning (brackets dodge the
+/// page-number-line strip, each marker is unique so the repeat strip keeps
+/// it) and never classifies as a heading; the pipeline strips markers from
+/// stored chunk content and rolls them into breadcrumb page numbers.
+fn join_pdf_pages(pages: &[String]) -> String {
+    let mut out = String::new();
+    for (idx, page) in pages.iter().enumerate() {
+        if page.trim().is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&format!("[page {}]\n{}", idx + 1, page.trim_end()));
+    }
+    out
+}
+
+/// Parse a page-marker line (`[page 12]`, exact after trimming) to its
+/// 1-based page number. Anything else — printed `Page 3` footers included —
+/// reads as body text, never a marker.
+pub fn page_marker_number(line: &str) -> Option<u32> {
+    let inner = line.trim().strip_prefix("[page ")?.strip_suffix(']')?;
+    if inner.is_empty() || !inner.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    inner.parse::<u32>().ok().filter(|n| *n >= 1)
+}
+
+/// True when extracted text carries page markers — the pipeline's gate for
+/// breadcrumb page numbers (markers only come from PDF extraction).
+pub fn has_page_markers(text: &str) -> bool {
+    text.lines().any(|l| page_marker_number(l).is_some())
+}
+
+/// Drop page-marker lines, keeping everything else byte-identical (chunk
+/// content stores marker-free; the stored item text keeps them as visible
+/// page breaks for drill-down reads).
+pub fn strip_page_markers(text: &str) -> String {
+    text.lines().filter(|l| page_marker_number(l).is_none()).collect::<Vec<_>>().join("\n")
+}
+
+/// True for PDF filenames (extension check, like `is_config_filename`) —
+/// the item flag's gate: only PDF items are spacing-scored.
+pub fn is_pdf_filename(name: &str) -> bool {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name).to_ascii_lowercase();
+    match base.rsplit('.').next() {
+        Some(ext) if ext != base.as_str() => ext == "pdf",
+        _ => false,
+    }
+}
+
+/// Current-state spacing check for stored item text: the same trip wire the
+/// catcher uses at ingest, reused at read time for the item flag.
+pub fn pdf_spacing_suspect(text: &str) -> bool {
+    let (splits, tokens) = split_suspects(text);
+    pdf_trips_detector(splits, tokens)
 }
 
 /// Warn only when the repair strictly improved the text — ties are foreign
@@ -591,6 +658,8 @@ struct PdfFlowOutput {
     last_y: f64,
     last_width: f64,
     pages: usize,
+    emit_markers: bool,
+    pending_page: Option<u32>,
 }
 
 impl PdfFlowOutput {
@@ -605,6 +674,27 @@ impl PdfFlowOutput {
             last_y: 0.0,
             last_width: 0.5,
             pages: 0,
+            emit_markers: false,
+            pending_page: None,
+        }
+    }
+
+    /// Marker-emitting sink for the repair path: page markers ride the
+    /// output so the winner carries page numbers either way. `new()` stays
+    /// markerless (direct-sink unit tests pin its bytes).
+    fn with_markers() -> Self {
+        Self { emit_markers: true, ..Self::new() }
+    }
+
+    /// Lazily open the current page: the marker emits on the first real
+    /// glyph, so glyph-less pages stay unmarked like the std path's blank
+    /// skip (spaces alone never earn a marker — see `push_glyph` only).
+    fn emit_pending_marker(&mut self) {
+        if !self.emit_markers {
+            return;
+        }
+        if let Some(n) = self.pending_page.take() {
+            self.out.push_str(&format!("[page {n}]\n"));
         }
     }
 
@@ -644,6 +734,7 @@ impl PdfFlowOutput {
     }
 
     fn push_glyph(&mut self, x: f64, y: f64, size: f64, width: f64, advance: f64, ch: &str) {
+        self.emit_pending_marker();
         self.break_for_gap(y, size);
         let threshold = if self.last_width < PDF_BLIND_WIDTH_EM {
             PDF_BLIND_SPLIT_EM
@@ -677,7 +768,7 @@ impl PdfFlowOutput {
 impl pdf_extract::OutputDev for PdfFlowOutput {
     fn begin_page(
         &mut self,
-        _page_num: u32,
+        page_num: u32,
         media_box: &pdf_extract::MediaBox,
         _art_box: Option<(f64, f64, f64, f64)>,
     ) -> Result<(), pdf_extract::OutputError> {
@@ -685,6 +776,7 @@ impl pdf_extract::OutputDev for PdfFlowOutput {
         if self.pages > 0 {
             self.out.push('\n');
         }
+        self.pending_page = Some(page_num);
         self.flip = pdf_extract::Transform::row_major(1.0, 0.0, 0.0, -1.0, 0.0, media_box.ury - media_box.lly);
         self.pages += 1;
         Ok(())
@@ -760,7 +852,7 @@ fn extract_pdf_flow(bytes: &[u8]) -> Result<String, String> {
     if doc.is_encrypted() {
         doc.decrypt("").map_err(|e| format!("pdf extract: {e}"))?;
     }
-    let mut out = PdfFlowOutput::new();
+    let mut out = PdfFlowOutput::with_markers();
     pdf_extract::output_doc(&doc, &mut out).map_err(|e| format!("pdf extract: {e}"))?;
     Ok(normalize_lines(&dehyphenate_pdf(&out.text())))
 }
@@ -1671,6 +1763,83 @@ mod tests {
         writer.finish().unwrap().into_inner()
     }
 
+    // R36.10 marker tests sit ahead of `text_decodes_*`: lizard 1.24
+    // mis-scopes that test into a bogus EOF span (see AGENTS.md), so tests
+    // after it inflate the artifact instead of measuring themselves.
+    #[test]
+    fn pdf_page_marker_parse_and_strip() {
+        assert_eq!(page_marker_number("[page 1]"), Some(1));
+        assert_eq!(page_marker_number("  [page 12]  "), Some(12));
+        for not in ["Page 3", "3 of 10", "[page x]", "[page 0]", "[page]", "x [page 2]", "[page 2] x", "42", ""] {
+            assert_eq!(page_marker_number(not), None, "{not:?} must not parse as a marker");
+        }
+        assert!(!is_pdf_filename("report.pdfx") && !is_pdf_filename("pdf") && !is_pdf_filename("notes.md"));
+        assert!(is_pdf_filename("report.pdf") && is_pdf_filename("DIR/R.PDF") && is_pdf_filename("a\\b.pdf"));
+        let marked = "[page 1]\nFirst words\n[page 2]\nSecond words";
+        assert!(has_page_markers(marked));
+        assert!(!has_page_markers("First words\nSecond words"));
+        assert_eq!(strip_page_markers(marked), "First words\nSecond words");
+    }
+
+    #[test]
+    fn pdf_markers_do_not_trip_detector() {
+        // Marker tokens (`page` + digits) must stay calibration-neutral:
+        // clean prose wrapped in markers scores what bare prose scores.
+        let bare = "Cancellations and notifications for processing of subscriptions and installations.";
+        let marked = "[page 1]\nCancellations and notifications for processing\n[page 2]\nof subscriptions and installations.";
+        let (bare_splits, _) = split_suspects(bare);
+        let (splits, tokens) = split_suspects(marked);
+        assert_eq!(splits, bare_splits, "markers must add no suspects");
+        assert!(!pdf_trips_detector(splits, tokens));
+        assert!(!pdf_spacing_suspect(marked));
+        assert!(pdf_spacing_suspect("Cancellati ons and Correcti ons with noti fi cati ons for processi ng of subscripti ons"));
+    }
+
+    #[test]
+    fn pdf_std_path_numbers_pages_and_skips_blank() {
+        let pdf = pdf_bytes(&[
+            "BT /F1 12 Tf 72 720 Td (First page words.) Tj ET",
+            "BT /F1 12 Tf 72 720 Td (Second page words.) Tj ET",
+        ]);
+        let (text, note) = extract_pdf_labeled(&pdf, "two.pdf").unwrap();
+        assert!(note.is_none(), "clean text must not trip");
+        let one = text.find("[page 1]").expect("page 1 marker");
+        let two = text.find("[page 2]").expect("page 2 marker");
+        assert!(one < two, "{text:?}");
+        assert!(text.contains("First page words."), "{text:?}");
+        assert!(text.contains("Second page words."), "{text:?}");
+        // A blank middle page leaves a numbering gap, never a marker.
+        let pdf = pdf_bytes(&[
+            "BT /F1 12 Tf 72 720 Td (Alpha words here.) Tj ET",
+            "BT /F1 12 Tf ET",
+            "BT /F1 12 Tf 72 720 Td (Gamma words here.) Tj ET",
+        ]);
+        let (text, _) = extract_pdf_labeled(&pdf, "gap.pdf").unwrap();
+        assert!(text.contains("[page 1]"), "{text:?}");
+        assert!(!text.contains("[page 2]"), "{text:?}");
+        assert!(text.contains("[page 3]"), "{text:?}");
+    }
+
+    #[test]
+    fn pdf_adaptive_clean_gains_only_page_markers() {
+        // R36.10: clean PDFs keep their words — the only addition is the
+        // page-marker line the pipeline rolls into breadcrumb page numbers.
+        let pdf = pdf_bytes(&["BT /F1 12 Tf 72 720 Td (Cancellations and notifications.) Tj 0 -14 Td (Second line here.) Tj ET"]);
+        let std = pdf_extract::extract_text_from_mem(&pdf).unwrap();
+        let (text, note) = extract_pdf_labeled(&pdf, "clean.pdf").unwrap();
+        assert!(note.is_none());
+        assert_eq!(strip_page_markers(&text), std.trim_end());
+        assert!(text.starts_with("[page 1]\n"), "{text:?}");
+    }
+
+    #[test]
+    fn pdf_flow_opens_first_page_with_marker() {
+        let pdf = pdf_bytes(&["BT /F1 12 Tf 72 720 Td (First page words.) Tj ET"]);
+        let text = extract_pdf_flow(&pdf).unwrap();
+        assert!(text.starts_with("[page 1]\n"), "{text:?}");
+        assert!(text.contains("First page words."), "{text:?}");
+    }
+
     #[test]
     fn text_decodes_utf8_utf16_and_cp1252() {
         assert_eq!(decode_text(b"plain ascii").unwrap(), "plain ascii");
@@ -2172,15 +2341,6 @@ Hello \b bold\b0  and \'93quoted\'94.\par Second \u8364? paragraph.\par}";
     }
 
     #[test]
-    fn pdf_adaptive_keeps_clean_byte_identical() {
-        let pdf = pdf_bytes(&["BT /F1 12 Tf 72 720 Td (Cancellations and notifications.) Tj 0 -14 Td (Second line here.) Tj ET"]);
-        let std = pdf_extract::extract_text_from_mem(&pdf).unwrap();
-        let (text, note) = extract_pdf_labeled(&pdf, "clean.pdf").unwrap();
-        assert!(note.is_none());
-        assert_eq!(text, std);
-    }
-
-    #[test]
     fn pdf_flow_keeps_tj_word_spaces() {
         // A real word-sized TJ gap (0.278em) still breaks in the repair pass.
         let pdf = pdf_bytes(&["BT /F1 12 Tf 72 720 Td [(Hello) -278 (world)] TJ ET"]);
@@ -2208,7 +2368,8 @@ Hello \b bold\b0  and \'93quoted\'94.\par Second \u8364? paragraph.\par}";
         let text = extract_pdf_flow(&pdf).unwrap();
         assert!(text.contains("First line\nSecond line"), "{text:?}");
         assert!(text.contains("Second line\n\nNew paragraph"), "{text:?}");
-        assert!(text.contains("New paragraph\n\nPage two"), "{text:?}");
+        // R36.10: the page break now carries its marker line.
+        assert!(text.contains("New paragraph\n\n[page 2]\nPage two"), "{text:?}");
     }
 
     #[test]

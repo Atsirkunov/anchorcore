@@ -1281,6 +1281,119 @@ async fn update_window_hashes(ctx: &ClassifyCtx) -> Result<(), String> {
 }
 
 // full-document chunks + hierarchical sections (R14.1)
+/// R36.10 page plan: chunks partition their sections in order, so one
+/// ordered walk assigns every chunk its content's page span. Marker lines
+/// are stripped from stored content (no `page`-token FTS noise) and
+/// marker-only chunks are dropped, not stored blank; sections roll up their
+/// kept chunks' spans. Texts without markers return untouched — non-PDF
+/// chunking is byte-identical, including `§` numbering (which counts final
+/// chunks).
+fn apply_page_plan(
+    metas: Vec<crate::chunking::SectionMeta>,
+    chunks: Vec<crate::chunking::ChunkMeta>,
+    cleaned: &str,
+) -> (Vec<crate::chunking::SectionMeta>, Vec<crate::chunking::ChunkMeta>) {
+    if !crate::extract::has_page_markers(cleaned) {
+        return (metas, chunks);
+    }
+    let spans = chunk_page_spans(&chunks);
+    let mut kept: Vec<crate::chunking::ChunkMeta> = Vec::with_capacity(chunks.len());
+    let mut kept_spans: Vec<(u32, u32)> = Vec::with_capacity(chunks.len());
+    for (mut c, span) in chunks.into_iter().zip(spans) {
+        let stripped = crate::extract::strip_page_markers(&c.content);
+        if stripped.trim().is_empty() {
+            continue;
+        }
+        c.content = stripped;
+        c.path = chunk_path_with_page(&c.path, span.0, span.1);
+        kept.push(c);
+        kept_spans.push(span);
+    }
+    let sec_spans = section_page_spans(metas.len(), &kept, &kept_spans);
+    let metas = metas
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut m)| {
+            let (s, e) = sec_spans.get(i).copied().unwrap_or((1, 1));
+            m.path = section_path_with_page(&m.path, s, e);
+            m
+        })
+        .collect();
+    (metas, kept)
+}
+
+/// Per-chunk page spans in chunk order, carrying the running page across
+/// chunks. Spans cover content lines only: a chunk opening with its marker
+/// sits on that page, and a trailing marker with no content after it does
+/// not extend the span (the running page still advances past it).
+fn chunk_page_spans(chunks: &[crate::chunking::ChunkMeta]) -> Vec<(u32, u32)> {
+    let mut page = 1u32;
+    chunks
+        .iter()
+        .map(|c| {
+            let (mut first, mut last) = (None, None);
+            for line in c.content.lines() {
+                if let Some(n) = crate::extract::page_marker_number(line) {
+                    page = page.max(n);
+                } else if !line.trim().is_empty() {
+                    if first.is_none() {
+                        first = Some(page);
+                    }
+                    last = Some(page);
+                }
+            }
+            (first.unwrap_or(page), last.unwrap_or(page))
+        })
+        .collect()
+}
+
+/// Per-section page spans rolled up from member chunks; chunk-less sections
+/// (only fully-empty docs) default to page 1.
+fn section_page_spans(
+    n_sections: usize,
+    chunks: &[crate::chunking::ChunkMeta],
+    spans: &[(u32, u32)],
+) -> Vec<(u32, u32)> {
+    let mut out: Vec<Option<(u32, u32)>> = vec![None; n_sections];
+    for (c, (s, e)) in chunks.iter().zip(spans.iter()) {
+        if let Some(idx) = c.section_idx.filter(|i| *i < n_sections) {
+            out[idx] = Some(match out[idx] {
+                None => (*s, *e),
+                Some((ps, pe)) => (ps.min(*s), pe.max(*e)),
+            });
+        }
+    }
+    out.into_iter().map(|o| o.unwrap_or((1, 1))).collect()
+}
+
+fn page_suffix(start: u32, end: u32) -> String {
+    if start >= end {
+        format!("(p. {start})")
+    } else {
+        format!("(pp. {start}-{end})")
+    }
+}
+
+/// Section paths always carry the page (root `""` becomes just the page —
+/// the breadcrumb then names the page instead of reading empty).
+fn section_path_with_page(path: &str, start: u32, end: u32) -> String {
+    if path.is_empty() {
+        page_suffix(start, end)
+    } else {
+        format!("{path} {}", page_suffix(start, end))
+    }
+}
+
+/// Chunk paths keep the R28.1 contract: empty stays empty so reads still
+/// fall back to the item's file path (the page rides the breadcrumb).
+fn chunk_path_with_page(path: &str, start: u32, end: u32) -> String {
+    if path.is_empty() {
+        String::new()
+    } else {
+        format!("{path} {}", page_suffix(start, end))
+    }
+}
+
 async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
     let doc_type = ctx.doc_type.clone();
     // symbol families dispatch on the filename; opaque external ids (Drive)
@@ -1311,6 +1424,9 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
             crate::chunking::clean_doc_text(&full_text)
         };
         let (metas, chunk_metas) = crate::chunking::chunk_for_doc_type(&doc_type, &filename, &cleaned);
+        // R36.10: PDF marker text gains breadcrumb page numbers + marker-free
+        // chunk content; anything without markers passes through untouched.
+        let (metas, chunk_metas) = apply_page_plan(metas, chunk_metas, &cleaned);
         // insert sections in order so parent idx maps correctly
         let mut section_ids: Vec<i64> = Vec::with_capacity(metas.len());
         for meta in &metas {
@@ -1695,6 +1811,90 @@ mod tests {
         assert_eq!(keep_chunks, 1);
         let keep_e_left: i64 = conn.query_row("SELECT COUNT(*) FROM entities WHERE id=?1", [keep_e], |r| r.get(0)).unwrap();
         assert_eq!(keep_e_left, 1);
+    }
+
+    /// R36.10 page-plan fixture: marker text through the real chunker —
+    /// heading sections per page plus a leading root block, asserting the
+    /// stored section/chunk paths and marker-free chunk bytes.
+    fn page_plan_text() -> String {
+        "[page 1]\nCover words before any heading.\n\n# Terms\nFirst page terms words.\n\n[page 2]\n# Scope\nSecond page scope words.\n".to_string()
+    }
+
+    #[tokio::test]
+    async fn store_doc_chunks_pdf_pages_in_breadcrumbs() {
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('s','folder','{}',1,'',0)", []).unwrap();
+        let sid = conn.last_insert_rowid();
+        conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale) VALUES (?1,'terms.pdf','terms.pdf','t','h','',0)", [sid]).unwrap();
+        let iid = conn.last_insert_rowid();
+        drop(conn);
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let settings = Arc::new(crate::settings::SettingsService::new(store));
+        settings.set_data_dir(dir.path());
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let doc = IngestionDoc {
+            external_id: "terms.pdf".to_string(),
+            title: "terms.pdf".to_string(),
+            text: page_plan_text(),
+            author: String::new(),
+            updated_at: None,
+            source_ref: "terms.pdf".to_string(),
+        };
+        let mut ctx = ClassifyCtx::new(&data_dir, sid, 0, &doc, false, settings, classifier, embedder);
+        ctx.item_id = iid;
+        ctx.doc_type = "documentation".to_string();
+        store_doc_chunks(&ctx).await.unwrap();
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let mut stmt = conn.prepare("SELECT path FROM sections WHERE item_id=?1 ORDER BY id").unwrap();
+        let paths: Vec<String> = stmt.query_map([iid], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
+        assert!(paths.iter().any(|p| p == "(p. 1)"), "root section names its page: {paths:?}");
+        // (The `" > "` prefix is the prose splitter's empty-root parenting,
+        // pre-existing — the page suffix appends to whatever path exists.)
+        assert!(paths.iter().any(|p| p == " > Terms (p. 1)"), "page-1 section: {paths:?}");
+        assert!(paths.iter().any(|p| p == " > Scope (p. 2)"), "page-2 section: {paths:?}");
+        let mut stmt = conn.prepare("SELECT content, path FROM chunks WHERE item_id=?1 AND kind='document' ORDER BY id").unwrap();
+        let chunks: Vec<(String, String)> = stmt.query_map([iid], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(|r| r.ok()).collect();
+        assert!(!chunks.is_empty());
+        for (content, path) in &chunks {
+            assert!(!crate::extract::has_page_markers(content), "stored chunk content is marker-free: {content:?}");
+            if path.is_empty() {
+                continue;
+            }
+            assert!(path.ends_with("(p. 1)") || path.ends_with("(p. 2)"), "chunk path carries its page: {path:?}");
+        }
+        assert!(chunks.iter().any(|(_, p)| p.is_empty()), "root chunks keep the empty-path file fallback: {chunks:?}");
+        assert!(chunks.iter().any(|(_, p)| p == " > Terms (p. 1)"), "sectioned chunks carry pages: {chunks:?}");
+    }
+
+    #[test]
+    fn page_plan_unit_spans_suffixes_and_skips() {
+        use crate::chunking::{ChunkMeta, SectionMeta};
+        let metas = vec![
+            SectionMeta { title: String::new(), level: 0, parent: None, path: String::new() },
+            SectionMeta { title: "Late".to_string(), level: 1, parent: None, path: "Late".to_string() },
+        ];
+        let chunks = vec![
+            ChunkMeta { content: "[page 2]\nspanning words".to_string(), section_idx: Some(1), level: 1, path: "Late".to_string() },
+            ChunkMeta { content: "more words\n[page 3]\ntail".to_string(), section_idx: Some(1), level: 1, path: "Late".to_string() },
+            ChunkMeta { content: "[page 4]".to_string(), section_idx: Some(0), level: 0, path: String::new() },
+        ];
+        let (metas, chunks) = apply_page_plan(metas, chunks, "[page 2]\nx");
+        assert_eq!(metas[0].path, "(p. 1)", "chunk-less root defaults to page 1");
+        assert_eq!(metas[1].path, "Late (pp. 2-3)", "section rolls up member spans");
+        assert_eq!(chunks.len(), 2, "marker-only chunk is skipped, not stored blank");
+        assert_eq!(chunks[0].path, "Late (p. 2)");
+        assert_eq!(chunks[1].path, "Late (pp. 2-3)");
+        assert!(!chunks.iter().any(|c| crate::extract::has_page_markers(&c.content)));
+        // No markers anywhere: inputs pass through untouched (same shapes).
+        let metas = vec![SectionMeta { title: String::new(), level: 0, parent: None, path: String::new() }];
+        let chunks = vec![ChunkMeta { content: "plain words".to_string(), section_idx: Some(0), level: 0, path: String::new() }];
+        let (metas, chunks) = apply_page_plan(metas, chunks, "plain words");
+        assert_eq!(metas[0].path, "");
+        assert_eq!(chunks[0].content, "plain words");
     }
 
     #[tokio::test]
