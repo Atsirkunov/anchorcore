@@ -9,19 +9,19 @@ import { OnboardingWizard } from "./OnboardingWizard";
 import { UpdateBanner } from "./Updates";
 import { AskTab } from "./tabs/AskTab";
 import { EntitiesTab } from "./tabs/EntitiesTab";
-import { ReviewTab } from "./tabs/ReviewTab";
 import { SettingsTab } from "./tabs/SettingsTab";
 import { SourcesTab } from "./tabs/SourcesTab";
 import { SystemTab } from "./tabs/SystemTab";
 
-type Tab = "ask" | "sources" | "entities" | "review" | "settings" | "system";
+type Tab = "ask" | "sources" | "entities" | "settings" | "system";
 
 // Primary = everyday flow; secondary = configure & inspect (airy grouped nav)
+// R31.2: the Review tab folded into Entities ("Needs a look" + Possible doubles);
+// /review/* stays for agents.
 const PRIMARY_TABS: { id: Tab; label: string }[] = [
   { id: "ask", label: "Ask" },
   { id: "sources", label: "Sources" },
   { id: "entities", label: "Entities" },
-  { id: "review", label: "Review" },
 ];
 const SECONDARY_TABS: { id: Tab; label: string }[] = [
   { id: "settings", label: "Settings" },
@@ -193,9 +193,6 @@ export default function App() {
         </ErrorBoundary>
         <ErrorBoundary label="Entities">
           {tab === "entities" && <EntitiesTab />}
-        </ErrorBoundary>
-        <ErrorBoundary label="Review">
-          {tab === "review" && <ReviewTab />}
         </ErrorBoundary>
         <ErrorBoundary label="Settings">
           {tab === "settings" && <SettingsTab />}

@@ -325,3 +325,74 @@ follow later (B's labels and single-queue survive into C unchanged).
    %`/`avg %`/`✓ Verified` present classifier self-scores and auto-statuses as
    trust signals. The tab simultaneously withholds the numbers users need and
    flaunts numbers that mean nothing.
+
+## 11. R31.2 acceptance notes (A + Review fold, shipped 2026-10-14)
+
+Branch `rust/R31.2`. Frontend-only — no Rust touched, no `/review/*` API
+change (the §6 duplicates-response addition was NOT needed: summaries resolve
+client-side from the entity list + `GET /entities/:id`).
+
+**What landed.** Default view is now All items (the empty-first-screen lie is
+gone); one shared truthful empty state (`Nothing here — N items total` + `Show
+all items`). Single attention path: the count line always shows `N need a
+look`, the filter offers `Needs a look (N)`, and duplicate proposals fold in as
+a `Possible doubles` strip with both summaries, both refs, and a `Merge — keeps
+#A` button that states the consequence. The Review tab is deleted (`App.tsx` +
+`ReviewTab.tsx`); `lowConfidence`/`duplicates`/`decideMerge` stay in `api.ts`
+and `/review/*` stays on the server for agents — the UI calls duplicates/merge
+but not low-confidence (the needs-a-look filter over the full list is the one
+queue; calling both would re-split it). One verb set everywhere: `Looks right`
+(PATCH verified, "keeps this in answers") + `Dispute…` opening a reason box →
+`Record dispute` (POST `/dispute`, audit trail readable per row under
+`History`). Bulk actions lost their layout side effects (`Looks right — all N
+below`, `Dispute all N…` with a reason box, rows stay visible). Every row shows
+`#id`; conflict links show the other item's summary with a `#id` autocomplete;
+kind re-label sits in both views. Dead/lying controls removed: `Stale` option
+(shown only if stale rows actually exist), `avg %`, kind dots, `lvl N`,
+`item #N`, the `✓ Verified` doc pill, the `Verify all & collapse` /
+`Reopen session` session-collapse. Absolute machine paths collapse to their
+last two segments; doc headers show `N items` + `M need a look`. `Show
+context` / `Show document` / `Whole doc` labels unified; TOC heading drops
+`TOC`, one-section docs skip the outline. Grouped is the default; the toggle
+persists in `localStorage` (no more silent auto-flip at 200 rows).
+
+**Relabel (with the R33.6 buckets).** Kinds: Decision / To-do / Note (+ legacy
+Document); buckets: Record / Reference / Code; statuses state consequences
+instead of claiming a human check: New / In answers / Disputed (with
+`⚑ disputed ×N`). All three label helpers (`frontend/src/entityLabels.ts`)
+are open-set — any unknown kind/doc_type/status renders titleized, never
+blank. `Entity.kind` widened from the 4-way union to `string` to match.
+
+**Deliberate deviation: tag chips dropped, not fixed.** The chips were a
+client-side substring guess (tag name contained in a section path) — there is
+no chunk→tags endpoint, so true attachment is unknowable without a backend
+change (out of scope) or one request per tag (unbounded: 600+ tags measured on
+real corpora). The plan §7-B sanctions dropping them; breadcrumbs + sections +
+Whole doc keep provenance. If tags return, they need a real endpoint.
+
+**Fresh-tester answers.** (1) *What do we know about X?* — the first screen
+lists every item grouped by document (title, ref, breadcrumb, type + bucket
+badges), each one click from its source passage (`Show context`) or full text
+(`Show document` → `Whole doc`). (2) *What needs my attention and what do I do
+about it?* — the header always counts `N need a look`; the filter isolates
+them; `Possible doubles` carries Merge/Not-doubles; every row offers `Looks
+right` / `Dispute…` with the consequence in the tooltip and the dispute trail
+under `History`. (3) *Why is this item here / based on what?* — breadcrumb +
+short ref on every row/card, `Show context` with the source passage and
+neighbours, `Whole doc` for the full text, `History` for who disputed it and
+why.
+
+**Evidence.** `npm run build` (tsc + vite) green, `npm run lint` clean, `npm
+test` 64/64 (12 files: 8 new label tests + 10 new tab tests incl. the recorded-
+dispute-not-silent-PATCH assertion). Live smoke 2026-10-14 on `:8263` (fresh
+temp data dir, `sample/` 10/10, Ollama LLM path → 36 notes, 5 unverified / 31
+verified, legacy `documentation`): context keys + full text, sections root
+path, PATCH verify, recorded dispute + readable trail, conflict
+flag/list/unflag round-trip, staged-proposal merge (B deleted, A kept,
+`merged:true`) and dismiss (both kept), `record`/`reference` bucket simulation
+alongside legacy rows (`reference:4, record:7, documentation:24` — all render
+via the open-set labels), and the served bundle contains the new strings
+(`Possible doubles`, `Needs a look`, `Record dispute`, `Looks right`, `Show
+all items`, `In answers`) with the old ones gone (`Possible duplicates`,
+`Verify all & collapse`, `Reopen session`, `Needs review`). No PII display
+re-added. Server stopped after; temp dir outside the repo.
