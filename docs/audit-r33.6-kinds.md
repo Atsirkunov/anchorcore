@@ -1,6 +1,6 @@
 # R33.6 phase 1 — entity-kind audit: prose taxonomy collapse
 
-> Status: audit only (STOP — phase 2 needs owner eyeball + GO).
+> Status: phase-2 GO (owner 2026-10-14: Q1(a) broaden-then-implement, Q2 GO as scoped). §§1–8 are the phase-1 record (kept intact); §9 is the broadened-marker re-audit.
 > Date: 2026-10-13. Worktree HEAD `8ecf24d`, binary `anchorcore v1.0.26` (debug).
 > Method: §5. Raw entity dump: §6 (every entity, both corpora).
 
@@ -260,3 +260,85 @@ Ollama); (c) a re-sync test that prose entities/conflicts/review state survive
 the bucket switch (no purge — unlike R33.2 code); (d) an audit-replay test
 pinning the §2 counts on the two corpora (or a fixed fixture pair) so the
 bucket line can't silently drift. No code written in phase 1.
+
+## 9. Re-audit with broadened markers (phase-2 GO record)
+
+> Date: 2026-10-14. Branch `rust/R33.6-phase2` off `5eb14d8`, binary
+> `anchorcore v1.0.26` (debug, pre-phase-2 code). Same §5 method: port 8261
+> (probed free), `--data-dir /tmp/r336p2` (outside the repo), local Ollama
+> (`llama3.2:3b` + `nomic-embed-text`); server stopped after. Job results:
+> sample/ `10/10, 23 entities, ~42s`; sample-ai/ `10/10, 27 entities`.
+> Server log shows **0** `document-type detection failed` and **0**
+> `document-type gate` lines — LLM path, no rules fallback.
+
+### Broadened record-marker set (owner Q1(a), all word-boundaried, 12k head)
+
+Old `detect_rules` set, word-boundaried: `\battendees\b`, `\bagenda\b`,
+`\bmeeting notes\b`, `\bminutes of\b`, `\bretro\b`, `\bdecision log\b`,
+`\bdecision:`, `\badr-`, `\bstatus:\s*accepted\b`. Plus: `\bagreed\b`,
+`\bdecided\b`, `\bapproved\b`, `\*\*status:\*\*\s*(confirmed|accepted|approved)`
+(markdown `**Status:**` verdict line), `(?m)^#{1,6}\s+decision\b` (`# Decision`
+titles, any ATX level), `\brevisit triggers?\b` (plural-tolerant — the
+wild occurrence is singular d3, but `triggers` is the natural plural form).
+
+### Live re-sync: phase-1 headline reconfirmed
+
+Still **20/20 `documentation`**, still **50/50 entities `note`** (23 + 27),
+zero decisions/actions/`document`. Zero-entity files now: sample d2, d3
+(sprint12 yields 6 notes this run vs 0 in phase 1 — LLM re-segmentation
+variance, all still `note`). The taxonomy problem remains total false
+negatives, not FPs.
+
+### Per-file buckets under the broadened set
+
+`truth` unchanged from §3 (D = real decision, A = real action, – = neither).
+
+### sample/ — 8 record / 2 reference
+
+| file | bucket (marker hits) | truth | verdict |
+|------|----------------------|-------|---------|
+| decisions/d1-instant-payments-scope.md | record (`decision:`, `**Status:**`, `# Decision`) | 1D | RECOVERED (projected) |
+| decisions/d2-billing-provider-approval.md | record (`decision:`, approved, `**Status:**`, `# Decision`) | 1D | RECOVERED (projected) |
+| decisions/d3-mobile-wallet-postponed.md | record (**agreed**, **Status: Confirmed**, **revisit trigger**) | 1D | **RECOVERED — was WOULD HIDE** (3 markers, §4 flag cleared) |
+| decisions/d4-payments-infra-migration.md | record (**approved** genuine + incidental `retro`) | 1D | **RECOVERED robust — was FRAGILE** ("Sarah approved it" carries it) |
+| meetings/m1-sprint12-retro.md | record (`attendees`, `retro`) | 1D + 4A | RECOVERED (probed §4) |
+| meetings/m2-q3-planning.md | record (`attendees`, `agenda`) | 3D + 4A | RECOVERED (projected) |
+| people.md | reference (no marker) | – | CORRECT, unchanged |
+| specs/billing-migration-runbook.md | record (**approved** — "Approved in decisions/d2") | – (procedural steps) | **WEAK FLIP — watch** (provenance pointer, not a decision; strict record prompt must emit nothing here) |
+| specs/instant-payments-spec.md | reference (no marker) | – | CORRECT, unchanged |
+| sprint12.md | record (`decision log`, decided, `# Decision` via `## Decision log`) | 3D + 2A | RECOVERED (projected) |
+
+### sample-ai/ — 7 record / 3 reference
+
+| file | bucket (marker hits) | truth | verdict |
+|------|----------------------|-------|---------|
+| decisions/d1-model-router-v2.md | record (`decision:`, approved, `**Status:**`, `# Decision`) | 1D | RECOVERED (projected) |
+| decisions/d2-eval-gate-thresholds.md | record (`decision:`, approved via Status line, `**Status:**`, `# Decision`) | 1D | RECOVERED (projected) |
+| decisions/d3-pricing-usage-tiers.md | record (`decision:`, approved via Status line, `**Status:**`, `# Decision`) | 1D | RECOVERED (projected) |
+| decisions/d4-eval-set-contamination.md | record (`decision:`, approved via Status line, `**Status:**`, `# Decision`) | 1D | RECOVERED (projected) |
+| meetings/m1-sprint14-planning.md | record (`attendees` only — "decision logging" noise **gone** via word boundary) | 5A | RECOVERED (projected) |
+| meetings/m2-incident-postmortem.md | record (`attendees`, decided + approved) | 1D + 3A | RECOVERED (projected) |
+| people.md | reference (no marker) | – | CORRECT, unchanged |
+| specs/eval-pipeline-runbook.md | reference (no marker) | – | CORRECT, unchanged |
+| specs/model-router-spec.md | record (**approved** — "Approved in decisions/d1" + adjectival "an approved policy") | – | **WEAK FLIP — watch** (same provenance-pointer shape as the sample runbook) |
+| sprint14.md | reference (no marker) | 0 explicit D (goal + commitments) | CORRECT-ish — commitments stay notes (no commitment markers per Q1(a) as specified) |
+
+### Re-audit findings
+
+- **d3/d4 both cleared.** d3 lands in `record` on three independent broadened
+  markers; d4 on genuine `approved` (the incidental `retro` is now backup, not
+  the carrier). **No-lost-decision check: 0 would-hide, 0 fragile** (was 1 + 1).
+- **2 weak flips, both the same shape:** a spec/runbook opening with an
+  "Approved in decisions/dX" provenance pointer (plus one adjectival "an
+  approved policy"). The bucket is a *permissive* gate (`record` = MAY emit
+  decision/action) — the strict per-bucket prompt is the real filter, and a
+  pointer with no recorded choice+reasoning must yield no decision. Both files
+  are flagged for the phase-2 live verification (re-sync must show notes-only
+  or nothing from them, no fabricated decisions).
+- **Word boundaries behave:** "decision logging" no longer hits `decision log`;
+  "approver"/"must approve" (both people.md) don't hit `approved`; "Revisit
+  next retro" doesn't hit `revisit trigger`.
+- **`# Decision` titles are redundant on these corpora** (every such file also
+  hits `decision:`) but principled — kept as specified.
+- **Unchanged reference set otherwise:** both people.md, both remaining specs,
+  eval runbook, sprint14 — all correctly `reference`.
