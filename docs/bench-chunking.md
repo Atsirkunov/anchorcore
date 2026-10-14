@@ -148,3 +148,14 @@ TOC can never underperform flat. Note: tokens/question FELL (fewer merged
 hits, no duplicated `[continued]` bytes) — parent-grouping collapses
 overlap, so down-with-held-recall is a win; per-hit bytes are UP (whole
 sections with `[match]` marks).
+
+R33.3 merged tree (leaf pool = document chunks, ask graph leg + R32.3
+demote removed, R36.x stack as in wave 2; branch rust/R33.3 f82bd15,
+debug binary, hybrid, 2026-10-14): **depth-file 6/8, coverage 6/8**,
+per-question identical to wave 2 (pay-02/pay-03 still red since
+baseline — no regression). Entity-kind top-5 hits fell 13/40 → 0/40
+with recall held: the same questions are now answered by document
+content instead of paraphrase. Tokens/question rose (~5.3k → ~6.8k
+est) for the same reason — full bytes replaced one-liners, so
+up-with-held-recall is the expected R33.3 signature, mirroring the
+R36.3 per-hit-bytes note.
