@@ -808,25 +808,25 @@ impl ClassifyCtx {
         Ok(())
     }
 
-    // B26 document-type pre-pass: one cheap detection per document, cached on
-    // the item; force reclassify re-detects (recovers from an earlier bad label).
+    // R33.6 deterministic bucket pre-pass: extension fast path first
+    // (source files are `code` whatever the content reads like — comments
+    // may read like prose), else prose markers → `record` vs `reference`
+    // (`classifier::assign_bucket`). No LLM (the 8-way detect collapsed
+    // 20/20 files to `documentation` — `docs/audit-r33.6-kinds.md` §1), no
+    // trust gate, no boxing. Cached on the item; force reclassify
+    // re-buckets (recovers legacy 8-way labels deterministically).
     async fn detect_doc_type(&mut self) -> Result<(), String> {
         self.classify_trusted = cloud_trusted(&*self.settings, "classifier");
         self.embed_trusted = cloud_trusted(&*self.settings, "embed");
         if !self.doc_type.is_empty() && !self.force {
             return Ok(());
         }
-        let trusted = self.classify_trusted;
-        // Box LLM future to bound stack (large classifier future previously blew 8 MB)
-        // Extension fast path: source files are `code` whatever the content
-        // looks like (comments may read like prose) — no LLM call needed.
         let doc_type = if crate::extract::is_code_filename(&self.external_id)
             || crate::extract::is_code_filename(&self.base_ref)
         {
             "code".to_string()
         } else {
-            // Box LLM future to bound stack (large classifier future previously blew 8 MB)
-            Box::pin(self.classifier.detect_document_type(&self.full_text, trusted)).await
+            crate::classifier::assign_bucket(&self.full_text)
         };
         self.doc_type = doc_type.clone();
         let item_id = self.item_id;
@@ -1485,14 +1485,14 @@ fn distill_unit_content(unit: &crate::classifier::DistilledUnit) -> String {
     content
 }
 
-// B18 distillation (chat-like doc types → Q&A units), hash-skipped.
+// B18 distillation (record bucket → Q&A units), hash-skipped.
 // R22.1: uses the LLM distiller (rules fallback inside `Classifier::distill`).
 async fn distill_item(ctx: &ClassifyCtx) -> Result<(), String> {
     let distill_enabled = ctx.settings.get("distill_enabled", None).map(|v| v == "true" || v == "1" || v == "True").unwrap_or(true);
     // R33.4: structured files skip distillation too — paraphrase chunks are
     // the same noise class as extracted entities (and burn an LLM call).
     if ctx.skips_extraction()
-        || !(crate::distill::DISTILL_DOC_TYPES.contains(&ctx.doc_type.as_str()) && distill_enabled)
+        || !(crate::classifier::bucket_distills(&ctx.doc_type) && distill_enabled)
     {
         // still need to update distill_hashes to current window hashes to avoid re-distilling later if type changes
         return update_distill_hashes(ctx).await;
@@ -1846,7 +1846,7 @@ mod tests {
         };
         let mut ctx = ClassifyCtx::new(&data_dir, sid, 0, &doc, false, settings, classifier, embedder);
         ctx.item_id = iid;
-        ctx.doc_type = "documentation".to_string();
+        ctx.doc_type = "reference".to_string();
         store_doc_chunks(&ctx).await.unwrap();
         let conn = crate::db::init_db(&db_path).unwrap();
         let mut stmt = conn.prepare("SELECT path FROM sections WHERE item_id=?1 ORDER BY id").unwrap();
@@ -2306,7 +2306,7 @@ mod tests {
         let doc = IngestionDoc { external_id: "a.md".to_string(), title: "a.md".to_string(), text: "body text here".to_string(), author: String::new(), updated_at: None, source_ref: "a.md".to_string() };
         let mut ctx = ClassifyCtx::new(&data_dir, sid, jid, &doc, false, settings, classifier, embedder);
         ctx.item_id = iid;
-        ctx.doc_type = "general".to_string();
+        ctx.doc_type = "reference".to_string();
         let mut perf = PhaseTimes::new();
         let err = ctx.finalize(&mut perf).await.unwrap_err();
         assert_eq!(err, "job cancelled");
@@ -2353,5 +2353,94 @@ mod tests {
         assert_eq!(n, 0);
         let items: i64 = conn.query_row("SELECT COUNT(*) FROM ingested_items", [], |r| r.get(0)).unwrap();
         assert_eq!(items, 1);
+    }
+
+    #[tokio::test]
+    async fn buckets_record_may_emit_while_reference_yields_nothing_degraded() {
+        // R33.6 §8(b): end to end through folder sync with the classifier on
+        // closed ports (deterministic rules path, no Ollama): a record file
+        // yields decision/action entities while a reference file yields none
+        // (its chunks still index). Stored doc_type is the bucket name.
+        let data_tmp = tempdir().unwrap();
+        let folder_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().to_string_lossy().to_string();
+        let folder = folder_tmp.path();
+        write_doc(folder, "r.md", "# Sprint retro\n\nAttendees: Ana, Bo.\n\nWe decided to use sqlite for vectors. Next step: review on Friday.\n");
+        write_doc(folder, "s.md", "# Widget spec\n\nThe widget renders blue panels on load. Operators file tickets through the portal.\n");
+        let (settings, sid) = seed_folder_source(&data_dir, folder);
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
+        let cfg = serde_json::json!({"path": folder.to_string_lossy()});
+        let (items, entities, _, _, _) = run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        assert_eq!((items, entities), (2, 2));
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let dt: String = conn.query_row("SELECT doc_type FROM ingested_items WHERE source_id=?1 AND external_id='r.md'", [sid], |r| r.get(0)).unwrap();
+        assert_eq!(dt, "record");
+        let kinds: Vec<String> = conn.prepare("SELECT kind FROM entities WHERE item_id=(SELECT id FROM ingested_items WHERE source_id=?1 AND external_id='r.md')").unwrap().query_map([sid], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
+        assert!(kinds.contains(&"decision".to_string()), "record file must yield a decision: {kinds:?}");
+        assert!(kinds.contains(&"action".to_string()), "record file must yield an action: {kinds:?}");
+        let dt: String = conn.query_row("SELECT doc_type FROM ingested_items WHERE source_id=?1 AND external_id='s.md'", [sid], |r| r.get(0)).unwrap();
+        assert_eq!(dt, "reference");
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM entities WHERE item_id=(SELECT id FROM ingested_items WHERE source_id=?1 AND external_id='s.md')", [sid], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "reference file yields no entities without the LLM");
+        let chunks: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE item_id=(SELECT id FROM ingested_items WHERE source_id=?1 AND external_id='s.md')", [sid], |r| r.get(0)).unwrap();
+        assert!(chunks >= 1, "reference chunks still index");
+        let doc_kinds: i64 = conn.query_row("SELECT COUNT(*) FROM entities WHERE kind='document'", [], |r| r.get(0)).unwrap();
+        assert_eq!(doc_kinds, 0, "new extraction never emits document");
+    }
+
+    #[tokio::test]
+    async fn legacy_prose_entities_conflicts_review_survive_bucket_switch() {
+        // R33.6 §8(c): unlike R33.2 code (purged), legacy prose passes
+        // through read-only — entities, conflicts, disputes, and the legacy
+        // doc_type all survive a re-sync; only a force reclassify re-buckets.
+        let data_tmp = tempdir().unwrap();
+        let folder_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().to_string_lossy().to_string();
+        let folder = folder_tmp.path();
+        write_doc(folder, "p.md", "# Sprint retro\n\nAttendees: Ana, Bo.\n\nWe decided to use sqlite for vectors. Next step: review on Friday.\n");
+        let (settings, sid) = seed_folder_source(&data_dir, folder);
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
+        let cfg = serde_json::json!({"path": folder.to_string_lossy()});
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        // Downgrade the item to a legacy label + attach review/conflict state.
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE source_id=?1 AND external_id='p.md'", [sid], |r| r.get(0)).unwrap();
+        conn.execute("UPDATE ingested_items SET doc_type='documentation' WHERE id=?1", [iid]).unwrap();
+        let eids: Vec<i64> = conn.prepare("SELECT id FROM entities WHERE item_id=?1 ORDER BY id").unwrap().query_map([iid], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
+        assert_eq!(eids.len(), 2);
+        conn.execute("UPDATE entities SET dispute_count=2, status='disputed' WHERE id=?1", [eids[0]]).unwrap();
+        conn.execute("INSERT INTO disputes (entity_id, reason, user) VALUES (?1,'stale number','tester')", [eids[0]]).unwrap();
+        conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind, source_ref, confidence) VALUES (?1,?2,'conflicts_with','p.md',0.9)", rusqlite::params![eids[0], eids[1]]).unwrap();
+        drop(conn);
+        // Unchanged re-sync: everything passes through byte-identical.
+        let (items, _, _, unchanged, _) = run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        assert_eq!((items, unchanged), (0, 1));
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let dt: String = conn.query_row("SELECT doc_type FROM ingested_items WHERE id=?1", [iid], |r| r.get(0)).unwrap();
+        assert_eq!(dt, "documentation", "non-force re-sync never rewrites the legacy label");
+        let ents: Vec<(String, String, i64, String)> = conn.prepare("SELECT kind, summary, dispute_count, status FROM entities WHERE item_id=?1 ORDER BY id").unwrap().query_map([iid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().filter_map(|r| r.ok()).collect();
+        assert_eq!(ents.len(), 2, "no purge of prose entities");
+        assert_eq!(ents[0].2, 2);
+        assert_eq!(ents[0].3, "disputed");
+        let rels: i64 = conn.query_row("SELECT COUNT(*) FROM relationships WHERE kind='conflicts_with'", [], |r| r.get(0)).unwrap();
+        assert_eq!(rels, 1, "conflict links survive");
+        let disputes: i64 = conn.query_row("SELECT COUNT(*) FROM disputes", [], |r| r.get(0)).unwrap();
+        assert_eq!(disputes, 1, "dispute rows survive");
+        drop(conn);
+        // Force reclassify re-buckets deterministically and re-extracts with
+        // decision/action/note kinds only.
+        run_folder_once(&pipe, &data_dir, sid, &cfg, true).await;
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let dt: String = conn.query_row("SELECT doc_type FROM ingested_items WHERE id=?1", [iid], |r| r.get(0)).unwrap();
+        assert_eq!(dt, "record", "force re-buckets the legacy label");
+        let kinds: Vec<String> = conn.prepare("SELECT DISTINCT kind FROM entities WHERE item_id=?1").unwrap().query_map([iid], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
+        assert!(!kinds.is_empty());
+        assert!(kinds.iter().all(|k| k == "decision" || k == "action" || k == "note"), "re-extracted kinds: {kinds:?}");
     }
 }
