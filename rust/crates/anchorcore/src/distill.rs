@@ -1,12 +1,12 @@
 //! Distillation signal gating — port of `backend/app/distill.py:96` `signal`.
-//! Also re-exports DISTILL_DOC_TYPES (mirrors classifier.DISTILL_DOC_TYPES).
+//!
+//! R33.6: the duplicated DISTILL_DOC_TYPES lists are deleted — distill
+//! gating lives in the bucket definition (`classifier::bucket_distills`).
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use regex::Regex;
-
-pub const DISTILL_DOC_TYPES: &[&str] = &["meeting", "decision_log", "general"];
 
 /// B18 IDF-gated signal score — mirrors `backend/app/distill.py:96` `signal`.
 ///

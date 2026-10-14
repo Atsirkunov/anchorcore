@@ -1,5 +1,13 @@
 //! Classification orchestration — port of `backend/app/classifier.py:1`.
-//! Ollama/cloud via `reqwest`, `cloud_trusted` gate (B39), rule fallback, `window_hash` helper.
+//! Ollama/cloud via `reqwest`, `cloud_trusted` gate (B39), rule fallback.
+//!
+//! R33.6: prose collapses to two deterministic buckets — `record`
+//! (meeting/decision content, the only bucket that may emit decision/action)
+//! vs `reference` (everything else, notes only). The 8-way LLM type-detect
+//! and the per-type prompt matrix are deleted: the old detect collapsed
+//! 20/20 corpus files to `documentation` (see `docs/audit-r33.6-kinds.md`).
+//! `code` still skips extraction entirely (R33.2). Legacy 8-way `doc_type`
+//! values and legacy `document`-kind rows pass through read-only.
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -7,27 +15,70 @@ use std::sync::{Arc, OnceLock};
 
 use crate::settings::SettingsService;
 
-pub const KINDS: &[&str] = &["decision", "document", "action", "note"];
-pub const DOC_TYPES: &[&str] = &["standards", "runbook", "documentation", "meeting", "decision_log", "prd", "code", "general"];
-// B26: document types that describe how things work — the extraction prompt and
-// the rule fallback must never turn descriptions/procedures into decision/action.
-pub const NOTE_ONLY_DOC_TYPES: &[&str] = &["standards", "runbook", "documentation"];
-pub const DISTILL_DOC_TYPES: &[&str] = &["meeting", "decision_log", "general"];
+/// Entity kinds new extraction may emit. `document` is retired (R33.6):
+/// status updates and descriptions are notes. Legacy `document`-kind rows
+/// pass through read-only — nothing re-normalizes stored rows.
+pub const KINDS: &[&str] = &["decision", "action", "note"];
+/// Prose buckets. `code` is not a bucket — it skips extraction (R33.2).
+pub const BUCKETS: &[&str] = &["record", "reference"];
 
-const TYPE_DETECT_PROMPT: &str = "You identify what kind of document a piece of text is.\nPick exactly one of: standards, runbook, documentation, meeting, decision_log, prd, code, general.\n- standards: regulatory/normative rules, requirements, procedures (\"shall\"/\"must\" language, articles/sections)\n- runbook: operational steps, escalation rules, how-to guide\n- documentation: internal process/policy documentation, SOPs, handbooks, descriptions of how things work\n- meeting: meeting notes, retros, planning notes\n- decision_log: a log of recorded decisions\n- prd: product requirements, specifications, scoping docs\n- code: source code or build scripts (functions, imports, types, config-as-code)\n- general: anything else\nRespond ONLY with the single word, nothing else.\n";
+// R33.6: one strict prompt per bucket. The record prompt may emit
+// decision/action but demands an explicitly recorded choice — a bare
+// approval pointer ("Approved in decisions/d2") with no choice or
+// reasoning is not a decision.
+const RECORD_PROMPT: &str = "You extract knowledge items from a MEETING or DECISION RECORD.\n\nClassify each item into exactly one of these kinds:\n- decision: ONLY a choice explicitly recorded as made (we decided / we agreed / chose / approved), with its reasoning. A bare approval pointer (\"Approved in decisions/d2\") with no recorded choice or reasoning is NOT a decision — skip it.\n- action: something explicitly assigned to a person, or a tracked follow-up with an owner\n- note: a fact, status update, constraint, revisit trigger, or anything else worth remembering\nDo NOT emit kind \"document\" — status updates and descriptions are notes.\nDo NOT extract the document itself as an item.\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": str, \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": str}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n";
+const REFERENCE_PROMPT: &str = "You extract knowledge items from a REFERENCE document (spec, runbook, policy, people, docs).\n\nThis document describes how things work — it does not record organizational decisions. Extract ONLY factual statements worth remembering:\n- note: a rule, requirement, step, definition, responsibility, or operational fact\nDo NOT extract:\n- decision (reference docs describe; they do not decide)\n- action (procedural steps are notes, not assigned to-dos)\n- document (status updates and descriptions are notes)\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": \"note\", \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": \"\"}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n";
 const DISTILL_PROMPT: &str = "You distill a conversation / chat-log excerpt into searchable Q&A units.\n\nA unit is a question someone asked AND its substantive answer. Normalize the\nexchange into a consistent format so it can be found later by either side.\n\nFor each distinct Q&A exchange in the text, output exactly one unit with:\n- question: the question, normalized to a standalone one-liner\n- answer: the substantive answer, normalized (no filler, greetings, or chit-chat)\n- terms: 1-5 searchable key terms / acronyms the unit is about\n- systems: any systems, teams, or components mentioned (empty if none)\n\nIgnore filler: greetings, small talk, acknowledgements (\"got it\", \"thanks\"),\nand messages with no information. If the text contains no real Q&A exchange,\nreturn {{\"units\": []}}.\n\nRespond ONLY with a JSON object:\n{{\"units\": [{{\"question\": str, \"answer\": str, \"terms\": [str], \"systems\": [str]}}]}}\n";
 
-fn prompts_for(doc_type: &str) -> &'static str {
-    match doc_type {
-        "standards" => "You extract knowledge items from a REGULATORY / STANDARDS document.\n\nThis document defines normative rules and procedures. Extract ONLY factual\nstatements worth remembering:\n- note: a rule, requirement, definition, or procedural fact\nDo NOT extract:\n- decision (standards don’t record organizational decisions)\n- action (procedural steps are rules, not assigned to-dos)\n- document (do not emit a summary for the document itself)\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": \"note\", \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": \"\"}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
-        "runbook" => "You extract knowledge items from a RUNBOOK / OPERATIONAL GUIDE.\n\nExtract ONLY factual statements worth remembering:\n- note: a step, prerequisite, escalation rule, or operational fact\nDo NOT extract:\n- decision (runbooks don’t record organizational decisions)\n- action (steps are procedural notes, not assigned to-dos)\n- document (do not emit a summary for the document itself)\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": \"note\", \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": \"\"}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
-        "documentation" => "You extract knowledge items from internal PROCESS / POLICY DOCUMENTATION.\n\nThis document describes how things work (processes, procedures, policies, responsibilities). Extract ONLY factual statements worth remembering:\n- note: a process step, rule, definition, responsibility, or operational fact\nDo NOT extract:\n- decision (documentation describes how things work; it does not record organizational decisions)\n- action (procedural steps are rules, not assigned to-dos)\n- document (do not emit a summary for the document itself)\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": \"note\", \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": \"\"}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
-        "meeting" => "You extract knowledge items from MEETING NOTES.\n\nClassify each item into exactly one of these kinds:\n- decision: a choice made in the meeting, with reasoning\n- action: something someone agreed to do (owner + due date if stated)\n- document: a status update / factual report\n- note: anything else worth remembering\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": str, \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": str}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
-        "decision_log" => "You extract knowledge items from a DECISION LOG.\n\nClassify each item into exactly one of these kinds:\n- decision: a recorded choice, with reasoning\n- note: context, constraints, or revisit triggers\n- action: a follow-up someone owns\nDo NOT extract the document itself as an item.\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": str, \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": str}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
-        "prd" => "You extract knowledge items from a PRODUCT / REQUIREMENTS document.\n\nClassify each item into exactly one of these kinds:\n- decision: ONLY an explicitly recorded scope choice (we decided / we agreed), never a requirement statement or description\n- document: a factual description / requirement / spec fact\n- action: an explicitly assigned follow-up\n- note: anything else worth remembering\nDo NOT extract the document itself as an item.\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": str, \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": str}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
-        // R33.2: no "code" arm — `classify` short-circuits before a prompt is needed.
-        _ => "You extract knowledge items from organizational text.\n\nClassify each item into exactly one of these kinds:\n- decision: ONLY a choice explicitly recorded as made (we decided / we agreed / chose), never a description, rule, or plan\n- document: a factual reference / status update / description\n- action: something explicitly assigned to a person, or a tracked follow-up\n- note: anything else worth remembering\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": str, \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": str}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n",
+/// R33.6 record markers (owner Q1(a) broadened set): the old detect_rules
+/// markers plus agreed/decided/approved, `**Status:**` verdict lines,
+/// `# Decision` titles, and revisit triggers — all word-boundaried, run
+/// over the lowercased 12k head. `decision logging` ≠ `decision log`.
+const RECORD_PATTERNS: &[&str] = &[
+    r"\battendees\b",
+    r"\bagenda\b",
+    r"\bmeeting notes\b",
+    r"\bminutes of\b",
+    r"\bretro\b",
+    r"\bdecision log\b",
+    r"\bdecision:",
+    r"\badr-",
+    r"\bstatus:\s*accepted\b",
+    r"\bagreed\b",
+    r"\bdecided\b",
+    r"\bapproved\b",
+    r"\*\*status:\*\*\s*(confirmed|accepted|approved)",
+    r"(?m)^#{1,6}\s+decision\b",
+    r"\brevisit triggers?\b",
+];
+
+/// R33.6 deterministic bucket assignment: markers → `record`, everything
+/// else → `reference`. No LLM, no trust gate — a pure function of the text.
+/// `code` is assigned by the pipeline's extension fast path, never here.
+pub fn assign_bucket(text: &str) -> String {
+    static RECORD_RES: OnceLock<Vec<Regex>> = OnceLock::new();
+    let res = RECORD_RES.get_or_init(|| RECORD_PATTERNS.iter().map(|p| Regex::new(p).unwrap()).collect());
+    let head: String = text.chars().take(12000).collect::<String>().to_lowercase();
+    if res.iter().any(|re| re.is_match(&head)) {
+        "record".to_string()
+    } else {
+        "reference".to_string()
     }
+}
+
+/// Only the `record` bucket may emit decision/action. `reference`, `code`,
+/// and every legacy 8-way value are notes-only-or-nothing: no
+/// grandfathering — force reclassify re-buckets deterministically.
+pub fn is_record_bucket(doc_type: &str) -> bool {
+    doc_type == "record"
+}
+
+/// R33.6: distill gating folded into the bucket definition (replaces both
+/// DISTILL_DOC_TYPES copies). Conversation-like records distill; reference
+/// docs never did as a class (only the old `general` catch-all did) and
+/// don't start now.
+pub fn bucket_distills(doc_type: &str) -> bool {
+    doc_type == "record"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,20 +123,9 @@ impl Classifier {
         crate::common::provider_is_local(&self.base_url())
     }
 
-    pub async fn detect_document_type(&self, text: &str, cloud_trusted: bool) -> String {
-        if !cloud_trusted && !self.provider_is_local() {
-            tracing::info!("document-type gate: remote provider unconfirmed; using rules");
-            return detect_rules(text);
-        }
-        match self.detect_llm(text).await {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::warn!("document-type detection failed ({}); using rules", e);
-                detect_rules(text)
-            }
-        }
-    }
-
+    /// R33.6: `doc_type` is the deterministic bucket (`record`/`reference`,
+    /// `code`) or a legacy 8-way value (treated as notes-only — see
+    /// `is_record_bucket`). Newly extracted prose always stores the bucket.
     pub async fn classify(
         &self,
         text: &str,
@@ -126,46 +166,8 @@ impl Classifier {
         }
     }
 
-    async fn detect_llm(&self, text: &str) -> Result<String, String> {
-        let truncated = text.chars().take(8000).collect::<String>();
-        let payload = serde_json::json!({
-            "model": self.settings.get("classifier_model", None).unwrap_or_else(|| "llama3.2:3b".to_string()),
-            "messages": [
-                {"role": "system", "content": TYPE_DETECT_PROMPT},
-                {"role": "user", "content": format!("Document text (beginning):\n{}", truncated)}
-            ],
-            "temperature": 0.0,
-            "max_tokens": 10
-        });
-        let base = self.base_url();
-        let api_key = self.settings.get("classifier_api_key", None).unwrap_or_default();
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(
-                self.settings.get_float("classifier_timeout", 60.0) as u64,
-            ))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let url = format!("{}/v1/chat/completions", base.trim_end_matches('/'));
-        let mut req = client.post(&url).json(&payload);
-        if !api_key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", api_key));
-        }
-        let resp = req.send().await.map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            return Err(format!("status {}", resp.status()));
-        }
-        let j: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-        let raw = j.pointer("/choices/0/message/content").and_then(|v| v.as_str()).unwrap_or("general").trim().to_lowercase();
-        for dt in DOC_TYPES {
-            if raw.contains(dt) {
-                return Ok(dt.to_string());
-            }
-        }
-        Ok("general".to_string())
-    }
-
     async fn classify_llm(&self, text: &str, source_ref: &str, doc_type: &str) -> Result<Vec<ClassifiedItem>, String> {
-        let prompt = prompts_for(doc_type);
+        let prompt = if is_record_bucket(doc_type) { RECORD_PROMPT } else { REFERENCE_PROMPT };
         let payload = serde_json::json!({
             "model": self.settings.get("classifier_model", None).unwrap_or_else(|| "llama3.2:3b".to_string()),
             "messages": [
@@ -193,7 +195,7 @@ impl Classifier {
         let raw = j.pointer("/choices/0/message/content").and_then(|v| v.as_str()).ok_or("missing content")?;
         let data: serde_json::Value = serde_json::from_str(raw).map_err(|e| e.to_string())?;
         let items = data.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        Ok(normalize_items(items, source_ref))
+        Ok(normalize_items(items, source_ref, doc_type))
     }
 
     async fn distill_llm(&self, text: &str, source_ref: &str) -> Result<Vec<DistilledUnit>, String> {
@@ -237,12 +239,19 @@ impl Classifier {
     }
 }
 
-fn normalize_items(items: Vec<serde_json::Value>, source_ref: &str) -> Vec<ClassifiedItem> {
+fn normalize_items(items: Vec<serde_json::Value>, source_ref: &str, bucket: &str) -> Vec<ClassifiedItem> {
     let mut out = Vec::new();
     for item in items {
         if let Some(obj) = item.as_object() {
-            let kind = obj.get("kind").and_then(|v| v.as_str()).unwrap_or("note").to_lowercase();
-            let kind = if KINDS.contains(&kind.as_str()) { kind } else { "note".to_string() };
+            let raw_kind = obj.get("kind").and_then(|v| v.as_str()).unwrap_or("note").to_lowercase();
+            // R33.6: new extraction emits decision/action/note only — a stray
+            // "document" (legacy kind, disobedient model) degrades to note.
+            let mut kind = if KINDS.contains(&raw_kind.as_str()) { raw_kind } else { "note".to_string() };
+            // R33.6: reference (and any legacy/non-record value) is
+            // notes-only, enforced here — the prompt asks, this guarantees.
+            if !is_record_bucket(bucket) && kind != "note" {
+                kind = "note".to_string();
+            }
             let summary = obj.get("summary").and_then(|v| v.as_str()).unwrap_or("").trim().chars().take(1000).collect::<String>();
             if summary.is_empty() { continue; }
             let reasoning = obj.get("reasoning").and_then(|v| v.as_str()).unwrap_or("").trim().chars().take(1000).collect();
@@ -290,15 +299,12 @@ pub fn classify_rules(text: &str, source_ref: &str) -> Vec<ClassifiedItem> {
     for sentence in split_sentences(text) {
         let s = sentence.trim();
         if s.is_empty() { continue; }
-        // only high-value kinds, and drop low-signal notes unless they carry owner/date/§ anchor (reduces 1.6k → ~200)
-        let has_anchor = s.contains("§") || s.to_lowercase().contains("owner") || s.contains("2024-") || s.contains("due ");
+        // R33.6: rules emit decision/action only (the `document` arm is
+        // deleted with the kind — status sentences yield nothing).
         if let Some(kind) = rule_kind(s) {
-            if kind == "note" && !has_anchor { continue; }
-            if kind == "document" && !has_anchor && s.len() < 80 { continue; }
             let conf = match kind.as_str() {
                 "decision" => 0.78,
                 "action" => 0.72,
-                "document" => 0.58,
                 _ => 0.52,
             };
             items.push(ClassifiedItem {
@@ -313,50 +319,16 @@ pub fn classify_rules(text: &str, source_ref: &str) -> Vec<ClassifiedItem> {
             });
         }
     }
-    normalize_items(items.into_iter().map(|i| serde_json::json!({"kind": i.kind, "summary": i.summary, "reasoning": i.reasoning, "confidence": i.confidence, "author": i.author})).collect(), source_ref)
+    // Rules run for the record bucket only (see `classify_rules_typed`) —
+    // normalize as record so decision/action survive.
+    normalize_items(items.into_iter().map(|i| serde_json::json!({"kind": i.kind, "summary": i.summary, "reasoning": i.reasoning, "confidence": i.confidence, "author": i.author})).collect(), source_ref, "record")
 }
 
-/// B26: deterministic document-type fallback for when the LLM is unavailable
-/// or the provider is untrusted. Ordered heuristics over the document head —
-/// `general` only when nothing matches.
-pub fn detect_rules(text: &str) -> String {
-    let head: String = text.chars().take(12000).collect::<String>().to_lowercase();
-    if contains_any(&head, &["attendees", "agenda", "meeting notes", "minutes of", "retro"]) {
-        return "meeting".to_string();
-    }
-    if contains_any(&head, &["decision log", "decision:", "adr-", "status: accepted"]) {
-        return "decision_log".to_string();
-    }
-    if contains_any(&head, &["acceptance criteria", "user story", "requirements:", "product requirements"]) {
-        return "prd".to_string();
-    }
-    // source code: distinctive syntax markers (checked before prose types —
-    // comments may mention processes or policies without being documentation)
-    let code_markers = ["fn ", "def ", "class ", "import ", "function ", "=>", "->", "#include", "package ", "export "];
-    if code_markers.iter().filter(|m| head.contains(*m)).count() >= 3 {
-        return "code".to_string();
-    }
-    let normative = head.matches(" must ").count() + head.matches(" shall ").count();
-    if head.contains('§') || normative >= 5 {
-        return "standards".to_string();
-    }
-    if contains_any(&head, &["procedure", "process", "sop", "workflow", "handbook", "policy", "instructions"]) {
-        return "documentation".to_string();
-    }
-    "general".to_string()
-}
-
-fn contains_any(hay: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|n| hay.contains(n))
-}
-
-/// Rules fallback that respects the detected document type: note-only types
-/// (standards/runbook/documentation) emit no entities without the LLM — the
-/// per-type prompt is the extractor, and guessing notes from keywords both
-/// fabricates and perturbs retrieval. Document chunks still make them findable.
-/// R33.2: `code` emits nothing either — code is code, never extracted.
+/// Rules fallback, bucket-aware: only `record` extracts without the LLM.
+/// `reference` (+ legacy types, + `code`) emit nothing — chunks still make
+/// them findable, and the LLM reference prompt extracts notes when online.
 pub fn classify_rules_typed(text: &str, source_ref: &str, doc_type: &str) -> Vec<ClassifiedItem> {
-    if NOTE_ONLY_DOC_TYPES.contains(&doc_type) || doc_type == "code" {
+    if !is_record_bucket(doc_type) {
         return Vec::new();
     }
     classify_rules(text, source_ref)
@@ -365,16 +337,12 @@ pub fn classify_rules_typed(text: &str, source_ref: &str, doc_type: &str) -> Vec
 fn rule_kind(sentence: &str) -> Option<String> {
     static RE_DECISION: OnceLock<Regex> = OnceLock::new();
     static RE_ACTION: OnceLock<Regex> = OnceLock::new();
-    static RE_DOCUMENT: OnceLock<Regex> = OnceLock::new();
     let lower = sentence.to_lowercase();
     if RE_DECISION.get_or_init(|| Regex::new(r"\b(we (decided|agreed|chose|approved|rejected|postponed)\b|decision\s*[:\-](\s|$)|(decided|agreed) (to|that|on)\b|(approved|rejected) the\b)").unwrap()).is_match(&lower) {
         return Some("decision".to_string());
     }
     if RE_ACTION.get_or_init(|| Regex::new(r"\b(action item|todo|to-do|next step|owner|assign|follow[- ]up|deadline|due)\b").unwrap()).is_match(&lower) {
         return Some("action".to_string());
-    }
-    if RE_DOCUMENT.get_or_init(|| Regex::new(r"\b(status|update|summary|as of|current state|is now|has been)\b").unwrap()).is_match(&lower) {
-        return Some("document".to_string());
     }
     None
 }
@@ -408,9 +376,20 @@ mod tests {
         assert_eq!(rule_kind("No match here."), None);
     }
     #[test]
+    fn rule_kind_status_sentences_yield_nothing() {
+        // R33.6: the `document` arm is deleted with the kind — status
+        // sentences yield nothing from rules (the LLM reference prompt
+        // turns them into notes when online).
+        assert_eq!(rule_kind("Status update as of now."), None);
+        assert_eq!(rule_kind("The current state is green."), None);
+    }
+    #[test]
     fn classify_rules_fallback() {
-        let items = classify_rules("We decided to approve the budget. Status update as of now. Owner: Alice § 1.2 — this status has enough context to pass the anchor filter for document kind.", "ref");
-        assert!(items.len() >= 2);
+        let items = classify_rules("We decided to approve the budget. Status update as of now. Owner: Alice will review the transfer checklist.", "ref");
+        let kinds: Vec<String> = items.iter().map(|i| i.kind.clone()).collect();
+        assert!(kinds.contains(&"decision".to_string()), "kinds: {kinds:?}");
+        assert!(kinds.contains(&"action".to_string()), "kinds: {kinds:?}");
+        assert!(!kinds.iter().any(|k| k == "document"), "rules never emit document: {kinds:?}");
     }
     #[test]
     fn distill_rules_pairs() {
@@ -430,25 +409,11 @@ mod tests {
     }
 
     #[test]
-    fn detect_rules_flags_documentation_and_standards() {
-        let process_doc = "This handbook describes the onboarding process step by step. The operator must file the request. The workflow continues to the next stage.";
-        assert_eq!(detect_rules(process_doc), "documentation");
-        let reg = "Article 12 shall apply. The institution must notify the authority. §434 defines the transfer rules.";
-        assert_eq!(detect_rules(reg), "standards");
-    }
-
-    #[test]
-    fn detect_rules_flags_source_code() {
-        let code = "use std::sync::Arc;\n\npub fn classify(text: &str) -> Vec<Item> {\n    match text.len() {\n        0 => Vec::new(),\n        _ => text.split_whitespace().map(|w| w.to_string()).collect(),\n    }\n}\n";
-        assert_eq!(detect_rules(code), "code");
-    }
-
-    #[test]
     fn code_type_extracts_nothing() {
         // R33.2: code is code — no entity extraction from source files, not
-        // even from the rules fallback. `code` stays a doc_type (chunking
-        // signal + stored label), but it yields zero entities.
-        assert!(DOC_TYPES.contains(&"code"));
+        // even from the rules fallback. `code` stays a stored doc_type
+        // (chunking signal + badge) but is not a bucket and yields nothing.
+        assert!(!BUCKETS.contains(&"code"));
         let items = classify_rules_typed("We decided to use sqlite-vec for vectors.", "main.rs", "code");
         assert!(items.is_empty());
     }
@@ -466,18 +431,162 @@ mod tests {
     }
 
     #[test]
-    fn note_only_types_emit_nothing_without_llm() {
-        // No LLM → the per-type prompt can't run; keyword guessing is disabled
-        // for note-only types (it fabricated decisions and note-noise before).
-        let text = "We decided to approve the budget. The operator must record the approval in the register.";
-        assert!(classify_rules_typed(text, "ref", "documentation").is_empty());
-        assert!(classify_rules_typed(text, "ref", "standards").is_empty());
-        assert!(classify_rules_typed(text, "ref", "runbook").is_empty());
+    fn reference_and_legacy_emit_nothing_without_llm() {
+        // No LLM → only the record bucket extracts; reference, code, and
+        // every legacy 8-way value yield nothing (chunks keep them
+        // findable; the LLM reference prompt extracts notes when online).
+        let text = "We decided to approve the budget. Next step: Alice will draft the plan.";
+        for t in ["reference", "code", "meeting", "decision_log", "documentation", "standards", "runbook", "prd", "general", ""] {
+            assert!(classify_rules_typed(text, "ref", t).is_empty(), "{t:?} must emit nothing without the LLM");
+        }
+    }
+
+    #[test]
+    fn record_rules_may_emit_decision_and_action() {
+        let items = classify_rules_typed("We decided to approve the budget. Next step: Alice will draft the plan.", "ref", "record");
+        let kinds: Vec<&str> = items.iter().map(|i| i.kind.as_str()).collect();
+        assert!(kinds.contains(&"decision"), "record may emit decisions: {kinds:?}");
+        assert!(kinds.contains(&"action"), "record may emit actions: {kinds:?}");
+        assert!(!kinds.contains(&"document"), "new extraction never emits document: {kinds:?}");
     }
 
     #[test]
     fn decision_mentions_are_not_decisions() {
         let items = classify_rules("The decision-making process is described below. What was decided about the transfer?", "ref");
         assert!(items.iter().all(|i| i.kind != "decision"));
+    }
+
+    fn items_of(kinds: &[&str]) -> Vec<serde_json::Value> {
+        kinds.iter().map(|k| serde_json::json!({"kind": k, "summary": "s", "reasoning": "r", "confidence": 0.9, "author": "a"})).collect()
+    }
+
+    #[test]
+    fn normalize_reference_coerces_everything_to_note() {
+        // A disobedient model emitting decision/action/document for a
+        // reference doc still stores notes — the bucket line is enforced
+        // in code, not just in the prompt.
+        let out = normalize_items(items_of(&["decision", "action", "document", "note", "bogus"]), "ref", "reference");
+        assert_eq!(out.len(), 5);
+        assert!(out.iter().all(|i| i.kind == "note"));
+    }
+
+    #[test]
+    fn normalize_record_keeps_decision_action_maps_document() {
+        let out = normalize_items(items_of(&["decision", "action", "document", "note"]), "ref", "record");
+        let kinds: Vec<&str> = out.iter().map(|i| i.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["decision", "action", "note", "note"]);
+    }
+
+    #[test]
+    fn normalize_legacy_types_are_notes_only() {
+        // No grandfathering: only the literal `record` bucket may emit
+        // decision/action; legacy values coerce to note until a force
+        // reclassify re-buckets them.
+        for legacy in ["meeting", "decision_log", "documentation", "general", "prd", "standards", "runbook", ""] {
+            let out = normalize_items(items_of(&["decision"]), "ref", legacy);
+            assert_eq!(out[0].kind, "note", "legacy {legacy:?} must be notes-only");
+        }
+    }
+
+    #[test]
+    fn bucket_each_marker_fires() {
+        // One text per R33.6 record marker (§9 broadened set) — each fires
+        // on its own, without help from other markers.
+        let cases = [
+            ("attendees", "Attendees: Ana, Bo."),
+            ("agenda", "Agenda: scope and billing."),
+            ("meeting notes", "Meeting notes from Tuesday."),
+            ("minutes of", "Minutes of the sync."),
+            ("retro", "Sprint retro actions."),
+            ("decision log", "The decision log records this."),
+            ("decision:", "**Decision:** Migrate now."),
+            ("adr-", "See adr-001 for context."),
+            ("status accepted", "Status: accepted by the board."),
+            ("agreed", "We agreed to postpone."),
+            ("decided", "We decided to launch."),
+            ("approved", "Sarah approved it."),
+            ("Status Confirmed", "**Status:** Confirmed"),
+            ("Status Accepted", "**Status:** Accepted"),
+            ("Status Approved", "**Status:** Approved"),
+            ("# Decision", "# Decision to migrate"),
+            ("revisit trigger", "**Revisit trigger:** vendor freezes API."),
+            ("revisit triggers", "Revisit triggers: vendor freezes API."),
+        ];
+        for (name, text) in cases {
+            assert_eq!(assign_bucket(text), "record", "marker {name:?} must fire");
+        }
+    }
+
+    #[test]
+    fn bucket_word_boundaries() {
+        // Near-misses that must NOT flip the bucket.
+        let cases = [
+            ("decision logging", "We improved decision logging for router tiers."),
+            ("approver", "Sarah is the final approver for payout changes."),
+            ("approve", "Ravi must approve any change to price."),
+            ("disagreed", "They disagreed on the scope."),
+            ("revisit w/o trigger", "Revisit next planning for the wallet call."),
+            ("bare decision", "The launch decision quotes this record, not a spreadsheet."),
+            ("Status Done", "**Status:** Done. Source: sprint update."),
+            ("retrospective", "Retrospective notes are in the wiki."),
+            ("agendas", "Agendas were circulated on Friday."),
+        ];
+        for (name, text) in cases {
+            assert_eq!(assign_bucket(text), "reference", "near-miss {name:?} must not fire");
+        }
+    }
+
+    #[test]
+    fn bucket_d3_d4_shaped_texts() {
+        // §9: d3 was WOULD HIDE, d4 FRAGILE — both land in `record` now.
+        // The d4 shape omits the incidental "retro" line on purpose:
+        // genuine `approved` must carry it alone.
+        let d3 = "# Mobile wallet integration postponed to Q3\n\nAisha and Elena agreed that shipping against a moving contract would create rework.\n\n**Status:** Confirmed. Source: sprint 12 planning notes.\n\n**Revisit trigger:** vendor freezes auth API.";
+        assert_eq!(assign_bucket(d3), "record");
+        let d4 = "# Payments service moves to new infrastructure\n\nDev proposed the migration, Sarah approved it after a dry-run showed zero-downtime deploys.\n\n**Status:** Done.";
+        assert_eq!(assign_bucket(d4), "record");
+    }
+
+    #[test]
+    fn bucket_empty_and_plain_prose_default_reference() {
+        assert_eq!(assign_bucket(""), "reference");
+        assert_eq!(assign_bucket("The widget renders blue panels on load."), "reference");
+    }
+
+    #[test]
+    fn audit_replay_pins_corpus_buckets() {
+        // §8(d): fixtures shaped like the 20 corpus files (titles + marker
+        // sentences) pin the §9 bucket line — 8 record sample / 7 record
+        // ai, including both weak flips (runbook, model-router-spec).
+        let sample = [
+            ("d1", "# Decision: Instant Payments MVP excludes incoming payments\n\n**Decision:** The MVP will NOT include incoming payments.\n\n**Status:** Confirmed.", "record"),
+            ("d2", "# Decision: Billing provider migration approved\n\n**Decision:** Migrate to the new billing provider.\n\n**Status:** Approved.", "record"),
+            ("d3", "# Mobile wallet integration postponed to Q3\n\nAisha and Elena agreed that shipping would create rework.\n\n**Status:** Confirmed.\n\n**Revisit trigger:** vendor freezes auth API.", "record"),
+            ("d4", "# Payments service moves to new infrastructure\n\nSarah approved it after a dry-run showed zero-downtime deploys.", "record"),
+            ("m1", "# Sprint 12 retro\n\nAttendees: Ana, Bo, Cy.\n\nAction items: re-baseline coverage.", "record"),
+            ("m2", "# Q3 planning\n\nAttendees: all leads.\n\nAgenda: scope, billing, wallet.", "record"),
+            ("people", "# People\n\nSarah is the final approver for payout changes.\n\nPriya owns the definition of done.", "reference"),
+            ("runbook", "# Billing migration runbook\n\nApproved in decisions/d2. Owner: Sarah.\n\nStep 1: provision sandbox.", "record"),
+            ("spec", "# Instant payments spec\n\nAn outgoing payment is composed of six movements.", "reference"),
+            ("sprint12", "# Sprint 12\n\n## Decision log\n\nWe decided to postpone the wallet integration.", "record"),
+        ];
+        let sample_ai = [
+            ("d1", "# Decision: Model router v2 (tiered routing)\n\n**Decision:** Approved router v2 for tiered routing.\n\n**Status:** Approved.", "record"),
+            ("d2", "# Decision: Eval gate thresholds for launch\n\n**Decision:** Builds ship only if the eval suite clears.\n\n**Status:** Approved.", "record"),
+            ("d3", "# Decision: Pricing moves to usage tiers\n\n**Decision:** Pricing moves to three usage tiers.\n\n**Status:** Approved.", "record"),
+            ("d4", "# Decision: Rebuild the reasoning holdout set\n\n**Decision:** The holdout set is retired and rebuilt.\n\n**Status:** Approved.", "record"),
+            ("m1", "# Sprint 14 planning\n\nAttendees: Noor, Sam.\n\nWe improved decision logging for router tiers.", "record"),
+            ("m2", "# Incident postmortem\n\nAttendees: on-call crew.\n\nDecided no for now on the auto-rollback.", "record"),
+            ("people", "# People\n\nRavi must approve any change to price or credits.", "reference"),
+            ("runbook", "# Eval pipeline runbook\n\nThresholds come from decisions/d2.\n\nThe launch decision quotes this record.", "reference"),
+            ("spec", "# Model router spec\n\nApproved in decisions/d1. Owner: Noor.\n\nTenants outside an approved policy page on-call.", "record"),
+            ("sprint14", "# Sprint 14\n\nCommitted: router v2 shadow mode. The goal is the September launch.", "reference"),
+        ];
+        for (name, text, want) in sample.iter().chain(sample_ai.iter()) {
+            assert_eq!(assign_bucket(text), (*want).to_string(), "fixture {name} must stay {want}");
+        }
+        let records = |xs: &[(&str, &str, &str)]| xs.iter().filter(|(_, t, _)| assign_bucket(t) == "record").count();
+        assert_eq!(records(&sample), 8, "sample/ must stay 8 record / 2 reference");
+        assert_eq!(records(&sample_ai), 7, "sample-ai/ must stay 7 record / 3 reference");
     }
 }
