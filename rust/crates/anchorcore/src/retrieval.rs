@@ -716,6 +716,78 @@ pub fn keyword_search_filtered(
     exec_fts_search(conn, question, source_ids, section_ids, top_k, qa_exclude_disputed, KindScope::Leaf)
 }
 
+/// R33.5: literal-substring search over stored chunk bytes — the non-ranked
+/// leg alongside FTS/semantic (plan D5, trimmed: filters + navigation
+/// shipped under R36.6). Case-sensitive `instr()` match (no LIKE escapes,
+/// no tokenization, regex stays an owner call), document order (item, then
+/// chunk row), leaf pool only (`kind='document'`, R33.3). Score is a
+/// uniform 1.0 (matched, unranked); the answer layer reports
+/// `retrieval: "exact"` so callers never read it as a ranked score.
+/// Empty needle matches nothing (`instr(x, '')` would match everything).
+pub fn exact_search(
+    conn: &Connection,
+    needle: &str,
+    source_ids: Option<&HashSet<i64>>,
+    top_k: usize,
+    qa_exclude_disputed: bool,
+) -> Vec<Hit> {
+    if needle.is_empty() {
+        return vec![];
+    }
+    // Same join shape as the FTS leg; the source filter is pushed into the
+    // SQL (F-04) with the in-memory pass in `hits_from_ordered_ids` final.
+    let mut sql = String::from(
+        "SELECT c.id FROM chunks c \
+         LEFT JOIN entities e ON e.id = c.entity_id \
+         LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
+         WHERE instr(c.content, ?) > 0",
+    );
+    let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Text(needle.to_string())];
+    append_source_filter(&mut sql, &mut params, source_ids);
+    if let Some(clause) = KindScope::Leaf.kind_clause() {
+        sql.push_str(clause);
+    }
+    sql.push_str(" ORDER BY COALESCE(c.item_id, e.item_id), c.id LIMIT ?");
+    params.push(rusqlite::types::Value::Integer(top_k as i64));
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    let ids: Vec<i64> = match stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |r| r.get(0))
+        .and_then(|m| m.collect())
+    {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    hits_from_ordered_ids(conn, ids, source_ids, qa_exclude_disputed)
+}
+
+/// Hydrate candidate ids in the caller's order (exact search is
+/// document-ordered, not scored): uniform 1.0, status/source gates final.
+fn hits_from_ordered_ids(
+    conn: &Connection,
+    ids: Vec<i64>,
+    source_ids: Option<&HashSet<i64>>,
+    qa_exclude_disputed: bool,
+) -> Vec<Hit> {
+    if ids.is_empty() {
+        return vec![];
+    }
+    let mut by_id: HashMap<i64, Hit> = load_hits_filtered(conn, &ids, source_ids, None, qa_exclude_disputed)
+        .into_iter()
+        .map(|h| (h.chunk_id, h))
+        .collect();
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        if let Some(mut h) = by_id.remove(&id) {
+            h.score = 1.0;
+            out.push(h);
+        }
+    }
+    out
+}
+
 fn matching_tag_sections(
     conn: &Connection,
     query: &str,
@@ -1823,6 +1895,112 @@ mod tests {
         let ids2: Vec<i64> = out2.iter().filter_map(|h| h.entity_id).collect();
         assert!(ids2.contains(&e3), "disputed e3 should appear when not excluded");
         assert!(out.iter().all(|h| h.item_id == Some(iid)), "graph neighbors must carry their item");
+    }
+
+    // --- R33.5: exact-string search ---
+
+    fn insert_chunk_kind(conn: &rusqlite::Connection, item_id: Option<i64>, kind: &str, content: &str) -> i64 {
+        conn.execute("INSERT INTO chunks (item_id, kind, content, source_ref, created_at) VALUES (?1,?2,?3,'ref',datetime('now'))", rusqlite::params![item_id, kind, content]).unwrap();
+        conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn exact_search_matches_literal_case_and_whitespace_verbatim() {
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s1", "internal");
+        let iid = insert_item(&conn, sid, "doc1");
+        let camel = insert_chunk(&conn, Some(iid), None, "call connectTimeout(30) before send");
+        let _lower = insert_chunk(&conn, Some(iid), None, "call connecttimeout(30) before send");
+        let double = insert_chunk(&conn, Some(iid), None, "a  double  spaced line");
+        let _single = insert_chunk(&conn, Some(iid), None, "a double spaced line");
+        let special = insert_chunk(&conn, Some(iid), None, "price is a+b (c) total");
+        // Case-sensitive: only the exact-case chunk matches.
+        let hits = exact_search(&conn, "connectTimeout", None, 8, true);
+        assert_eq!(hits.iter().map(|h| h.chunk_id).collect::<Vec<_>>(), vec![camel]);
+        // Whitespace-verbatim: two spaces match only two spaces.
+        let ws = exact_search(&conn, "double  spaced", None, 8, true);
+        assert_eq!(ws.iter().map(|h| h.chunk_id).collect::<Vec<_>>(), vec![double]);
+        // Regex-significant chars are literal (regex stays an owner call).
+        let sp = exact_search(&conn, "a+b (c)", None, 8, true);
+        assert_eq!(sp.iter().map(|h| h.chunk_id).collect::<Vec<_>>(), vec![special]);
+        // Unranked: every hit scores the uniform 1.0.
+        assert!(hits.iter().all(|h| h.score == 1.0));
+    }
+
+    #[test]
+    fn exact_search_no_match_and_empty_needle() {
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s1", "internal");
+        let iid = insert_item(&conn, sid, "doc1");
+        insert_chunk(&conn, Some(iid), None, "some ordinary content here");
+        assert!(exact_search(&conn, "zzz-no-such-token", None, 8, true).is_empty());
+        assert!(exact_search(&conn, "", None, 8, true).is_empty(), "empty needle must match nothing (instr(x,'') matches all)");
+    }
+
+    #[test]
+    fn exact_search_leaf_only_and_document_order() {
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s1", "internal");
+        let first = insert_item(&conn, sid, "aaa-first");
+        let second = insert_item(&conn, sid, "zzz-second");
+        // Insert out of document order: the second item's chunk gets the
+        // lower row id, so row order alone would list it first.
+        let c_second = insert_chunk(&conn, Some(second), None, "needle in second file");
+        let c_first = insert_chunk(&conn, Some(first), None, "needle in first file");
+        // Non-leaf rows hold the needle too but must never surface (R33.3).
+        let eid = insert_entity(&conn, first, "needle paraphrase", "unverified", "alice");
+        conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content) VALUES (?1,'entity','ref','needle in entity row')", [eid]).unwrap();
+        insert_chunk_kind(&conn, Some(first), "section_summary", "needle in summary row");
+        let hits = exact_search(&conn, "needle", None, 8, true);
+        assert_eq!(
+            hits.iter().map(|h| h.chunk_id).collect::<Vec<_>>(),
+            vec![c_first, c_second],
+            "document order (item, then chunk) — not insertion order"
+        );
+        assert!(hits.iter().all(|h| h.entity_id.is_none()));
+    }
+
+    #[test]
+    fn exact_search_honors_source_scope_and_disputed_gate() {
+        let (_dir, conn) = harness_db();
+        let s1 = insert_source(&conn, "s1", "internal");
+        let s2 = insert_source(&conn, "s2", "internal");
+        let i1 = insert_item(&conn, s1, "doc1");
+        let i2 = insert_item(&conn, s2, "doc2");
+        let c1 = insert_chunk(&conn, Some(i1), None, "shared marker one");
+        let c2 = insert_chunk(&conn, Some(i2), None, "shared marker two");
+        let only_s1: HashSet<i64> = [s1].into_iter().collect();
+        let scoped = exact_search(&conn, "shared marker", Some(&only_s1), 8, true);
+        assert_eq!(scoped.iter().map(|h| h.chunk_id).collect::<Vec<_>>(), vec![c1]);
+        let empty: HashSet<i64> = HashSet::new();
+        assert!(exact_search(&conn, "shared marker", Some(&empty), 8, true).is_empty(), "empty scope matches nothing (project/public parity)");
+        let all = exact_search(&conn, "shared marker", None, 8, true);
+        assert_eq!(all.len(), 2, "unscoped search sees both sources ({c1}, {c2})");
+        // A document chunk linked to a disputed entity honors the gate.
+        let ed = insert_entity(&conn, i1, "disputed note", "disputed", "bob");
+        let cd = insert_chunk(&conn, Some(i1), Some(ed), "shared marker disputed");
+        assert!(!exact_search(&conn, "shared marker disputed", None, 8, true).iter().any(|h| h.chunk_id == cd));
+        assert!(exact_search(&conn, "shared marker disputed", None, 8, false).iter().any(|h| h.chunk_id == cd));
+    }
+
+    #[test]
+    fn exact_search_differs_from_fts_ranking() {
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s1", "internal");
+        let iid = insert_item(&conn, sid, "doc1");
+        insert_chunk(&conn, Some(iid), None, "the Tenant Identifier for Northbank");
+        // FTS folds case (unicode61): ranked search finds it …
+        let ranked = keyword_search(&conn, "tenant identifier", None, 8, true);
+        assert_eq!(ranked.len(), 1, "FTS must match case-insensitively");
+        // … but the exact leg is case-sensitive: no match.
+        assert!(exact_search(&conn, "tenant identifier", None, 8, true).is_empty());
+        // And the reverse: a substring spanning a token boundary is
+        // literal here, while FTS only matches whole tokens.
+        insert_chunk(&conn, Some(iid), None, "settle code confirmed");
+        let lit = exact_search(&conn, "tle co", None, 8, true);
+        assert_eq!(lit.len(), 1);
+        let fts_sub = keyword_search(&conn, "tle co", None, 8, true);
+        assert!(fts_sub.is_empty(), "FTS matches whole tokens only, got {}", fts_sub.len());
     }
 
     #[test]
