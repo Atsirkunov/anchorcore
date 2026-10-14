@@ -150,6 +150,7 @@ export const api = {
     const qs = q.toString();
     return request<Entity[]>(`/entities${qs ? `?${qs}` : ""}`);
   },
+  getEntity: (id: number) => request<Entity>(`/entities/${id}`),
   updateEntity: (id: number, payload: Partial<Pick<Entity, "kind" | "status" | "owner">>) =>
     request<Entity>(`/entities/${id}`, {
       method: "PATCH",
@@ -175,6 +176,8 @@ export const api = {
   entityContext: (id: number) =>
     request<{ entity_id: number; source_name: string | null; source_ref: string; window_text: string; expanded_before: string[]; expanded_after: string[]; full_text: string; highlight: string; item_title: string }>(`/entities/${id}/context`),
 
+  // R31.2: the Review tab folded into Entities, but /review/* stays — agents
+  // and the folded duplicates queue use it. No backend change.
   lowConfidence: () => request<Entity[]>("/review/low-confidence"),
   duplicates: () => request<MergeProposal[]>("/review/duplicates"),
   decideMerge: (proposalId: number, decision: "merge" | "dismiss") =>
