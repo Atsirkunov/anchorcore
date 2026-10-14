@@ -71,6 +71,9 @@ pub struct Citation {
     pub content: String,
     pub item_title: String,
     pub content_truncated: bool,
+    /// 1-based source lines (markdown chunks; 0/0 when untracked).
+    pub line_start: i64,
+    pub line_end: i64,
 }
 
 #[derive(Deserialize)]
@@ -136,6 +139,9 @@ pub struct SearchHit {
     pub conflicts_with: Vec<i64>,
     pub score: f64,
     pub content_truncated: bool,
+    /// 1-based source lines (markdown chunks; 0/0 when untracked).
+    pub line_start: i64,
+    pub line_end: i64,
 }
 
 #[derive(Serialize)]
@@ -442,6 +448,32 @@ fn citations_limit() -> usize {
     std::env::var("ANCHOR_CITATIONS").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(5)
 }
 
+/// Batched 1-based source line ranges for citable chunks (R38.3; 0/0 when
+/// the chunker didn't track lines). One query per response, like the maps
+/// above — the `Hit` struct stays untouched.
+fn line_ranges_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> std::collections::HashMap<i64, (i64, i64)> {
+    let mut out: std::collections::HashMap<i64, (i64, i64)> = std::collections::HashMap::new();
+    if chunk_ids.is_empty() {
+        return out;
+    }
+    let sql = format!(
+        "SELECT id, line_start, line_end FROM chunks WHERE id IN ({})",
+        crate::common::placeholders(chunk_ids.len())
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(chunk_ids.iter()), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+    }) {
+        for (id, start, end) in rows.flatten() {
+            out.insert(id, (start, end));
+        }
+    }
+    out
+}
+
 fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content: bool, limit: usize, query: &str) -> Vec<Citation> {
     let db_path = crate::db::resolve_db_path(data_dir);
     let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
@@ -451,6 +483,7 @@ fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content:
     let doc_type_map = doc_types_for_chunks(&conn, &ids);
     let meta_map = item_meta_for_chunks(&conn, &ids);
     let env_map = crate::retrieval::envs_for_chunks(&conn, &ids);
+    let range_map = line_ranges_for_chunks(&conn, &ids);
     let section_ids: Vec<i64> = hits.iter().take(limit).filter_map(|h| h.section_id).collect();
     let crumb_map = section_breadcrumbs(&conn, &section_ids);
     hits.iter().take(limit).map(|h| {
@@ -458,6 +491,7 @@ fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content:
         // lives in one, else the item's file path — entity citations must
         // stay attributable to their source file.
         let (item_title, item_path) = meta_map.get(&h.chunk_id).cloned().unwrap_or_default();
+        let (line_start, line_end) = range_map.get(&h.chunk_id).copied().unwrap_or((0, 0));
         Citation {
             entity_id: h.entity_id,
             item_id: h.item_id,
@@ -478,6 +512,8 @@ fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content:
             snippet: hit_preview(&h.content, query, h.chunk_id, 500),
             content: if want_content { h.content.clone() } else { String::new() },
             content_truncated: h.content_truncated,
+            line_start,
+            line_end,
         }
     }).collect()
 }
@@ -838,6 +874,7 @@ pub async fn search(
     let doc_type_map = doc_types_for_chunks(&conn, &ids);
     let meta_map = item_meta_for_chunks(&conn, &ids);
     let env_map = crate::retrieval::envs_for_chunks(&conn, &ids);
+    let range_map = line_ranges_for_chunks(&conn, &ids);
     let section_ids: Vec<i64> = page.iter().filter_map(|h| h.section_id).collect();
     let crumb_map = section_breadcrumbs(&conn, &section_ids);
     let hits = page.into_iter().map(|h| {
@@ -845,6 +882,7 @@ pub async fn search(
         // documents (no sections) fall back to the item's path within its
         // source (folder: relative file path; opaque connectors: id).
         let (item_title, item_path) = meta_map.get(&h.chunk_id).cloned().unwrap_or_default();
+        let (line_start, line_end) = range_map.get(&h.chunk_id).copied().unwrap_or((0, 0));
         SearchHit {
             chunk_id: Some(h.chunk_id),
             entity_id: h.entity_id,
@@ -865,6 +903,8 @@ pub async fn search(
             item_id: h.item_id,
             item_title,
             score: rounded_score(h.score),
+            line_start,
+            line_end,
         }
     }).collect();
     SearchResponse { hits, blocked: blocked_count, refusal, next_cursor, retrieval: retrieval.to_string() }
@@ -1308,6 +1348,23 @@ mod tests {
             status: None,
             content_truncated: false,
         }
+    }
+
+    #[test]
+    fn line_ranges_batch_lookup() {
+        // R38.3: one query maps chunk ids to 1-based ranges; unknown ids and
+        // untracked (0/0) chunks degrade instead of erroring.
+        let (_dir, conn, _settings) = seed_gate_db();
+        let item: i64 = conn.query_row("SELECT id FROM ingested_items LIMIT 1", [], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO chunks (item_id, source_ref, content, line_start, line_end) VALUES (?1,'r','a',3,9)", [item]).unwrap();
+        let ranged = conn.last_insert_rowid();
+        conn.execute("INSERT INTO chunks (item_id, source_ref, content) VALUES (?1,'r','b')", [item]).unwrap();
+        let plain = conn.last_insert_rowid();
+        let map = line_ranges_for_chunks(&conn, &[ranged, plain, 999_999]);
+        assert_eq!(map.get(&ranged).copied(), Some((3, 9)));
+        assert_eq!(map.get(&plain).copied(), Some((0, 0)));
+        assert!(!map.contains_key(&999_999));
+        assert!(line_ranges_for_chunks(&conn, &[]).is_empty());
     }
 
     #[test]

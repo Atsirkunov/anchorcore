@@ -498,7 +498,8 @@ fn export_chunks(conn: &Connection, zip: &mut ArchiveWriter, opts: &ExportOption
     let sql = format!(
         "SELECT json_object('type','chunk','uid',c.uid,'item_uid',i.uid,'entity_uid',en.uid, \
             'section_uid',sec.uid,'kind',c.kind,'source_ref',c.source_ref,'content',c.content, \
-            'level',c.level,'path',c.path,'is_pii',{pii},'pii_categories',json(c.pii_categories), \
+            'level',c.level,'path',c.path,'line_start',c.line_start,'line_end',c.line_end, \
+            'is_pii',{pii},'pii_categories',json(c.pii_categories), \
             'created_at',c.created_at) \
          FROM chunks c \
          LEFT JOIN ingested_items i ON i.id = c.item_id \
@@ -516,7 +517,8 @@ fn export_sections(conn: &Connection, zip: &mut ArchiveWriter, opts: &ExportOpti
     let sql = format!(
         "SELECT json_object('type','section','uid',s.uid,'item_uid',i.uid,'parent_uid',p.uid, \
             'level',s.level,'title',s.title,'path',s.path,'chunk_range',s.chunk_range, \
-            'summary',s.summary,'summary_hash',s.summary_hash,'created_at',s.created_at) \
+            'summary',s.summary,'summary_hash',s.summary_hash,'line_start',s.line_start, \
+            'line_end',s.line_end,'kind',s.kind,'meta',s.meta,'created_at',s.created_at) \
          FROM sections s \
          JOIN ingested_items i ON i.id = s.item_id \
          LEFT JOIN sections p ON p.id = s.parent_id WHERE 1=1{} ORDER BY s.id",
@@ -1261,12 +1263,18 @@ fn apply_section(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let chunk_range = str_field(rec, "chunk_range");
     let summary = str_field(rec, "summary");
     let summary_hash = str_field(rec, "summary_hash");
+    let line_start = i64_field(rec, "line_start").unwrap_or(0);
+    let line_end = i64_field(rec, "line_end").unwrap_or(0);
+    let kind = str_field(rec, "kind");
+    let kind = if kind.is_empty() { "section".to_string() } else { kind };
+    let meta = str_field(rec, "meta");
+    let meta = if meta.is_empty() { "{}".to_string() } else { meta };
     if action == Action::Insert {
         ctx.conn
             .execute(
-                "INSERT INTO sections (item_id, parent_id, level, title, path, chunk_range, summary, summary_hash, uid, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))",
-                rusqlite::params![item_id, parent_id, level, title, path, chunk_range, summary, summary_hash, uid],
+                "INSERT INTO sections (item_id, parent_id, level, title, path, chunk_range, summary, summary_hash, line_start, line_end, kind, meta, uid, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'))",
+                rusqlite::params![item_id, parent_id, level, title, path, chunk_range, summary, summary_hash, line_start, line_end, kind, meta, uid],
             )
             .map_err(|e| e.to_string())?;
         let id = ctx.conn.last_insert_rowid();
@@ -1276,8 +1284,8 @@ fn apply_section(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let id = existing.unwrap();
     ctx.conn
         .execute(
-            "UPDATE sections SET parent_id=?2, level=?3, title=?4, path=?5, chunk_range=?6, summary=?7, summary_hash=?8 WHERE id=?1",
-            rusqlite::params![id, parent_id, level, title, path, chunk_range, summary, summary_hash],
+            "UPDATE sections SET parent_id=?2, level=?3, title=?4, path=?5, chunk_range=?6, summary=?7, summary_hash=?8, line_start=?9, line_end=?10, kind=?11, meta=?12 WHERE id=?1",
+            rusqlite::params![id, parent_id, level, title, path, chunk_range, summary, summary_hash, line_start, line_end, kind, meta],
         )
         .map_err(|e| e.to_string())?;
     ctx.remember("sections", &uid, id);
@@ -1359,15 +1367,17 @@ fn apply_chunk(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let content = str_field(rec, "content");
     let level = i64_field(rec, "level").unwrap_or(0);
     let path = str_field(rec, "path");
+    let line_start = i64_field(rec, "line_start").unwrap_or(0);
+    let line_end = i64_field(rec, "line_end").unwrap_or(0);
     let is_pii = bool_int(rec, "is_pii");
     let pii_categories = rec.get("pii_categories").map(|v| v.to_string()).unwrap_or_else(|| "[]".to_string());
     let embedding = embedding_field(ctx, rec, "embedding_b64", "chunk");
     if action == Action::Insert {
         ctx.conn
             .execute(
-                "INSERT INTO chunks (item_id, entity_id, section_id, kind, source_ref, content, level, path, is_pii, pii_categories, embedding, uid, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'))",
-                rusqlite::params![item_id, entity_id, section_id, kind, source_ref, content, level, path, is_pii, pii_categories, embedding, uid],
+                "INSERT INTO chunks (item_id, entity_id, section_id, kind, source_ref, content, level, path, line_start, line_end, is_pii, pii_categories, embedding, uid, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now'))",
+                rusqlite::params![item_id, entity_id, section_id, kind, source_ref, content, level, path, line_start, line_end, is_pii, pii_categories, embedding, uid],
             )
             .map_err(|e| e.to_string())?;
         let id = ctx.conn.last_insert_rowid();
@@ -1377,8 +1387,8 @@ fn apply_chunk(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let id = existing.unwrap();
     ctx.conn
         .execute(
-            "UPDATE chunks SET item_id=?2, entity_id=?3, section_id=?4, kind=?5, source_ref=?6, content=?7, level=?8, path=?9, is_pii=?10, pii_categories=?11 WHERE id=?1",
-            rusqlite::params![id, item_id, entity_id, section_id, kind, source_ref, content, level, path, is_pii, pii_categories],
+            "UPDATE chunks SET item_id=?2, entity_id=?3, section_id=?4, kind=?5, source_ref=?6, content=?7, level=?8, path=?9, line_start=?10, line_end=?11, is_pii=?12, pii_categories=?13 WHERE id=?1",
+            rusqlite::params![id, item_id, entity_id, section_id, kind, source_ref, content, level, path, line_start, line_end, is_pii, pii_categories],
         )
         .map_err(|e| e.to_string())?;
     if let Some(blob) = embedding {

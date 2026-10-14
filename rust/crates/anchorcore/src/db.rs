@@ -147,12 +147,23 @@ fn ensure_columns(conn: &Connection) -> Result<()> {
             summary TEXT NOT NULL DEFAULT '',
             summary_embedding BLOB,
             summary_hash TEXT NOT NULL DEFAULT '',
+            line_start INTEGER NOT NULL DEFAULT 0,
+            line_end INTEGER NOT NULL DEFAULT 0,
+            kind TEXT NOT NULL DEFAULT 'section',
+            meta TEXT NOT NULL DEFAULT '{}',
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         )", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_sections_item_id ON sections(item_id)", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_sections_parent_id ON sections(parent_id)", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_chunks_section_id ON chunks(section_id)", []);
     try_add_column(conn, "ALTER TABLE sections ADD COLUMN summary_hash TEXT NOT NULL DEFAULT ''");
+    // R38.1 markdown ranges (mirrors 19_markdown_ranges.sql for straggler DBs)
+    try_add_column(conn, "ALTER TABLE sections ADD COLUMN line_start INTEGER NOT NULL DEFAULT 0");
+    try_add_column(conn, "ALTER TABLE sections ADD COLUMN line_end INTEGER NOT NULL DEFAULT 0");
+    try_add_column(conn, "ALTER TABLE sections ADD COLUMN kind TEXT NOT NULL DEFAULT 'section'");
+    try_add_column(conn, "ALTER TABLE sections ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'");
+    try_add_column(conn, "ALTER TABLE chunks ADD COLUMN line_start INTEGER NOT NULL DEFAULT 0");
+    try_add_column(conn, "ALTER TABLE chunks ADD COLUMN line_end INTEGER NOT NULL DEFAULT 0");
     // R14.4 tags
     let _ = conn.execute(
         "CREATE TABLE IF NOT EXISTS tags (
@@ -350,6 +361,8 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/17_file_fingerprint.sql")),
         // F-03: per-item completion marker (processed_hash) with one-shot backfill
         M::up(include_str!("../migrations/18_processed_hash.sql")),
+        // R38.1: markdown line ranges + section kind/meta
+        M::up(include_str!("../migrations/19_markdown_ranges.sql")),
     ])
 }
 
@@ -371,6 +384,28 @@ mod tests {
         // pragmas
         let fk: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
         assert_eq!(fk, 1);
+    }
+
+    #[test]
+    fn migration_19_markdown_ranges() {
+        // R38.1: sections carry kind/meta + 1-based line ranges, chunks carry
+        // line ranges (prose/code/config paths write the 0/0 default).
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("md19.db");
+        let conn = init_db(&path).unwrap();
+        for (table, col) in [
+            ("sections", "line_start"),
+            ("sections", "line_end"),
+            ("sections", "kind"),
+            ("sections", "meta"),
+            ("chunks", "line_start"),
+            ("chunks", "line_end"),
+        ] {
+            let n: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name='{col}'"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 1, "{table}.{col} must exist after migrate");
+        }
     }
 
     fn vec_trigger_sql(conn: &Connection) -> Vec<String> {
@@ -418,6 +453,19 @@ mod tests {
             // migration 18 has real work to do (ALTER + one-shot backfill).
             conn.execute("ALTER TABLE ingested_items DROP COLUMN processed_hash", [])
                 .unwrap_or_else(|e| panic!("drop processed_hash: {e}"));
+            // A real v10 DB also predates R38.1 — drop the markdown ranges
+            // so migration 19 has real work to do (same rule).
+            for (table, col) in [
+                ("sections", "line_start"),
+                ("sections", "line_end"),
+                ("sections", "kind"),
+                ("sections", "meta"),
+                ("chunks", "line_start"),
+                ("chunks", "line_end"),
+            ] {
+                conn.execute(&format!("ALTER TABLE {} DROP COLUMN {}", table, col), [])
+                    .unwrap_or_else(|e| panic!("drop {table}.{col}: {e}"));
+            }
             conn.execute("DROP TABLE vec_chunks", []).unwrap();
             conn.pragma_update(None, "writable_schema", "ON").unwrap();
             conn.execute(
@@ -435,7 +483,7 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         run_migrations(&mut conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 18);
+        assert_eq!(v, 19);
         assert_eq!(vec_trigger_sql(&conn), before);
         let adopted: String = conn.query_row("SELECT processed_hash FROM ingested_items", [], |r| r.get(0)).unwrap();
         assert_eq!(adopted, "h", "migration 18 must backfill processed_hash=content_hash");
