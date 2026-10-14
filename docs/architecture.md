@@ -84,8 +84,9 @@ and `disputed` ones unless opted back in.
 | Classifier windows | `classify_windows` | `ANCHOR_CLASSIFY_WINDOW_CHARS=16000`, 50% overlap | Overlapping windows for the classifier — not stored as chunks, but governs hash dedup and cost |
 
 The pipeline runs clean → strip → chunk → store (`Chunk(kind=document)`,
-old doc chunks deleted on re-sync). Known gap: Rust still only trims instead
-of full `clean_text` (parity follow-up).
+old doc chunks deleted on re-sync). Cleaning is ported (prose documents;
+code/config keep raw text to preserve indentation — see the `rust/BACKLOG.md`
+shipped log).
 
 **Distillation:** chat-like windows (meetings, decision logs, general notes)
 are normalized into searchable Q&A units stored as `kind='distilled'` chunks.
@@ -93,7 +94,7 @@ An IDF gate (`embed_min_signal=0.15`) skips low-signal filler from vector
 embedding — it stays keyword-findable in FTS5. Distillation is hash-skipped
 per window.
 
-**Scale — hierarchical TOC (shipped 1.0.12):** documents keep their structure
+**Scale — hierarchical TOC (shipped in 1.0.12):** documents keep their structure
 now. Headings become a saved `sections` tree (parent/level/path/summary),
 passages point at their section, and a `tags` taxonomy is built as documents
 arrive (similar topics merged at 0.82 similarity). Retrieval goes
@@ -134,12 +135,12 @@ sequenceDiagram
 always, `who_knows` on ownership cues) → the executor runs them with one
 shared embedding call (`hybrid` = vec0 vector + FTS5 keyword) → fusion (RRF
 `score=Σ w/(60+rank)`, age decay, per-item diversity cap, context expansion,
-near-duplicate dedupe) → 1–2 hop graph walk → PII/sensitive gate for
-unapproved providers → cited generation. Every retrieval path takes an
+near-duplicate dedupe) → 1–2 hop graph walk → source-label gate for
+unapproved providers (`sensitive` sources excluded) → cited generation. Every retrieval path takes an
 optional source-id scope; every hit carries chunk, entity, item, source and
 score.
 
-*Hierarchical (shipped 1.0.12):* the same pipeline with a TOC pre-stage
+*Hierarchical (shipped in 1.0.12):* the same pipeline with a TOC pre-stage
 (`toc_search` before flat hybrid). Persisted sections + tags let retrieval
 prune *before* vector search: tag/SQL filter, summary-node vector search over
 ~5k summaries, then leaf vec0 restricted to the top sections. Falls back to
@@ -188,7 +189,7 @@ lexical+vector fusion alone misses, because the connected knowledge doesn't
 need to co-occur in the question's words. Pure SQL — no model calls.
 
 Remaining backlog: a fuller *who_knows* ranking and per-user ACLs for hosted.
-Scoped search via *projects* and PII gating both shipped.
+Scoped search via *projects* and source-label gating both shipped.
 
 ## 5. Data Model — Uniform Entity Graph
 
@@ -243,7 +244,7 @@ erDiagram
         string last_error
         int error_count
         bool enabled
-        string label "internal|public|sensitive|pii"
+        string label "internal|public|sensitive (+legacy pii)"
     }
     CHUNKS {
         int id PK
@@ -254,8 +255,8 @@ erDiagram
         string source_ref "section"
         string content
         bytes embedding "float32 blob"
-        bool is_pii "auto-flagged"
-        string pii_categories "JSON"
+        bool is_pii "legacy, unwritten"
+        string pii_categories "legacy, unwritten"
         int level "heading level"
         string path "section path e.g. Art12 > 12.3"
         datetime created_at
@@ -390,11 +391,13 @@ erDiagram
 - Local server binds 127.0.0.1 by default; the Team container sets `--host 0.0.0.0` (Host/Origin allowlist; set `ANCHOR_AUTH_SECRET` for logins).
 - Secret values masked in logs, error responses, and API payloads (`***set***`).
 - Tests never touch the real keychain (`ANCHOR_SECRETS_NO_KEYRING`).
-- **Data labels:** `sources.label` (`public|internal|sensitive|pii`, default
-  `internal`); `chunks.is_pii` auto-flagged. Sensitive/PII content skips
-  cloud classify/embed/answer, falls back to local rules, and records a
-  `system_event`. Share/MCP surface (`GET /qa/public`, `public_only`) only
-  sees public sources. Per-user ACL deferred to hosted.
+- **Data labels:** `sources.label` (`public|internal|sensitive`, default
+  `internal`); `sensitive` sources skip cloud classify/embed/answer, fall
+  back to local rules, and record a `system_event`. Share/MCP surface
+  (`GET /qa/public`, `public_only`) only sees public sources. Per-user ACL
+  deferred to hosted. (Chunk/item PII flags and the legacy `pii` label were
+  removed from user-facing surfaces — R35.1, owner decision 2026-10-13; the
+  backend still accepts them as hidden compat.)
 - Every allow/block decision is audited in `system_events`; hosted auth
   issues HS256 JWT when `ANCHOR_AUTH_SECRET` is set, otherwise disabled
   (local stays single-user).
@@ -414,9 +417,9 @@ erDiagram
 ## 9. Evolution Path
 
 ```
-v1 (shipped, 1.0.13): local-first app — folder/Drive/Jira/Linear/REST connectors,
+v1 (shipped; current version: see docs/release-notes/): local-first app — folder/Drive/Jira/Linear/REST connectors,
     document-aware classification + review queue, cited Q&A (hybrid RRF + vec0 +
-    planner/executor + graph walk + distillation + projects + PII gate),
+    planner/executor + graph walk + distillation + projects + source-label gate),
     hierarchical sections, MCP mode, Team self-hosted (Docker + offline license),
     Windows/macOS apps
   -> next: website + launch, Drive OAuth, Slack connector, hosted pilot

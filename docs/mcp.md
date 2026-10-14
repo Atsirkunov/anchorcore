@@ -39,7 +39,7 @@ needs custom glue; MCP is the glue.
 |---|---|---|---|
 | `ask` | `question` (required), `project_id?`, `public_only?`, `include_content?` | composed answer + citations with provenance (item id + file path + title + env class on every citation; full chunk bytes on opt-in, capped at 4000 chars with `content_truncated`) | `POST /qa`, `POST /qa/public` |
 | `search` | `query` (required), `k` (default 8, max 50), `project_id?`, `public_only?`, `env?` (`live`/`test`) | cited chunks with provenance (item id/title/path, env class, source ref, score); summaries/snippets window on the match; test fixtures rank below live hits unless the query names them; long chunks capped at 4000 chars with `content_truncated` flagged | `POST /qa/search` |
-| `get_entity` | `entity_id` | entity + parent item/chunk links (`item_id`, `chunk_id`) + manual PII mark | Entity graph |
+| `get_entity` | `entity_id` | entity + parent item/chunk links (`item_id`, `chunk_id`) + legacy item PII flag (deprecated) | Entity graph |
 | `get_source` | `source_id` | source details (no config/secrets) | Sources |
 | `list_sources` | — | names, connectors, last sync | Sources |
 | `memory_status` | — | version, model availability, pending embeddings | `/system/status` |
@@ -170,10 +170,8 @@ or add `mcp.servers.anchorcore` (V2: `type: "local"`, `command` array) in
 |---|---|---|
 | B14.1 | Local stdio MCP, read-only (Python sidecar + 6 tools + `/qa/search`) | ✅ DONE (v1.0.9, legacy) |
 | R12.5 | Same surface as a Rust sidecar + `public_only` + audit | ✅ DONE (1.0.12, shipped) |
-| R20 | Zero-setup MCP UX — real-path card, `/system/mcp`, one-click client connect, runtime discovery, release smoke (plan: [plan-mcp-zero-setup.md](./plan-mcp-zero-setup.md)) | R20.1–R20.3, R20.6–R20.9 landed 2026-10-11; **R20.4** (runtime discovery) and **R20.5** (release smoke) open |
-| B14.2 | HTTP transport + token auth + audit — **re-ranked 2026-10-11 (R20.7): this is the Team/remote path.** It removes the binary-path problem entirely (one URL instead of a host path for every harness) and leaves the local stdio default untouched | Next, after R20.4/R20.5 |
-| B14.3 | Write-back `ingest` (unverified + review queue) | Open |
-| B14.4 | Registry publishing (Claude Code marketplace etc.) — **re-ranked below B14.2**: a one-click convenience for Claude users, not the Team unblocker | Later |
+
+Open MCP work (zero-setup UX, HTTP transport, write-back, registry) is tracked in `rust/BACKLOG.md` (Phase 20 + B14.2–B14.4) — see there for current status. Plan: [plan-mcp-zero-setup.md](./plan-mcp-zero-setup.md).
 
 ## 10. Open Questions
 

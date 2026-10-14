@@ -124,3 +124,5 @@ git diff --stat   # Markdown only
 ## Out of scope
 
 Fixing the underlying product questions (whether the PII mark is removed in code, retrieval behaviour, release automation), editing `AGENTS.md` gotchas beyond the version/test-count claims in T1, the website (`website/`), and the agent skills under `.agents/skills/` (mention drift you notice in the summary; do not edit them here).
+
+Status: DONE 2026-10-14, branch docs/t1-t8

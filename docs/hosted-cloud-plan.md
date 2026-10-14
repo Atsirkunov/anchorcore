@@ -1,9 +1,6 @@
-# AnchorCore — Hosted Infra Plan (v2 + R19.1)
+# AnchorCore — Hosted Cloud Tier Plan (future)
 
-> Locked 2026-08-10 (decisions D8–D9 in [v2v3-scope.md](./v2v3-scope.md)). Operational
-> reference for the hosted tier (B35). One-box topology until real demand; no
-> K8s/multi-region/autoscaling.
-> **R19.1 (2026-10-10):** the Team self-hosted image is **one container running the shipped Rust binary** (SQLite volume, UI embedded, license gate — `hosting/`). The topology below is the future **Hosted cloud** tier plan: it would run this same binary with a Postgres swap + the pieces listed (B49), which is not wired yet.
+> Status: plan — **future plan** for the hosted cloud tier — not operating instructions. Team self-hosting today: one container, SQLite — see [hosting/README.md](../hosting/README.md).
 
 ## Topology
 

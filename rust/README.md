@@ -1,6 +1,6 @@
 # AnchorCore Rust Port — workspace
 
-> **Status: shipped as of `v1.0.9` `7131cfe` (2026-08-21).** Python `backend/` is archived on tag `archive/python-final` (frozen conformance; see R19.1: `hosting/` is the one-container Rust Team image); Rust `rust/` is the shipped artifact (single source `rust/Cargo.toml:6`). All `backend/tests` `110/17` honest green vs Rust on `:8123` (`cargo test` + `cargo check` green via CI `rust-conformance`). See `docs/rust-port.md:1` (evaluation closed) + `rust/BACKLOG.md` (open work; completed Phases 0–17 in `rust/BACKLOG-archive.md`) + `docs/handover-2026-08-21-retire.md:1`.
+> **Status: shipped** (since `v1.0.9`, 2026-08-21; current version: see `docs/release-notes/`). Python `backend/` is archived on tag `archive/python-final` (frozen conformance; see R19.1: `hosting/` is the one-container Rust Team image); Rust `rust/` is the shipped artifact (single source `rust/Cargo.toml:6`). `backend/tests` green vs Rust on `:8123` (`cargo test` + `cargo check` green via CI `rust-conformance`). See `docs/rust-port.md:1` (evaluation closed) + `rust/BACKLOG.md` (open work; completed Phases 0–17 in `rust/BACKLOG-archive.md`) + `docs/handover-2026-08-21-retire.md:1`.
 
 ## Why a separate folder?
 
