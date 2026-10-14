@@ -38,7 +38,7 @@ Then click **Sync now**.
 Two things in here are deliberate test content, not mistakes: the planning notes
 still quote the old eval number (0.94) that `d4` corrects to 0.89, and the
 postmortem's open question about publishing an incident note was never closed.
-They exist so you can try the Review tab's dispute flow and watch an answer
+They exist so you can try the Entities tab's dispute flow (Needs a look) and watch an answer
 change its source.
 
 ## Things to try (in the Ask tab)

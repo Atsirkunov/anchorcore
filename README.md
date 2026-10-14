@@ -70,7 +70,7 @@ Team and commercial use requires a paid license.
 
 ```
 rust/       Rust service (Axum) — connectors, ingestion, classification, RAG Q&A — shipped artifact (single source rust/Cargo.toml; version: see docs/release-notes/)
-frontend/   React SPA (Vite) — Ask, Sources, Entities, Review, Settings, System
+frontend/   React SPA (Vite) — Ask, Sources, Entities, Settings, System
 sample/     Mini-company demo corpus — connect it as a folder source
             (guide: docs/sample-dataset.md)
 hosting/    Team image — ONE container, the same Rust binary (SQLite volume, license gate)
@@ -137,7 +137,7 @@ Sources (folder, Drive, Jira, Linear, REST) -> extract text -> clean -> chunk ->
   types emit no entities without the LLM (no keyword guessing), and only
   explicitly recorded choices ("we decided…", "Decision: …") count as decisions.
 - **Reviewable entities**: every entity stores the exact classifier input
-  window (`window_text`) — the Review tab shows "what the classifier saw"
+  window (`window_text`) — the Entities tab shows "what the classifier saw"
   behind each low-confidence item.
 - **Cheap reclassification**: 16k-char windows + per-window content hashes —
   unchanged windows are skipped (a reclassify of unchanged content makes ~0

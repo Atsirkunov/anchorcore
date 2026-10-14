@@ -1,6 +1,6 @@
 # AnchorCore — Code indexing redesign (plan)
 
-> Status: approved 2026-10-12 — R33.1 signed off; R33.2 (code skips extraction) + R33.4 (config chunking) landed the same day; R33.3 landed 2026-10-14. Open: R33.5, R33.6. D2: entities fully out of retrieval (option a),
+> Status: approved 2026-10-12 — R33.1 signed off; R33.2 (code skips extraction) + R33.4 (config chunking) landed the same day; R33.3–R33.6 all landed 2026-10-14 (R33.5 exact-string search, R33.6 buckets). Phase complete. D2: entities fully out of retrieval (option a),
 > with a who-knows audit as the gate (5–10 ownership questions per sample corpus against chunks-only
 > retrieval in R33.3; option b is the fallback). D6: PRD folds into `reference`; bucket assignment stays
 > fully deterministic (markers → `record`, everything else → `reference`); per-source manual override is
