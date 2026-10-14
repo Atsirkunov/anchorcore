@@ -104,6 +104,11 @@ pub struct SearchRequest {
     /// R36.6: code-symbol filter — keeps hits whose section title/path names
     /// the symbol (case-insensitive substring; section-less chunks drop out).
     pub symbol: Option<String>,
+    /// R33.5: retrieval mode — `"exact"` selects literal-substring search
+    /// (case-sensitive, document order, unranked, no embedding call);
+    /// absent/unknown means ranked hybrid (env-consistent: a typo never
+    /// changes the leg). Same scope/gate/filter contract either way.
+    pub mode: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -755,10 +760,13 @@ pub async fn search(
     req: SearchRequest,
     data_dir: &str,
 ) -> SearchResponse {
+    // R33.5: exact mode skips the embedding call entirely (nothing to
+    // rank) and reports its own leg — never hybrid/keyword_only.
+    let is_exact = is_exact_mode(&req.mode);
     let query_for_embed = req.query.clone();
-    let query_embedding = embedder.embed_query(&query_for_embed).await;
+    let query_embedding = embed_unless_exact(embedder, &query_for_embed, is_exact).await;
     // B58 strict: None when remote unavailable → honest keyword-only.
-    let retrieval = if query_embedding.is_some() { "hybrid" } else { "keyword_only" };
+    let retrieval = retrieval_label(is_exact, query_embedding.is_some());
     let data_dir_string = data_dir.to_string();
     let data_dir_for_block = data_dir_string.clone();
     let query = req.query.clone();
@@ -783,7 +791,13 @@ pub async fn search(
     let hits = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir_for_block);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
-        search_sync_inner(&conn, &query, k, project_id, public_only, query_embedding, &filters)
+        // Same downstream tail (provider gate, pagination, hit mapping) —
+        // only the candidate leg differs.
+        if is_exact {
+            exact_search_sync_inner(&conn, &query, k, project_id, public_only, &filters)
+        } else {
+            search_sync_inner(&conn, &query, k, project_id, public_only, query_embedding, &filters)
+        }
     })
     .await
     .unwrap_or_default();
@@ -1064,6 +1078,50 @@ fn search_sync_inner(
     apply_search_filters(conn, hits, filters, k)
 }
 
+/// R33.5: `"exact"` (case-insensitive, like the env filter) selects the
+/// literal-substring leg; anything else means ranked.
+fn is_exact_mode(mode: &Option<String>) -> bool {
+    mode.as_deref().map(|m| m.trim().eq_ignore_ascii_case("exact")).unwrap_or(false)
+}
+
+/// R33.5: exact mode needs no embedding (nothing to rank) — skip the call.
+async fn embed_unless_exact(embedder: &Embedder, query: &str, is_exact: bool) -> Option<Vec<f32>> {
+    if is_exact { None } else { embedder.embed_query(query).await }
+}
+
+/// R33.5: exact mode reports its own leg — never hybrid/keyword_only.
+fn retrieval_label(is_exact: bool, embedded: bool) -> &'static str {
+    if is_exact {
+        "exact"
+    } else if embedded {
+        "hybrid"
+    } else {
+        "keyword_only"
+    }
+}
+
+/// R33.5: exact leg of `/qa/search` — same scope/gate/filter contract as
+/// the ranked leg, but the literal-substring candidate set (no embedding,
+/// no RRF, no parent expansion or filename boost: the matching leaf
+/// chunks themselves, in document order).
+fn exact_search_sync_inner(
+    conn: &Connection,
+    needle: &str,
+    k: usize,
+    project_id: Option<i64>,
+    public_only: bool,
+    filters: &SearchFilters,
+) -> Vec<crate::retrieval::Hit> {
+    let scope = project_scope(conn, project_id, public_only);
+    let fetch_k = if filters.any() { (k * 5).clamp(k, 50) } else { k };
+    let cfg = RetrievalConfig::from_env_with_top_k(fetch_k);
+    let hits = crate::retrieval::exact_search(conn, needle, scope.as_ref(), fetch_k, cfg.qa_exclude_disputed);
+    if !filters.any() {
+        return hits;
+    }
+    apply_search_filters(conn, hits, filters, k)
+}
+
 fn turn_text(turn: &AskTurn) -> String {
     format!("{}: {}", turn.role, turn.content)
 }
@@ -1324,7 +1382,7 @@ mod tests {
         let embedder = Arc::new(Embedder::new(settings.clone()));
         // Default settings: example remote base is untrusted (no ANCHOR_CLOUD_TRUST here).
         settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
-        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None };
+        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
         let res = search(&settings, &embedder, req, &data_dir).await;
         assert!(res.hits.is_empty(), "sensitive hit must be withheld, got {:?}", res.hits.len());
         assert_eq!(res.refusal.as_deref(), Some("gated_provider"));
@@ -1339,7 +1397,7 @@ mod tests {
         // Localhost is trusted in every environment — deterministic trust.
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         assert!(is_answer_trusted(&settings));
-        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None };
+        let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
         let res = search(&settings, &embedder, req, &data_dir).await;
         assert!(!res.hits.is_empty(), "trusted provider must see the sensitive hit");
         assert!(res.refusal.is_none());
@@ -1352,18 +1410,18 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
-        let base = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None };
+        let base = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
         let compact = search(&settings, &embedder, base, &data_dir).await;
         assert!(!compact.hits.is_empty());
         assert!(compact.hits.iter().all(|h| h.content.is_empty()), "default must omit chunk bytes");
         assert!(compact.hits.iter().all(|h| !h.summary.is_empty() && !h.source_ref.is_empty()));
         assert!(compact.hits.iter().all(|h| !h.item_title.is_empty()), "item_title must carry provenance");
         assert!(compact.hits.iter().all(|h| h.path == "docs/f.md"), "flat docs fall back to the item path");
-        let full_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("summary,source_ref,score,content".to_string()), cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None };
+        let full_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("summary,source_ref,score,content".to_string()), cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
         let full = search(&settings, &embedder, full_req, &data_dir).await;
         assert!(full.hits.iter().all(|h| !h.content.is_empty()), "fields incl. content must return bytes");
         // agent-friendly alias: include_content=true is fields=content
-        let alias_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: Some(true), env: None, kind: None, path_prefix: None, symbol: None };
+        let alias_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: Some(true), env: None, kind: None, path_prefix: None, symbol: None, mode: None };
         let alias = search(&settings, &embedder, alias_req, &data_dir).await;
         assert!(alias.hits.iter().all(|h| !h.content.is_empty()), "include_content=true must return bytes");
     }
@@ -1375,7 +1433,7 @@ mod tests {
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         // Both seeded chunks share these words, so one page of 1 must leave a next cursor.
-        let mk = |cursor: Option<usize>| SearchRequest { query: "quarterly report numbers".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("all".to_string()), cursor, limit: Some(1), include_content: None, env: None, kind: None, path_prefix: None, symbol: None };
+        let mk = |cursor: Option<usize>| SearchRequest { query: "quarterly report numbers".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("all".to_string()), cursor, limit: Some(1), include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
         let p1 = search(&settings, &embedder, mk(None), &data_dir).await;
         assert_eq!(p1.hits.len(), 1, "page size 1 must return exactly one hit");
         let next = p1.next_cursor.expect("first page must carry a cursor when hits remain");
@@ -1419,7 +1477,7 @@ mod tests {
         assert_eq!(res.mode, "none");
         assert!(res.citations.is_empty(), "no-match ask must cite nothing");
         assert_eq!(res.retrieval, "keyword_only");
-        let sreq = SearchRequest { query: "xqzt blorpt wumpus".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None };
+        let sreq = SearchRequest { query: "xqzt blorpt wumpus".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
         let sres = search(&settings, &embedder, sreq, &data_dir).await;
         assert!(sres.hits.is_empty(), "no-match search must return no hits");
     }
@@ -1430,10 +1488,131 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
-        let req = SearchRequest { query: "sunshine".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None };
+        let req = SearchRequest { query: "sunshine".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
         let res = search(&settings, &embedder, req, &data_dir).await;
         assert!(!res.hits.is_empty(), "keyword search must find the seeded chunk");
         assert_eq!(res.retrieval, "keyword_only");
+    }
+
+    // --- R33.5: exact-string search over /qa/search ---
+
+    fn exact_req(query: &str) -> SearchRequest {
+        SearchRequest { query: query.to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("all".to_string()), cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: Some("exact".to_string()) }
+    }
+
+    #[test]
+    fn exact_mode_selector_is_case_insensitive_and_defaults_ranked() {
+        assert!(!is_exact_mode(&None));
+        assert!(is_exact_mode(&Some("exact".to_string())));
+        assert!(is_exact_mode(&Some("  EXACT ".to_string())));
+        assert!(!is_exact_mode(&Some("fuzzy".to_string())), "unknown modes stay ranked, like unknown env/kind unfilter");
+        assert!(!is_exact_mode(&Some(String::new())));
+    }
+
+    #[tokio::test]
+    async fn search_exact_mode_returns_unranked_verbatim_hits() {
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        let res = search(&settings, &embedder, exact_req("moonvault"), &data_dir).await;
+        assert_eq!(res.hits.len(), 1, "only the sensitive chunk holds the needle");
+        assert_eq!(res.retrieval, "exact");
+        let h = &res.hits[0];
+        assert_eq!(h.score, 1.0, "unranked uniform score");
+        assert_eq!(h.content, "quarterly moonvault report numbers", "verbatim stored bytes");
+        assert!(h.summary.contains("moonvault"), "summary centers on the match: {}", h.summary);
+        assert_eq!(h.path, "docs/f.md", "flat docs fall back to the item path");
+        assert!(h.item_id.is_some() && h.chunk_id.is_some(), "exact hits drill down like ranked ones");
+        assert!(res.refusal.is_none() && res.blocked == 0);
+        // Case-sensitive at the API boundary too.
+        let miss = search(&settings, &embedder, exact_req("Moonvault"), &data_dir).await;
+        assert!(miss.hits.is_empty(), "Moonvault (capital M) is absent verbatim");
+        assert_eq!(miss.retrieval, "exact");
+    }
+
+    #[tokio::test]
+    async fn search_exact_mode_gated_provider_refusal() {
+        // Gating parity with the ranked leg: same gate, same tail.
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
+        let res = search(&settings, &embedder, exact_req("moonvault"), &data_dir).await;
+        assert!(res.hits.is_empty(), "sensitive hit must be withheld, got {:?}", res.hits.len());
+        assert_eq!(res.refusal.as_deref(), Some("gated_provider"));
+        assert!(res.blocked >= 1);
+        assert_eq!(res.retrieval, "exact");
+        // The ordinary-source needle still reads through the same gate.
+        let ok = search(&settings, &embedder, exact_req("sunshine"), &data_dir).await;
+        assert_eq!(ok.hits.len(), 1);
+        assert!(ok.refusal.is_none());
+    }
+
+    #[tokio::test]
+    async fn search_exact_mode_scope_parity() {
+        // Project scope + public_only cut the exact leg like the ranked one.
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        let ord: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO projects (name) VALUES ('p1')", []).unwrap();
+        let pid: i64 = conn.last_insert_rowid();
+        conn.execute("INSERT INTO project_sources (project_id, source_id) VALUES (?1,?2)", rusqlite::params![pid, ord]).unwrap();
+        // Both seeded chunks hold "quarterly"; the project holds one source.
+        let mut scoped = exact_req("quarterly");
+        scoped.project_id = Some(pid);
+        let res = search(&settings, &embedder, scoped, &data_dir).await;
+        assert_eq!(res.hits.len(), 1);
+        assert!(res.hits[0].content.contains("sunshine"));
+        // No public sources seeded: public_only empties without a refusal
+        // (empty scope, not a gate — same as ranked).
+        let mut pub_only = exact_req("quarterly");
+        pub_only.public_only = Some(true);
+        let pub_res = search(&settings, &embedder, pub_only, &data_dir).await;
+        assert!(pub_res.hits.is_empty());
+        assert!(pub_res.refusal.is_none());
+    }
+
+    #[tokio::test]
+    async fn search_exact_mode_unknown_mode_stays_ranked() {
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        let mut req = exact_req("sunshine");
+        req.mode = Some("fuzzy".to_string());
+        let res = search(&settings, &embedder, req, &data_dir).await;
+        assert_eq!(res.retrieval, "keyword_only", "unknown mode falls back to the ranked leg");
+        assert!(!res.hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_exact_mode_cap_and_pagination() {
+        // Both seeded chunks hold "quarterly": k caps, cursor walks.
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        let mut capped = exact_req("quarterly");
+        capped.k = Some(1);
+        let cap = search(&settings, &embedder, capped, &data_dir).await;
+        assert_eq!(cap.hits.len(), 1, "k caps the exact leg like the ranked one");
+        assert!(cap.next_cursor.is_none(), "a capped fetch has no second page");
+        // Fetch-wide, then walk one per page.
+        let mut p1req = exact_req("quarterly");
+        p1req.limit = Some(1);
+        let p1 = search(&settings, &embedder, p1req, &data_dir).await;
+        assert_eq!(p1.hits.len(), 1);
+        let next = p1.next_cursor.expect("one more exact hit remains");
+        let mut page2 = exact_req("quarterly");
+        page2.cursor = Some(next);
+        page2.limit = Some(1);
+        let p2 = search(&settings, &embedder, page2, &data_dir).await;
+        assert_eq!(p2.hits.len(), 1);
+        assert!(p2.next_cursor.is_none(), "second page exhausts the two exact hits");
+        assert_ne!(p1.hits[0].chunk_id, p2.hits[0].chunk_id);
     }
 
     #[tokio::test]
@@ -1612,6 +1791,7 @@ mod tests {
             kind: None,
             path_prefix: None,
             symbol: None,
+            mode: None,
         };
         let plain = search(&settings, &embedder, mk(None), &data_dir).await;
         assert_eq!(plain.hits.len(), 2, "both classes match the shared terms; the entity row stays out");
@@ -1663,6 +1843,7 @@ mod tests {
             kind: None,
             path_prefix: None,
             symbol: None,
+            mode: None,
         };
         assert!(SearchFilters::from_request(&req).any());
         let req_none = SearchRequest {
@@ -1678,6 +1859,7 @@ mod tests {
             kind: Some("banana".to_string()),
             path_prefix: None,
             symbol: None,
+            mode: None,
         };
         assert!(!SearchFilters::from_request(&req_none).any(), "unknown-only kind normalizes away");
     }
@@ -1765,6 +1947,7 @@ mod tests {
             kind: kind.map(|s| s.to_string()),
             path_prefix: path_prefix.map(|s| s.to_string()),
             symbol: symbol.map(|s| s.to_string()),
+            mode: None,
         }
     }
 
@@ -1877,6 +2060,7 @@ mod tests {
             kind: kind.map(|s| s.to_string()),
             path_prefix: prefix.map(|s| s.to_string()),
             symbol: symbol.map(|s| s.to_string()),
+            mode: None,
         };
         // Four-way: only the live doc chunk under src/ in the symbol section.
         let four = search(&settings, &embedder, req(Some("live"), Some("document"), Some("src/"), Some("fetch_user")), &data_dir).await;
@@ -1939,7 +2123,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
-        let req = SearchRequest { query: "tungsten invoice".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("all".to_string()), cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None };
+        let req = SearchRequest { query: "tungsten invoice".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("all".to_string()), cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
         let res = search(&settings, &embedder, req, &data_dir).await;
         assert_eq!(res.hits.len(), 2, "two Billing matches merge into one parent");
         let bill = res.hits.iter().find(|h| h.breadcrumb == "Billing").expect("billing parent");

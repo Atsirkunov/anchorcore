@@ -201,7 +201,8 @@ struct SearchFilterArgs<'a> {
 
 /// R36.6: `/qa/search` body for MCP search — filters pass through
 /// verbatim; the server normalizes (unknown kinds unfilter, like `env`).
-fn build_search_payload(query: &str, k: usize, project_id: Option<i64>, public_only: bool, filters: &SearchFilterArgs) -> Value {
+/// R33.5: `mode` passes through the same way (unknown modes stay ranked).
+fn build_search_payload(query: &str, k: usize, project_id: Option<i64>, public_only: bool, filters: &SearchFilterArgs, mode: Option<&str>) -> Value {
     // The agent composes from these bytes, so opt back into full content
     // (server default is compact citable hits; verbatim drill-down is get_entity).
     let mut payload = json!({"query": query.trim(), "k": k, "fields": "all"});
@@ -210,6 +211,9 @@ fn build_search_payload(query: &str, k: usize, project_id: Option<i64>, public_o
     }
     if public_only {
         payload["public_only"] = json!(true);
+    }
+    if let Some(m) = mode {
+        payload["mode"] = json!(m);
     }
     if let Some(e) = filters.env {
         payload["env"] = json!(e);
@@ -226,14 +230,14 @@ fn build_search_payload(query: &str, k: usize, project_id: Option<i64>, public_o
     payload
 }
 
-async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only: bool, filters: SearchFilterArgs<'_>) -> Result<Value, String> {
+async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only: bool, filters: SearchFilterArgs<'_>, mode: Option<&str>) -> Result<Value, String> {
     if query.trim().is_empty() {
         return Err("query must be a non-empty string".to_string());
     }
     if k < 1 || k > 50 {
         return Err("k must be between 1 and 50".to_string());
     }
-    let payload = build_search_payload(query, k, project_id, public_only, &filters);
+    let payload = build_search_payload(query, k, project_id, public_only, &filters, mode);
     let result = http_call("POST", "/qa/search", Some(payload)).await?;
     audit_mcp("search", &format!("q={} k={} public_only={} hits={}", query.chars().take(80).collect::<String>(), k, public_only, result.get("hits").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0)));
     let hits: Vec<Value> = result.get("hits").and_then(|v| v.as_array()).cloned().unwrap_or_default().into_iter().map(|h| search_hit_json(&h)).collect();
@@ -340,7 +344,8 @@ fn tool_defs() -> Value {
                     "env": {"type": "string", "description": "Optional env class filter: 'live' or 'test' (path- or header-derived; test fixtures rank below live hits by default, not hidden)"},
                     "kind": {"type": "string", "description": "Optional chunk-kind filter: comma list from document,entity,distilled (unknown values unfilter)"},
                     "path_prefix": {"type": "string", "description": "Optional item-path prefix filter: relative (cfg/) or absolute (/data/corpus/cfg) via the owning folder source's root"},
-                    "symbol": {"type": "string", "description": "Optional code-symbol filter: keeps hits whose section title/path names the symbol"}
+                    "symbol": {"type": "string", "description": "Optional code-symbol filter: keeps hits whose section title/path names the symbol"},
+                    "mode": {"type": "string", "description": "Optional retrieval mode: 'exact' matches the query as a literal case-sensitive substring in document order (unranked, score 1.0); omit for ranked hybrid"}
                 },
                 "required": ["query"]
             }
@@ -427,7 +432,8 @@ async fn handle_request(req: Request) -> Option<Response> {
                         path_prefix: args.get("path_prefix").and_then(|v| v.as_str()),
                         symbol: args.get("symbol").and_then(|v| v.as_str()),
                     };
-                    tool_search(q, k, pid, pub_only, filters).await
+                    let mode = args.get("mode").and_then(|v| v.as_str());
+                    tool_search(q, k, pid, pub_only, filters, mode).await
                 }
                 "get_entity" => {
                     let eid = args.get("entity_id").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -507,7 +513,7 @@ mod tests {
     #[test]
     fn search_payload_passes_filters_through() {
         let full = SearchFilterArgs { env: Some("live"), kind: Some("document,entity"), path_prefix: Some("cfg/"), symbol: Some("fetch_user") };
-        let v = build_search_payload("  acme ledger ", 5, Some(3), true, &full);
+        let v = build_search_payload("  acme ledger ", 5, Some(3), true, &full, None);
         assert_eq!(v.get("query").and_then(|q| q.as_str()), Some("acme ledger"));
         assert_eq!(v.get("k").and_then(|k| k.as_u64()), Some(5));
         assert_eq!(v.get("fields").and_then(|f| f.as_str()), Some("all"));
@@ -519,10 +525,23 @@ mod tests {
         assert_eq!(v.get("symbol").and_then(|s| s.as_str()), Some("fetch_user"));
         // Absent filters stay absent — the server reads missing as unfiltered.
         let none = SearchFilterArgs { env: None, kind: None, path_prefix: None, symbol: None };
-        let bare = build_search_payload("q", 8, None, false, &none);
-        for key in ["project_id", "public_only", "env", "kind", "path_prefix", "symbol"] {
+        let bare = build_search_payload("q", 8, None, false, &none, None);
+        for key in ["project_id", "public_only", "env", "kind", "path_prefix", "symbol", "mode"] {
             assert!(bare.get(key).is_none(), "{key} must stay absent");
         }
+    }
+
+    #[test]
+    fn search_payload_passes_mode_through() {
+        // R33.5: exact mode rides the same payload (gating parity comes
+        // from the shared server path — public_only still travels with it).
+        let none = SearchFilterArgs { env: None, kind: None, path_prefix: None, symbol: None };
+        let v = build_search_payload("connectTimeout", 8, None, true, &none, Some("exact"));
+        assert_eq!(v.get("mode").and_then(|m| m.as_str()), Some("exact"));
+        assert_eq!(v.get("public_only").and_then(|p| p.as_bool()), Some(true));
+        assert_eq!(v.get("fields").and_then(|f| f.as_str()), Some("all"), "exact hits still carry bytes for the composing model");
+        let bare = build_search_payload("q", 8, None, false, &none, None);
+        assert!(bare.get("mode").is_none(), "absent mode stays absent (ranked)");
     }
 
     #[test]
@@ -552,7 +571,7 @@ mod tests {
         let defs = tool_defs();
         let search = defs.as_array().unwrap().iter().find(|t| t.get("name").and_then(|n| n.as_str()) == Some("search")).expect("search tool");
         let props = search.pointer("/inputSchema/properties").and_then(|p| p.as_object()).expect("properties");
-        for key in ["query", "k", "project_id", "public_only", "env", "kind", "path_prefix", "symbol"] {
+        for key in ["query", "k", "project_id", "public_only", "env", "kind", "path_prefix", "symbol", "mode"] {
             assert!(props.contains_key(key), "schema must advertise {key}");
         }
     }
