@@ -40,7 +40,12 @@ signature, manifest consistency, all-live fixture) gate CI.
 3. Add one or more `pairs` entries: `id`, natural-language `query`, and
    `expected` doc ids (more than one is allowed — e.g. the ADR-vs-
    lint-config pair — and scores partial credit).
-4. Run the table command and check the new row: fused must hit (it is
+4. Optional `heading` on a docs entry (R40.5): models production
+   `embed_input(chunks.path, content)` — the leaf chunk's *embedding
+   input* becomes `heading + "\n" + content` while FTS/snippet content
+   stays raw. Use it for continuation-chunk pairs (query terms in the
+   heading, absent from the bytes); docs without it embed bare content.
+5. Run the table command and check the new row: fused must hit (it is
    asserted), and each leg should behave as the pair intends.
 
 ## Term discipline (read before writing docs)

@@ -114,3 +114,11 @@ ADR log. Append newest first.
   - R30.5's "PII scan bounded" clause is resolved by deletion; its tag/empty-text clauses stand.
 
 ---
+
+## 2026-10-19 — R40.5: no silent mass re-embed for pre-1.0.28 bare vectors
+
+* **Decision:** Vectors embedded before R38.2 (1.0.28) keep their bare content-only bytes until a force re-sync re-chunks the item (which NULLs embeddings; the re-embed then uses heading-prefixed input). The scheduler backfill fills only NULL embeddings, likewise prefixed. No version-gated mass re-embed.
+* **Context:** Since R38.2 every embed path embeds `embed_input(chunks.path, content)` uniformly — the R40.5 filing premise ("PDFs embed bare") holds only for empty-path chunks (undetected structure → fallback windows) and for vectors stored before 1.0.28. A mass re-embed would re-bill/slow every upgrade for a gain most corpora get incrementally; force re-sync is the explicit refresh. Golden pair `rfp-escrow-01` pins the prefix gain on the vector leg.
+* **Consequences:** Recently synced sectioned docs carry prefixed vectors; older ones converge on next force re-sync. Any future embed-input format change reuses this rule (note, not migration) unless recall measurably requires otherwise.
+
+---

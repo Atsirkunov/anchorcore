@@ -1925,10 +1925,10 @@ mod tests {
         let mut stmt = conn.prepare("SELECT path FROM sections WHERE item_id=?1 ORDER BY id").unwrap();
         let paths: Vec<String> = stmt.query_map([iid], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
         assert!(paths.iter().any(|p| p == "(p. 1)"), "root section names its page: {paths:?}");
-        // (The `" > "` prefix is the prose splitter's empty-root parenting,
-        // pre-existing — the page suffix appends to whatever path exists.)
-        assert!(paths.iter().any(|p| p == " > Terms (p. 1)"), "page-1 section: {paths:?}");
-        assert!(paths.iter().any(|p| p == " > Scope (p. 2)"), "page-2 section: {paths:?}");
+        // (R40.5: the prose splitter no longer prefixes top-level paths with
+        // `" > "` — the page suffix appends to the bare heading instead.)
+        assert!(paths.iter().any(|p| p == "Terms (p. 1)"), "page-1 section: {paths:?}");
+        assert!(paths.iter().any(|p| p == "Scope (p. 2)"), "page-2 section: {paths:?}");
         let mut stmt = conn.prepare("SELECT content, path FROM chunks WHERE item_id=?1 AND kind='document' ORDER BY id").unwrap();
         let chunks: Vec<(String, String)> = stmt.query_map([iid], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(|r| r.ok()).collect();
         assert!(!chunks.is_empty());
@@ -1940,7 +1940,7 @@ mod tests {
             assert!(path.ends_with("(p. 1)") || path.ends_with("(p. 2)"), "chunk path carries its page: {path:?}");
         }
         assert!(chunks.iter().any(|(_, p)| p.is_empty()), "root chunks keep the empty-path file fallback: {chunks:?}");
-        assert!(chunks.iter().any(|(_, p)| p == " > Terms (p. 1)"), "sectioned chunks carry pages: {chunks:?}");
+        assert!(chunks.iter().any(|(_, p)| p == "Terms (p. 1)"), "sectioned chunks carry pages: {chunks:?}");
     }
 
     #[test]

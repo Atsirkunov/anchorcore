@@ -148,6 +148,12 @@ struct EvalDoc {
     file: String,
     title: String,
     summary: String,
+    /// R40.5: optional section heading. When present, the leaf chunk's
+    /// *embedding input* is `heading + "\n" + content` — modeling production
+    /// `markdown::embed_input(chunks.path, content)` (R38.2) — while FTS and
+    /// snippets still see the raw content. Pairs that put query terms in the
+    /// heading but not the body measure the vector-leg gain of the prefix.
+    heading: Option<String>,
 }
 
 struct EvalPair {
@@ -198,6 +204,7 @@ fn load_manifest() -> (Vec<EvalDoc>, Vec<EvalPair>) {
                 file: str_field(d, "file", &ctx),
                 title: str_field(d, "title", &ctx),
                 summary: str_field(d, "summary", &ctx),
+                heading: d.get("heading").and_then(|v| v.as_str()).map(|s| s.to_string()),
             }
         })
         .collect();
@@ -233,8 +240,9 @@ fn insert_chunk(
     kind: &str,
     source_ref: &str,
     content: &str,
+    embed_text: &str,
 ) -> i64 {
-    let embedding = embedder::pack_single(&hash_embed(content));
+    let embedding = embedder::pack_single(&hash_embed(embed_text));
     conn.execute(
         "INSERT INTO chunks (item_id, entity_id, source_ref, content, embedding, kind, section_id, level, path, is_pii, created_at) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, 0, '', 0, datetime('now'))",
         params![item_id, source_ref, content, embedding, kind, section_id],
@@ -257,8 +265,11 @@ fn insert_doc(conn: &Connection, source_id: i64, doc: &EvalDoc) {
     )
     .expect("insert section");
     let section_id = conn.last_insert_rowid();
-    insert_chunk(conn, item_id, section_id, "document", &doc.title, &content);
-    insert_chunk(conn, item_id, section_id, "section_summary", &doc.title, &doc.summary);
+    // R40.5: a declared heading prefixes the leaf *embedding input only*
+    // (production `embed_input` split); FTS/snippet content stays raw.
+    let leaf_embed = doc.heading.as_ref().map(|h| format!("{h}\n{content}")).unwrap_or_else(|| content.clone());
+    insert_chunk(conn, item_id, section_id, "document", &doc.title, &content, &leaf_embed);
+    insert_chunk(conn, item_id, section_id, "section_summary", &doc.title, &doc.summary, &doc.summary);
 }
 
 /// Fresh temp DB per test: real `init_db` migration chain (FTS triggers,

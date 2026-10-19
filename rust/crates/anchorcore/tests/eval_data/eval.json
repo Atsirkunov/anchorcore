@@ -78,6 +78,13 @@
       "file": "docs/rfp-direct-debits.md",
       "title": "RFP 8.2: Reversal notifications",
       "summary": "RFP 8.2: every Direct Debit carries a reversal notification schedule with reason rows."
+    },
+    {
+      "id": "rfp-escrow-timetable",
+      "file": "docs/rfp-escrow-timetable.md",
+      "title": "9.4 Escrow timetable",
+      "summary": "Escrow timetable: funds stay on hold through a three-stage release notice.",
+      "heading": "9.4 Escrow timetable — escrow timetable dates, final escrow timetable"
     }
   ],
   "pairs": [
@@ -184,6 +191,12 @@
       "query": "how does the CA cancellation process differ from the implemented code",
       "expected": ["rfp-direct-debits"],
       "notes": "R40.6 (1.0.29 field case): vocabulary mismatch — the RFP says 'reversal'/'Direct Debit', the query says 'cancellation'/'CA'. Misses every leg before synonym expansion; the keyword leg hits after and keyword slots carry it to fused."
+    },
+    {
+      "id": "rfp-escrow-01",
+      "query": "when is the escrow timetable",
+      "expected": ["rfp-escrow-timetable"],
+      "notes": "R40.5: continuation-chunk signal — 'escrow'/'timetable' live in the section heading, not the chunk bytes (production sections split so only the first chunk holds the heading line; the rest carry it via chunks.path into embed_input). The vector leg misses on bare content vectors and hits on heading-prefixed input; keyword/TOC stay dark (FTS is content-only, TOC leaf is keyword-gated without vec0)."
     }
   ]
 }

@@ -129,6 +129,17 @@ Code constants (need a rebuild; change only with a failing test in hand):
 - Mixed score scales: fixed by R40.2. Keyword-slot hits rescored into RRF
   range (the floor leg's 0.5/(60+rank) share) instead of raw BM25 (~14
   next to ~0.01); provenance keeps the real keyword rank.
+- Heading-prefixed vectors: since R38.2 every embed path
+  (`embed_chunks`, backup re-embed, scheduler backfill) embeds
+  `embed_input(chunks.path, content)` — breadcrumb + text — on every
+  sectioned doc type, not just markdown. R40.5 pinned it: the prose
+  splitter no longer emits leading-`" > "` paths, and the golden pair
+  `rfp-escrow-01` proves a continuation chunk (heading in path, not in
+  bytes) clears the vector leg only with the prefix. Backfill story:
+  vectors embedded before 1.0.28 are bare and stay bare — they refresh
+  only on force re-sync (re-chunk NULLs embeddings, re-embed prefixes
+  them); the scheduler backfill fills NULLs with prefixed input. No
+  silent mass re-embed (recorded 2026-10-19, `rust/docs/decisions.md`).
 - Still open: suspect detector duplicated pending reunification (R39.13,
   P3); cross-encoder reranker deferred (R39.11, owner call).
 
