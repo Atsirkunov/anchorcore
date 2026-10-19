@@ -852,9 +852,10 @@ impl ClassifyCtx {
             || crate::extract::is_config_filename(&self.base_ref)
     }
 
-    async fn classify_windows(&mut self) -> Result<usize, String> {
-        // B26/R22.1: per-window LLM extraction (rules fallback inside
-        // `Classifier::classify`), hash-skipped and bounded-concurrency.
+    /// B26: hash-skip planning — which windows need (re)classification.
+    /// Split out of `classify_windows` (gate hygiene: the R40.7 vocab hook
+    /// pushed the orchestrator past CCN 15). Pure scan, no I/O.
+    fn plan_window_jobs(&mut self) -> Vec<(i64, String, String)> {
         let mut jobs: Vec<(i64, String, String)> = Vec::new();
         for (idx, window) in self.windows.iter().enumerate() {
             let index = (idx + 1) as i64;
@@ -872,6 +873,13 @@ impl ClassifyCtx {
             };
             jobs.push((index, source_ref, window.clone()));
         }
+        jobs
+    }
+
+    async fn classify_windows(&mut self) -> Result<usize, String> {
+        // B26/R22.1: per-window LLM extraction (rules fallback inside
+        // `Classifier::classify`), hash-skipped and bounded-concurrency.
+        let jobs = self.plan_window_jobs();
         if jobs.is_empty() {
             return Ok(0);
         }
