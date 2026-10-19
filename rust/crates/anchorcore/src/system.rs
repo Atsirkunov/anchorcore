@@ -632,6 +632,19 @@ pub fn spawn_update_check(state: AppState) {
     });
 }
 
+// ── App-served setup skill (R23.3) ──────────────────────────────────────────
+//
+// Release zips ship only the binary, so zip users have no skill files on
+// disk — the app serves its own setup SKILL.md embedded at compile time
+// (`include_str!`, same mechanism as the SQL migrations in `db.rs`), so an
+// agent can fetch it over HTTP with no git clone.
+const SETUP_SKILL_MD: &str = include_str!("../../../../.agents/skills/anchorcore-setup/SKILL.md");
+
+/// `GET /system/skill` — the embedded setup skill as `text/markdown`.
+pub async fn skill_handler() -> ([(axum::http::header::HeaderName, &'static str); 1], &'static str) {
+    ([(axum::http::header::CONTENT_TYPE, "text/markdown; charset=utf-8")], SETUP_SKILL_MD)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -699,6 +712,22 @@ mod tests {
         for off in [None, Some(String::new()), Some("0".to_string()), Some("false".to_string())] {
             assert!(!truthy_setting(off.clone()), "{off:?} should be off");
         }
+    }
+
+    fn repo_skill_bytes(name: &str) -> Vec<u8> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../../.agents/skills/{name}/SKILL.md"));
+        std::fs::read(&path).unwrap()
+    }
+
+    /// R23.3: the served setup skill is byte-identical to the repo file.
+    #[tokio::test]
+    async fn skill_endpoint_serves_embedded_setup_skill_byte_identical() {
+        let resp = axum::response::IntoResponse::into_response(skill_handler().await);
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()["content-type"], "text/markdown; charset=utf-8");
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        assert_eq!(body.as_ref(), SETUP_SKILL_MD.as_bytes());
+        assert_eq!(body.as_ref(), repo_skill_bytes("anchorcore-setup").as_slice());
     }
 
     /// The trust contract: a plain GET must never perform the GitHub request.

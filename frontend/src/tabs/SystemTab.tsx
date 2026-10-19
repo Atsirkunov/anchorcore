@@ -238,6 +238,7 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
       <McpConnectCard />
       <BackupCard />
       <UpdateCard onGoSettings={onConfigure} />
+      <AgentSkillCard />
 
       <h3 style={{ marginBottom: 8 }}>Errors & warnings</h3>
       {events.length === 0 ? (
@@ -299,6 +300,67 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+function AgentSkillCard() {
+  const [copied, setCopied] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const copy = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const text = await api.fetchSkill();
+      await navigator.clipboard?.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const download = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const text = await api.fetchSkill();
+      const url = URL.createObjectURL(new Blob([text], { type: "text/markdown" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "anchorcore-setup-SKILL.md";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ ...styles.card, marginBottom: 16 }}>
+      <div style={styles.cardTitle}>Agent setup skill</div>
+      <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 8 }}>
+        Hand this to your coding agent to install, configure, and connect AnchorCore. Served by this app — no git clone needed.
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button onClick={copy} disabled={busy} style={styles.button}>
+          {copied ? "Copied!" : "Copy skill"}
+        </button>
+        <button
+          onClick={download}
+          disabled={busy}
+          style={{ ...styles.button, background: theme.bgHover, border: `1px solid ${theme.border}` }}
+        >
+          Download SKILL.md
+        </button>
+      </div>
+      {error && <div style={{ fontSize: 12, color: theme.red, marginTop: 6 }}>{error}</div>}
     </div>
   );
 }
