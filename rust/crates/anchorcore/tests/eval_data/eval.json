@@ -72,6 +72,12 @@
       "file": "config/flags.json",
       "title": "flags.json: feature flags",
       "summary": "Feature flag list: the flag that gates the new checkout flow."
+    },
+    {
+      "id": "rfp-direct-debits",
+      "file": "docs/rfp-direct-debits.md",
+      "title": "RFP 8.2: Reversal notifications",
+      "summary": "RFP 8.2: every Direct Debit carries a reversal notification schedule with reason rows."
     }
   ],
   "pairs": [
@@ -172,6 +178,12 @@
       "query": "what did the api design sync decide about rate limits",
       "expected": ["api-design-sync"],
       "notes": "Prose notes; 'api' is shared but decide/rate/limits/sync/design converge only here."
+    },
+    {
+      "id": "rfp-reversal-01",
+      "query": "how does the CA cancellation process differ from the implemented code",
+      "expected": ["rfp-direct-debits"],
+      "notes": "R40.6 (1.0.29 field case): vocabulary mismatch — the RFP says 'reversal'/'Direct Debit', the query says 'cancellation'/'CA'. Misses every leg before synonym expansion; the keyword leg hits after and keyword slots carry it to fused."
     }
   ]
 }

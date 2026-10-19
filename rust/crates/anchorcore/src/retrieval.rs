@@ -60,13 +60,52 @@ fn query_terms(question: &str) -> Vec<String> {
         .collect()
 }
 
+/// R40.6: curated synonym clusters for the FTS keyword leg only — never the
+/// vector leg, never snippets (`query_terms` stays unexpanded). A query term
+/// that is a member of a cluster pulls the cluster's other members into the
+/// FTS `OR` query. Every cluster cites the eval pair that justifies it; the
+/// golden set (`tests/eval_data/eval.json`) is the immune system — all
+/// existing pairs must stay green. R40.7 merges corpus-extracted vocabulary
+/// into this same expansion path.
+pub const SYNONYM_CLUSTERS: &[&[&str]] = &[
+    // Pair `rfp-reversal-01` (1.0.29 field case): the RFP says "reversal",
+    // users ask about "cancellation". Both directions expand.
+    &[
+        "cancel", "cancelled", "cancelling", "cancellation", "cancellations", "reverse",
+        "reversed", "reversing", "reversal", "reversals", "withdraw", "withdrawal", "withdrawals",
+    ],
+    // Pair `rfp-reversal-01`: the query's "CA" is the doc's "Corporate
+    // Action". Phrased as one unit so a loose "action" never matches —
+    // that would be over-expansion (`action` is everywhere).
+    &["ca", "direct-debit"],
+];
+
+/// Expand FTS terms with curated synonyms (R40.6). Original terms keep
+/// their order and come first; synonyms append deduped.
+fn expand_fts_terms(terms: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = terms.to_vec();
+    for cluster in SYNONYM_CLUSTERS {
+        if !terms.iter().any(|t| cluster.contains(&t.as_str())) {
+            continue;
+        }
+        for syn in *cluster {
+            if !out.iter().any(|t| t == syn) {
+                out.push((*syn).to_string());
+            }
+        }
+    }
+    out
+}
+
 /// Mirrors `answer_engine.py:71` _fts_match_query — R8.2: Unicode-aware (was [a-z0-9_])
+/// R40.6: terms expand through [`SYNONYM_CLUSTERS`] before the `OR` join.
 pub fn fts_match_query(question: &str) -> Option<String> {
     let terms = query_terms(question);
     if terms.is_empty() {
         return None;
     }
-    Some(terms.iter().map(|t| format!("\"{}\"", t)).collect::<Vec<_>>().join(" OR "))
+    let expanded = expand_fts_terms(&terms);
+    Some(expanded.iter().map(|t| format!("\"{}\"", t)).collect::<Vec<_>>().join(" OR "))
 }
 
 /// Earliest query-term occurrence in lowercased `hay`: byte offset + term char len.
@@ -2589,6 +2628,40 @@ mod tests {
     #[test]
     fn fts_query() {
         assert_eq!(fts_match_query("who knows about Phoenix?"), Some("\"knows\" OR \"phoenix\"".to_string()));
+        assert_eq!(fts_match_query("the and or"), None);
+    }
+
+    #[test]
+    fn synonym_expansion_pulls_cluster_members() {
+        // R40.6: "cancellation" expands to the cancel/reverse/withdraw family;
+        // originals first, synonyms appended deduped.
+        let q = fts_match_query("how does cancellation work").expect("terms");
+        assert!(q.starts_with("\"cancellation\" OR \"work\""), "originals first: {q}");
+        for syn in ["cancel", "reversal", "reverse", "withdrawal"] {
+            assert!(q.contains(&format!("\"{syn}\"")), "missing synonym {syn}: {q}");
+        }
+        // Both directions: "reversal" pulls "cancellation" back.
+        let back = fts_match_query("reversal notifications").expect("terms");
+        assert!(back.contains("\"cancellation\""), "reverse direction: {back}");
+    }
+
+    #[test]
+    fn synonym_expansion_acronym_stays_phrased() {
+        // R40.6: "CA" expands to the "direct-debit" phrase — a loose
+        // "action" term would over-match (it is everywhere).
+        let q = fts_match_query("the CA process").expect("terms");
+        assert!(q.contains("\"direct-debit\""), "phrased acronym: {q}");
+        assert!(!q.split(" OR ").any(|t| t == "\"action\""), "no loose action: {q}");
+        assert!(!q.split(" OR ").any(|t| t == "\"corporate\""), "no loose corporate: {q}");
+    }
+
+    #[test]
+    fn synonym_expansion_leaves_other_queries_alone() {
+        // R40.6 immune check at the unit level: no cluster member, no change.
+        assert_eq!(
+            fts_match_query("who knows about Phoenix?"),
+            Some("\"knows\" OR \"phoenix\"".to_string())
+        );
         assert_eq!(fts_match_query("the and or"), None);
     }
 
