@@ -254,12 +254,13 @@ jobs:
               $same = ($served.Length -eq $repo.Length) -and (-not (Compare-Object $served $repo -SyncWindow 0))
               if (-not $same) { throw "FAULT: /system/skills/$skill bytes differ from the repo SKILL.md" }
             }
-            & curl.exe -sf http://127.0.0.1:8129/system/skills/nope -o NUL 2>$null
-            if ($LASTEXITCODE -eq 0) { throw "FAULT: unknown skill did not 404" }
+            $code = & curl.exe -s -o NUL -w "%{http_code}" http://127.0.0.1:8129/system/skills/nope 2>$null
+            if ($code -ne "404") { throw "FAULT: /system/skills/nope returned [$code], expected 404" }
             Write-Host "ok (windows): /system/skills/:name serves setup + search byte-identical"
           } finally {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           }
+          exit 0
 
       - name: Upload Rust Windows
         uses: actions/upload-artifact@v4
