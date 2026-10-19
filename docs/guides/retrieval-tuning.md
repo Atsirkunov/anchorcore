@@ -43,6 +43,11 @@ Env vars (effective at call time, no restart):
   scales scores — ordering-only since R33.3.)
 - `ANCHOR_KEYWORD_SLOTS` (2) - reserved tail slots for top floor-keyword
   hits locked out by fusion; `0` disables (R39.2).
+- `ANCHOR_TYPE_SLOTS` (2) - reserved tail slots for the best below-cut
+  hit of each doc kind (`doc_type`) missing from the cut, so sparse
+  kinds survive ADR/code crowding; `0` disables (R40.4). Eviction
+  prefers duplicated-kind tail (singleton kinds survive); when
+  singletons cover the whole tail, keyword slots win the collision.
 - `ANCHOR_MIN_RELEVANCE_COSINE` (0.50) - vector-cosine floor for evidence
   with no BM25 match; below it on every hit returns empty (R39.3).
 - `ANCHOR_AUTHORITY_TIERS` (on) - set `0`/`false` to disable the (env, tier) ordering partition (R39.7).
