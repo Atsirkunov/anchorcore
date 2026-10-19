@@ -25,8 +25,10 @@ RUN apt-get update \
 WORKDIR /src
 COPY rust/ rust/
 # R23.6: skills are baked in via include_str! (system.rs, skills_setup.rs) —
-# without this the builder fails on a missing file. Any new served skill
-# needs no change here (whole dir), but a new include OUTSIDE rust/ does.
+# without this the builder fails on a missing file. A newly SERVED skill
+# needs no change here (whole dir) but must be re-included in
+# Dockerfile.dockerignore (context filter); same for any new include
+# OUTSIDE rust/.
 COPY .agents/skills/ .agents/skills/
 COPY --from=frontend /src/frontend/dist frontend/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry \

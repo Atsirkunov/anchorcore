@@ -1,8 +1,19 @@
 # Build context filter for hosting/Dockerfile (BuildKit: <Dockerfile>.dockerignore).
-# Keeps the context small — only frontend/ + rust/ are copied in.
+# Keeps the context small — only frontend/ + rust/ + the served skills are copied in.
 .git
 .github
 .agents
+# R23.6: the served skills bake into the binary via include_str!, so the
+# context must carry them. Re-including under an ignored parent requires
+# re-including each level (a file under an excluded dir stays excluded).
+!.agents/
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/anchorcore-setup/
+!.agents/skills/anchorcore-search/
+!.agents/skills/anchorcore-setup/SKILL.md
+!.agents/skills/anchorcore-search/SKILL.md
 .claude
 agent
 docs
