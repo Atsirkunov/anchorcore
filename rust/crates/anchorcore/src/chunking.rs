@@ -344,57 +344,71 @@ fn numbered_heading_level(s: &str) -> i32 {
     1
 }
 
-/// TOC ghost-section suppression (R39.9): PDF contents pages (`8.1 Detection
-/// ... 23`) otherwise become near-empty ghost sections next to the real ones,
-/// because the numbered/ALL-CAPS classifier section-izes every entry line.
-/// A blank-delimited block is a contents run when it holds at least
-/// `TOC_MIN_ENTRIES` page-numbered entries at `>= 1/2` density; every line of
-/// a flagged block stays prose (bytes kept, chunked normally) and the
-/// `Contents`-style header above the block is suppressed with it. Real
-/// sections survive: their headings carry no trailing page number, and a lone
-/// digit-ending heading never reaches the run threshold on its own.
+/// TOC ghost-section suppression (R39.9, sparse-hardened R40.3): PDF contents
+/// pages (`8.1 Detection ... 23`) otherwise become near-empty ghost sections
+/// next to the real ones, because the numbered/ALL-CAPS classifier
+/// section-izes every entry line. Detection slides windows over the
+/// non-blank line sequence (blank-delimited blocks miss sparse TOCs whose
+/// entries are blank-separated — the common PDF-extraction shape): a window
+/// flags when it holds at least `TOC_MIN_ENTRIES` page-numbered entries at
+/// `>= 1/2` density within a local span. Flagged lines keep their bytes but
+/// never open sections (chunked as normal prose); a `Contents`-style header
+/// above a run is suppressed with it. Only would-be headings are ever
+/// flagged (only they can ghost — wrapped continuations are harmless prose
+/// either way). Real sections survive: their headings carry no trailing page
+/// number, lone digit-ending headings never reach the threshold, and
+/// scattered ones never share a local span.
 const TOC_MIN_ENTRIES: usize = 3;
+const TOC_MAX_WINDOW: usize = 8;
 
 /// Pre-scan: one flag per line — `true` keeps the line's bytes but skips
-/// section-izing it. Blocks are maximal blank-delimited runs.
+/// section-izing it. Entry probes run once per non-blank line; windows of
+/// 3..=8 consecutive non-blank lines flag local runs (subsumes the old
+/// dense-block rule — a dense run is a window with span == size - 1).
 fn toc_suppressed(lines: &[&str]) -> Vec<bool> {
     let mut out = vec![false; lines.len()];
-    let mut start = 0;
-    while start < lines.len() {
-        if lines[start].trim().is_empty() {
-            start += 1;
-            continue;
+    let nonblank: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty())
+        .map(|(i, _)| i)
+        .collect();
+    let entry: Vec<bool> = nonblank.iter().map(|&i| toc_entry_candidate(lines[i])).collect();
+    for size in TOC_MIN_ENTRIES..=TOC_MAX_WINDOW.min(nonblank.len()) {
+        for start in 0..=nonblank.len() - size {
+            let window = &nonblank[start..start + size];
+            if toc_window_flagged(window, &entry[start..start + size]) {
+                for (pos, &i) in window.iter().enumerate() {
+                    if entry[start + pos] {
+                        out[i] = true;
+                        suppress_toc_title_above(&mut out, lines, i);
+                    }
+                }
+            }
         }
-        let mut end = start;
-        while end < lines.len() && !lines[end].trim().is_empty() {
-            end += 1;
-        }
-        if toc_block_flagged(&lines[start..end]) {
-            toc_mark_block(&mut out, lines, start, end);
-        }
-        start = end;
     }
     out
 }
 
-/// Flagged when page-numbered would-be headings dominate the block.
-fn toc_block_flagged(block: &[&str]) -> bool {
-    let mut entries = 0usize;
-    for line in block {
-        if toc_entry_candidate(line) {
-            entries += 1;
-        }
-    }
-    entries >= TOC_MIN_ENTRIES && entries * 2 >= block.len()
+/// Flagged when page-numbered would-be headings dominate a local window:
+/// at least `TOC_MIN_ENTRIES` at `>= 1/2` density, spanning at most twice
+/// the window (every-other-line blanks pass; scattered lines don't).
+fn toc_window_flagged(window: &[usize], entry: &[bool]) -> bool {
+    let Some(&first) = window.first() else {
+        return false;
+    };
+    let Some(&last) = window.last() else {
+        return false;
+    };
+    let entries = entry.iter().filter(|&&e| e).count();
+    entries >= TOC_MIN_ENTRIES && entries * 2 >= window.len() && last - first <= 2 * window.len()
 }
 
-/// Suppress the whole block (wrapped entry lines and an in-block `CONTENTS`
-/// header are prose too) plus a `Contents`-style header line above it.
-fn toc_mark_block(out: &mut [bool], lines: &[&str], start: usize, end: usize) {
-    for flag in out[start..end].iter_mut() {
-        *flag = true;
-    }
-    let mut j = start;
+/// Suppress a `Contents`-style header on the first non-blank line above a
+/// flagged entry (in-run lines above are entries, never titles — safe to
+/// call per flagged line).
+fn suppress_toc_title_above(out: &mut [bool], lines: &[&str], idx: usize) {
+    let mut j = idx;
     while j > 0 {
         j -= 1;
         if lines[j].trim().is_empty() {
@@ -403,22 +417,34 @@ fn toc_mark_block(out: &mut [bool], lines: &[&str], start: usize, end: usize) {
         if toc_title_line(lines[j]) {
             out[j] = true;
         }
-        break;
+        return;
     }
 }
 
 /// A contents entry: a would-be heading (`8.1 Detection`, `INTRODUCTION`)
-/// plus a trailing page number (`23`, `... 23`). The classifier decides the
-/// prefix, so only lines that could ghost ever count.
+/// plus a trailing page number (`23`, `... 23`). Dot leaders don't count
+/// toward the length cap (extracted TOCs pad entries past 80 raw chars);
+/// the classifier decides the cleaned prefix, so only lines that could
+/// ghost ever count.
 fn toc_entry_candidate(line: &str) -> bool {
     let s = line.trim();
-    if s.is_empty() || s.len() > 80 {
+    if s.is_empty() {
         return false;
     }
-    match strip_trailing_page_number(s) {
-        Some(rest) => classify_heading(rest).is_some(),
-        None => false,
+    let Some(rest) = strip_trailing_page_number(s) else {
+        return false;
+    };
+    let entry = strip_dot_leaders(rest);
+    if entry.is_empty() || entry.chars().count() > 80 {
+        return false;
     }
+    classify_heading(entry).is_some()
+}
+
+/// Drop dot/ellipsis leader runs off an entry tail — length and
+/// classification read the words, not the padding.
+fn strip_dot_leaders(s: &str) -> &str {
+    s.trim_end_matches(|c: char| c == '.' || c == '·' || c == '…' || c.is_whitespace())
 }
 
 /// `Contents` / `Table of Contents` / `Index`, any case — the header above a
@@ -1945,6 +1971,41 @@ mod tests {
         assert!(!toc_title_line("Contents page footer"));
         assert!(toc_title_line("Contents"));
         assert!(toc_title_line("TABLE OF CONTENTS"));
+    }
+
+    #[test]
+    fn toc_sparse_blank_separated_entries_suppressed() {
+        // R40.3: PDF extraction often blank-separates TOC entries — the old
+        // blank-delimited-block rule saw size-1 blocks and never flagged.
+        let text = "Contents\n\n8.1 Detection 23\n\n8.2 Prevention 24\n\n8.3 Response 25\n\nBody text here.\n";
+        let (sections, _) = chunk_document_with_sections(text);
+        let titles: Vec<&str> = sections.iter().map(|s| s.title.as_str()).collect();
+        assert!(!titles.iter().any(|t| t.contains("23") || t.contains("24") || t.contains("25")), "sparse ghosts: {titles:?}");
+    }
+
+    #[test]
+    fn toc_long_dot_leader_line_suppressed() {
+        // R40.3: leader padding pushes raw lines past 80 chars — length and
+        // classification read the entry words, not the padding.
+        let pad = ".".repeat(70);
+        let text = format!("Contents\n8.1 Detection {pad} 23\n8.2 Prevention {pad} 24\n8.3 Response {pad} 25\nBody.\n");
+        assert!(text.lines().nth(1).unwrap().len() > 80, "fixture must exceed the old raw cap");
+        let (sections, _) = chunk_document_with_sections(&text);
+        let titles: Vec<&str> = sections.iter().map(|s| s.title.as_str()).collect();
+        assert!(!titles.iter().any(|t| t.contains("23") || t.contains("24") || t.contains("25")), "leader ghosts: {titles:?}");
+    }
+
+    #[test]
+    fn toc_scattered_digit_headings_still_split() {
+        // R40.3: the span guard — digit-ending real headings far apart never
+        // share a local window, so they keep sectioning.
+        let filler = "Prose line.\n".repeat(20);
+        let text = format!("8.1 Summary 2024\n{filler}8.2 Outlook 2025\n{filler}8.3 Review 2026\nTail.\n");
+        let (sections, _) = chunk_document_with_sections(&text);
+        let titles: Vec<&str> = sections.iter().map(|s| s.title.as_str()).collect();
+        assert!(titles.contains(&"8.1 Summary 2024"), "scattered real headings must split: {titles:?}");
+        assert!(titles.contains(&"8.2 Outlook 2025"), "scattered real headings must split: {titles:?}");
+        assert!(titles.contains(&"8.3 Review 2026"), "scattered real headings must split: {titles:?}");
     }
 
     #[test]

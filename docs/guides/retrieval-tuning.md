@@ -83,7 +83,7 @@ Code constants (need a rebuild; change only with a failing test in hand):
   Demote after fusion or partition before the cut (that's what live-first
   does).
 
-## Shipped fixes (Phase 39 all waves, 2026-10-19) + remaining issues
+## Shipped fixes (Phases 39+40.1-40.3, 2026-10-19) + remaining issues
 
 - Floor-only keyword lockout: fixed by R39.2. `ANCHOR_KEYWORD_SLOTS`
   (default 2, `0` disables) reserves tail slots for top floor-keyword hits
@@ -97,8 +97,10 @@ Code constants (need a rebuild; change only with a failing test in hand):
   nomic-embed-text x `sample/`); `ask` answers "not found" (`mode: "none"`).
 - Unbounded age decay: floored by R39.6. `ANCHOR_DECAY_FLOOR` (default
   0.8, clamped [0,1]) - a year-old chunk keeps 0.8 instead of 0.5.
-- Ghost sections from contents pages: fixed by R39.9. TOC-like runs keep
-  their bytes but never open sections.
+- Ghost sections from contents pages: fixed by R39.9, sparse-hardened by
+  R40.3 (sliding windows catch blank-separated entries; dot leaders don't
+  count toward the length cap). Both apply at chunk time only - already
+  indexed items keep their ghosts until a force re-sync rebuilds them.
 - Boost file matching: fixed by R39.4. Exact basename beats substring,
   shortest path wins the rest (`best_item_for_name`); version-like tokens
   (`v1.2`) never fire. Boost scoring stays exactly `max + 1.0`.
@@ -121,6 +123,12 @@ Code constants (need a rebuild; change only with a failing test in hand):
 - Eval mirror drift: fixed by R39.12. `retrieval::orchestrate_fusion` is
   the single fusion path for ask, search, and the eval; the mirror is
   deleted.
+- Ignored `limit`: fixed by R40.1. `limit` pages over the `k`-sized
+  candidate list, so a bare `limit: 50` now widens retrieval past the
+  default k=8 (1.0.29 returned 7 hits for any limit without `k`).
+- Mixed score scales: fixed by R40.2. Keyword-slot hits rescored into RRF
+  range (the floor leg's 0.5/(60+rank) share) instead of raw BM25 (~14
+  next to ~0.01); provenance keeps the real keyword rank.
 - Still open: suspect detector duplicated pending reunification (R39.13,
   P3); cross-encoder reranker deferred (R39.11, owner call).
 

@@ -2570,6 +2570,12 @@ fn select_slot_hits(hits: &[Hit], floor_kw: &[Hit], slots: usize) -> Vec<Hit> {
         }
         let mut h = h.clone();
         h.provenance = vec![LegMatch { leg: "keyword".to_string(), rank: i + 1 }];
+        // R40.2: rescale into RRF range — the raw BM25 score (~14) would sit
+        // next to fused scores (~0.01) and lie to score-reading agents
+        // (1.0.29 live report). The value is the RRF contribution the floor
+        // leg (weight 0.5) would have given this rank; order is unaffected
+        // (list position + stable partitions decide, never scores).
+        h.score = 0.5 / (RRF_K + (i + 1) as f64);
         take.push(h);
     }
     take
@@ -2649,6 +2655,23 @@ mod tests {
             keyword_matched: false,
             cosine: None,
         }
+    }
+
+    #[test]
+    fn slot_pulled_hits_score_in_rrf_range() {
+        // R40.2: pulled hits arrive with raw BM25-scale scores (~14) — they
+        // must rescale into the fused RRF range (~0.01) so score-reading
+        // agents compare like with like (1.0.29 live report).
+        let mut kw1 = blank_hit(7);
+        kw1.score = 14.3;
+        let mut kw2 = blank_hit(8);
+        kw2.score = 9.1;
+        let fused = vec![blank_hit(1)];
+        let out = select_slot_hits(&fused, &[kw1, kw2], 2);
+        assert_eq!(out.len(), 2);
+        assert!((out[0].score - 0.5 / (RRF_K + 1.0)).abs() < 1e-9, "rank-1 slot scores its floor RRF share, got {}", out[0].score);
+        assert!((out[1].score - 0.5 / (RRF_K + 2.0)).abs() < 1e-9, "rank-2 slot scores its floor RRF share, got {}", out[1].score);
+        assert!(out.iter().all(|h| h.score < 1.0), "no BM25-scale survivor");
     }
 
     #[test]

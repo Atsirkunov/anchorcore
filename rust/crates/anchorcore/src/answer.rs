@@ -758,7 +758,11 @@ pub async fn search(
     let data_dir_string = data_dir.to_string();
     let data_dir_for_block = data_dir_string.clone();
     let query = req.query.clone();
-    let k = req.k.unwrap_or(8).clamp(1, 50);
+    // R40.1: `limit` pages over the `k`-sized candidate list, so a bare
+    // `limit: 50` must widen retrieval too — otherwise the default k=8
+    // silently caps every page (1.0.29 live report: limit 20/50/100 → 7).
+    let want = req.limit.unwrap_or(0).saturating_add(req.cursor.unwrap_or(0));
+    let k = req.k.unwrap_or(8).max(want).clamp(1, 50);
     let project_id = req.project_id;
     let public_only = req.public_only.unwrap_or(false);
     // A3: compact-by-default — full chunk bytes only on explicit opt-in.
@@ -1468,6 +1472,49 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), 2, "two pages must cover two distinct chunks");
+    }
+
+    #[tokio::test]
+    async fn search_limit_without_k_widens_retrieval() {
+        // R40.1: `limit` pages over the `k`-sized candidate list — a bare
+        // `limit: 20` must widen retrieval past the default k=8 (1.0.29
+        // live report: limit 20/50/100 still returned 7).
+        let dir = tempdir().unwrap();
+        let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (connector, name) VALUES ('folder','ordinary')", []).unwrap();
+        let sid: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
+        for n in 0..12 {
+            conn.execute(
+                "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h',?2,?3,'x')",
+                rusqlite::params![sid, format!("n{n}.md"), format!("docs/n{n}.md")],
+            )
+            .unwrap();
+            let iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE title=?1", [format!("n{n}.md")], |r| r.get(0)).unwrap();
+            conn.execute(
+                "INSERT INTO chunks (item_id, source_ref, content) VALUES (?1,'ref',?2)",
+                rusqlite::params![iid, format!("quasarion ledger entry number {n} filler words")],
+            )
+            .unwrap();
+        }
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let store = crate::secrets::SecretStore::new_no_keyring(dir.path().join("secrets.enc"));
+        let settings = Arc::new(SettingsService::new(store));
+        settings.set_data_dir(dir.path());
+        settings.set("embed_base_url", "http://127.0.0.1:9", &conn).unwrap();
+        settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        let mk = |k: Option<usize>, cursor: Option<usize>, limit: Option<usize>| SearchRequest {
+            query: "quasarion ledger".to_string(), k, project_id: None, public_only: None,
+            fields: None, cursor, limit, include_content: None, env: None, kind: None,
+            path_prefix: None, symbol: None, mode: None,
+        };
+        let res = search(&settings, &embedder, mk(None, None, Some(20)), &data_dir).await;
+        assert_eq!(res.hits.len(), 12, "bare limit=20 must see all 12 matches, got {}", res.hits.len());
+        assert!(res.next_cursor.is_none());
+        // Cursor + limit widen together: page [10..15) of the same 12.
+        let page = search(&settings, &embedder, mk(None, Some(10), Some(5)), &data_dir).await;
+        assert_eq!(page.hits.len(), 2, "cursor=10 limit=5 over 12 hits must return 2, got {}", page.hits.len());
     }
 
     #[tokio::test]
