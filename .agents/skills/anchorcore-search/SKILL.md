@@ -8,6 +8,10 @@ description: Read-only retrieval over the user's indexed AnchorCore sources thro
 Read-only retrieval over the user's indexed sources. Never write, resync or
 reclassify; that changes the user's index.
 
+MCP-first: this skill is the fallback for when MCP is unavailable or blocked
+(see the anchorcore-setup skill, step 5). If MCP tools get configured later,
+drop this skill — with both active, agents duplicate effort.
+
 ## Connect
 
 - Base URL: ANCHOR_BACKEND_URL env, else ~/.anchorcore/runtime.json, else
