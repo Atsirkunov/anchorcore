@@ -1,0 +1,15 @@
+# api-lint rule set: lint rules every service must satisfy.
+# api-lint version 3.
+rules:
+  # This rule forbids offset pagination on collection routes.
+  require-cursor-pagination:
+    severity: error
+    match: "page[number]"
+    message: "Use cursor pagination; offset pagination is rejected."
+
+  # Every cursor parameter is required on paginated routes.
+  require-cursor-param:
+    severity: error
+    message: "Cursor pagination requires the cursor parameter."
+
+# The required rules are enforced in review; enforced checks block merge.

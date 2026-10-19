@@ -1,0 +1,15 @@
+# Paging policy: who gets paged for each alert severity.
+escalation:
+  # A sev1 payments alert pages the primary immediately.
+  sev1:
+    payments:
+      alert: pageduty-high-urgency
+      primary: "payments-oncall"
+      secondary: "payments-lead"
+      note: "The primary gets paged within two minutes; if the primary
+        misses the alert, the secondary gets paged automatically. The
+        incident commander is paged for every sev1."
+
+  # Sev2 alerts page during business hours only.
+  sev2:
+    note: "Sev1 payments incidents always page out; sev2 never pages."
