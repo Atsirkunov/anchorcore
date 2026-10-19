@@ -225,6 +225,41 @@ and `search "…"` returns cited chunks. Calls are audited (rows under
 `/system/errors?component=mcp`; `GET /system/mcp` reports the counter on builds
 that have it).
 
+### MCP blocked? — fall back to the search skill
+
+Prefer MCP above — it is the live connection. Fall back only when MCP is
+unavailable or blocked: the harness has no MCP support, it cannot spawn the
+local `anchorcore mcp` process (sandboxed harness), or `tools/list` still shows
+no anchorcore tools after a harness restart.
+
+The fallback is the read-only `anchorcore-search` skill: ranked search,
+whole-file fetch, and section outlines over the same local REST API (same base
+URL, CSRF, and auth rules as this skill) — no MCP needed. It never writes,
+resyncs, or reclassifies. **Either/or, never both:** with MCP tools *and* the
+search skill active, agents duplicate effort (the same query goes out over MCP
+and over plain HTTP). If you install the skill, do not also connect MCP — and
+if MCP later starts working, remove the skill again.
+
+Install it from the repo — the app does not serve skills yet (release zips
+ship only the binary), so the source is
+`.agents/skills/anchorcore-search/SKILL.md` in the checkout:
+
+1. Preferred: `npx skills add Atsirkunov/anchorcore --skill anchorcore-search`
+   (puts the file into whatever skills dir your agent reads). If the CLI does
+   not offer that skill yet, or there is no `npx`, copy it by hand next to this
+   setup skill — if this file lives at `<dir>/anchorcore-setup/SKILL.md`, the
+   search skill goes to `<dir>/anchorcore-search/SKILL.md`:
+   `mkdir -p <dir>/anchorcore-search && curl -sL https://raw.githubusercontent.com/Atsirkunov/anchorcore/main/.agents/skills/anchorcore-search/SKILL.md -o <dir>/anchorcore-search/SKILL.md`
+   (PowerShell: `Invoke-WebRequest -Uri <that URL> -OutFile <dir>\anchorcore-search\SKILL.md`).
+2. Repo already cloned (e.g. for `sample/`) → copy
+   `.agents/skills/anchorcore-search/SKILL.md` from the checkout to the same
+   `<dir>/anchorcore-search/SKILL.md` target instead of downloading.
+3. Restart the harness (skills load at start), then verify: ask it to search
+   AnchorCore for a known term — expect ranked hits with citations — and
+   confirm `tools/list` shows **no** anchorcore tools (the either/or check).
+   Connection refused means the app itself is not up — start it per step 1;
+   the skill talks to the same `127.0.0.1` API as MCP.
+
 ## 6. Verify end to end (always)
 
 1. `POST /qa/search {"query":"…","k":8}` → hits with `source_ref` and scores;
