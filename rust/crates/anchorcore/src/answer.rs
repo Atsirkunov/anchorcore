@@ -71,6 +71,12 @@ pub struct Citation {
     pub content: String,
     pub item_title: String,
     pub content_truncated: bool,
+    /// R38.1: contributing legs + ranks from the last fusion (`[]` unranked).
+    pub provenance: Vec<retrieval::LegMatch>,
+    /// R38.1: age-decay factor applied to `score` (1.0 = none).
+    pub decay: f64,
+    /// R38.1: surfaced by filename boost above the ranked list.
+    pub boosted: bool,
 }
 
 #[derive(Deserialize)]
@@ -136,6 +142,12 @@ pub struct SearchHit {
     pub conflicts_with: Vec<i64>,
     pub score: f64,
     pub content_truncated: bool,
+    /// R38.1: contributing legs + ranks from the last fusion (`[]` unranked).
+    pub provenance: Vec<retrieval::LegMatch>,
+    /// R38.1: age-decay factor applied to `score` (1.0 = none).
+    pub decay: f64,
+    /// R38.1: surfaced by filename boost above the ranked list.
+    pub boosted: bool,
 }
 
 #[derive(Serialize)]
@@ -478,6 +490,9 @@ fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content:
             snippet: hit_preview(&h.content, query, h.chunk_id, 500),
             content: if want_content { h.content.clone() } else { String::new() },
             content_truncated: h.content_truncated,
+            provenance: h.provenance.clone(),
+            decay: rounded_score(h.decay),
+            boosted: h.boosted,
         }
     }).collect()
 }
@@ -614,7 +629,8 @@ fn project_scope(conn: &Connection, project_id: Option<i64>, public_only: bool) 
 /// flat-only fallback when TOC is empty. R33.3: no graph leg — entity
 /// neighbors are entity chunks, and entities never enter retrieval (D2
 /// option (a)); `graph_expand` stays for the entity-lookup flows' tests.
-fn orchestrate(
+/// R38.3: the relevance gate wraps this (`orchestrate`), not the branches.
+fn orchestrate_inner(
     conn: &Connection,
     query: &str,
     query_embedding: Option<Vec<f32>>,
@@ -641,18 +657,23 @@ fn orchestrate(
             if hits.is_empty() { None } else { Some(hits) }
         });
         let floor_kw = retrieval::keyword_search(conn, query, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed);
+        // R38.2: slot candidates — one clone per TOC-path query; fusion below consumes the original.
+        let slot_pool = floor_kw.clone();
         let floor_kw_opt = if floor_kw.is_empty() { None } else { Some(floor_kw) };
         let mut lists = vec![toc];
         let mut weights = vec![1.0];
+        let mut legs = vec!["toc"];
         if let Some(h) = floor_vec {
             lists.push(h);
             weights.push(0.5);
+            legs.push("vector");
         }
         if let Some(h) = floor_kw_opt {
             lists.push(h);
             weights.push(0.5);
+            legs.push("keyword");
         }
-        let fused = retrieval::rrf_fuse_multi(lists, weights);
+        let fused = retrieval::rrf_fuse_multi_named(lists, weights, &legs);
         // Env ordering is the live-first partition inside fuse_and_rank
         // (R33.3: the R32.3 score multiplier is retired — RRF fuses by rank).
         let mut hits = retrieval::fuse_and_rank(
@@ -666,7 +687,13 @@ fn orchestrate(
             cfg.qa_exclude_disputed,
             query,
         );
+        // R38.2: reserved keyword slots pull locked-out floor hits into the
+        // cut list before boost/return-shape (boost detection still exact —
+        // the snapshot runs after the slots).
+        retrieval::apply_keyword_slots(conn, &mut hits, &slot_pool, cfg.top_k, cfg.halflife, query);
+        let prev_top = retrieval::top_score(&hits);
         retrieval::filename_boost(conn, &mut hits, query);
+        retrieval::mark_boosted_hits(&mut hits, prev_top);
         // R36.3: return-shape assembly runs once, over the final ranked
         // list, so same-scope merging sees boosted hits too.
         return retrieval::parent_return(conn, hits);
@@ -692,9 +719,30 @@ fn orchestrate(
         cfg.qa_exclude_disputed,
         query,
     );
+    let prev_top = retrieval::top_score(&hits);
     retrieval::filename_boost(conn, &mut hits, query);
+    retrieval::mark_boosted_hits(&mut hits, prev_top);
     // R36.3: return-shape assembly runs once, over the final ranked list.
     retrieval::parent_return(conn, hits)
+}
+
+/// Ranked retrieval for ask + search: the TOC/flat ranking above, then the
+/// R38.3 minimum-relevance gate — empty evidence unless some hit carries a
+/// real BM25 match, a boost, or cosine at the floor (ask answers mode
+/// "none", search returns no hits).
+fn orchestrate(
+    conn: &Connection,
+    query: &str,
+    query_embedding: Option<Vec<f32>>,
+    scope: Option<HashSet<i64>>,
+    cfg: &RetrievalConfig,
+) -> Vec<crate::retrieval::Hit> {
+    let hits = orchestrate_inner(conn, query, query_embedding, scope, cfg);
+    if hits.is_empty() || retrieval::passes_relevance_gate(&hits) {
+        hits
+    } else {
+        Vec::new()
+    }
 }
 
 fn retrieve_sync(
@@ -865,6 +913,9 @@ pub async fn search(
             item_id: h.item_id,
             item_title,
             score: rounded_score(h.score),
+            provenance: h.provenance.clone(),
+            decay: rounded_score(h.decay),
+            boosted: h.boosted,
         }
     }).collect();
     SearchResponse { hits, blocked: blocked_count, refusal, next_cursor, retrieval: retrieval.to_string() }
@@ -1307,6 +1358,11 @@ mod tests {
             is_pii: pii,
             status: None,
             content_truncated: false,
+            provenance: Vec::new(),
+            decay: 1.0,
+            boosted: false,
+            keyword_matched: false,
+            cosine: None,
         }
     }
 
@@ -1402,6 +1458,13 @@ mod tests {
         assert!(!res.hits.is_empty(), "trusted provider must see the sensitive hit");
         assert!(res.refusal.is_none());
         assert_eq!(res.blocked, 0);
+        // R38.1: provenance + decay + boosted ride on every search hit.
+        for h in &res.hits {
+            assert!(!h.provenance.is_empty(), "keyword single-list stamps its leg");
+            assert_eq!(h.provenance[0].leg, "keyword");
+            assert!((h.decay - 1.0).abs() < 1e-6, "fresh chunk decay must be ~1.0");
+            assert!(!h.boosted, "no filename mention — nothing boosted");
+        }
     }
 
     #[tokio::test]
@@ -1459,6 +1522,10 @@ mod tests {
         assert!(!res.citations.is_empty(), "keyword hit on ordinary source must survive");
         assert_eq!(res.mode, "context_only");
         assert_eq!(res.retrieval, "keyword_only");
+        // R38.1: citations carry the same provenance as search hits.
+        assert_eq!(res.citations[0].provenance.len(), 1);
+        assert_eq!(res.citations[0].provenance[0].leg, "keyword");
+        assert!(!res.citations[0].boosted);
         assert!(res.answer.contains("No model key"), "answer: {}", res.answer.chars().take(120).collect::<String>());
         assert!(res.refusal.is_none());
     }
@@ -2195,6 +2262,108 @@ mod tests {
         conn.query_row("SELECT id FROM ingested_items WHERE title='beta.md'", [], |r| r.get(0)).unwrap()
     }
 
+    fn seed_slots_db() -> (tempfile::TempDir, Connection) {
+        // 8 live single-leaf docs + 1 fixture doc (10 TOC leaves) + B,
+        // fenced out of TOC but the floor keyword rank-1. B is deliberately
+        // fixture-pathed: a live B would lock out too (9th live at the cut),
+        // but the final list would be all-live and the live-first assert
+        // vacuous — a test-pathed B proves the slots coexist with live-first
+        // instead of punching through it.
+        let dir = tempdir().unwrap();
+        let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (connector, name) VALUES ('folder','ordinary')", []).unwrap();
+        let sid: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
+        let docs = [
+            ("a1.md", "docs/a1.md", 1),
+            ("a2.md", "docs/a2.md", 1),
+            ("a3.md", "docs/a3.md", 1),
+            ("a4.md", "docs/a4.md", 1),
+            ("a5.md", "docs/a5.md", 1),
+            ("a6.md", "docs/a6.md", 1),
+            ("a7.md", "docs/a7.md", 1),
+            ("a8.md", "docs/a8.md", 1),
+            ("t1.md", "tests/t1.md", 2),
+            ("b.md", "tests/b.md", 1),
+        ];
+        for (title, ext, leaves) in docs {
+            conn.execute(
+                "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h',?2,?3,'x')",
+                rusqlite::params![sid, title, ext],
+            )
+            .unwrap();
+            let iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE title=?1", [title], |r| r.get(0)).unwrap();
+            conn.execute("INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,1,'S','S')", [iid]).unwrap();
+            let sec = conn.last_insert_rowid();
+            let summary = if title == "b.md" {
+                "nothing relevant here at all".to_string()
+            } else {
+                format!("alpha project notes {title}")
+            };
+            conn.execute(
+                "INSERT INTO chunks (item_id, section_id, kind, source_ref, content) VALUES (?1,?2,'section_summary',?3,?4)",
+                rusqlite::params![iid, sec, ext, summary],
+            )
+            .unwrap();
+            for k in 0..leaves {
+                let body = if title == "b.md" {
+                    "zephyr zephyr zephyr special mid-body signal".to_string()
+                } else {
+                    format!("alpha body {title} leaf {k} filler words padding text")
+                };
+                conn.execute(
+                    "INSERT INTO chunks (item_id, section_id, source_ref, content) VALUES (?1,?2,?3,?4)",
+                    rusqlite::params![iid, sec, ext, body],
+                )
+                .unwrap();
+            }
+        }
+        (dir, conn)
+    }
+
+    fn assert_live_first(conn: &Connection, hits: &[crate::retrieval::Hit]) {
+        let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+        let classes = crate::retrieval::envs_for_chunks(conn, &ids);
+        let mut seen_test = false;
+        for h in hits {
+            let env = classes.get(&h.chunk_id).cloned().unwrap_or_else(|| "live".to_string());
+            if env == "test" {
+                seen_test = true;
+            } else {
+                assert!(!seen_test, "live hit after a test hit — live-first broken");
+            }
+        }
+    }
+
+    #[test]
+    fn orchestrate_keyword_slots_rescue_floor_rank_one() {
+        // R38.2: 8+ TOC hits at weight 1.0 lock the floor-only keyword
+        // rank-1 (B) out of the top-8 cut; the reserved slots (default 2)
+        // pull it back via ordering. 0 disables.
+        let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_KEYWORD_SLOTS");
+        let (_dir, conn) = seed_slots_db();
+        let b: i64 = conn.query_row("SELECT id FROM ingested_items WHERE title='b.md'", [], |r| r.get(0)).unwrap();
+        let cfg = RetrievalConfig::from_env_with_top_k(8);
+        let toc = retrieval::toc_search(&conn, "alpha zephyr", None, None, 8, true);
+        assert!(toc.len() >= 8, "need 8+ TOC hits for the lockout, got {}", toc.len());
+        assert!(!toc.iter().any(|h| h.item_id == Some(b)), "B must be fenced out of TOC");
+        let floor = retrieval::keyword_search(&conn, "alpha zephyr", None, 8, true);
+        assert_eq!(floor[0].item_id, Some(b), "B must be the floor-only keyword rank-1");
+        let hits = orchestrate(&conn, "alpha zephyr", None, None, &cfg);
+        assert!(hits.len() <= 8, "slots displace, never grow: {}", hits.len());
+        let b_hit = hits.iter().find(|h| h.item_id == Some(b)).expect("floor rank-1 must take a reserved slot");
+        assert_eq!(b_hit.provenance.len(), 1);
+        assert_eq!(b_hit.provenance[0].leg, "keyword");
+        assert_eq!(b_hit.provenance[0].rank, 1);
+        assert_live_first(&conn, &hits);
+        // 0 disables: B stays locked out.
+        std::env::set_var("ANCHOR_KEYWORD_SLOTS", "0");
+        let off = orchestrate(&conn, "alpha zephyr", None, None, &cfg);
+        assert!(!off.iter().any(|h| h.item_id == Some(b)), "slots=0 must leave B locked out");
+        std::env::remove_var("ANCHOR_KEYWORD_SLOTS");
+    }
+
     #[test]
     fn build_citations_carries_parent_shape() {
         let (dir, conn, _settings) = seed_parent_db();
@@ -2235,6 +2404,79 @@ mod tests {
         assert!(!s.contains("tungsten early"), "terms outside the mark don't pull the window");
         // Unmarked content keeps match_snippet behavior.
         assert_eq!(hit_preview("plain content", "zzz", 1, 50), crate::retrieval::match_snippet("plain content", "zzz", 50));
+    }
+
+    /// Unit 768-vector with exact cosine `c` against e0.
+    fn unit_with_first_cos(c: f32) -> Vec<f32> {
+        let mut v = vec![0.0f32; 768];
+        v[0] = c;
+        v[1] = (1.0 - c * c).sqrt();
+        v
+    }
+
+    #[test]
+    fn orchestrate_relevance_gate_hybrid_and_keyword_paths() {
+        // R38.3: hybrid evidence under the cosine floor (0.30, no BM25
+        // match) gates to empty; near-identical cosine (0.99) passes, and
+        // the keyword-only path passes on its BM25 match. 768-dim crafted
+        // vectors = default ANCHOR_EMBED_DIM, so no env games.
+        let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_MIN_RELEVANCE_COSINE");
+        let dir = tempdir().unwrap();
+        let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (connector, name) VALUES ('folder','ordinary')", []).unwrap();
+        let sid: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h','gated.md','docs/gated.md','treasury routes content here')",
+            [sid],
+        )
+        .unwrap();
+        let iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE title='gated.md'", [], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO chunks (item_id, source_ref, content) VALUES (?1,'gated.md','treasury routes content here')", [iid])
+            .unwrap();
+        let cid: i64 = conn.last_insert_rowid();
+        let mut e0 = vec![0.0f32; 768];
+        e0[0] = 1.0;
+        conn.execute("UPDATE chunks SET embedding=?1 WHERE id=?2", rusqlite::params![crate::embedder::pack_single(&e0), cid]).unwrap();
+        let cfg = RetrievalConfig::from_env_with_top_k(8);
+        // Hybrid, low cosine, no keyword match → empty (ask: mode "none").
+        let low = orchestrate(&conn, "zzqxqjsupercal", Some(unit_with_first_cos(0.30)), None, &cfg);
+        assert!(low.is_empty(), "0.30-cosine vector-only evidence must gate, got {:?}", low.iter().map(|h| h.chunk_id).collect::<Vec<_>>());
+        // Hybrid, high cosine → passes.
+        let high = orchestrate(&conn, "zzqxqjsupercal", Some(unit_with_first_cos(0.99)), None, &cfg);
+        assert_eq!(high.len(), 1);
+        assert_eq!(high[0].chunk_id, cid);
+        // Keyword-only path: the BM25 match passes with no cosine at all.
+        let kw = orchestrate(&conn, "treasury routes", None, None, &cfg);
+        assert_eq!(kw.len(), 1);
+        assert_eq!(kw[0].chunk_id, cid);
+    }
+
+    #[test]
+    fn orchestrate_marks_filename_boosted_hits() {
+        // R38.1: a bare-filename query matches no content — the surfaced
+        // chunk arrives via filename boost: boosted=true, empty provenance
+        // (it bypassed ranking), and it survives the relevance gate (R38.3)
+        // as explicit intent.
+        let dir = tempdir().unwrap();
+        let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (connector, name) VALUES ('folder','ordinary')", []).unwrap();
+        let sid: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h','routing-config.yml','docs/routing-config.yml','treasury config content here')",
+            [sid],
+        )
+        .unwrap();
+        let iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE title='routing-config.yml'", [], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO chunks (item_id, source_ref, content) VALUES (?1,'routing-config.yml','treasury config content here')", [iid])
+            .unwrap();
+        let cfg = RetrievalConfig::from_env_with_top_k(8);
+        let hits = orchestrate(&conn, "routing-config.yml", None, None, &cfg);
+        assert_eq!(hits.len(), 1, "bare filename must surface its file");
+        assert!(hits[0].boosted);
+        assert!(hits[0].provenance.is_empty(), "boosted hits bypass ranking");
     }
 
     #[test]
