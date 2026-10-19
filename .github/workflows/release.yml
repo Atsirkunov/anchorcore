@@ -66,6 +66,23 @@ jobs:
 
           grep -q '"name":"memory_status"' /tmp/mcp.json || { echo "FAULT: MCP tool 'memory_status' missing from tools/list"; cat /tmp/mcp.json; exit 1; }
           echo "ok (linux): the shipped binary runs the stdio MCP server with 6 tools incl. search"
+      - name: Assert the app-served agent skills (R23.6)
+        run: |
+          set -e
+          export ANCHOR_OPEN_BROWSER=0 ANCHOR_SECRETS_NO_KEYRING=1
+          rm -rf /tmp/ac-skill-smoke && mkdir -p /tmp/ac-skill-smoke
+          ./dist/anchorcore --port 8129 --data-dir /tmp/ac-skill-smoke --no-tray > /tmp/ac-skill-smoke.log 2>&1 &
+          SRV=$!
+          trap "kill $SRV 2>/dev/null || true" EXIT
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8129/health >/dev/null && break; sleep 1; done
+          curl -sf http://127.0.0.1:8129/health >/dev/null || { echo "FAULT: skill-smoke server did not start"; cat /tmp/ac-skill-smoke.log; exit 1; }
+          for SKILL in setup search; do
+            curl -sf -D /tmp/skill-headers.txt "http://127.0.0.1:8129/system/skills/$SKILL" -o /tmp/skill-served.md
+            grep -qi 'content-type: text/markdown' /tmp/skill-headers.txt || { echo "FAULT: /system/skills/$SKILL is not text/markdown"; cat /tmp/skill-headers.txt; exit 1; }
+            cmp /tmp/skill-served.md ".agents/skills/anchorcore-$SKILL/SKILL.md" || { echo "FAULT: /system/skills/$SKILL bytes differ from the repo SKILL.md"; exit 1; }
+          done
+          if curl -sf http://127.0.0.1:8129/system/skills/nope -o /dev/null; then echo "FAULT: unknown skill did not 404"; exit 1; fi
+          echo "ok (linux): /system/skills/:name serves setup + search byte-identical"
 
       - name: Upload Rust Linux
         uses: actions/upload-artifact@v4
@@ -147,6 +164,23 @@ jobs:
 
           grep -q '"name":"memory_status"' /tmp/mcp.json || { echo "FAULT: MCP tool 'memory_status' missing from tools/list"; cat /tmp/mcp.json; exit 1; }
           echo "ok (macos): the shipped binary runs the stdio MCP server with 6 tools incl. search"
+      - name: Assert the app-served agent skills (R23.6)
+        run: |
+          set -e
+          export ANCHOR_OPEN_BROWSER=0 ANCHOR_SECRETS_NO_KEYRING=1
+          rm -rf /tmp/ac-skill-smoke && mkdir -p /tmp/ac-skill-smoke
+          ./dist/AnchorCore.app/Contents/MacOS/AnchorCore --port 8129 --data-dir /tmp/ac-skill-smoke --no-tray > /tmp/ac-skill-smoke.log 2>&1 &
+          SRV=$!
+          trap "kill $SRV 2>/dev/null || true" EXIT
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8129/health >/dev/null && break; sleep 1; done
+          curl -sf http://127.0.0.1:8129/health >/dev/null || { echo "FAULT: skill-smoke server did not start"; cat /tmp/ac-skill-smoke.log; exit 1; }
+          for SKILL in setup search; do
+            curl -sf -D /tmp/skill-headers.txt "http://127.0.0.1:8129/system/skills/$SKILL" -o /tmp/skill-served.md
+            grep -qi 'content-type: text/markdown' /tmp/skill-headers.txt || { echo "FAULT: /system/skills/$SKILL is not text/markdown"; cat /tmp/skill-headers.txt; exit 1; }
+            cmp /tmp/skill-served.md ".agents/skills/anchorcore-$SKILL/SKILL.md" || { echo "FAULT: /system/skills/$SKILL bytes differ from the repo SKILL.md"; exit 1; }
+          done
+          if curl -sf http://127.0.0.1:8129/system/skills/nope -o /dev/null; then echo "FAULT: unknown skill did not 404"; exit 1; fi
+          echo "ok (macos): /system/skills/:name serves setup + search byte-identical"
 
       - name: Upload macOS app
         uses: actions/upload-artifact@v4
@@ -193,6 +227,39 @@ jobs:
           $resp = ($req | & dist/anchorcore.exe mcp | Out-String)
           if ($resp -notmatch '"search"') { throw "FAULT: search tool missing`n$resp" }
           Write-Host "ok (windows): the shipped exe runs the stdio MCP server with 6 tools incl. search"
+      - name: Assert the app-served agent skills (R23.6)
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:ANCHOR_OPEN_BROWSER = "0"
+          $env:ANCHOR_SECRETS_NO_KEYRING = "1"
+          $dataDir = Join-Path $env:TEMP "ac-skill-smoke"
+          if (Test-Path $dataDir) { Remove-Item -Recurse -Force $dataDir }
+          New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+          $proc = Start-Process -FilePath (Resolve-Path dist/anchorcore.exe) -ArgumentList "--port","8129","--data-dir",$dataDir,"--no-tray" -RedirectStandardOutput (Join-Path $dataDir "smoke.log") -RedirectStandardError (Join-Path $dataDir "smoke.err.log") -PassThru
+          try {
+            $up = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              & curl.exe -sf http://127.0.0.1:8129/health -o $null 2>$null
+              if ($LASTEXITCODE -eq 0) { $up = $true; break }
+              Start-Sleep -Seconds 1
+            }
+            if (-not $up) { throw "FAULT: skill-smoke server did not start" }
+            foreach ($skill in @("setup", "search")) {
+              & curl.exe -sf -D (Join-Path $env:TEMP "skill-headers.txt") "http://127.0.0.1:8129/system/skills/$skill" -o (Join-Path $env:TEMP "skill-served.md") 2>$null
+              if ($LASTEXITCODE -ne 0) { throw "FAULT: /system/skills/$skill request failed" }
+              $headers = Get-Content (Join-Path $env:TEMP "skill-headers.txt") -Raw
+              if ($headers -notmatch "(?i)content-type:\s*text/markdown") { throw "FAULT: /system/skills/$skill is not text/markdown" }
+              $served = [IO.File]::ReadAllBytes((Join-Path $env:TEMP "skill-served.md"))
+              $repo = [IO.File]::ReadAllBytes(".agents/skills/anchorcore-$skill/SKILL.md")
+              $same = ($served.Length -eq $repo.Length) -and (-not (Compare-Object $served $repo -SyncWindow 0))
+              if (-not $same) { throw "FAULT: /system/skills/$skill bytes differ from the repo SKILL.md" }
+            }
+            & curl.exe -sf http://127.0.0.1:8129/system/skills/nope -o $null 2>$null
+            if ($LASTEXITCODE -eq 0) { throw "FAULT: unknown skill did not 404" }
+            Write-Host "ok (windows): /system/skills/:name serves setup + search byte-identical"
+          } finally {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          }
 
       - name: Upload Rust Windows
         uses: actions/upload-artifact@v4

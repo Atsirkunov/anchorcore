@@ -245,6 +245,12 @@ export const api = {
       body: JSON.stringify({ client }),
     }),
   logDownloadUrl: (name: string) => `/system/logs/${encodeURIComponent(name)}`,
+  skillUrl: (name: string) => `/system/skills/${encodeURIComponent(name)}`,
+  fetchSkill: async (name: string): Promise<string> => {
+    const res = await fetch(`/system/skills/${encodeURIComponent(name)}`);
+    if (!res.ok) throw new Error(await errorMessage(res));
+    return res.text();
+  },
 
   // R25.5: backup & restore. These bypass request() — an archive is a blob
   // download and an import is a multipart upload that may run for minutes.

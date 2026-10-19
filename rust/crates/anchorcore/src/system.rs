@@ -632,6 +632,36 @@ pub fn spawn_update_check(state: AppState) {
     });
 }
 
+// ── App-served agent skills (R23.3 setup-only, generalized by R23.6) ─────────
+//
+// Release zips ship only the binary, so zip users have no skill files on
+// disk — the app serves its own SKILL.md files embedded at compile time
+// (`include_str!`, same mechanism as the SQL migrations in `db.rs`), so an
+// agent can fetch setup + search over HTTP with no git clone. One mechanism:
+// `GET /system/skills/:name` (the R23.3 `/system/skill` shape never shipped,
+// so no compat alias).
+const SETUP_SKILL_MD: &str = include_str!("../../../../.agents/skills/anchorcore-setup/SKILL.md");
+const SEARCH_SKILL_MD: &str = include_str!("../../../../.agents/skills/anchorcore-search/SKILL.md");
+
+fn skill_markdown(name: &str) -> Option<&'static str> {
+    match name {
+        "setup" | "anchorcore-setup" => Some(SETUP_SKILL_MD),
+        "search" | "anchorcore-search" => Some(SEARCH_SKILL_MD),
+        _ => None,
+    }
+}
+
+/// `GET /system/skills/:name` — one embedded skill as `text/markdown`;
+/// unknown names 404 with the known list.
+pub async fn skills_handler(
+    Path(name): Path<String>,
+) -> Result<([(axum::http::header::HeaderName, &'static str); 1], &'static str), (StatusCode, Json<Value>)> {
+    match skill_markdown(name.trim()) {
+        Some(md) => Ok(([(axum::http::header::CONTENT_TYPE, "text/markdown; charset=utf-8")], md)),
+        None => Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail": format!("Unknown skill '{name}' (setup, search)")}))))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -698,6 +728,51 @@ mod tests {
         }
         for off in [None, Some(String::new()), Some("0".to_string()), Some("false".to_string())] {
             assert!(!truthy_setting(off.clone()), "{off:?} should be off");
+        }
+    }
+
+    fn repo_skill_bytes(name: &str) -> Vec<u8> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../../.agents/skills/{name}/SKILL.md"));
+        std::fs::read(&path).unwrap()
+    }
+
+    async fn get_skill(name: &str) -> axum::response::Response {
+        match skills_handler(Path(name.to_string())).await {
+            Ok(ok) => axum::response::IntoResponse::into_response(ok),
+            Err(err) => axum::response::IntoResponse::into_response(err),
+        }
+    }
+
+    async fn assert_skill_byte_identical(name: &str) {
+        let resp = get_skill(name).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{name} should serve");
+        assert_eq!(resp.headers()["content-type"], "text/markdown; charset=utf-8");
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        assert_eq!(body.as_ref(), skill_markdown(name).unwrap().as_bytes());
+        assert_eq!(body.as_ref(), repo_skill_bytes(&format!("anchorcore-{name}")).as_slice());
+    }
+
+    /// R23.3/R23.6: each served skill is byte-identical to its repo file.
+    #[tokio::test]
+    async fn skills_endpoint_serves_setup_skill_byte_identical() {
+        assert_skill_byte_identical("setup").await;
+    }
+
+    #[tokio::test]
+    async fn skills_endpoint_serves_search_skill_byte_identical() {
+        assert_skill_byte_identical("search").await;
+    }
+
+    /// R23.6: unknown skill names 404 (no compat alias — `/system/skill`
+    /// never shipped, so nothing else may resolve).
+    #[tokio::test]
+    async fn skills_endpoint_unknown_name_is_404() {
+        for name in ["nope", "skill", "SETUP", "setup.md"] {
+            let resp = get_skill(name).await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{name} should 404");
+            let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+            let v: Value = serde_json::from_slice(&body).unwrap();
+            assert!(v["detail"].as_str().unwrap().contains("setup"), "detail names setup: {v}");
         }
     }
 
