@@ -24,6 +24,10 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY rust/ rust/
+# R23.6: skills are baked in via include_str! (system.rs, skills_setup.rs) —
+# without this the builder fails on a missing file. Any new served skill
+# needs no change here (whole dir), but a new include OUTSIDE rust/ does.
+COPY .agents/skills/ .agents/skills/
 COPY --from=frontend /src/frontend/dist frontend/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/rust/target \
