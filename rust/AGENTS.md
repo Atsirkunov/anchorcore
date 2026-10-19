@@ -1,6 +1,6 @@
 # AnchorCore Rust — agent guide (shipped `v1.0.20`)
 
-This mirrors `/AGENTS.md` but for the `rust/` workspace. **Rust is now shipped** (`v1.0.20`, `cargo test` + `cargo check` green + honest conformance vs Rust via CI `rust-conformance`). `backend/` is legacy conformance only; new work is in `rust/` — `hosting/` is this same binary in one container (R19.1, license gate `license.rs`). Read this + `rust/BACKLOG.md` + `docs/rust-port.md` + `docs/handover-2026-08-21-retire.md:1`.
+This mirrors `/AGENTS.md` but for the `rust/` workspace. **Rust is now shipped** (`v1.0.20`, `cargo test` + `cargo check` green + honest conformance vs Rust via CI `rust-conformance`). `backend/` is legacy conformance only; new work is in `rust/` — `hosting/` is this same binary in one container (R19.1, license gate `license.rs`). Read this + `rust/BACKLOG.md` + `docs/archive/rust-port.md` + `docs/archive/handover-2026-08-21-retire.md:1`.
 
 ## Contract-first (still, but Rust is source)
 
@@ -10,10 +10,10 @@ This mirrors `/AGENTS.md` but for the `rust/` workspace. **Rust is now shipped**
 
 ## How to work here (now tech-debt, not greenfield)
 
-* Pick open work from `rust/BACKLOG.md`: **Phase 20** (`R20.*`, MCP zero-setup UX — `docs/plan-mcp-zero-setup.md`), **Phase 23** (`R23.*`, agent-friendly config), **Phase 18** (`R18.*`, website audit) — plus the shipped log (R19, R21–R24). Completed Phases 0–17: `rust/BACKLOG-archive.md`. Tasks still sized for parallel agents (file-disjoint). Full review driving earlier phases: `docs/review-2026-08-21-full.md:1`.
-* For each task: schema/migration (if any) → router/handler → wire in `main.rs` → test (new `cargo test` green + existing Python `backend/tests` via HTTP on `:8123`) → docs. Note: R9.2 makes conformance honest (`127` collect → `110/17` vs Rust via CI `rust-conformance`); old "124/3" & "115/8/3" were inflated/stale (see `docs/review-2026-08-21-full.md:1`).
+* Pick open work from `rust/BACKLOG.md`: **Phase 20** (`R20.*`, MCP zero-setup UX — `docs/plan-mcp-zero-setup.md`), **Phase 23** (`R23.*`, agent-friendly config), **Phase 18** (`R18.*`, website audit) — plus the shipped log (R19, R21–R24). Completed Phases 0–17: `rust/BACKLOG-archive.md`. Tasks still sized for parallel agents (file-disjoint). Full review driving earlier phases: `docs/archive/review-2026-08-21-full.md:1`.
+* For each task: schema/migration (if any) → router/handler → wire in `main.rs` → test (new `cargo test` green + existing Python `backend/tests` via HTTP on `:8123`) → docs. Note: R9.2 makes conformance honest (`127` collect → `110/17` vs Rust via CI `rust-conformance`); old "124/3" & "115/8/3" were inflated/stale (see `docs/archive/review-2026-08-21-full.md:1`).
 * Keep `rust/Cargo.toml:6` single source (`1.0.20` via `scripts/sync_version.py`); crates live under `rust/crates/*`.
-* Log decisions in `rust/docs/decisions.md`; update `docs/handover-*.md` on retire.
+* Log decisions in `rust/docs/decisions.md`; update `docs/archive/handover-*.md` on retire.
 
 ## Gotchas (from Python)
 
@@ -21,7 +21,7 @@ This mirrors `/AGENTS.md` but for the `rust/` workspace. **Rust is now shipped**
 * Retrieval must filter `stale`/`disputed` via `_status_ok` equivalent — every path must gate it.
 * Secrets via OS keychain (`keyring` crate) + `***set***` placeholder — same UX as `backend/app/secrets.py`.
 * **Toolchain on this box (2026-10-12): Rust builds work.** No MSVC, but a portable MinGW + GNU-host toolchain is installed and cached: `C:\Users\Aleksandr\.local\winlibs\mingw64\bin` (WinLibs 16.2, ucrt) + rustup `stable-x86_64-pc-windows-gnu`. Invoke:
-  `$env:PATH = "C:\Users\Aleksandr\.local\winlibs\mingw64\bin;" + $env:PATH; cargo +stable-x86_64-pc-windows-gnu test --offline -p anchorcore --target x86_64-pc-windows-gnu` (from `rust/`). `cargo check`/`test`/`clippy`/`build` all work; `cargo +stable-x86_64-pc-windows-msvc` still fails (`link.exe` absent). `rust/target` is shared with the main checkout — a fresh `git worktree` needs `robocopy` of `rust/target` and `frontend/dist` (both gitignored) or a full rebuild + `npm run build` (see `docs/handover-2026-10-10-b54-verify.md`).
+  `$env:PATH = "C:\Users\Aleksandr\.local\winlibs\mingw64\bin;" + $env:PATH; cargo +stable-x86_64-pc-windows-gnu test --offline -p anchorcore --target x86_64-pc-windows-gnu` (from `rust/`). `cargo check`/`test`/`clippy`/`build` all work; `cargo +stable-x86_64-pc-windows-msvc` still fails (`link.exe` absent). `rust/target` is shared with the main checkout — a fresh `git worktree` needs `robocopy` of `rust/target` and `frontend/dist` (both gitignored) or a full rebuild + `npm run build` (see `docs/archive/handover-2026-10-10-b54-verify.md`).
 * CI runs the real `cargo test`/clippy on every push (`ci.yml` `rust-conformance`); keep them green locally too.
 * `vec0` vs Python scan fallback — `rust` should use `sqlite-vec` statically linked.
 

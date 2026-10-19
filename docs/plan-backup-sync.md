@@ -1,9 +1,8 @@
 # AnchorCore — Backup, export & encrypted device sync (plan)
 
-> Status: proposed 2026-10-11 — decisions §8 need owner sign-off before Phase A
-> starts; Phases B/C are design-only until then. Phase A tasks:
-> `rust/BACKLOG.md` Phase 25 (R25.1–R25.7). Product anchor and priority:
-> `docs/product-plan.md` B61.
+> Status: Phase A shipped 2026-10-12 (R25.1–R25.7 — see `docs/backup.md`);
+> decisions §8 still need owner sign-off before Phases B/C start (design-only
+> until then). Product anchor and priority: `docs/product-plan.md` B61.
 >
 > Trigger: "plan and design backup / export feature in case user changes the
 > devices… future hosted solution where we will allow users to sync information

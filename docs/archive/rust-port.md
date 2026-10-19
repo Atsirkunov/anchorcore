@@ -1,6 +1,6 @@
 # AnchorCore — Backend Port to Rust (evaluation + plan, B31) — **Done 2026-08-21 `v1.0.9`**
 
-> **Status: shipped — Rust is the backend (`v1.0.9` `7131cfe`, `cargo test 47` + `cargo check 0` + `110/17` honest vs Rust via CI `rust-conformance`, `scripts/sync_version.py`).** The question was real — *"would Rust make this easier to run and faster?"* — and the answer is in `rust/docs/cutover.md:1` + `docs/handover-2026-08-21-retire.md:1`. This doc is now historical; companion: [product-plan.md](./product-plan.md#b31-backend-port-to-rust-p3deferred) + `rust/BACKLOG.md:1` + `rust/README.md:1`. **Superseded by R19.1:** `hosting/` now runs the Rust binary in one container (Team image, B59).
+> **Status: shipped — Rust is the backend (`v1.0.9` `7131cfe`, `cargo test 47` + `cargo check 0` + `110/17` honest vs Rust via CI `rust-conformance`, `scripts/sync_version.py`).** The question was real — *"would Rust make this easier to run and faster?"* — and the answer is in `rust/docs/cutover.md:1` + `docs/handover-2026-08-21-retire.md:1`. This doc is now historical; companion: [product-plan.md](../product-plan.md#b31-backend-port-to-rust-p3deferred) + `rust/BACKLOG.md:1` + `rust/README.md:1`. **Superseded by R19.1:** `hosting/` now runs the Rust binary in one container (Team image, B59).
 
 ---
 
@@ -147,4 +147,4 @@ contract keeps both worlds working in parallel.
 
 *Workspace: `rust/` (Cargo workspace, `rust/AGENTS.md`, `rust/BACKLOG.md`). AI agents: pick one `R*.*` task, branch `rust/R1.1`.*
 
-*Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [product-plan.md](./product-plan.md), [rust/BACKLOG.md](../rust/BACKLOG.md)*
+*Companion docs: [architecture.md](../architecture.md), [packaging.md](../packaging.md), [product-plan.md](../product-plan.md), [rust/BACKLOG.md](../../rust/BACKLOG.md)*

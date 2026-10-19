@@ -203,7 +203,7 @@ Open MCP work (zero-setup UX, HTTP transport, write-back, registry) is tracked i
 
 - [x] **Decided (R20.7, 2026-10-11): local stays stdio + `runtime.json` discovery (R20.4), and streamable HTTP (B14.2) is the Team/remote answer, re-ranked ahead of the registry (B14.4).** Rationale: a local harness must own the stdio process (stdin/stdout *are* the transport), while HTTP removes the path entirely for a shared instance — one URL, bearer token, no host paths to discover. The registry is still worth doing, but as a convenience rather than as the thing that unblocks Team. Details in the plan's "Decisions recorded".
 - [ ] Token scoping model for v2 (per-user vs per-team, read/write tiers)?
-- [ ] Do we cap `search` k and prompt budget to protect Ollama/context under agent load?
+- [x] ~~Cap `search` k to protect Ollama/context under agent load?~~ — resolved: `k` defaults to 8, max 50, server-side.
 - [ ] Should `ask` be exposed at all, or is `search` enough for agents (answers for humans)?
 - [ ] Naming: expose the product as `anchorcore` (brand) or `memory` (function) in MCP tool namespaces?
 

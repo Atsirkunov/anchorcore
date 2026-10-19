@@ -23,7 +23,7 @@
    - [ ] `npm run build` + `npm run lint` + `npm run test` in `frontend/` — TypeScript + Vite clean
    - [ ] Sanity: `cargo run -p anchorcore -- --port 8000` → ask a question, check Settings
 2. **Bump the version** — edit `rust/Cargo.toml:6` `workspace.package.version` → `python scripts/sync_version.py --check` (Cargo is the only source since the archive)
-3. **Update docs** — backlog items marked `DONE`; handover `docs/handover-*.md`; stale-claim sweep: `git grep -n "shipped 1\.0\.\|shipped as of\|shipped (1\.0" AGENTS.md README.md docs/packaging.md docs/architecture.md rust/README.md docs/releasing.md` (fix current-version claims, confirm historical ones) + `git grep -n "bundled sample"` (B50) — fix or confirm historical
+3. **Update docs** — backlog items marked `DONE`; handover `docs/archive/handover-*.md`; stale-claim sweep: `git grep -n "shipped 1\.0\.\|shipped as of\|shipped (1\.0" AGENTS.md README.md docs/packaging.md docs/architecture.md rust/README.md docs/releasing.md` (fix current-version claims, confirm historical ones) + `git grep -n "bundled sample"` (B50) — fix or confirm historical
 4. **Draft the release notes** — `docs/release-notes/vX.Y.Z.md` from the commits since the previous tag + the shipped log + handovers, written for users (and their agents), not maintainers: `Highlights` (what's new, plain verbs), `Fixed` (user-visible bugs only), `Upgrade notes` (migrations, behavior changes, anything to re-run). Translate R-codes/B-codes into plain language, never paste internal IDs unexplained. Commit the file with the release. (Notes exist from v1.0.22 onward — do not backfill older tags from memory.)
 5. **Tag and push:**
    ```

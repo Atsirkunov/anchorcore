@@ -1,7 +1,7 @@
 # AnchorCore — Packaging Plan
 
 > Goal: ship AnchorCore as a runnable app a non-developer can launch.
-> Status: **Rust shipped** (current version: see `docs/release-notes/`) — `rust/target/release/anchorcore` release binary (`frontend/dist` embedded via `include_dir!`, `9.8M`, ad-hoc `codesign`) is the local artifact. **Python `backend/` PyInstaller (`packaging.spec`) is archived on tag `archive/python-final`** (conformance suite fetches it frozen). Legacy `dist/AnchorCore.exe/.app` (B20/B24) remain documented for history.
+> Status: **Rust shipped** (current version: see `docs/release-notes/`) — `rust/target/release/anchorcore` release binary (`frontend/dist` embedded via `include_dir!`, ad-hoc `codesign`) is the local artifact. **Python `backend/` PyInstaller (`packaging.spec`) is archived on tag `archive/python-final`** (conformance suite fetches it frozen). Legacy `dist/AnchorCore.exe/.app` (B20/B24) remain documented for history.
 
 ---
 
@@ -17,11 +17,12 @@
 
 ## 2. Building (Rust — shipped)
 
-One command from the repo root:
+From the repo root:
 
 ```bash
-npm run build && cargo build --release
-# artifact: rust/target/release/anchorcore (9.8M, frontend/dist embedded; `anchorcore mcp` is a mode)
+cd frontend && npm run build && cd ..
+cargo build --release
+# artifact: rust/target/release/anchorcore (frontend/dist embedded; `anchorcore mcp` is a mode)
 # release zips: dist/AnchorCore-{windows,macos,linux}.zip via release.yml
 ```
 
@@ -61,10 +62,8 @@ and logs land in `~/.anchorcore/anchorcore.log`.)
 
 | Item | Why | Effort |
 |---|---|---|
-| ✅ Ollama guided install (B8/B54) | first-run wizard checks Ollama + pulls models | done |
 | macOS notarization | silent Gatekeeper approval; needs Apple Developer account ($99/yr) | 1–2 days |
 | Windows installer (Inno Setup/NSIS) | nicer than a raw exe | 0.5 day |
-| ✅ Windows windowed exe (no console) | subsystem flag + panic-to-log hook in `main.rs` | done, needs CI build check |
 | App icon | neither `.app` nor exe bundles a custom icon yet | needs a designer (or reuse `frontend/public/vite.svg` as placeholder) |
 | Auto-update | Sparkle/tauri-updater | later |
 | Bundled inference (llama.cpp) | fully offline, no Ollama prerequisite | +2–3 days |

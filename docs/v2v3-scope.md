@@ -47,11 +47,10 @@ the latest GitHub Release assets for Windows/macOS.
 | Download | ✅ direct `releases/latest/download` asset links (site + README) |
 | Docs | GitHub repo itself (no separate docs site — decided against VitePress-style) |
 | Pricing | ✅ tiers without prices (see §6) |
-| Changelog | ❌ none yet — no `CHANGELOG.md`, no page (see §5) |
+| Changelog | ✅ per-version notes (`docs/release-notes/`, from v1.0.22) attached to each GitHub Release; no website page yet (see §5) |
 | Blog | Later |
 
-Still open: hosting choice (Cloudflare Pages is an option, not chosen),
-`og-card.png` export for strict social crawlers, reserving `anchorcore.ai`.
+Still open: reserving `anchorcore.ai`. (Hosting is Workers Static Assets and `og-card.png` shipped — B47.)
 
 ## 3. Hosting (the hosted v2 story)
 
@@ -115,7 +114,7 @@ ask it questions" — not raw file transfer.
 | Permissions (owner/editor/viewer) | — | planned | v2 Teams tier trigger |
 
 **Label-scoped sharing (mechanism shipped, links not):** sources carry a
-label (`public|internal|sensitive|pii`); the share-safe API (`/qa/public`,
+label (`public|internal|sensitive` — `pii` retired from user-facing copy, R35.1); the share-safe API (`/qa/public`,
 `public_only`) already excludes non-public content, and `sensitive`/`pii`
 content never leaves the local machine. The actual share *links* are still to
 build on top of this. The governance story is what enterprise buyers will ask
@@ -127,17 +126,16 @@ local stays free; team self-hosted = paid platform license; hosted = paid when i
 ## 5. Release management & changelogs
 
 Current state: tag `v*` → CI builds Windows + macOS (+ Linux) zips, attaches
-to GitHub Releases. Versions are already 1.x (the old "stay v0 until first
-pilot" plan lapsed). Still missing:
+to GitHub Releases with per-version notes (`docs/release-notes/`, drafted +
+attached per `docs/releasing.md` — this superseded the old `CHANGELOG.md`
+plan). Versions are already 1.x (the old "stay v0 until first pilot" plan
+lapsed). Still missing:
 
-- **Changelog file in the repo** (`CHANGELOG.md`) — manual, Keep a Changelog
-  format. Make it part of the release checklist in `docs/releasing.md`.
-- **Website changelog page** — rendered from CHANGELOG.md (open).
+- **Website changelog page** — rendered from `docs/release-notes/` (open).
 - **Auto-release notes** — generate from commits between tags (later; manual
-  curated changelog is better quality at this stage).
-- **Update checks** — the app checks the latest version on launch (opt-in),
-  "update available" banner. Deferred; no longer blocked (stable
-  `releases/latest/download` URLs now exist).
+  curated notes are better quality at this stage).
+- **Update checks** — ✅ shipped ([updates.md](./updates.md)): manual check in
+  the System tab + opt-in startup check, "update available" banner.
 
 ## 6. Free tier & pricing (aligns with product-plan §10–11)
 
@@ -149,7 +147,7 @@ prices on site — price discovery happens in pilot conversations.
 |---|---|---|---|---|
 | Price | €0 | one-time license, perpetual incl. 1yr support/updates | TBD from pilots | support contract, scoped per deal |
 | Core memory + Q&A | ✅ | ✅ | ✅ | ✅ |
-| License enforcement | — | offline ed25519 key (`backend/app/license.py`) | — | ✅ |
+| License enforcement | — | offline ed25519 key (`rust/crates/anchorcore/src/license.rs`) | — | ✅ |
 | Hosted sync ("AI already knows") | — | — | ✅ | ✅ |
 | Bundled model access | — | — | ✅ (metered) | ✅ |
 | Team workspace + sharing | — | ✅ (your VPC) | ✅ | ✅ |
@@ -176,7 +174,7 @@ prices on site — price discovery happens in pilot conversations.
 
 | Step | What | State |
 |---|---|---|
-| 1 | Changelog discipline (`CHANGELOG.md`) | open |
+| 1 | Changelog discipline | ✅ done in evolved form (per-version `docs/release-notes/` via `releasing.md`) |
 | 2 | Website landing + download page | ✅ shipped |
 | 3 | Docs presence | decided: GitHub repo itself, no separate docs site |
 | 4 | Read-only share links (project tokens) | open, needs B14.2 MCP HTTP |

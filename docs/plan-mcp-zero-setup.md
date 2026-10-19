@@ -3,22 +3,19 @@
 > Status: accepted 2026-10-11; revised same day - single-executable merge
 > (R20.8) and wizard enablement (R20.9) adopted. R20.1-R20.3 + R20.6 + R20.7 +
 > R20.8 + R20.9 landed (see `rust/BACKLOG.md` Phase 20); **R20.4** (runtime
-> discovery) and **R20.5** (release smoke) remain open. The stdio-vs-HTTP
-> question is settled under "Decisions recorded" below.
+> discovery) and **R20.10** (CI search smoke; R20.5 handshake shipped) remain
+> open. The stdio-vs-HTTP question is settled under "Decisions recorded" below.
 
 ## What is already true (don't rebuild it)
 
-- Every release zip ships the sidecar: `AnchorCore-windows.zip` =
-  `anchorcore.exe` + `anchorcore-mcp.exe`; Linux = `anchorcore` +
-  `anchorcore-mcp`; macOS = `AnchorCore.app/Contents/MacOS/anchorcore-mcp`
-  (`.github/workflows/release.yml:41-46,74-84,138-145`). Two files today;
-  R20.8 merges them into one (see Decisions).
-- The sidecar defaults to `http://127.0.0.1:8000` (`bin/mcp.rs:15`) and talks
-  HTTP to the running app (single DB owner, like the browser UI). Six
-  read-only tools, `public_only` gate, audit rows in `system_events`
-  (`component='mcp'`).
-- `claude mcp add anchorcore -- <path-to-sidecar>` works today with the
-  shipped binary (`docs/mcp.md` §4.1/§8).
+- Every release zip ships one binary: `anchorcore` runs the app and
+  `anchorcore mcp` is the MCP mode (R20.8 merged the old `anchorcore-mcp`
+  sidecar in; see Decisions).
+- The MCP mode defaults to `http://127.0.0.1:8000` and talks HTTP to the
+  running app (single DB owner, like the browser UI). Six read-only tools,
+  `public_only` gate, audit rows in `system_events` (`component='mcp'`).
+- `claude mcp add anchorcore -- <path-to-anchorcore> mcp` works today with
+  the shipped binary (`docs/mcp.md` §4.1/§8).
 
 ## Failure modes found (2026-10-11)
 

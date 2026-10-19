@@ -60,7 +60,7 @@ Team and commercial use requires a paid license.
 - [Agent setup skill](./.agents/skills/anchorcore-setup/SKILL.md) — hand it to your agent: install, configure models and sources, connect MCP, verify answers
 - [v2/v3 business scoping](./docs/v2v3-scope.md) — website, hosting, sharing, pricing, free tier
 - [Design system](./docs/design-system.md) — color tokens, typography, messaging, website approach (single source for app + site)
-- [Rust port evaluation](./docs/rust-port.md) — is a Rust backend worth it? (distribution vs LLM latency)
+- [Rust port evaluation](./docs/archive/rust-port.md) — is a Rust backend worth it? (distribution vs LLM latency — historical, decided)
 - [Sample dataset guide](./docs/sample-dataset.md) — what the demo corpus exercises
 - [REST API guide](./docs/guides/rest-api.md) — connect any JSON list API as a source
 - [Obsidian vault guide](./docs/guides/obsidian-vault.md) — point AnchorCore at a vault folder

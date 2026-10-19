@@ -79,7 +79,7 @@ and `disputed` ones unless opted back in.
 | Layer | Function | Config | Purpose |
 |---|---|---|---|
 | Cleaning | `clean_text` + repeated-line stripping | — | Strip control chars, page numbers, repeated headers/footers and normalize whitespace *before* chunking, so boundaries, embeddings and FTS tokens are clean |
-| Entity summary | `chunk_text` (`chunking.py` / `chunking.rs`) | `ANCHOR_CHUNK_SIZE=800`, `ANCHOR_CHUNK_OVERLAP=100` (chars, UTF-8 safe) | Fixed 800/100 slices of each entity summary → `chunks kind=entity` |
+| Entity summary | `chunk_text` (`chunking.rs`) | `ANCHOR_CHUNK_SIZE=800`, `ANCHOR_CHUNK_OVERLAP=100` (chars, UTF-8 safe) | Fixed 800/100 slices of each entity summary → `chunks kind=entity` |
 | Full-document | `chunk_document` | `ANCHOR_CHUNK_MAX_CHARS=1600` | Section-aware: hard split at headings (`§434`, `4.2.1`, `Article 12`, ALL-CAPS), paragraphs packed per section up to 1600 chars, fixed-slice fallback only for oversized paragraphs |
 | Classifier windows | `classify_windows` | `ANCHOR_CLASSIFY_WINDOW_CHARS=16000`, 50% overlap | Overlapping windows for the classifier — not stored as chunks, but governs hash dedup and cost |
 
