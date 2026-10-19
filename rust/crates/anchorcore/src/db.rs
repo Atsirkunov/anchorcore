@@ -363,6 +363,8 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/18_processed_hash.sql")),
         // R38.1: markdown line ranges + section kind/meta
         M::up(include_str!("../migrations/19_markdown_ranges.sql")),
+        // R40.7: corpus vocabulary table (rules + quarantined LLM pairs)
+        M::up(include_str!("../migrations/20_vocabulary.sql")),
     ])
 }
 
@@ -466,6 +468,10 @@ mod tests {
                 conn.execute(&format!("ALTER TABLE {} DROP COLUMN {}", table, col), [])
                     .unwrap_or_else(|e| panic!("drop {table}.{col}: {e}"));
             }
+            // A real v10 DB also predates R40.7 — drop the vocabulary table
+            // so migration 20 has real work to do (same rule).
+            conn.execute("DROP TABLE vocabulary", [])
+                .unwrap_or_else(|e| panic!("drop vocabulary: {e}"));
             conn.execute("DROP TABLE vec_chunks", []).unwrap();
             conn.pragma_update(None, "writable_schema", "ON").unwrap();
             conn.execute(
@@ -483,7 +489,11 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         run_migrations(&mut conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 19);
+        assert_eq!(v, 20);
+        let vocab: String = conn
+            .query_row("SELECT name FROM sqlite_master WHERE type='table' AND name='vocabulary'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(vocab, "vocabulary", "migration 20 must create the table");
         assert_eq!(vec_trigger_sql(&conn), before);
         let adopted: String = conn.query_row("SELECT processed_hash FROM ingested_items", [], |r| r.get(0)).unwrap();
         assert_eq!(adopted, "h", "migration 18 must backfill processed_hash=content_hash");

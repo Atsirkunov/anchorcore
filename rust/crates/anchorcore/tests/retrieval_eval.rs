@@ -62,6 +62,10 @@ mod common;
 #[path = "../src/retrieval.rs"]
 mod retrieval;
 
+#[allow(dead_code)]
+#[path = "../src/vocab.rs"]
+mod vocab;
+
 /// Minimal `embedder` shim: `retrieval.rs`'s inner unit-test module is
 /// compiled into this target (`cfg(test)` is set for test builds) and calls
 /// `crate::embedder::pack_single`. This is byte-identical to
@@ -154,6 +158,11 @@ struct EvalDoc {
     /// snippets still see the raw content. Pairs that put query terms in the
     /// heading but not the body measure the vector-leg gain of the prefix.
     heading: Option<String>,
+    /// R40.7: optional per-doc vocabulary, seeded as ACTIVE rule rows for
+    /// the doc's item (`[[term, expansion], ...]`). Pairs whose query term
+    /// matches a seeded term (but appears in no body) measure the
+    /// query-time vocab expansion end to end.
+    vocab: Vec<(String, String)>,
 }
 
 struct EvalPair {
@@ -205,6 +214,25 @@ fn load_manifest() -> (Vec<EvalDoc>, Vec<EvalPair>) {
                 title: str_field(d, "title", &ctx),
                 summary: str_field(d, "summary", &ctx),
                 heading: d.get("heading").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                vocab: d
+                    .get("vocab")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|e| {
+                                let pair = e.as_array().unwrap_or_else(|| {
+                                    panic!("{ctx}: vocab entries are [term, expansion] pairs")
+                                });
+                                assert_eq!(pair.len(), 2, "{ctx}: vocab entries are [term, expansion] pairs");
+                                let term = pair[0].as_str().unwrap_or_else(|| panic!("{ctx}: vocab term must be a string")).to_string();
+                                let expansion =
+                                    pair[1].as_str().unwrap_or_else(|| panic!("{ctx}: vocab expansion must be a string")).to_string();
+                                assert!(!term.trim().is_empty() && !expansion.trim().is_empty(), "{ctx}: vocab pair must be non-empty");
+                                (term, expansion)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             }
         })
         .collect();
@@ -259,6 +287,14 @@ fn insert_doc(conn: &Connection, source_id: i64, doc: &EvalDoc) {
     )
     .expect("insert item");
     let item_id = conn.last_insert_rowid();
+    // R40.7: per-doc vocabulary, seeded active (rule-origin) for the doc's item.
+    for (term, expansion) in &doc.vocab {
+        conn.execute(
+            "INSERT INTO vocabulary (term, expansion, item_id, source_id, origin, status) VALUES (?1,?2,?3,?4,'rule','active')",
+            params![term, expansion, item_id, source_id],
+        )
+        .expect("insert vocab");
+    }
     conn.execute(
         "INSERT INTO sections (item_id, parent_id, level, title, path, chunk_range, summary, summary_hash, created_at) VALUES (?1, NULL, 0, ?2, ?2, '', ?3, '', datetime('now'))",
         params![item_id, doc.title, doc.summary],

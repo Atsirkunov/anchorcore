@@ -47,6 +47,7 @@ mod stubs;
 mod system;
 mod tags;
 mod tray;
+mod vocab;
 mod watcher;
 
 use axum::{

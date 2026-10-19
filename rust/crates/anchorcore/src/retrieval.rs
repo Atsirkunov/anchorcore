@@ -39,7 +39,8 @@ pub fn is_who_knows(query: &str) -> bool {
 
 /// Shared query terms for FTS matching and match-centered snippets:
 /// Unicode word runs, lowercased, len ≥ 2, stopwords removed.
-fn query_terms(question: &str) -> Vec<String> {
+/// Crate-visible for `vocab.rs` (multiword-expansion subset checks).
+pub(crate) fn query_terms(question: &str) -> Vec<String> {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| Regex::new(r"[\p{L}\p{N}_§\-]+").unwrap());
     static STOPWORDS: OnceLock<HashSet<&str>> = OnceLock::new();
@@ -99,12 +100,35 @@ fn expand_fts_terms(terms: &[String]) -> Vec<String> {
 
 /// Mirrors `answer_engine.py:71` _fts_match_query — R8.2: Unicode-aware (was [a-z0-9_])
 /// R40.6: terms expand through [`SYNONYM_CLUSTERS`] before the `OR` join.
+/// This stays the pure curated-only form (unit-pinned, no DB) — production
+/// legs call [`fts_match_query_scoped`] for the vocabulary merge.
 pub fn fts_match_query(question: &str) -> Option<String> {
     let terms = query_terms(question);
     if terms.is_empty() {
         return None;
     }
     let expanded = expand_fts_terms(&terms);
+    Some(expanded.iter().map(|t| format!("\"{}\"", t)).collect::<Vec<_>>().join(" OR "))
+}
+
+/// R40.7: FTS query with corpus-vocabulary expansion — curated synonyms
+/// (R40.6) plus active project-scoped vocab pairs, deduped. Multiword
+/// expansions quote as FTS phrases.
+pub fn fts_match_query_scoped(
+    conn: &Connection,
+    question: &str,
+    source_ids: Option<&HashSet<i64>>,
+) -> Option<String> {
+    let terms = query_terms(question);
+    if terms.is_empty() {
+        return None;
+    }
+    let mut expanded = expand_fts_terms(&terms);
+    for extra in crate::vocab::vocab_expansion_terms(conn, &terms, source_ids) {
+        if !expanded.iter().any(|t| t == &extra) {
+            expanded.push(extra);
+        }
+    }
     Some(expanded.iter().map(|t| format!("\"{}\"", t)).collect::<Vec<_>>().join(" OR "))
 }
 
@@ -621,7 +645,7 @@ fn exec_fts_search(
     qa_exclude_disputed: bool,
     scope: KindScope,
 ) -> Vec<Hit> {
-    let Some(match_q) = fts_match_query(query) else { return vec![] };
+    let Some(match_q) = fts_match_query_scoped(conn, query, source_ids) else { return vec![] };
     if let Some(ids) = section_ids {
         if ids.is_empty() && scope.empty_section_is_empty() {
             return vec![];
@@ -2340,7 +2364,7 @@ pub fn filename_boost_filtered(conn: &Connection, hits: &mut Vec<Hit>, query: &s
         return;
     }
     let content_q = strip_filename_tokens(query, &names);
-    let match_q = fts_match_query(&content_q);
+    let match_q = fts_match_query_scoped(conn, &content_q, None);
     let mut cids: Vec<i64> = Vec::new();
     for iid in named_item_ids(conn, &names).into_iter().take(3) {
         let cid = match_q
@@ -2789,6 +2813,35 @@ mod tests {
             Some("\"knows\" OR \"phoenix\"".to_string())
         );
         assert_eq!(fts_match_query("the and or"), None);
+    }
+
+    #[test]
+    fn scoped_fts_query_merges_active_vocab() {
+        // R40.7: active vocab pairs join the FTS OR behind curated synonyms
+        // (proposed rows never do); project scope filters.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "sv", "internal");
+        let iid = insert_item(&conn, sid, "doc");
+        let dunning = crate::vocab::normalize_pair("dunning", "payment reminder").unwrap();
+        let solo = crate::vocab::normalize_pair("solo", "only here").unwrap();
+        crate::vocab::store_vocab(&conn, iid, sid, &[dunning], &[solo]).unwrap();
+        assert_eq!(
+            fts_match_query_scoped(&conn, "what is dunning", None),
+            Some("\"dunning\" OR \"payment reminder\"".to_string())
+        );
+        assert_eq!(
+            fts_match_query_scoped(&conn, "solo mission", None),
+            Some("\"solo\" OR \"mission\"".to_string()),
+            "proposed pair contributes nothing"
+        );
+        let other: HashSet<i64> = [sid + 100].into_iter().collect();
+        assert_eq!(
+            fts_match_query_scoped(&conn, "what is dunning", Some(&other)),
+            Some("\"dunning\"".to_string()),
+            "other project sees no vocab"
+        );
+        // The pure form is vocab-blind (sees the DB-free curated map only).
+        assert_eq!(fts_match_query("what is dunning"), Some("\"dunning\"".to_string()));
     }
 
     #[test]

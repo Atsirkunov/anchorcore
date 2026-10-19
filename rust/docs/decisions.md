@@ -122,3 +122,16 @@ ADR log. Append newest first.
 * **Consequences:** Recently synced sectioned docs carry prefixed vectors; older ones converge on next force re-sync. Any future embed-input format change reuses this rule (note, not migration) unless recall measurably requires otherwise.
 
 ---
+
+## 2026-10-19 — R40.7: quarantined corpus vocabulary
+
+* **Decision:** Corpus jargon extracts at ingest into `vocabulary` (term, expansion, item, source, origin, status) and expands FTS terms at query time. Tier-1 rules (parenthetical acronyms anywhere, `CODE - x` / `Term: def` under glossary headings) go active immediately; Tier-2 LLM pairs (`defined_terms` piggyback on classify) stay proposed until corroborated by a second independent item (same-item re-store never self-corroborates), confirmed by any rule row, or approved in R40.8 review. Activation is sticky; `rejected` rows survive re-sync and suppress the pair globally. Rejected rows witness nothing.
+* **Context:** RFP-style docs define codes the query never spells (`Long Form (CODE)`); curated synonyms (R40.6) cannot cover per-corpus jargon. LLM pairs are quarantined because a single model guess is the least trustworthy signal in the pipeline — the golden pair `dunning-01` proves the expansion path while unit tests pin the quarantine. No-model installs get Tier 1 only (pure rules, no classify dependency). Structured files (code/config) extract nothing, consistent with the extraction skip.
+* **Alternatives considered:**
+  - *A: LLM pairs active immediately* — rejected: single-witness model output expanding every matching query is how "CA" learns to mean something wrong corpus-wide.
+  - *B: Per-item rejection scope* — rejected: a rejected pair is wrong, period; global suppression is simpler and matches "never re-proposed".
+* **Consequences:**
+  - Backup archives do not carry `vocabulary` yet (format change out of R40.7 scope) — restore + force re-sync rebuilds it; file the backup-table follow-up if restores go routine.
+  - Query-time lookup is project-scoped but label-blind (terms, not content); chunk label/status gates apply downstream as before.
+
+---

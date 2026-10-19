@@ -85,6 +85,13 @@
       "title": "9.4 Escrow timetable",
       "summary": "Escrow timetable: funds stay on hold through a three-stage release notice.",
       "heading": "9.4 Escrow timetable — escrow timetable dates, final escrow timetable"
+    },
+    {
+      "id": "dunning-notices",
+      "file": "docs/dunning-notices.md",
+      "title": "Dunning notices",
+      "summary": "Dunning: payment reminder schedule before orders pause.",
+      "vocab": [["dunning", "payment reminder"]]
     }
   ],
   "pairs": [
@@ -197,6 +204,12 @@
       "query": "when is the escrow timetable",
       "expected": ["rfp-escrow-timetable"],
       "notes": "R40.5: continuation-chunk signal — 'escrow'/'timetable' live in the section heading, not the chunk bytes (production sections split so only the first chunk holds the heading line; the rest carry it via chunks.path into embed_input). The vector leg misses on bare content vectors and hits on heading-prefixed input; keyword/TOC stay dark (FTS is content-only, TOC leaf is keyword-gated without vec0)."
+    },
+    {
+      "id": "dunning-01",
+      "query": "what is dunning",
+      "expected": ["dunning-notices"],
+      "notes": "R40.7: corpus vocabulary end to end — 'dunning' appears in no body; the seeded active pair expands the keyword leg to the 'payment reminder' phrase (3x in the doc). Misses every leg with no vocab row; keyword + TOC-leaf hit with it (the merge rides the shared FTS query builder, so both keyword paths expand)."
     }
   ]
 }

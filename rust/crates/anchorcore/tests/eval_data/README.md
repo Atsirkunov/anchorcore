@@ -45,7 +45,13 @@ signature, manifest consistency, all-live fixture) gate CI.
    input* becomes `heading + "\n" + content` while FTS/snippet content
    stays raw. Use it for continuation-chunk pairs (query terms in the
    heading, absent from the bytes); docs without it embed bare content.
-5. Run the table command and check the new row: fused must hit (it is
+5. Optional `vocab` on a docs entry (R40.7): `[[term, expansion], ...]`
+   pairs seeded as ACTIVE rule rows for the doc's item. Use it for
+   vocabulary pairs (query term matches a seeded term but appears in no
+   body); the keyword leg must miss with the key removed. Quarantine
+   (`proposed` never expands) is unit-tested, not golden — a
+   never-expanding pair cannot assert fused recall.
+6. Run the table command and check the new row: fused must hit (it is
    asserted), and each leg should behave as the pair intends.
 
 ## Term discipline (read before writing docs)

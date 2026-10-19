@@ -145,6 +145,17 @@ Code constants (need a rebuild; change only with a failing test in hand):
   only on force re-sync (re-chunk NULLs embeddings, re-embed prefixes
   them); the scheduler backfill fills NULLs with prefixed input. No
   silent mass re-embed (recorded 2026-10-19, `rust/docs/decisions.md`).
+- Corpus vocabulary (R40.7): FTS query terms expand through the
+  `vocabulary` table (migration 20) on top of the R40.6 curated map.
+  Tier-1 rules (parenthetical acronyms, glossary lines) are active
+  immediately, no model needed; Tier-2 LLM pairs (`defined_terms` on the
+  classify call, zero extra calls) stay `proposed` until a second
+  independent item corroborates, a rule row confirms, or R40.8 review
+  approves — single witnesses never expand. Lookup is project-scoped
+  (`source_ids`); expansion adds terms only, chunk label/status gates
+  still apply downstream. Known gap: `vocabulary` is not in backup
+  archives yet — restore + force re-sync rebuilds it (rules fully, LLM
+  pairs re-proposed).
 - Still open: suspect detector duplicated pending reunification (R39.13,
   P3); cross-encoder reranker deferred (R39.11, owner call).
 

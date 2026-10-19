@@ -81,6 +81,25 @@ pub fn bucket_distills(doc_type: &str) -> bool {
     doc_type == "record"
 }
 
+/// R40.7: one classify call returns items + Tier-2 vocabulary piggyback
+/// (zero extra calls — `defined_terms` rides the same JSON response).
+#[derive(Debug, Clone)]
+pub struct ClassifyOutput {
+    pub items: Vec<ClassifiedItem>,
+    pub defined_terms: Vec<crate::vocab::DefinedTerm>,
+}
+
+/// R40.7: Tier-2 instruction, shared by both bucket prompts (one const so
+/// they cannot drift — the LLM lists domain terms the doc defines).
+const DEFINED_TERMS_SUFFIX: &str = "\nAlso list domain terms the document defines: \"defined_terms\": [{\"term\": \"CA\", \"expansion\": \"Direct Debit\"}] — acronyms, codes, or jargon with their spelled-out form, max 10. Omit the key when the document defines nothing.\n";
+
+/// R40.7: bucket prompt + Tier-2 instruction. Crate-visible for the prompt
+/// test (both buckets must carry the suffix).
+pub(crate) fn classify_prompt(doc_type: &str) -> String {
+    let base = if is_record_bucket(doc_type) { RECORD_PROMPT } else { REFERENCE_PROMPT };
+    format!("{base}{DEFINED_TERMS_SUFFIX}")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClassifiedItem {
     pub kind: String,
@@ -132,22 +151,28 @@ impl Classifier {
         source_ref: &str,
         doc_type: &str,
         cloud_trusted: bool,
-    ) -> Vec<ClassifiedItem> {
+    ) -> ClassifyOutput {
         // R33.2: code is code — no entity extraction from source files. The
         // code itself is the retrievable unit; paraphrases only added ranking
         // noise and review-queue filler. No LLM call is attempted either.
         if doc_type == "code" {
-            return Vec::new();
+            return ClassifyOutput { items: Vec::new(), defined_terms: Vec::new() };
         }
         if !cloud_trusted && !self.provider_is_local() {
             tracing::info!("classification gate: remote provider unconfirmed; using rules");
-            return classify_rules_typed(text, source_ref, doc_type);
+            return ClassifyOutput {
+                items: classify_rules_typed(text, source_ref, doc_type),
+                defined_terms: Vec::new(),
+            };
         }
         match self.classify_llm(text, source_ref, doc_type).await {
-            Ok(items) => items,
+            Ok(out) => out,
             Err(e) => {
                 tracing::warn!("LLM classification failed ({}); falling back to rules", e);
-                classify_rules_typed(text, source_ref, doc_type)
+                ClassifyOutput {
+                    items: classify_rules_typed(text, source_ref, doc_type),
+                    defined_terms: Vec::new(),
+                }
             }
         }
     }
@@ -166,8 +191,8 @@ impl Classifier {
         }
     }
 
-    async fn classify_llm(&self, text: &str, source_ref: &str, doc_type: &str) -> Result<Vec<ClassifiedItem>, String> {
-        let prompt = if is_record_bucket(doc_type) { RECORD_PROMPT } else { REFERENCE_PROMPT };
+    async fn classify_llm(&self, text: &str, source_ref: &str, doc_type: &str) -> Result<ClassifyOutput, String> {
+        let prompt = classify_prompt(doc_type);
         let payload = serde_json::json!({
             "model": self.settings.get("classifier_model", None).unwrap_or_else(|| "llama3.2:3b".to_string()),
             "messages": [
@@ -195,7 +220,10 @@ impl Classifier {
         let raw = j.pointer("/choices/0/message/content").and_then(|v| v.as_str()).ok_or("missing content")?;
         let data: serde_json::Value = serde_json::from_str(raw).map_err(|e| e.to_string())?;
         let items = data.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        Ok(normalize_items(items, source_ref, doc_type))
+        Ok(ClassifyOutput {
+            items: normalize_items(items, source_ref, doc_type),
+            defined_terms: parse_defined_terms(&data),
+        })
     }
 
     async fn distill_llm(&self, text: &str, source_ref: &str) -> Result<Vec<DistilledUnit>, String> {
@@ -258,6 +286,29 @@ fn normalize_items(items: Vec<serde_json::Value>, source_ref: &str, bucket: &str
             let confidence = obj.get("confidence").and_then(|v| v.as_f64()).map(|f| f.clamp(0.0,1.0)).unwrap_or(0.5);
             let author = obj.get("author").and_then(|v| v.as_str()).unwrap_or("").trim().chars().take(300).collect();
             out.push(ClassifiedItem { kind, summary, reasoning, confidence, author, source_ref: source_ref.to_string(), window_text: String::new(), window_index: None });
+        }
+    }
+    out
+}
+
+/// R40.7: Tier-2 piggyback parse — `defined_terms` from the same classify
+/// response (zero extra calls). Missing key → none; garbage entries are
+/// dropped by the shared normalizer; capped at 10 per window.
+fn parse_defined_terms(data: &serde_json::Value) -> Vec<crate::vocab::DefinedTerm> {
+    let mut out = Vec::new();
+    let Some(arr) = data.get("defined_terms").and_then(|v| v.as_array()) else {
+        return out;
+    };
+    for entry in arr.iter().take(10) {
+        let Some(obj) = entry.as_object() else {
+            continue;
+        };
+        let term = obj.get("term").and_then(|v| v.as_str()).unwrap_or("");
+        let expansion = obj.get("expansion").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(pair) = crate::vocab::normalize_pair(term, expansion) {
+            if !out.contains(&pair) {
+                out.push(pair);
+            }
         }
     }
     out
@@ -426,8 +477,40 @@ mod tests {
         let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
         let svc = Arc::new(crate::settings::SettingsService::new(store));
         let c = Classifier::new(svc);
-        let items = c.classify("We decided to use sqlite-vec for vectors.", "main.rs", "code", true).await;
-        assert!(items.is_empty());
+        let out = c.classify("We decided to use sqlite-vec for vectors.", "main.rs", "code", true).await;
+        assert!(out.items.is_empty());
+        assert!(out.defined_terms.is_empty());
+    }
+
+    #[test]
+    fn both_bucket_prompts_carry_defined_terms() {
+        // R40.7: the Tier-2 instruction rides both prompts via one const —
+        // no drift, no extra model call.
+        for bucket in ["record", "reference"] {
+            let prompt = classify_prompt(bucket);
+            assert!(prompt.contains("defined_terms"), "{bucket} prompt must ask for terms");
+            assert!(prompt.contains("max 10"), "{bucket} prompt must cap the list");
+        }
+    }
+
+    #[test]
+    fn parse_defined_terms_drops_garbage() {
+        let data = serde_json::json!({
+            "items": [],
+            "defined_terms": [
+                {"term": "CA", "expansion": "Direct Debit"},
+                {"term": "x", "expansion": "too short a term"},
+                {"term": "same", "expansion": "same"},
+                {"term": "", "expansion": "empty term"},
+                "not-an-object",
+                {"term": "CA", "expansion": "Direct Debit"},
+            ]
+        });
+        let terms = parse_defined_terms(&data);
+        assert_eq!(terms.len(), 1, "only the valid pair survives, deduped: {terms:?}");
+        assert_eq!(terms[0].term, "ca");
+        assert_eq!(terms[0].expansion, "direct debit");
+        assert!(parse_defined_terms(&serde_json::json!({"items": []})).is_empty(), "missing key → none");
     }
 
     #[test]
