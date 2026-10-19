@@ -624,114 +624,11 @@ fn project_scope(conn: &Connection, project_id: Option<i64>, public_only: bool) 
     scope
 }
 
-/// TOC coarse-to-fine precision path unioned with a discounted flat hybrid
-/// recall floor (TOC fencing can hide mid-body signals from leaf search),
-/// flat-only fallback when TOC is empty. R33.3: no graph leg — entity
-/// neighbors are entity chunks, and entities never enter retrieval (D2
-/// option (a)); `graph_expand` stays for the entity-lookup flows' tests.
-/// R38.3: the relevance gate wraps this (`orchestrate`), not the branches.
-fn orchestrate_inner(
-    conn: &Connection,
-    query: &str,
-    query_embedding: Option<Vec<f32>>,
-    scope: Option<HashSet<i64>>,
-    cfg: &RetrievalConfig,
-) -> Vec<crate::retrieval::Hit> {
-    // R14.5: TOC coarse-to-fine — try toc_search first (prunes to ~200 candidates)
-    let toc_opt = {
-        let emb_opt = query_embedding.as_deref();
-        let toc = retrieval::toc_search(conn, query, emb_opt, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed);
-        if toc.is_empty() { None } else { Some(toc) }
-    };
-    if let Some(toc) = toc_opt {
-        // Flat recall floor (R36.7 funnel follow-up): TOC fences leaf search
-        // to summary-admitted sections, and head-extract summaries can't see
-        // mid-body signals (benchmark ai-03: d1's only "incident" mention is
-        // a See-also line — its summaries match nothing, so the leaf fence
-        // excludes the whole file). Union unfiltered hybrid legs UNDERNEATH
-        // the TOC ranking (discounted: precision-first, recall-floor), so TOC
-        // can never underperform flat. Single fused list into fuse_and_rank
-        // keeps all downstream behavior (dedupe/live-first/cut).
-        let floor_vec = query_embedding.as_ref().and_then(|emb| {
-            let hits = retrieval::vector_search(conn, emb, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed);
-            if hits.is_empty() { None } else { Some(hits) }
-        });
-        let floor_kw = retrieval::keyword_search(conn, query, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed);
-        // R38.2: slot candidates — one clone per TOC-path query; fusion below consumes the original.
-        let slot_pool = floor_kw.clone();
-        let floor_kw_opt = if floor_kw.is_empty() { None } else { Some(floor_kw) };
-        let mut lists = vec![toc];
-        let mut weights = vec![1.0];
-        let mut legs = vec!["toc"];
-        if let Some(h) = floor_vec {
-            lists.push(h);
-            weights.push(0.5);
-            legs.push("vector");
-        }
-        if let Some(h) = floor_kw_opt {
-            lists.push(h);
-            weights.push(0.5);
-            legs.push("keyword");
-        }
-        let fused = retrieval::rrf_fuse_multi_named(lists, weights, &legs);
-        // Env ordering is the live-first partition inside fuse_and_rank
-        // (R33.3: the R32.3 score multiplier is retired — RRF fuses by rank).
-        let mut hits = retrieval::fuse_and_rank(
-            conn,
-            Some(fused),
-            None,
-            cfg.keyword_weight,
-            cfg.halflife,
-            cfg.max_per_source,
-            cfg.top_k,
-            cfg.qa_exclude_disputed,
-            query,
-        );
-        // R38.2: reserved keyword slots pull locked-out floor hits into the
-        // cut list before boost/return-shape (boost detection still exact —
-        // the snapshot runs after the slots).
-        retrieval::apply_keyword_slots(conn, &mut hits, &slot_pool, cfg.top_k, cfg.halflife, query);
-        let prev_top = retrieval::top_score(&hits);
-        // R38.5: thread the cfg exclusion flag — boost no longer hardcodes it.
-        retrieval::filename_boost_filtered(conn, &mut hits, query, cfg.qa_exclude_disputed);
-        retrieval::mark_boosted_hits(&mut hits, prev_top);
-        // R36.3: return-shape assembly runs once, over the final ranked
-        // list, so same-scope merging sees boosted hits too.
-        return retrieval::parent_return(conn, hits);
-    }
-    // R8.1: hybrid search — vector + keyword
-    let vector_hits = query_embedding.as_ref().and_then(|emb| {
-        let hits = retrieval::vector_search(conn, emb, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed);
-        if hits.is_empty() { None } else { Some(hits) }
-    });
-    let keyword_hits = retrieval::keyword_search(conn, query, scope.as_ref(), cfg.top_k, cfg.qa_exclude_disputed);
-    // F-07: no newest-documents fallback — a no-match query must surface as
-    // empty evidence (ask answers mode "none", search returns no hits), not
-    // as cited "evidence" that never mentions the question.
-    let keyword_opt = if keyword_hits.is_empty() { None } else { Some(keyword_hits) };
-    let mut hits = retrieval::fuse_and_rank(
-        conn,
-        vector_hits,
-        keyword_opt,
-        cfg.keyword_weight,
-        cfg.halflife,
-        cfg.max_per_source,
-        cfg.top_k,
-        cfg.qa_exclude_disputed,
-        query,
-    );
-    let prev_top = retrieval::top_score(&hits);
-    // R38.5: thread the cfg exclusion flag — boost no longer hardcodes it.
-    retrieval::filename_boost_filtered(conn, &mut hits, query, cfg.qa_exclude_disputed);
-    retrieval::mark_boosted_hits(&mut hits, prev_top);
-    // R36.3: return-shape assembly runs once, over the final ranked list.
-    retrieval::parent_return(conn, hits)
-}
-
-/// Ranked retrieval for ask + search: the TOC/flat ranking above, then the
-/// R38.3 minimum-relevance gate — empty evidence unless some hit carries a
-/// real BM25 match, a boost, or cosine at the floor (ask answers mode
-/// "none", search returns no hits).
+/// Ranked retrieval for ask + search: scope resolution and embedding stay
+/// here; the pure fusion path (TOC-or-flat legs → RRF fuse → `fuse_and_rank`
+/// → keyword slots → filename boost → `parent_return` → status re-filter →
+/// relevance gate) lives in `retrieval::orchestrate_fusion` (R38.12 —
+/// shared with the R38.10 eval so the two can never drift).
 fn orchestrate(
     conn: &Connection,
     query: &str,
@@ -739,18 +636,17 @@ fn orchestrate(
     scope: Option<HashSet<i64>>,
     cfg: &RetrievalConfig,
 ) -> Vec<crate::retrieval::Hit> {
-    // R38.5: status re-filtered after `parent_return` (inside
-    // `orchestrate_inner`) — return-shape assembly must never reintroduce
-    // excluded evidence — before the relevance gate sees the final list.
-    let hits: Vec<crate::retrieval::Hit> = orchestrate_inner(conn, query, query_embedding, scope, cfg)
-        .into_iter()
-        .filter(|h| retrieval::status_ok(h.status.as_deref(), cfg.qa_exclude_disputed))
-        .collect();
-    if hits.is_empty() || retrieval::passes_relevance_gate(&hits) {
-        hits
-    } else {
-        Vec::new()
-    }
+    retrieval::orchestrate_fusion(
+        conn,
+        query,
+        query_embedding.as_deref(),
+        scope.as_ref(),
+        cfg.top_k,
+        cfg.keyword_weight,
+        cfg.halflife,
+        cfg.max_per_source,
+        cfg.qa_exclude_disputed,
+    )
 }
 
 fn retrieve_sync(

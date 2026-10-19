@@ -32,10 +32,15 @@
 //!   path returns `None` on dim mismatch and the real scan fallback
 //!   (`cosine > 0.2`) runs — exactly what production does on bundled
 //!   rusqlite (no vec0 module), including the TOC summary→keyword fallback.
-//! - Fused recall mirrors `answer.rs::orchestrate` exactly (TOC branch with
-//!   discounted flat floor, else flat hybrid; production defaults
-//!   keyword_weight=1.0, halflife=365d, max_per_source=3; `filename_boost`
-//!   + `parent_return`), fusing the same leg outputs the table reports.
+//! - Fused recall calls the production fusion path itself
+//!   (`retrieval::orchestrate_fusion`, shared with `answer.rs::orchestrate`
+//!   since R38.12 — the old `orchestrate_mirror` restatement is deleted, so
+//!   the eval can never drift from production): TOC-or-flat legs → RRF fuse
+//!   → `fuse_and_rank` → keyword slots → filename boost → `parent_return` →
+//!   status re-filter → relevance gate, at production defaults
+//!   (keyword_weight=1.0, halflife=365d, max_per_source=3, exclude
+//!   disputed). The shared fn re-runs the same leg functions on the same
+//!   inputs, so it fuses the same outputs the table reports.
 //! - The set asserts the golden bar (fused recall 1.0 on every pair) plus
 //!   the R38.2 signature (bare opaque codes are keyword-floor-only); the
 //!   per-leg columns are reported, not asserted, so fusion tuning has room.
@@ -295,48 +300,19 @@ struct LegResults {
     fused: Vec<retrieval::Hit>,
 }
 
-/// Faithful mirror of `answer.rs::orchestrate` (private, so re-stated here
-/// from its public pieces): TOC precision path unioned with the discounted
-/// flat hybrid recall floor, else flat hybrid. Production defaults
-/// (keyword_weight 1.0, halflife 365d, max_per_source 3, exclude disputed).
-/// Takes the already-measured leg outputs so the fused column fuses exactly
-/// what the per-leg columns report.
-fn orchestrate_mirror(
-    conn: &Connection,
-    query: &str,
-    vector_hits: Vec<retrieval::Hit>,
-    keyword_hits: Vec<retrieval::Hit>,
-    toc_hits: Vec<retrieval::Hit>,
-) -> Vec<retrieval::Hit> {
-    if !toc_hits.is_empty() {
-        let mut lists = vec![toc_hits];
-        let mut weights = vec![1.0];
-        if !vector_hits.is_empty() {
-            lists.push(vector_hits);
-            weights.push(0.5);
-        }
-        if !keyword_hits.is_empty() {
-            lists.push(keyword_hits);
-            weights.push(0.5);
-        }
-        let fused = retrieval::rrf_fuse_multi(lists, weights);
-        let mut hits = retrieval::fuse_and_rank(conn, Some(fused), None, 1.0, 365.0, 3, K, true, query);
-        retrieval::filename_boost(conn, &mut hits, query);
-        return retrieval::parent_return(conn, hits);
-    }
-    let vector_opt = if vector_hits.is_empty() { None } else { Some(vector_hits) };
-    let keyword_opt = if keyword_hits.is_empty() { None } else { Some(keyword_hits) };
-    let mut hits = retrieval::fuse_and_rank(conn, vector_opt, keyword_opt, 1.0, 365.0, 3, K, true, query);
-    retrieval::filename_boost(conn, &mut hits, query);
-    retrieval::parent_return(conn, hits)
-}
-
 fn run_query(conn: &Connection, query: &str) -> LegResults {
     let query_emb = hash_embed(query);
     let vector = retrieval::vector_search(conn, &query_emb, None, K, true);
     let keyword = retrieval::keyword_search(conn, query, None, K, true);
     let toc = retrieval::toc_search(conn, query, Some(&query_emb), None, K, true);
-    let fused = orchestrate_mirror(conn, query, vector.clone(), keyword.clone(), toc.clone());
+    // R38.12: the fused column calls the production fusion path itself
+    // (`retrieval::orchestrate_fusion`, shared with `answer.rs::orchestrate`)
+    // at production defaults (keyword_weight 1.0, halflife 365d,
+    // max_per_source 3, exclude disputed) — the old `orchestrate_mirror`
+    // restatement is deleted, so the eval can never drift from production.
+    // The shared fn re-runs the same leg functions on the same inputs, so
+    // it fuses the same outputs the per-leg columns report.
+    let fused = retrieval::orchestrate_fusion(conn, query, Some(&query_emb), None, K, 1.0, 365.0, 3, true);
     LegResults { vector, keyword, toc, fused }
 }
 
