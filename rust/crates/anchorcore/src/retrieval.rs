@@ -9,6 +9,7 @@
 
 use chrono::{DateTime, Utc};
 use regex::Regex;
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
@@ -21,6 +22,13 @@ pub const GRAPH_KIND_WEIGHTS: &[(&str, f64)] = &[
     ("related", 0.4),
 ];
 pub const GRAPH_DEFAULT_WEIGHT: f64 = 0.5;
+
+/// Serializes env-knob tests: env vars are process-global and tests run on
+/// threads, so every test that sets/removes an `ANCHOR_*` knob — or asserts
+/// a default-knob value a concurrent test could perturb — must hold this.
+/// Crate-visible so `answer.rs` knob tests join the same exclusion.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Mirrors `answer_engine.py:40` _WHO_KNOWS_RE
 pub fn is_who_knows(query: &str) -> bool {
@@ -105,24 +113,60 @@ pub fn match_snippet(content: &str, query: &str, n: usize) -> String {
 
 /// Mirrors `answer_engine.py:96` _rrf_fuse_multi
 pub fn rrf_fuse_multi(lists: Vec<Vec<Hit>>, weights: Vec<f64>) -> Vec<Hit> {
+    rrf_fuse_multi_named(lists, weights, &[])
+}
+
+/// RRF fusion with per-leg rank provenance (R38.1): each fused hit records
+/// every contributing list's name + 1-based rank, overwriting any earlier
+/// fusion's record (the outer fusion explains the final order). Unnamed lists
+/// read as `list{index}` — `toc_search` keeps this default; its output is
+/// always re-fused by `orchestrate` before it surfaces.
+pub fn rrf_fuse_multi_named(lists: Vec<Vec<Hit>>, weights: Vec<f64>, legs: &[&str]) -> Vec<Hit> {
     let mut fused: HashMap<(i64, Option<i64>), Hit> = HashMap::new();
-    for (hits, weight) in lists.into_iter().zip(weights) {
+    for (li, (hits, weight)) in lists.into_iter().zip(weights).enumerate() {
+        let leg = legs.get(li).map(|s| s.to_string()).unwrap_or_else(|| format!("list{li}"));
         for (rank, hit) in hits.into_iter().enumerate() {
-            let rank = (rank + 1) as f64;
             let key = hit.key();
             let entry = fused.entry(key).or_insert_with(|| Hit {
                 chunk_id: hit.chunk_id,
                 entity_id: hit.entity_id,
                 score: 0.0,
+                provenance: Vec::new(),
                 ..hit.clone()
             });
-            let add = weight / (RRF_K + rank);
-            entry.score += add;
+            fuse_one_leg(entry, &hit, &leg, rank + 1, weight);
         }
     }
     let mut out: Vec<Hit> = fused.into_values().collect();
     sort_hits(&mut out);
     out
+}
+
+/// One list's contribution to a fused hit: the RRF add plus the provenance
+/// record. Keyword/cosine evidence ORs across legs (the R38.3 gate reads the
+/// union); decay is untouched — `fuse_and_rank` applies it after fusion.
+fn fuse_one_leg(entry: &mut Hit, hit: &Hit, leg: &str, rank: usize, weight: f64) {
+    entry.provenance.push(LegMatch { leg: leg.to_string(), rank });
+    entry.keyword_matched |= hit.keyword_matched;
+    entry.cosine = max_cosine(entry.cosine, hit.cosine);
+    entry.score += weight / (RRF_K + rank as f64);
+}
+
+fn max_cosine(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        (Some(x), None) => Some(x),
+        (None, Some(y)) => Some(y),
+        (None, None) => None,
+    }
+}
+
+/// R38.1: one contributing leg of a fused hit — which ranked list matched
+/// and at which 1-based rank. Surfaced on search hits + ask citations.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LegMatch {
+    pub leg: String,
+    pub rank: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +185,17 @@ pub struct Hit {
     /// True when section expansion dropped siblings (byte cap / window) —
     /// `content` is not the whole section. Full bytes via the item endpoint.
     pub content_truncated: bool,
+    /// R38.1: contributing legs + ranks from the last fusion (or the
+    /// single-list stamp). Empty for unranked hits (exact, boosted).
+    pub provenance: Vec<LegMatch>,
+    /// R38.1: age-decay factor `fuse_and_rank` applied to `score` (1.0 = none).
+    pub decay: f64,
+    /// R38.1: surfaced by filename boost above the ranked list, not by ranking.
+    pub boosted: bool,
+    /// R38.3: a real BM25/FTS match on some leg (loaders set, fusion ORs).
+    pub keyword_matched: bool,
+    /// R38.3: raw vector cosine when a vec leg matched (fusion keeps the max).
+    pub cosine: Option<f64>,
 }
 
 impl Hit {
@@ -162,6 +217,18 @@ fn parse_created_at(v: &str) -> Option<DateTime<Utc>> {
         .map(|n| n.and_utc())
 }
 
+/// R38.6: age-decay floor — `ANCHOR_DECAY_FLOOR`, default 0.8, clamped to
+/// [0, 1]. Old evidence fades but never vanishes: a year-old chunk at a
+/// 365-day halflife keeps 0.8 instead of 0.5. (Deliberately uniform — no
+/// per-source-type decay.)
+pub fn decay_floor() -> f64 {
+    std::env::var("ANCHOR_DECAY_FLOOR")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| v.clamp(0.0, 1.0))
+        .unwrap_or(0.8)
+}
+
 /// Mirrors `answer_engine.py:115` _age_decay
 pub fn age_decay(created_at: Option<DateTime<Utc>>, halflife_days: f64, now: DateTime<Utc>) -> f64 {
     let Some(ts) = created_at else { return 1.0 };
@@ -172,7 +239,7 @@ pub fn age_decay(created_at: Option<DateTime<Utc>>, halflife_days: f64, now: Dat
     if age_days < 0.0 {
         return 1.0;
     }
-    0.5_f64.powf(age_days / halflife_days)
+    0.5_f64.powf(age_days / halflife_days).max(decay_floor())
 }
 
 /// Mirrors `answer_engine.py:134` _content_signature
@@ -388,6 +455,11 @@ fn make_hit(
         is_pii: is_pii != 0,
         status,
         content_truncated: false,
+        provenance: Vec::new(),
+        decay: 1.0,
+        boosted: false,
+        keyword_matched: false,
+        cosine: None,
     })
 }
 
@@ -410,6 +482,9 @@ fn hits_from_distances(
         if let Some(d) = by_id.get(&h.chunk_id) {
             if let Some(score) = vec_score_from_distance(*d) {
                 h.score = score;
+                // R38.3: the RRF score won't survive fusion — carry the raw
+                // cosine for the relevance gate.
+                h.cosine = Some(score);
                 out.push(h);
             }
         }
@@ -484,6 +559,8 @@ fn hits_from_ranks(
     for mut h in hits {
         if let Some(rank) = by_id.get(&h.chunk_id) {
             h.score = -rank;
+            // R38.3: an FTS row hit is a real BM25 match by construction.
+            h.keyword_matched = true;
             out.push(h);
         }
     }
@@ -570,6 +647,7 @@ fn vector_search_scan_filtered(
                 let score = cosine(query_emb, &vec);
                 if score > 0.2 {
                     h.score = score as f64;
+                    h.cosine = Some(score as f64);
                     scored.push(h);
                 }
             }
@@ -1038,7 +1116,7 @@ pub fn who_knows_search(
         let created_dt = created.and_then(|s| DateTime::parse_from_rfc3339(&s).ok()).map(|d| d.with_timezone(&Utc));
         let decay = age_decay(created_dt, halflife, now);
         let score = conf * (1.0 + 0.5 * (overlap.min(4) as f64)) * decay;
-        out.push(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, section_id: None, path: String::new(), score, content, source_ref, is_pii: is_pii!=0, status, content_truncated: false });
+        out.push(Hit { chunk_id: cid, entity_id: eid, item_id: iid, source_id: sid, section_id: None, path: String::new(), score, content, source_ref, is_pii: is_pii!=0, status, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None });
     }
     sort_hits(&mut out);
     out.truncate(top_k*2);
@@ -1113,7 +1191,7 @@ pub fn graph_expand(
             if !status_ok(status.as_deref(), qa_exclude_disputed) { continue; }
             // need source_id via item
             let sid: Option<i64> = if let Some(iid)=item { conn.query_row("SELECT source_id FROM ingested_items WHERE id=?1", [*iid], |r| r.get(0)).ok() } else { None };
-            out.push(Hit { chunk_id: cid.unwrap_or(eid), entity_id: Some(eid), item_id: *item, source_id: sid, section_id: None, path: String::new(), score, content: content.clone().unwrap_or_else(|| summary.clone()), source_ref: src_ref.clone().unwrap_or_else(|| summary.clone()), is_pii: false, status: status.clone(), content_truncated: false });
+            out.push(Hit { chunk_id: cid.unwrap_or(eid), entity_id: Some(eid), item_id: *item, source_id: sid, section_id: None, path: String::new(), score, content: content.clone().unwrap_or_else(|| summary.clone()), source_ref: src_ref.clone().unwrap_or_else(|| summary.clone()), is_pii: false, status: status.clone(), content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None });
         }
     }
     out
@@ -1123,6 +1201,47 @@ pub fn fuse_evidence(mut lists: Vec<Vec<Hit>>, weights: Vec<f64>) -> Vec<Hit> {
     if lists.is_empty() { return vec![]; }
     if lists.len()==1 { let mut v = lists.remove(0); sort_hits(&mut v); return v; }
     rrf_fuse_multi(lists, weights)
+}
+
+/// R38.1: single-list provenance — input order is the loader's rank order
+/// (loaders return sorted). Skips hits that already carry a fusion record:
+/// the TOC path feeds one pre-fused list through `fuse_and_rank` and its
+/// outer-fusion legs must survive.
+fn stamp_single_leg(hits: &mut [Hit], leg: &str) {
+    for (i, h) in hits.iter_mut().enumerate() {
+        if h.provenance.is_empty() {
+            h.provenance = vec![LegMatch { leg: leg.to_string(), rank: i + 1 }];
+        }
+    }
+}
+
+/// Batched age decay (P1 4.7 — was N+1 per hit): multiplies each score by
+/// its factor and records the applied factor on the hit (R38.1).
+pub fn apply_age_decay(conn: &Connection, hits: &mut [Hit], halflife_days: f64) {
+    if hits.is_empty() {
+        return;
+    }
+    let now = Utc::now();
+    let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+    let sql = format!("SELECT id, created_at FROM chunks WHERE id IN ({})", placeholders(ids.len()));
+    let mut map: HashMap<i64, Option<DateTime<Utc>>> = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(&sql) {
+        if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+        }) {
+            for row in rows.flatten() {
+                let (id, s) = row;
+                let dt = s.as_deref().and_then(parse_created_at);
+                map.insert(id, dt);
+            }
+        }
+    }
+    for h in hits.iter_mut() {
+        let created = map.get(&h.chunk_id).cloned().unwrap_or(None);
+        let factor = age_decay(created, halflife_days, now);
+        h.decay = factor;
+        h.score *= factor;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1141,34 +1260,21 @@ pub fn fuse_and_rank(
     let mut fused = if vector_hits.is_none() && keyword_hits.is_none() {
         vec![]
     } else if vector_hits.is_none() {
-        keyword_hits.unwrap()
+        let mut v = keyword_hits.unwrap();
+        stamp_single_leg(&mut v, "keyword");
+        v
     } else if keyword_hits.is_none() {
-        vector_hits.unwrap()
+        let mut v = vector_hits.unwrap();
+        stamp_single_leg(&mut v, "vector");
+        v
     } else {
-        rrf_fuse_multi(vec![vector_hits.unwrap(), keyword_hits.unwrap()], vec![1.0, keyword_weight])
+        rrf_fuse_multi_named(
+            vec![vector_hits.unwrap(), keyword_hits.unwrap()],
+            vec![1.0, keyword_weight],
+            &["vector", "keyword"],
+        )
     };
-    let now = Utc::now();
-    // batch created_at (P1 4.7 — was N+1 per hit)
-    if !fused.is_empty() {
-        let ids: Vec<i64> = fused.iter().map(|h| h.chunk_id).collect();
-        let sql = format!("SELECT id, created_at FROM chunks WHERE id IN ({})", placeholders(ids.len()));
-        let mut map: HashMap<i64, Option<DateTime<Utc>>> = HashMap::new();
-        if let Ok(mut stmt) = conn.prepare(&sql) {
-            if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
-            }) {
-                for row in rows.flatten() {
-                    let (id, s) = row;
-                    let dt = s.as_deref().and_then(parse_created_at);
-                    map.insert(id, dt);
-                }
-            }
-        }
-        for h in &mut fused {
-            let created = map.get(&h.chunk_id).cloned().unwrap_or(None);
-            h.score *= age_decay(created, halflife_days, now);
-        }
-    }
+    apply_age_decay(conn, &mut fused, halflife_days);
     // R33.3: no score demotion — the R32.3 ×0.5 multiplier retired with the
     // entity leaf pool (it never reordered on its own; RRF ranks ignore
     // scores). Env ordering is the `prefer_live_envs` partition before the
@@ -1766,6 +1872,100 @@ pub fn filename_boost(conn: &Connection, hits: &mut Vec<Hit>, query: &str) {
     sort_hits(hits);
 }
 
+/// R38.1: pre-boost max score — the snapshot `mark_boosted_hits` compares to.
+pub fn top_score(hits: &[Hit]) -> f64 {
+    hits.iter().map(|h| h.score).fold(0.0f64, f64::max)
+}
+
+/// R38.1: mark filename-boosted hits. `filename_boost` scores surfaced
+/// chunks `top + 1.0`, so anything above the pre-boost max is boosted —
+/// detected here so the boost itself stays untouched.
+pub fn mark_boosted_hits(hits: &mut [Hit], prev_top: f64) {
+    for h in hits.iter_mut() {
+        if h.score > prev_top {
+            h.boosted = true;
+        }
+    }
+}
+
+/// R38.2: reserved keyword slots in the final top-k — `ANCHOR_KEYWORD_SLOTS`,
+/// default 2, 0 disables.
+pub fn keyword_slots() -> usize {
+    std::env::var("ANCHOR_KEYWORD_SLOTS").ok().and_then(|v| v.parse().ok()).unwrap_or(2)
+}
+
+/// R38.2: pull top floor-keyword hits locked out by fusion into reserved
+/// tail slots of the final top-k — via ordering, not weight changes. The
+/// TOC path fuses at TOC@1.0 vs floors@0.5, so a floor-only keyword match
+/// can never outrank a TOC hit and the fuse cut drops it; the reserved
+/// slots displace the lowest-ranked tail instead (the list is live-first,
+/// so tail eviction takes test hits before live ones). Decay applies to
+/// pulled hits like any fused hit; live-first re-partitions after the
+/// insert, so env ordering still holds.
+pub fn apply_keyword_slots(
+    conn: &Connection,
+    hits: &mut Vec<Hit>,
+    floor_kw: &[Hit],
+    top_k: usize,
+    halflife_days: f64,
+    query: &str,
+) {
+    let slots = keyword_slots();
+    if slots == 0 || floor_kw.is_empty() || top_k == 0 {
+        return;
+    }
+    let mut take = select_slot_hits(hits, floor_kw, slots);
+    if take.is_empty() {
+        return;
+    }
+    apply_age_decay(conn, &mut take, halflife_days);
+    let overflow = hits.len().saturating_add(take.len()).saturating_sub(top_k);
+    hits.truncate(hits.len().saturating_sub(overflow));
+    hits.extend(take);
+    prefer_live_envs(conn, hits, query);
+}
+
+/// R38.3: minimum vector cosine for evidence without any BM25 match —
+/// `ANCHOR_MIN_RELEVANCE_COSINE`, default 0.50. Calibrated 2026-10-19 on
+/// nomic-embed-text x sample/ (14 chunks, 800-char windows): direct 0.75,
+/// no-shared-term paraphrases 0.57-0.64, weak 0.56 | gibberish 0.46,
+/// unrelated 0.37. 0.50 separates with ~0.1 margin either side; the 0.2
+/// vec floor admits everything measured (min 0.30), so it gates nothing.
+pub fn min_relevance_cosine() -> f64 {
+    std::env::var("ANCHOR_MIN_RELEVANCE_COSINE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.50)
+}
+
+/// R38.3: minimum-relevance gate — some hit must carry a real BM25 match,
+/// an explicit filename boost, or vector cosine at or above the floor, or
+/// the whole list is vector noise and `orchestrate` returns empty (ask
+/// answers mode "none"). Boosted hits pass as explicit intent: a bare
+/// filename matches no content by design (R32.1), so gating them would
+/// delete the exact file the user named.
+pub fn passes_relevance_gate(hits: &[Hit]) -> bool {
+    let floor = min_relevance_cosine();
+    hits.iter().any(|h| h.keyword_matched || h.boosted || h.cosine.map(|c| c >= floor).unwrap_or(false))
+}
+
+/// Top floor-keyword hits (keyword-rank order) missing from the fused list,
+/// stamped with their keyword rank — they bypassed fusion, but unlike
+/// boosted hits their rank is real.
+fn select_slot_hits(hits: &[Hit], floor_kw: &[Hit], slots: usize) -> Vec<Hit> {
+    let present: HashSet<i64> = hits.iter().map(|h| h.chunk_id).collect();
+    let mut take = Vec::new();
+    for (i, h) in floor_kw.iter().enumerate() {
+        if take.len() >= slots {
+            break;
+        }
+        if present.contains(&h.chunk_id) {
+            continue;
+        }
+        let mut h = h.clone();
+        h.provenance = vec![LegMatch { leg: "keyword".to_string(), rank: i + 1 }];
+        take.push(h);
+    }
+    take
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1813,19 +2013,166 @@ mod tests {
 
     #[test]
     fn rrf() {
-        let h1 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, section_id: None, path: String::new(), score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None, content_truncated: false }];
-        let h2 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, section_id: None, path: String::new(), score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None, content_truncated: false }];
+        let h1 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, section_id: None, path: String::new(), score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None }];
+        let h2 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, section_id: None, path: String::new(), score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None }];
         let fused = rrf_fuse_multi(vec![h1, h2], vec![1.0, 1.0]);
         assert_eq!(fused.len(), 1);
         assert!(fused[0].score > 0.0);
     }
 
+    fn blank_hit(chunk_id: i64) -> Hit {
+        Hit {
+            chunk_id,
+            entity_id: None,
+            item_id: None,
+            source_id: None,
+            section_id: None,
+            path: String::new(),
+            score: 0.0,
+            content: String::new(),
+            source_ref: String::new(),
+            is_pii: false,
+            status: None,
+            content_truncated: false,
+            provenance: Vec::new(),
+            decay: 1.0,
+            boosted: false,
+            keyword_matched: false,
+            cosine: None,
+        }
+    }
+
+    #[test]
+    fn rrf_fuse_named_records_contributing_ranks() {
+        // R38.1: every fused hit names its contributing legs + 1-based ranks.
+        let fused = rrf_fuse_multi_named(
+            vec![vec![blank_hit(1), blank_hit(2)], vec![blank_hit(2), blank_hit(3)]],
+            vec![1.0, 1.0],
+            &["vector", "keyword"],
+        );
+        assert_eq!(fused.len(), 3);
+        let prov = |cid: i64| fused.iter().find(|h| h.chunk_id == cid).unwrap().provenance.clone();
+        assert_eq!(prov(1), vec![LegMatch { leg: "vector".into(), rank: 1 }]);
+        assert_eq!(prov(2), vec![LegMatch { leg: "vector".into(), rank: 2 }, LegMatch { leg: "keyword".into(), rank: 1 }]);
+        assert_eq!(prov(3), vec![LegMatch { leg: "keyword".into(), rank: 2 }]);
+        // Unnamed lists (toc_search internals) read as list{index}.
+        let unnamed = rrf_fuse_multi(vec![vec![blank_hit(7)]], vec![1.0]);
+        assert_eq!(unnamed[0].provenance, vec![LegMatch { leg: "list0".into(), rank: 1 }]);
+    }
+
+    #[test]
+    fn fusion_preserves_keyword_and_cosine_evidence() {
+        // R38.1/38.3: the gate reads the union — keyword ORs, cosine maxes.
+        let mut v = blank_hit(1);
+        v.cosine = Some(0.7);
+        let mut k = blank_hit(1);
+        k.keyword_matched = true;
+        k.cosine = Some(0.4);
+        let fused = rrf_fuse_multi_named(vec![vec![v], vec![k]], vec![1.0, 1.0], &["vector", "keyword"]);
+        assert_eq!(fused.len(), 1);
+        assert!(fused[0].keyword_matched);
+        assert_eq!(fused[0].cosine, Some(0.7));
+    }
+
+    #[test]
+    fn fuse_and_rank_stamps_single_list_provenance_and_decay() {
+        // R38.1: single-list hits keep raw scores AND record leg + rank +
+        // applied decay; pre-fused lists keep their outer-fusion record.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_prov", "internal");
+        let iid = insert_item(&conn, sid, "doc");
+        let c1 = insert_chunk(&conn, Some(iid), None, "treasury routes alpha content here");
+        let c2 = insert_chunk(&conn, Some(iid), None, "treasury routes beta content here");
+        let mk = |cid: i64, score: f64| Hit {
+            chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None,
+            path: String::new(), score, content: format!("distinct content {cid}"), source_ref: "ref".into(),
+            is_pii: false, status: Some("unverified".into()), content_truncated: false,
+            provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
+        };
+        let out = fuse_and_rank(&conn, None, Some(vec![mk(c1, 9.0), mk(c2, 4.0)]), 1.0, 365.0, 3, 10, true, "treasury routes");
+        assert_eq!(out.len(), 2);
+        for h in &out {
+            assert_eq!(h.provenance.len(), 1, "single-list hit carries one leg");
+            assert_eq!(h.provenance[0].leg, "keyword");
+            assert!((h.decay - 1.0).abs() < 1e-6, "fresh chunk decay must be ~1.0, got {}", h.decay);
+        }
+        assert_eq!(out.iter().find(|h| h.chunk_id == c1).unwrap().provenance[0].rank, 1);
+        assert_eq!(out.iter().find(|h| h.chunk_id == c2).unwrap().provenance[0].rank, 2);
+        // Pre-fused input keeps its record (the TOC path feeds one fused list).
+        let mut pre = mk(c1, 0.03);
+        pre.provenance = vec![LegMatch { leg: "toc".into(), rank: 3 }];
+        let out2 = fuse_and_rank(&conn, Some(vec![pre]), None, 1.0, 365.0, 3, 10, true, "treasury routes");
+        assert_eq!(out2[0].provenance, vec![LegMatch { leg: "toc".into(), rank: 3 }]);
+    }
+
+    #[test]
+    fn mark_boosted_hits_flags_above_prev_top() {
+        // R38.1: filename_boost scores surfaced chunks top + 1.0 — anything
+        // above the pre-boost max is boosted, everything else is not.
+        let mut v = vec![blank_hit(1), blank_hit(2)];
+        v[0].score = 5.0;
+        v[1].score = 6.0;
+        mark_boosted_hits(&mut v, 5.0);
+        assert!(!v[0].boosted);
+        assert!(v[1].boosted);
+        assert_eq!(top_score(&v), 6.0);
+    }
+
+    #[test]
+    fn relevance_gate_needs_keyword_boost_or_cosine() {
+        // R38.3: vector noise below the floor gates the whole list; any one
+        // real signal (BM25, boost, cosine) passes it. Default floor 0.50.
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_MIN_RELEVANCE_COSINE");
+        let mut noise = blank_hit(1);
+        noise.cosine = Some(0.30);
+        assert!(!passes_relevance_gate(&[noise.clone()]), "0.30 cosine must gate at 0.50");
+        assert!(!passes_relevance_gate(&[blank_hit(2)]), "no evidence at all must gate");
+        let mut strong = blank_hit(3);
+        strong.cosine = Some(0.99);
+        assert!(passes_relevance_gate(&[noise.clone(), strong]));
+        let mut kw = blank_hit(4);
+        kw.keyword_matched = true;
+        assert!(passes_relevance_gate(&[noise.clone(), kw]));
+        let mut b = blank_hit(5);
+        b.boosted = true;
+        assert!(passes_relevance_gate(&[noise, b]));
+        // Knob honored: a stricter floor gates the 0.99 hit too.
+        std::env::set_var("ANCHOR_MIN_RELEVANCE_COSINE", "0.9999");
+        let mut strong2 = blank_hit(6);
+        strong2.cosine = Some(0.99);
+        assert!(!passes_relevance_gate(&[strong2]));
+        std::env::remove_var("ANCHOR_MIN_RELEVANCE_COSINE");
+    }
+
     #[test]
     fn age() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_DECAY_FLOOR");
         let now = Utc.with_ymd_and_hms(2026, 1, 10, 12, 0, 0).unwrap();
         let old = Utc.with_ymd_and_hms(2025, 1, 10, 12, 0, 0).unwrap();
         let d = age_decay(Some(old), 365.0, now);
         assert!(d < 1.0 && d > 0.4);
+    }
+
+    #[test]
+    fn age_decay_floors_at_08_by_default() {
+        // R38.6: max(0.8, decay); the knob clamps to [0, 1], 0 restores raw.
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_DECAY_FLOOR");
+        let now = Utc.with_ymd_and_hms(2026, 1, 10, 12, 0, 0).unwrap();
+        let old = Utc.with_ymd_and_hms(2024, 1, 10, 12, 0, 0).unwrap();
+        let raw = 0.5_f64.powf(731.0 / 365.0);
+        assert!((age_decay(Some(old), 365.0, now) - 0.8).abs() < 1e-9, "raw {raw} must floor at 0.8");
+        let fresh = Utc.with_ymd_and_hms(2026, 1, 9, 12, 0, 0).unwrap();
+        assert!(age_decay(Some(fresh), 365.0, now) > 0.99, "fresh stays above the floor");
+        std::env::set_var("ANCHOR_DECAY_FLOOR", "0");
+        assert!((age_decay(Some(old), 365.0, now) - raw).abs() < 1e-9, "floor 0 restores raw decay");
+        std::env::set_var("ANCHOR_DECAY_FLOOR", "bogus");
+        assert!((age_decay(Some(old), 365.0, now) - 0.8).abs() < 1e-9, "unparsable falls back to 0.8");
+        std::env::set_var("ANCHOR_DECAY_FLOOR", "7");
+        assert_eq!(age_decay(Some(old), 365.0, now), 1.0, ">1 clamps to 1.0");
+        std::env::remove_var("ANCHOR_DECAY_FLOOR");
     }
 
     #[test]
@@ -1863,10 +2210,7 @@ mod tests {
         conn.last_insert_rowid()
     }
 
-    /// Serializes `ANCHOR_TEST_ENV_DEMOTE` readers/writers: env vars are
-    /// process-global and tests run on threads, so the knob-owning tests
-    /// below must not overlap.
-    static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 
     #[test]
     fn harness_graph_expand_filters_stale_and_disputed() {
@@ -1883,7 +2227,7 @@ mod tests {
         let _ = conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?2,'related')", rusqlite::params![e1, e3]).unwrap();
         let _ = conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?2,'owns')", rusqlite::params![e1, e4]).unwrap();
         assert_eq!(rel1, 1);
-        let seed = vec![Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "seed".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false }];
+        let seed = vec![Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "seed".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None }];
         // with qa_exclude_disputed=true, disputed should be filtered
         let out = graph_expand(&conn, &seed, None, 2, 5, true);
         let ids: Vec<i64> = out.iter().filter_map(|h| h.entity_id).collect();
@@ -2014,7 +2358,7 @@ mod tests {
         let c1 = insert_chunk(&conn, Some(iid), Some(e1), "prose decision details");
         let _ = conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?2,'conflicts_with')", rusqlite::params![e1, e2]).unwrap();
         let _ = conn.execute("INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1,?2,'related')", rusqlite::params![e1, e3]).unwrap();
-        let seed = vec![Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "seed".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false }];
+        let seed = vec![Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "seed".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None }];
         let out = graph_expand(&conn, &seed, None, 2, 5, true);
         let ids: Vec<i64> = out.iter().filter_map(|h| h.entity_id).collect();
         assert!(!ids.contains(&e2), "conflicting e2 must never expand as supporting evidence");
@@ -2044,8 +2388,8 @@ mod tests {
         let c1 = insert_chunk(&conn, Some(iid), Some(e1), "content Phoenix decision");
         let c2 = insert_chunk(&conn, Some(iid), None, "document chunk Phoenix billing is stable");
         // need created_at for age decay; ensure chunks have timestamps via init_db
-        let h1 = Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "c1".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false };
-        let h2 = Hit { chunk_id: c2, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 0.5, content: "c2".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false };
+        let h1 = Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "c1".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None };
+        let h2 = Hit { chunk_id: c2, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 0.5, content: "c2".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None };
         let fused = fuse_and_rank(&conn, Some(vec![h1]), Some(vec![h2]), 1.0, 365.0, 3, 5, true, "phoenix billing");
         assert!(!fused.is_empty());
         // RRF should have merged both; diversity cap per item should keep both since distinct chunk_ids
@@ -2062,7 +2406,7 @@ mod tests {
     }
 
     fn summary_hit(chunk_id: i64, sid: i64, item: i64, sec: Option<i64>) -> Hit {
-        Hit { chunk_id, entity_id: None, item_id: Some(item), source_id: Some(sid), section_id: sec, path: String::new(), score: 1.0, content: String::new(), source_ref: String::new(), is_pii: false, status: None, content_truncated: false }
+        Hit { chunk_id, entity_id: None, item_id: Some(item), source_id: Some(sid), section_id: sec, path: String::new(), score: 1.0, content: String::new(), source_ref: String::new(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None }
     }
 
     #[test]
@@ -2140,6 +2484,11 @@ mod tests {
             is_pii: false,
             status: None,
             content_truncated: false,
+            provenance: Vec::new(),
+            decay: 1.0,
+            boosted: false,
+            keyword_matched: false,
+            cosine: None,
         }
     }
 
@@ -2195,6 +2544,7 @@ mod tests {
 
     #[test]
     fn harness_vector_search_section_filter() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let (_dir, conn) = harness_db();
         // use small dim for test
         std::env::set_var("ANCHOR_EMBED_DIM", "4");
@@ -2587,6 +2937,11 @@ mod tests {
                 is_pii: false,
                 status: Some("unverified".into()),
                 content_truncated: false,
+                provenance: Vec::new(),
+                decay: 1.0,
+                boosted: false,
+                keyword_matched: false,
+                cosine: None,
             }],
         );
         assert_eq!(out.len(), 1);
@@ -2627,7 +2982,7 @@ mod tests {
         // R33.3: the R32.3 score multiplier is retired — the partition is the
         // only env ordering. Guards (query exemption, kill knob, segment
         // matching) move here so they stay pinned.
-        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
         let (_dir, conn) = harness_db();
         let sid = insert_source(&conn, "s_env", "internal");
@@ -2637,7 +2992,7 @@ mod tests {
         conn.execute("UPDATE ingested_items SET external_id='cfg/payment-routes.test.yml' WHERE id=?1", [tst]).unwrap();
         let c_live = insert_chunk(&conn, Some(live), None, "live treasury routes content");
         let c_test = insert_chunk(&conn, Some(tst), None, "test treasury routes content");
-        let mk = |cid: i64, iid: i64| Hit { chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 10.0, content: "x".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false };
+        let mk = |cid: i64, iid: i64| Hit { chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 10.0, content: "x".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None };
         // Default: the test file sinks below the live file, scores untouched.
         let mut hits = vec![mk(c_test, tst), mk(c_live, live)];
         prefer_live_envs(&conn, &mut hits, "which treasury routes are supported");
@@ -2693,7 +3048,7 @@ mod tests {
         let matched = insert_chunk(&conn, Some(iid), None, "ACME_FEE routing table content here");
         let other = insert_item(&conn, sid, "other");
         let c_other = insert_chunk(&conn, Some(other), None, "unrelated notes");
-        let mk_other = || Hit { chunk_id: c_other, entity_id: None, item_id: Some(other), source_id: Some(sid), section_id: None, path: String::new(), score: 15.0, content: "unrelated".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false };
+        let mk_other = || Hit { chunk_id: c_other, entity_id: None, item_id: Some(other), source_id: Some(sid), section_id: None, path: String::new(), score: 15.0, content: "unrelated".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None };
         let mut hits = vec![mk_other()];
         filename_boost(&conn, &mut hits, "routing-config.yml ACME_FEE");
         assert_eq!(hits.len(), 2);
@@ -2737,7 +3092,7 @@ mod tests {
         let matched = insert_chunk(&conn, Some(iid), None, "ACME_FEE routing table content here with padding words");
         let other = insert_item(&conn, sid, "other");
         let c_other = insert_chunk(&conn, Some(other), None, "unrelated notes");
-        let mut hits = vec![Hit { chunk_id: c_other, entity_id: None, item_id: Some(other), source_id: Some(sid), section_id: None, path: String::new(), score: 15.0, content: "unrelated".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false }];
+        let mut hits = vec![Hit { chunk_id: c_other, entity_id: None, item_id: Some(other), source_id: Some(sid), section_id: None, path: String::new(), score: 15.0, content: "unrelated".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None }];
         filename_boost(&conn, &mut hits, "routing-config.yml ACME_FEE");
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].chunk_id, matched, "named file must surface leaf bytes, not its summary");
@@ -2748,7 +3103,7 @@ mod tests {
         // R33.3: production entity chunks (entity_id only, no item_id) still
         // resolve their item's path via the entity — env classification stays
         // kind-agnostic even though entity rows no longer reach retrieval.
-        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
         let (_dir, conn) = harness_db();
         let sid = insert_source(&conn, "s_en", "internal");
@@ -2767,7 +3122,7 @@ mod tests {
         };
         let (c_live, e_live) = mk_ent_chunk(live, "live direction supported");
         let (c_test, e_test) = mk_ent_chunk(tst, "test direction supported");
-        let mk = |cid: i64, eid: i64| Hit { chunk_id: cid, entity_id: Some(eid), item_id: None, source_id: Some(sid), section_id: None, path: String::new(), score: 10.0, content: "x".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false };
+        let mk = |cid: i64, eid: i64| Hit { chunk_id: cid, entity_id: Some(eid), item_id: None, source_id: Some(sid), section_id: None, path: String::new(), score: 10.0, content: "x".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None };
         let mut hits = vec![mk(c_test, e_test), mk(c_live, e_live)];
         prefer_live_envs(&conn, &mut hits, "which treasury routes are supported");
         assert_eq!(hits.iter().map(|h| h.chunk_id).collect::<Vec<_>>(), vec![c_live, c_test], "test entity row must sink like a document chunk");
@@ -2807,8 +3162,10 @@ mod tests {
     fn fuse_and_rank_decays_sqlite_timestamps() {
         // F-10: writers store SQLite `CURRENT_TIMESTAMP`, not RFC 3339 —
         // decay must apply to real rows, not silently return 1.0.
-        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        // R38.6: the raw ~x0.5 now floors at 0.8 (factor recorded on the hit).
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
+        std::env::remove_var("ANCHOR_DECAY_FLOOR");
         let (_dir, conn) = harness_db();
         let sid = insert_source(&conn, "s_age", "internal");
         let old = insert_item(&conn, sid, "old");
@@ -2822,13 +3179,57 @@ mod tests {
             chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None,
             path: String::new(), score: 10.0, content: content.into(), source_ref: "ref".into(),
             is_pii: false, status: Some("unverified".into()), content_truncated: false,
+            provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
         };
         let out = fuse_and_rank(&conn, None, Some(vec![mk(c_old, old, "old treasury"), mk(c_fresh, fresh, "fresh treasury")]), 1.0, 365.0, 3, 10, true, "treasury routes");
         assert_eq!(out.len(), 2);
-        let s_old = out.iter().find(|h| h.chunk_id == c_old).unwrap().score;
+        let h_old = out.iter().find(|h| h.chunk_id == c_old).unwrap();
         let s_fresh = out.iter().find(|h| h.chunk_id == c_fresh).unwrap().score;
-        assert!((s_old - 5.0).abs() < 0.05, "year-old chunk must decay ~x0.5 at 365d halflife, got {}", s_old);
+        assert!((h_old.score - 8.0).abs() < 0.05, "year-old chunk must floor at ~x0.8 at 365d halflife, got {}", h_old.score);
+        assert!((h_old.decay - 0.8).abs() < 0.01, "applied factor recorded, got {}", h_old.decay);
         assert!((s_fresh - 10.0).abs() < 0.05, "fresh chunk must keep full score, got {}", s_fresh);
+    }
+
+    #[test]
+    fn decay_floor_flips_fuse_ordering() {
+        // R38.6: old(10) vs fresh(7) — floored 8.0 beats 7.0, raw 5.0 loses.
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
+        std::env::remove_var("ANCHOR_DECAY_FLOOR");
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_floor", "internal");
+        let old = insert_item(&conn, sid, "old");
+        let fresh = insert_item(&conn, sid, "fresh");
+        conn.execute("UPDATE ingested_items SET external_id='cfg/floor-old.md' WHERE id=?1", [old]).unwrap();
+        conn.execute("UPDATE ingested_items SET external_id='cfg/floor-fresh.md' WHERE id=?1", [fresh]).unwrap();
+        let c_old = insert_chunk(&conn, Some(old), None, "old treasury routes alfa content");
+        let c_fresh = insert_chunk(&conn, Some(fresh), None, "fresh treasury routes beta content");
+        conn.execute("UPDATE chunks SET created_at = datetime('now','-365 days') WHERE id=?1", [c_old]).unwrap();
+        let mk = |cid: i64, iid: i64, score: f64, content: &str| Hit {
+            chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None,
+            path: String::new(), score, content: content.into(), source_ref: "ref".into(),
+            is_pii: false, status: Some("unverified".into()), content_truncated: false,
+            provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
+        };
+        let run = || {
+            fuse_and_rank(
+                &conn,
+                None,
+                Some(vec![mk(c_old, old, 10.0, "old treasury routes alfa"), mk(c_fresh, fresh, 7.0, "fresh treasury routes beta")]),
+                1.0,
+                365.0,
+                3,
+                10,
+                true,
+                "treasury routes",
+            )
+        };
+        let floored = run();
+        assert_eq!(floored[0].chunk_id, c_old, "floored 8.0 must beat fresh 7.0");
+        std::env::set_var("ANCHOR_DECAY_FLOOR", "0");
+        let raw = run();
+        assert_eq!(raw[0].chunk_id, c_fresh, "raw 5.0 must lose to fresh 7.0");
+        std::env::remove_var("ANCHOR_DECAY_FLOOR");
     }
 
     #[test]
@@ -2836,7 +3237,7 @@ mod tests {
         // R33.3: the score multiplier is retired — the live-first partition
         // sits directly before the cut, so the live file still wins top-1
         // even when the fixture chunk outranks it in both input lists.
-        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
         let (_dir, conn) = harness_db();
         let sid = insert_source(&conn, "s_fz", "internal");
@@ -2850,6 +3251,7 @@ mod tests {
             chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None,
             path: String::new(), score, content: content.into(), source_ref: "ref".into(),
             is_pii: false, status: Some("unverified".into()), content_truncated: false,
+            provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
         };
         let lists = || {
             (
@@ -2875,7 +3277,7 @@ mod tests {
         // several × on length norm alone — live must still win top-1
         // through the partition. R33.3: the gap is doc-vs-doc now; the
         // fixture's entity row sits in the DB and must never surface.
-        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
         let (_dir, conn) = harness_db();
         let sid = insert_source(&conn, "s_lp", "internal");
@@ -2970,7 +3372,7 @@ mod tests {
         let cid = insert_chunk(&conn, Some(iid), None, "ACME_FEE routing table content here");
         let other = insert_item(&conn, sid, "other");
         let c_other = insert_chunk(&conn, Some(other), None, "unrelated notes");
-        let mk_other = || Hit { chunk_id: c_other, entity_id: None, item_id: Some(other), source_id: Some(sid), section_id: None, path: String::new(), score: 15.0, content: "unrelated".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false };
+        let mk_other = || Hit { chunk_id: c_other, entity_id: None, item_id: Some(other), source_id: Some(sid), section_id: None, path: String::new(), score: 15.0, content: "unrelated".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None };
         let mut hits = vec![mk_other()];
         filename_boost(&conn, &mut hits, "what is in routing-config.yml?");
         assert_eq!(hits.len(), 2);
