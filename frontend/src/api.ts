@@ -251,6 +251,20 @@ export const api = {
     if (!res.ok) throw new Error(await errorMessage(res));
     return res.text();
   },
+  skillInstallTargets: () =>
+    request<{
+      skills: { name: string; dir: string; file: string }[];
+      clients: { id: string; name: string; detected: boolean; skills_dir: string | null }[];
+    }>("/system/skills/install-targets"),
+  skillInstall: (name: string, client: string) =>
+    request<{ ok: boolean; path?: string; already_installed?: boolean; backup?: string | null; error?: string }>(
+      `/system/skills/${encodeURIComponent(name)}/install`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client }),
+      }
+    ),
 
   // R25.5: backup & restore. These bypass request() — an archive is a blob
   // download and an import is a multipart upload that may run for minutes.
