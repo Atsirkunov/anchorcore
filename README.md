@@ -49,22 +49,15 @@ Team and commercial use requires a paid license.
 
 ## Docs
 
-- [Product Plan](./docs/product-plan.md) — what we're building, for whom, and why (+ full backlog)
-- [Architecture](./docs/architecture.md) — system view + architecture diagram
-- [Packaging](./docs/packaging.md) — Rust binary for Windows, macOS and Linux (`anchorcore mcp` mode in the same binary)
-- [Releasing](./docs/releasing.md) — release checklist: tag → CI builds all platform zips
-- [Agent connectivity (MCP)](./docs/mcp.md) - how harnesses (Claude Code, Codex, opencode, Cursor) use the memory
-- [Backup, export & device migration](./docs/backup.md) - portable `.anchorcore-backup` archives, secrets model, CLI + UI walkthrough
-- [Updates](./docs/updates.md) - manual release check (no background pings), the startup-check opt-in, what updating does to your data
-- [System tray](./docs/tray.md) - Open + Quit from the tray/menu bar, opt-outs, headless notes
 - [Agent setup skill](./.agents/skills/anchorcore-setup/SKILL.md) — hand it to your agent: install, configure models and sources, connect MCP, verify answers
-- [v2/v3 business scoping](./docs/v2v3-scope.md) — website, hosting, sharing, pricing, free tier
-- [Design system](./docs/design-system.md) — color tokens, typography, messaging, website approach (single source for app + site)
-- [Rust port evaluation](./docs/archive/rust-port.md) — is a Rust backend worth it? (distribution vs LLM latency — historical, decided)
-- [Sample dataset guide](./docs/sample-dataset.md) — what the demo corpus exercises
+- [Agent connectivity (MCP)](./docs/mcp.md) — how harnesses (Claude Code, Codex, opencode, Cursor) use the memory
+- [Backup, export & device migration](./docs/backup.md) — portable `.anchorcore-backup` archives, secrets model, CLI + UI walkthrough
+- [Updates](./docs/updates.md) — manual release check (no background pings), the startup-check opt-in, what updating does to your data
+- [System tray](./docs/tray.md) — Open + Quit from the tray/menu bar, opt-outs, headless notes
 - [REST API guide](./docs/guides/rest-api.md) — connect any JSON list API as a source
 - [Obsidian vault guide](./docs/guides/obsidian-vault.md) — point AnchorCore at a vault folder
-- [Docs index](./docs/README.md) — every doc classified: current / plans / historical / release notes
+- [Architecture](./docs/architecture.md) — system view + architecture diagram
+- [Docs index](./docs/README.md) — everything else: plans, packaging, releasing, history, release notes
 
 ## Project layout
 
