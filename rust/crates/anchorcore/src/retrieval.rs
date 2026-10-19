@@ -1502,6 +1502,10 @@ pub fn fuse_and_rank(
     // Live-first sits directly before the cut: any later score sort would
     // undo the partition, and the cut must choose from a live-led list.
     prefer_live_envs(conn, &mut fused, query);
+    // R38.7: authority tiers refine within the env classes (live-first
+    // still dominates — the partition sorts by (env, tier)); the cut
+    // chooses from an authority-led list.
+    prefer_authority_tiers(conn, &mut fused, query);
     // R38.5: stale/disputed filter BEFORE the cut — excluded hits must not
     // consume top-k slots (seeded corpora still return a full top_k).
     let hits: Vec<Hit> = fused.into_iter().filter(|h| status_ok(h.status.as_deref(), qa_exclude_disputed)).take(top_k).collect();
@@ -1963,6 +1967,205 @@ pub(crate) fn envs_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> HashMap<i
     chunk_item_env(conn, chunk_ids).into_iter().map(|(id, (p, head))| (id, env_for_item(&p, &head).to_string())).collect()
 }
 
+/// R38.7: source-authority tiers — a file-class prior as an ORDERING
+/// PARTITION (the `prefer_live_envs` pattern generalized, never a score
+/// multiplier — RRF fuses by rank and single-list BM25 gaps dwarf any
+/// multiplier, R32.7). Lower wins; ties keep score order (stable).
+///
+/// | tier | class | markers |
+/// | 0 `Spec` | ADR/decision/spec docs | `adr/`, `rfc/`, `decisions/`, `design-docs/` dirs; `adr-*`/`rfc-*` names; `spec` in a prose filename |
+/// | 1 `Code` | source code | code extensions (self-contained list — the R38.10 eval target compiles this module standalone, so `extract.rs` helpers are out of reach) |
+/// | 2 `Config` | config/data/operational | config extensions + `Dockerfile`/`Makefile`/… names |
+/// | 3 `Prose` | everything else (default) | runbooks, notes, unknown kinds |
+/// | 4 `Generated` | lint / generated / vendored / build output | `vendor/`, `generated/`, `node_modules/`-style output dirs; `lint`/`golangci`/`eslint`/… names; `*.generated.*`, `*.min.*`, lockfiles |
+///
+/// Terse precise classes (code, config) outrank verbose prose: a BM25
+/// OR-query matches half the corpus on one shared word, so prose-above-
+/// config buries exact config answers (eval `flags-01`: a 5-term YAML
+/// match lost to 1-term prose). Lowest authority wins on overlap: a
+/// generated file is generated wherever it sits (`vendor/spec.md` →
+/// `Generated`, `*.golangci.yml` → `Generated` before the config extension
+/// is read). Deliberate non-promotions: bare `spec/` dirs (RSpec suites own
+/// that name) promote prose files only, and `*.spec.ts` stays `Code`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AuthorityTier {
+    Spec,
+    Code,
+    Config,
+    Prose,
+    Generated,
+}
+
+/// R38.7: dir segments that demote to `Generated` (vendored deps + build
+/// output — overlaps `folder.rs::SKIP_DIRS`, which prunes most of these at
+/// ingest; the tier catches the rest: Drive sources, pre-skip rows).
+const GENERATED_DIR_MARKERS: &[&str] = &[
+    "node_modules", "bower_components", "vendor", "vendored", "third_party", "third-party",
+    "generated", "dist", "build", "out", "target", "__pycache__", ".venv", "venv",
+    "coverage", ".next", ".nuxt", "pods", "deriveddata",
+];
+
+/// R38.7: dir segments that promote to `Spec` (bare `spec/` is NOT here —
+/// RSpec suites own that name; prose files under it promote via
+/// `SPEC_DIR_PROSE_ONLY`).
+const SPEC_DIR_MARKERS: &[&str] = &["adr", "adrs", "rfc", "rfcs", "decision", "decisions", "design-docs", "designdocs"];
+
+/// R38.7: dir segments that promote prose files only (see above).
+const SPEC_DIR_PROSE_ONLY: &[&str] = &["spec", "specs"];
+
+/// R38.7: whole-word `Spec` filename tokens (prose extensions only —
+/// `foo.spec.ts` stays `Code`).
+const SPEC_NAME_TOKENS: &[&str] = &["spec", "specs", "rfc", "rfcs", "adr", "adrs", "decision", "decisions"];
+
+/// R38.7: lint-tool name fragments — a lint config is enforcement, not
+/// evidence (`api-lint.yml` matches on the `lint` token instead).
+const LINT_NAME_MARKERS: &[&str] = &["golangci", "eslint", "flake8", "pylint", "rubocop"];
+
+/// R38.7: prose extensions (gate the `Spec` filename/dir rules).
+const PROSE_EXTENSIONS: &[&str] = &["md", "markdown", "rst", "txt", "adoc"];
+
+/// R38.7: source-code extensions (self-contained: the R38.10 eval target
+/// compiles this module standalone via `#[path]`, so `extract.rs` helpers
+/// are out of reach — keep this list in sync by shape, not by import).
+const CODE_EXTENSIONS: &[&str] = &[
+    "rs", "py", "ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts", "go", "java", "kt", "kts",
+    "scala", "c", "h", "cc", "hh", "cpp", "hpp", "cxx", "hxx", "cs", "rb", "php", "swift",
+    "m", "mm", "sh", "bash", "zsh", "fish", "ps1", "sql", "r", "lua", "pl", "pm", "ex",
+    "exs", "erl", "hrl", "hs", "ml", "mli", "clj", "cljs", "dart", "vue", "svelte", "ipynb",
+    "html", "htm", "css", "scss", "less", "sass", "proto", "graphql", "gql",
+];
+
+/// R38.7: config/data extensions.
+const CONFIG_EXTENSIONS: &[&str] = &[
+    "yml", "yaml", "json", "jsonc", "json5", "toml", "ini", "cfg", "conf", "config", "env",
+    "properties", "xml", "csv", "tsv", "hcl", "tf", "tfvars", "nix",
+];
+
+/// R38.7: extensionless operational filenames (compared against the stem,
+/// so `CMakeLists.txt` matches too) — build recipes, not implementation.
+const CONFIG_NAME_MARKERS: &[&str] =
+    &["dockerfile", "containerfile", "makefile", "gnumakefile", "justfile", "gemfile", "vagrantfile", "brewfile", "cmakelists"];
+
+/// R38.7: last path segment (both separators — folder `external_id`s use
+/// `/`, Drive titles and Windows rows may carry `\`).
+fn tier_basename(lower_path: &str) -> &str {
+    lower_path.rsplit(['/', '\\']).next().unwrap_or(lower_path)
+}
+
+/// R38.7: extension after the last dot (`""` when dotless; `.env` → `env`).
+fn tier_extension(basename: &str) -> &str {
+    basename.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("")
+}
+
+/// R38.7: stem (basename minus the last extension) for exact-name matches.
+fn tier_stem(basename: &str) -> &str {
+    basename.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(basename)
+}
+
+/// R38.7: dir segments (everything above the basename), lowercased already.
+fn tier_dir_segments(lower_path: &str) -> Vec<&str> {
+    let mut segs: Vec<&str> = lower_path.split(['/', '\\']).collect();
+    segs.pop();
+    segs
+}
+
+/// R38.7: basename tokens (lowercased already) for whole-word markers.
+fn basename_tokens(basename: &str) -> Vec<String> {
+    basename.split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()).map(|t| t.to_string()).collect()
+}
+
+/// R38.7: `Generated` wins over every other class — checked first.
+fn is_generated_path(dir_segments: &[&str], basename: &str) -> bool {
+    if dir_segments.iter().any(|s| GENERATED_DIR_MARKERS.contains(s)) {
+        return true;
+    }
+    if basename_tokens(basename).iter().any(|t| t == "lint" || t == "lints" || t == "generated") {
+        return true;
+    }
+    if LINT_NAME_MARKERS.iter().any(|m| basename.contains(m)) {
+        return true;
+    }
+    basename.contains(".min.") || basename.contains(".bundle.") || basename.ends_with(".lock") || basename.contains("-lock.")
+}
+
+/// R38.7: `Spec` — decision/spec dirs and names. Runs after the generated
+/// check, before extensions.
+fn is_spec_path(dir_segments: &[&str], basename: &str, ext: &str) -> bool {
+    if dir_segments.iter().any(|s| SPEC_DIR_MARKERS.contains(s)) {
+        return true;
+    }
+    if basename.starts_with("adr-") || basename.starts_with("adr_") || basename.starts_with("rfc-") || basename.starts_with("rfc_") {
+        return true;
+    }
+    if !PROSE_EXTENSIONS.contains(&ext) {
+        return false;
+    }
+    if dir_segments.iter().any(|s| SPEC_DIR_PROSE_ONLY.contains(s)) {
+        return true;
+    }
+    basename_tokens(basename).iter().any(|t| SPEC_NAME_TOKENS.contains(&t.as_str()))
+}
+
+/// R38.7: file-class authority for one item path (case-insensitive).
+/// Precedence: generated → spec → code → config → prose default.
+pub fn authority_tier(path: &str) -> AuthorityTier {
+    let lower = path.to_lowercase();
+    let basename = tier_basename(&lower);
+    let dirs = tier_dir_segments(&lower);
+    if is_generated_path(&dirs, basename) {
+        return AuthorityTier::Generated;
+    }
+    let ext = tier_extension(basename);
+    if is_spec_path(&dirs, basename, ext) {
+        return AuthorityTier::Spec;
+    }
+    if CODE_EXTENSIONS.contains(&ext) {
+        return AuthorityTier::Code;
+    }
+    if CONFIG_EXTENSIONS.contains(&ext) || CONFIG_NAME_MARKERS.contains(&tier_stem(basename)) {
+        return AuthorityTier::Config;
+    }
+    AuthorityTier::Prose
+}
+
+/// R38.7 kill knob — `ANCHOR_AUTHORITY_TIERS`, default on; `0`/`false` off.
+pub fn authority_tiers_enabled() -> bool {
+    match std::env::var("ANCHOR_AUTHORITY_TIERS") {
+        Ok(v) => v != "0" && v.to_lowercase() != "false",
+        Err(_) => true,
+    }
+}
+
+/// R38.7: authority-tier ordering — the `prefer_live_envs` pattern
+/// generalized to file classes. Stable sort by (env, tier): tiers refine
+/// WITHIN env classes and live-first still dominates. Never a score
+/// multiplier (same R32.7 argument — partitions reorder, multipliers don't).
+/// Guards (the live-first analogues): queries naming a file are exempt (an
+/// explicit filename is the strongest intent signal — R32.7), and
+/// `ANCHOR_AUTHORITY_TIERS=0` disables. Under a live-first exemption (test
+/// files named, or the demote knob at 1.0) the env rank flattens and tiers
+/// refine score order alone — the partition never imposes an env order the
+/// live-first guards forbid.
+pub fn prefer_authority_tiers(conn: &Connection, hits: &mut [Hit], query: &str) {
+    if hits.len() < 2 || !authority_tiers_enabled() {
+        return;
+    }
+    if !filename_tokens(query).is_empty() {
+        return;
+    }
+    let live_first = !has_env_marker(query) && (0.0..1.0).contains(&test_env_factor());
+    let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+    let env = chunk_item_env(conn, &ids);
+    hits.sort_by_key(|h| match env.get(&h.chunk_id) {
+        Some((path, head)) => {
+            let test = live_first && env_for_item(path, head) == "test";
+            (u8::from(test), authority_tier(path))
+        }
+        // No marker evidence (unknown chunk) reads as live prose, not test.
+        None => (0, AuthorityTier::Prose),
+    });
+}
+
 /// Tokens that look like filenames (`routing-config.yml`, `service.go`):
 /// contain a dot, carry a letter (excludes `1.0.23`), long enough to matter.
 /// R38.4: version-like tokens (`v1.2`) never fire — a release label is not
@@ -2131,9 +2334,9 @@ fn boost_exclude_disputed_default() -> bool {
         .unwrap_or(true)
 }
 
-/// Legacy 3-arg entry — the frozen R38.10 eval mirror calls this; it
-/// resolves the production exclusion default from env. New callers pass
-/// the flag to `filename_boost_filtered` explicitly.
+/// Legacy 3-arg entry — unit tests call this; it resolves the production
+/// exclusion default from env. Production (`orchestrate_fusion`, R38.12)
+/// passes the flag to `filename_boost_filtered` explicitly.
 pub fn filename_boost(conn: &Connection, hits: &mut Vec<Hit>, query: &str) {
     filename_boost_filtered(conn, hits, query, boost_exclude_disputed_default())
 }
@@ -2166,8 +2369,8 @@ pub fn keyword_slots() -> usize {
 /// can never outrank a TOC hit and the fuse cut drops it; the reserved
 /// slots displace the lowest-ranked tail instead (the list is live-first,
 /// so tail eviction takes test hits before live ones). Decay applies to
-/// pulled hits like any fused hit; live-first re-partitions after the
-/// insert, so env ordering still holds.
+/// pulled hits like any fused hit; live-first + authority tiers (R38.7)
+/// re-partition after the insert, so env/tier ordering still holds.
 pub fn apply_keyword_slots(
     conn: &Connection,
     hits: &mut Vec<Hit>,
@@ -2189,6 +2392,9 @@ pub fn apply_keyword_slots(
     hits.truncate(hits.len().saturating_sub(overflow));
     hits.extend(take);
     prefer_live_envs(conn, hits, query);
+    // R38.7: the slot insert runs after the fuse cut, so the pulled hits
+    // need the same (env, tier) order the cut list already has.
+    prefer_authority_tiers(conn, hits, query);
 }
 
 /// R38.3: minimum vector cosine for evidence without any BM25 match —
@@ -2210,6 +2416,143 @@ pub fn min_relevance_cosine() -> f64 {
 pub fn passes_relevance_gate(hits: &[Hit]) -> bool {
     let floor = min_relevance_cosine();
     hits.iter().any(|h| h.keyword_matched || h.boosted || h.cosine.map(|c| c >= floor).unwrap_or(false))
+}
+
+/// R38.12: TOC-branch fusion inputs — the TOC precision list at 1.0 over
+/// the discounted flat recall floor (0.5 legs), with leg names for R38.1
+/// provenance. Empty floor legs stay out (no empty-list fusion noise).
+fn toc_fusion_lists(
+    toc: Vec<Hit>,
+    floor_vec: Option<Vec<Hit>>,
+    floor_kw: Option<Vec<Hit>>,
+) -> (Vec<Vec<Hit>>, Vec<f64>, Vec<&'static str>) {
+    let mut lists = vec![toc];
+    let mut weights = vec![1.0];
+    let mut legs = vec!["toc"];
+    if let Some(h) = floor_vec {
+        lists.push(h);
+        weights.push(0.5);
+        legs.push("vector");
+    }
+    if let Some(h) = floor_kw {
+        lists.push(h);
+        weights.push(0.5);
+        legs.push("keyword");
+    }
+    (lists, weights, legs)
+}
+
+/// R38.12: post-cut finish shared by both branches — filename boost above
+/// a pre-boost snapshot (R38.1 detection still exact), then return-shape
+/// assembly (R36.3) over the final ranked list, so same-scope merging sees
+/// boosted hits too.
+fn boost_and_assemble(conn: &Connection, mut hits: Vec<Hit>, query: &str, qa_exclude_disputed: bool) -> Vec<Hit> {
+    let prev_top = top_score(&hits);
+    // R38.5: the cfg exclusion flag threads in — the boost hardcodes nothing.
+    filename_boost_filtered(conn, &mut hits, query, qa_exclude_disputed);
+    mark_boosted_hits(&mut hits, prev_top);
+    parent_return(conn, hits)
+}
+
+/// R38.12: the pure fusion path — TOC-or-flat legs → RRF fuse →
+/// `fuse_and_rank` → keyword slots → filename boost → `parent_return` →
+/// status re-filter → relevance gate. Everything `answer.rs::orchestrate`
+/// does minus scope resolution and embedding computation, which stay with
+/// the caller (`answer.rs` resolves project scope + the embedder; the
+/// R38.10 eval passes its own). Both call this — the eval's
+/// `orchestrate_mirror` restatement is deleted, so production and the
+/// golden set can never drift again. R33.3: no graph leg — entity
+/// neighbors are entity chunks, and entities never enter retrieval.
+#[allow(clippy::too_many_arguments)]
+pub fn orchestrate_fusion(
+    conn: &Connection,
+    query: &str,
+    query_embedding: Option<&[f32]>,
+    scope: Option<&HashSet<i64>>,
+    top_k: usize,
+    keyword_weight: f64,
+    halflife_days: f64,
+    max_per_source: usize,
+    qa_exclude_disputed: bool,
+) -> Vec<Hit> {
+    // R14.5: TOC coarse-to-fine — try toc_search first (prunes to ~200 candidates)
+    let toc_opt = {
+        let toc = toc_search(conn, query, query_embedding, scope, top_k, qa_exclude_disputed);
+        if toc.is_empty() { None } else { Some(toc) }
+    };
+    let hits = if let Some(toc) = toc_opt {
+        // Flat recall floor (R36.7 funnel follow-up): TOC fences leaf search
+        // to summary-admitted sections, and head-extract summaries can't see
+        // mid-body signals (benchmark ai-03: d1's only "incident" mention is
+        // a See-also line — its summaries match nothing, so the leaf fence
+        // excludes the whole file). Union unfiltered hybrid legs UNDERNEATH
+        // the TOC ranking (discounted: precision-first, recall-floor), so TOC
+        // can never underperform flat. Single fused list into fuse_and_rank
+        // keeps all downstream behavior (dedupe/live-first/cut).
+        let floor_vec = query_embedding.and_then(|emb| {
+            let hits = vector_search(conn, emb, scope, top_k, qa_exclude_disputed);
+            if hits.is_empty() { None } else { Some(hits) }
+        });
+        let floor_kw = keyword_search(conn, query, scope, top_k, qa_exclude_disputed);
+        // R38.2: slot candidates — one clone per TOC-path query; fusion below consumes the original.
+        let slot_pool = floor_kw.clone();
+        let floor_kw_opt = if floor_kw.is_empty() { None } else { Some(floor_kw) };
+        let (lists, weights, legs) = toc_fusion_lists(toc, floor_vec, floor_kw_opt);
+        let fused = rrf_fuse_multi_named(lists, weights, &legs);
+        // Env ordering is the live-first partition inside fuse_and_rank
+        // (R33.3: the R32.3 score multiplier is retired — RRF fuses by rank).
+        let mut cut = fuse_and_rank(
+            conn,
+            Some(fused),
+            None,
+            keyword_weight,
+            halflife_days,
+            max_per_source,
+            top_k,
+            qa_exclude_disputed,
+            query,
+        );
+        // R38.2: reserved keyword slots pull locked-out floor hits into the
+        // cut list before boost/return-shape (boost detection still exact —
+        // the snapshot runs after the slots).
+        apply_keyword_slots(conn, &mut cut, &slot_pool, top_k, halflife_days, query);
+        boost_and_assemble(conn, cut, query, qa_exclude_disputed)
+    } else {
+        // R8.1: hybrid search — vector + keyword
+        let vector_hits = query_embedding.and_then(|emb| {
+            let hits = vector_search(conn, emb, scope, top_k, qa_exclude_disputed);
+            if hits.is_empty() { None } else { Some(hits) }
+        });
+        let keyword_hits = keyword_search(conn, query, scope, top_k, qa_exclude_disputed);
+        // F-07: no newest-documents fallback — a no-match query must surface as
+        // empty evidence (ask answers mode "none", search returns no hits), not
+        // as cited "evidence" that never mentions the question.
+        let keyword_opt = if keyword_hits.is_empty() { None } else { Some(keyword_hits) };
+        let fused = fuse_and_rank(
+            conn,
+            vector_hits,
+            keyword_opt,
+            keyword_weight,
+            halflife_days,
+            max_per_source,
+            top_k,
+            qa_exclude_disputed,
+            query,
+        );
+        boost_and_assemble(conn, fused, query, qa_exclude_disputed)
+    };
+    // R38.5: status re-filtered after `parent_return` — return-shape
+    // assembly must never reintroduce excluded evidence — before the
+    // relevance gate sees the final list.
+    let hits: Vec<Hit> = hits.into_iter().filter(|h| status_ok(h.status.as_deref(), qa_exclude_disputed)).collect();
+    // R38.3: minimum-relevance gate — empty evidence unless some hit
+    // carries a real BM25 match, a boost, or cosine at the floor (ask
+    // answers mode "none", search returns no hits).
+    if hits.is_empty() || passes_relevance_gate(&hits) {
+        hits
+    } else {
+        Vec::new()
+    }
 }
 
 /// Top floor-keyword hits (keyword-rank order) missing from the fused list,
@@ -3729,6 +4072,209 @@ mod tests {
         let map = envs_for_chunks(&conn, &[c_fixture, c_live]);
         assert_eq!(map.get(&c_fixture).map(|s| s.as_str()), Some("test"));
         assert_eq!(map.get(&c_live).map(|s| s.as_str()), Some("live"));
+    }
+
+    #[test]
+    fn authority_tier_classes_file_kinds() {
+        // R38.7: the tier table — spec dirs/names, prose default, code and
+        // config extensions, generated/lint/vendored last. Lowest authority
+        // wins on overlap; `spec/` test suites and `*.spec.ts` stay out.
+        use AuthorityTier::*;
+        let cases = [
+            ("decisions/adr-007-cursor-pagination.md", Spec),
+            ("adr/0001-use-cursor-pagination.md", Spec),
+            ("docs/adr-012-billing.md", Spec),
+            ("rfc/0012-pagination.md", Spec),
+            ("spec/api.md", Spec),
+            ("design-docs/search.md", Spec),
+            ("docs\\adr-001.md", Spec),
+            ("notes/api-design-sync.md", Prose),
+            ("docs/runbook.md", Prose),
+            ("README", Prose),
+            ("file.weird-ext", Prose),
+            ("src/auth/session.py", Code),
+            ("src/billing/proration.rs", Code),
+            ("src/web/pagination.ts", Code),
+            ("service.go", Code),
+            ("foo.spec.ts", Code),
+            ("spec/pagination_spec.rb", Code),
+            ("config/pagerduty.yml", Config),
+            ("config/flags.json", Config),
+            ("pyproject.toml", Config),
+            (".env", Config),
+            ("Dockerfile", Config),
+            ("Makefile", Config),
+            ("CMakeLists.txt", Config),
+            ("config/api-lint.yml", Generated),
+            (".golangci.yml", Generated),
+            (".eslintrc.js", Generated),
+            ("gen/service.generated.go", Generated),
+            ("vendor/spec.md", Generated),
+            ("node_modules/pkg/index.js", Generated),
+            ("dist/bundle.js", Generated),
+            ("Cargo.lock", Generated),
+            ("package-lock.json", Generated),
+            ("static/app.min.js", Generated),
+            ("ADRs/Upper-Case-RFC-001.MD", Spec),
+        ];
+        for (path, want) in cases {
+            assert_eq!(authority_tier(path), want, "tier of {path}");
+        }
+    }
+
+    #[test]
+    fn fuse_and_rank_partitions_authority_tiers() {
+        // R38.7: an ADR outranks a same-query lint config and a generated
+        // file through the partition even when both lead it on score in
+        // every input list — and a generated hit never beats a same-score
+        // ADR from either input order.
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_AUTHORITY_TIERS");
+        std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_tier", "internal");
+        let adr = insert_item(&conn, sid, "adr");
+        let lint = insert_item(&conn, sid, "lint");
+        let gen = insert_item(&conn, sid, "gen");
+        conn.execute("UPDATE ingested_items SET external_id='decisions/adr-007-pagination.md' WHERE id=?1", [adr]).unwrap();
+        conn.execute("UPDATE ingested_items SET external_id='config/api-lint.yml' WHERE id=?1", [lint]).unwrap();
+        conn.execute("UPDATE ingested_items SET external_id='gen/pagination.generated.ts' WHERE id=?1", [gen]).unwrap();
+        let c_adr = insert_chunk(&conn, Some(adr), None, "adr cursor pagination decision record content");
+        let c_lint = insert_chunk(&conn, Some(lint), None, "lint cursor pagination rule enforcement content");
+        let c_gen = insert_chunk(&conn, Some(gen), None, "generated cursor pagination client stub content");
+        let mk = |cid: i64, iid: i64, score: f64, content: &str| Hit {
+            chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None,
+            path: String::new(), score, content: content.into(), source_ref: "ref".into(),
+            is_pii: false, status: Some("unverified".into()), content_truncated: false,
+            provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
+        };
+        let bodies = |cid: i64| match cid {
+            c if c == c_adr => (adr, "adr cursor pagination decision record content"),
+            c if c == c_lint => (lint, "lint cursor pagination rule enforcement content"),
+            _ => (gen, "generated cursor pagination client stub content"),
+        };
+        let lists = || {
+            let one = |scores: [(i64, f64); 3]| {
+                scores.into_iter().map(|(cid, s)| { let (iid, body) = bodies(cid); mk(cid, iid, s, body) }).collect::<Vec<_>>()
+            };
+            (one([(c_lint, 9.0), (c_gen, 8.0), (c_adr, 5.0)]), one([(c_lint, 9.0), (c_gen, 8.0), (c_adr, 5.0)]))
+        };
+        let (v, k) = lists();
+        let fused = fuse_and_rank(&conn, Some(v), Some(k), 1.0, 365.0, 3, 3, true, "cursor pagination enforced");
+        let ids: Vec<i64> = fused.iter().map(|h| h.chunk_id).collect();
+        assert_eq!(ids, vec![c_adr, c_lint, c_gen], "ADR first, same-tier ties keep fused order");
+        // Same-score pin from both input orders (ties sort unstably — only
+        // the partition makes the ADR win deterministic).
+        for order in [vec![c_lint, c_gen, c_adr], vec![c_adr, c_gen, c_lint]] {
+            let single: Vec<Hit> = order.into_iter().map(|cid| { let (iid, body) = bodies(cid); mk(cid, iid, 10.0, body) }).collect();
+            let tied = fuse_and_rank(&conn, None, Some(single), 1.0, 365.0, 3, 3, true, "cursor pagination enforced");
+            assert_eq!(tied.len(), 3);
+            assert_eq!(tied[0].chunk_id, c_adr, "generated/lint must never beat a same-score ADR");
+        }
+    }
+
+    #[test]
+    fn authority_tiers_refine_within_live_first() {
+        // R38.7: tiers refine within env classes — a live lint config still
+        // outranks a test ADR (live-first dominates), while the live ADR
+        // leads both.
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_AUTHORITY_TIERS");
+        std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_tierenv", "internal");
+        let live_adr = insert_item(&conn, sid, "live-adr");
+        let live_lint = insert_item(&conn, sid, "live-lint");
+        let test_adr = insert_item(&conn, sid, "test-adr");
+        conn.execute("UPDATE ingested_items SET external_id='decisions/adr-011-cursor.md' WHERE id=?1", [live_adr]).unwrap();
+        conn.execute("UPDATE ingested_items SET external_id='config/api-lint.yml' WHERE id=?1", [live_lint]).unwrap();
+        conn.execute("UPDATE ingested_items SET external_id='tests/adr-009-legacy.md' WHERE id=?1", [test_adr]).unwrap();
+        let c_live_adr = insert_chunk(&conn, Some(live_adr), None, "live adr cursor content");
+        let c_live_lint = insert_chunk(&conn, Some(live_lint), None, "live lint cursor content");
+        let c_test_adr = insert_chunk(&conn, Some(test_adr), None, "test adr cursor content");
+        let mk = |cid: i64, iid: i64, score: f64| Hit {
+            chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None,
+            path: String::new(), score, content: "x".into(), source_ref: "ref".into(),
+            is_pii: false, status: None, content_truncated: false,
+            provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
+        };
+        let mut hits = vec![mk(c_test_adr, test_adr, 9.0), mk(c_live_lint, live_lint, 8.0), mk(c_live_adr, live_adr, 7.0)];
+        prefer_authority_tiers(&conn, &mut hits, "cursor pagination enforced");
+        let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+        assert_eq!(ids, vec![c_live_adr, c_live_lint, c_test_adr], "live ADR > live lint > test ADR");
+        assert!(hits.iter().all(|h| h.score == 9.0 || h.score == 8.0 || h.score == 7.0), "partition orders, never rescores");
+    }
+
+    #[test]
+    fn authority_tiers_filename_mention_and_knob_exempt() {
+        // R38.7 guards (the live-first analogues): a query naming the lint
+        // file keeps score order (explicit filename intent wins), and
+        // ANCHOR_AUTHORITY_TIERS=0/false disables the partition.
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_AUTHORITY_TIERS");
+        std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_tierex", "internal");
+        let adr = insert_item(&conn, sid, "adr");
+        let lint = insert_item(&conn, sid, "lint");
+        conn.execute("UPDATE ingested_items SET external_id='decisions/adr-007-pagination.md' WHERE id=?1", [adr]).unwrap();
+        conn.execute("UPDATE ingested_items SET external_id='config/api-lint.yml' WHERE id=?1", [lint]).unwrap();
+        let c_adr = insert_chunk(&conn, Some(adr), None, "adr cursor pagination decision record");
+        let c_lint = insert_chunk(&conn, Some(lint), None, "lint cursor pagination rule enforcement");
+        let mk = |cid: i64, iid: i64, score: f64| Hit {
+            chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None,
+            path: String::new(), score, content: "x".into(), source_ref: "ref".into(),
+            is_pii: false, status: None, content_truncated: false,
+            provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
+        };
+        // Default: the ADR leads despite trailing on score.
+        let mut hits = vec![mk(c_lint, lint, 10.0), mk(c_adr, adr, 9.0)];
+        prefer_authority_tiers(&conn, &mut hits, "cursor pagination enforced");
+        assert_eq!(hits.iter().map(|h| h.chunk_id).collect::<Vec<_>>(), vec![c_adr, c_lint]);
+        assert!(hits.iter().all(|h| h.score == 10.0 || h.score == 9.0), "partition orders, never rescores");
+        // Exemption: naming the file keeps score order.
+        let mut named = vec![mk(c_lint, lint, 10.0), mk(c_adr, adr, 9.0)];
+        prefer_authority_tiers(&conn, &mut named, "what is in api-lint.yml");
+        assert_eq!(named[0].chunk_id, c_lint, "filename mentions must not partition");
+        // Knob off: nothing moves.
+        for off in ["0", "false"] {
+            std::env::set_var("ANCHOR_AUTHORITY_TIERS", off);
+            let mut hits_off = vec![mk(c_lint, lint, 10.0), mk(c_adr, adr, 9.0)];
+            prefer_authority_tiers(&conn, &mut hits_off, "cursor pagination enforced");
+            assert_eq!(hits_off[0].chunk_id, c_lint, "knob {off} disables tiers");
+        }
+        std::env::remove_var("ANCHOR_AUTHORITY_TIERS");
+    }
+
+    #[test]
+    fn authority_tiers_rank_code_above_config_above_prose() {
+        // R38.7 middle chain: terse precise classes outrank verbose prose —
+        // a 1-term code/config match leads a 5-term prose match (the eval
+        // `flags-01` shape: exact config answers must not sink under prose).
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_AUTHORITY_TIERS");
+        std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_tiermid", "internal");
+        let code = insert_item(&conn, sid, "code");
+        let cfg = insert_item(&conn, sid, "cfg");
+        let prose = insert_item(&conn, sid, "prose");
+        conn.execute("UPDATE ingested_items SET external_id='src/billing/proration.rs' WHERE id=?1", [code]).unwrap();
+        conn.execute("UPDATE ingested_items SET external_id='config/flags.json' WHERE id=?1", [cfg]).unwrap();
+        conn.execute("UPDATE ingested_items SET external_id='docs/glossary.md' WHERE id=?1", [prose]).unwrap();
+        let c_code = insert_chunk(&conn, Some(code), None, "code proration content");
+        let c_cfg = insert_chunk(&conn, Some(cfg), None, "config flags content");
+        let c_prose = insert_chunk(&conn, Some(prose), None, "prose glossary content");
+        let mk = |cid: i64, iid: i64, score: f64| Hit {
+            chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None,
+            path: String::new(), score, content: "x".into(), source_ref: "ref".into(),
+            is_pii: false, status: None, content_truncated: false,
+            provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
+        };
+        let mut hits = vec![mk(c_prose, prose, 10.0), mk(c_cfg, cfg, 9.5), mk(c_code, code, 9.0)];
+        prefer_authority_tiers(&conn, &mut hits, "proration flags glossary");
+        let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+        assert_eq!(ids, vec![c_code, c_cfg, c_prose], "code > config > prose despite score order");
     }
 
     #[test]
