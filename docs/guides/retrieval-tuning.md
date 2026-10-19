@@ -22,7 +22,7 @@ age decay → diversity/dedupe → live-first → top_k cut → filename boost.
 | Old doc should win but fresh trivia outranks it (or vice versa) | Age decay too strong/weak | `ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS` (default 365). Larger = age matters less; `0` disables decay |
 | One long doc crowds out everything else | Diversity cap too loose | Lower `ANCHOR_RETRIEVAL_MAX_PER_SOURCE` (default 3 per item) |
 | Test/fixture/sample files outrank real docs | Live-first partition disabled or query matches markers | Ensure `ANCHOR_TEST_ENV_DEMOTE` is unset/`0.5`; `1.0` disables the partition. Queries naming test files are exempt by design |
-| Query names a file but another file wins | Filename boost missed or grabbed the wrong file | Boost fires only on dotted tokens (`service.go`, not bare `service`); the file match is substring LIKE + first-id-wins, so it can grab the wrong file (R38.4). It runs after the cut and pulls below-cut chunks at `max + 1.0`, so when it fires it always wins |
+| Query names a file but another file wins | Filename boost missed or grabbed the wrong file | Boost fires only on dotted tokens (`service.go`, not bare `service`); the file match is substring LIKE + first-id-wins, so it can grab the wrong file (R39.4). It runs after the cut and pulls below-cut chunks at `max + 1.0`, so when it fires it always wins |
 | "Who owns X?" returns generic docs | who_knows leg didn't trigger | Trigger words: who/whom/owns/owner/responsible/expert/knows. Rephrase to include one |
 | Same content repeated across hits | Dedupe signature missed | Dedupe keys on `(item_id, first-160-chars normalized)` — cross-item copies are kept by design |
 | Correct chunk missing even at large `k` | Binary gate, not a weight | Check: `stale`/`disputed` status, project scope, `public_only`, or `sensitive`/`pii` label vs untrusted provider |
@@ -42,12 +42,12 @@ Env vars (effective at call time, no restart):
   live-first partition; `1.0` disables it. (The number itself no longer
   scales scores — ordering-only since R33.3.)
 - `ANCHOR_KEYWORD_SLOTS` (2) - reserved tail slots for top floor-keyword
-  hits locked out by fusion; `0` disables (R38.2).
+  hits locked out by fusion; `0` disables (R39.2).
 - `ANCHOR_MIN_RELEVANCE_COSINE` (0.50) - vector-cosine floor for evidence
-  with no BM25 match; below it on every hit returns empty (R38.3).
-- `ANCHOR_AUTHORITY_TIERS` (on) - set `0`/`false` to disable the (env, tier) ordering partition (R38.7).
+  with no BM25 match; below it on every hit returns empty (R39.3).
+- `ANCHOR_AUTHORITY_TIERS` (on) - set `0`/`false` to disable the (env, tier) ordering partition (R39.7).
 - `ANCHOR_DECAY_FLOOR` (0.8) - age decay never drops below this; `0`
-  restores raw decay (R38.6).
+  restores raw decay (R39.6).
 - `ANCHOR_QA_EXCLUDE_DISPUTED` (true) — set `0`/`false` to include
   `disputed` chunks.
 
@@ -83,32 +83,32 @@ Code constants (need a rebuild; change only with a failing test in hand):
   Demote after fusion or partition before the cut (that's what live-first
   does).
 
-## Shipped fixes (Phase 38 all waves, 2026-10-19) + remaining issues
+## Shipped fixes (Phase 39 all waves, 2026-10-19) + remaining issues
 
-- Floor-only keyword lockout: fixed by R38.2. `ANCHOR_KEYWORD_SLOTS`
+- Floor-only keyword lockout: fixed by R39.2. `ANCHOR_KEYWORD_SLOTS`
   (default 2, `0` disables) reserves tail slots for top floor-keyword hits
   that fusion would drop; live-first re-partitions after the insert.
-- Opaque single score: fixed by R38.1. Every search hit and citation now
+- Opaque single score: fixed by R39.1. Every search hit and citation now
   carries `provenance` (contributing legs + 1-based ranks), `decay` (applied
   factor), and `boosted` (surfaced by filename boost, bypassed ranking).
-- No "nothing relevant": fixed by R38.3. `orchestrate` returns empty
+- No "nothing relevant": fixed by R39.3. `orchestrate` returns empty
   unless some hit has a BM25 match, a boost, or cosine >=
   `ANCHOR_MIN_RELEVANCE_COSINE` (default 0.50, calibrated on
   nomic-embed-text x `sample/`); `ask` answers "not found" (`mode: "none"`).
-- Unbounded age decay: floored by R38.6. `ANCHOR_DECAY_FLOOR` (default
+- Unbounded age decay: floored by R39.6. `ANCHOR_DECAY_FLOOR` (default
   0.8, clamped [0,1]) - a year-old chunk keeps 0.8 instead of 0.5.
-- Ghost sections from contents pages: fixed by R38.9. TOC-like runs keep
+- Ghost sections from contents pages: fixed by R39.9. TOC-like runs keep
   their bytes but never open sections.
-- Boost file matching: fixed by R38.4. Exact basename beats substring,
+- Boost file matching: fixed by R39.4. Exact basename beats substring,
   shortest path wins the rest (`best_item_for_name`); version-like tokens
   (`v1.2`) never fire. Boost scoring stays exactly `max + 1.0`.
-- Boost status hole: fixed by R38.5. The `qa_exclude_disputed` flag threads
+- Boost status hole: fixed by R39.5. The `qa_exclude_disputed` flag threads
   from `orchestrate` into the boost (no hardcoded value), the stale/disputed
   filter runs before the top-k cut, and status re-filters after
   `parent_return`.
-- Suspect-PDF fence: fixed by R38.8. `toc_search` splices flat-leg hits for
+- Suspect-PDF fence: fixed by R39.8. `toc_search` splices flat-leg hits for
   `suspect` items after the fenced legs; clean corpora skip the extra legs.
-- No source-authority signal: fixed by R38.7. `prefer_authority_tiers`
+- No source-authority signal: fixed by R39.7. `prefer_authority_tiers`
   stable-sorts by (env, tier) after live-first (tiers refine within env
   classes; filename mentions exempt; `ANCHOR_AUTHORITY_TIERS=0` disables):
   Spec (adr/rfc/decision dirs, adr-/rfc- names) < Code (source
@@ -118,11 +118,11 @@ Code constants (need a rebuild; change only with a failing test in hand):
   (`vendor/spec.md` reads Generated). Watch item: prose sits below config
   by design (BM25 OR-queries otherwise bury exact config answers) -
   flip via the kill knob if runbooks lose wrongly.
-- Eval mirror drift: fixed by R38.12. `retrieval::orchestrate_fusion` is
+- Eval mirror drift: fixed by R39.12. `retrieval::orchestrate_fusion` is
   the single fusion path for ask, search, and the eval; the mirror is
   deleted.
-- Still open: suspect detector duplicated pending reunification (R38.13,
-  P3); cross-encoder reranker deferred (R38.11, owner call).
+- Still open: suspect detector duplicated pending reunification (R39.13,
+  P3); cross-encoder reranker deferred (R39.11, owner call).
 
 ## Code pointers
 

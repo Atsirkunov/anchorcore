@@ -1,5 +1,5 @@
 {
-  "_comment": "R38.10 golden retrieval eval set: fixture corpus manifest + query/expected-doc pairs. Runner: rust/crates/anchorcore/tests/retrieval_eval.rs. How to extend: tests/eval_data/README.md. Term discipline (distractor hygiene, summary terms, env markers) is documented there — read it before adding pairs.",
+  "_comment": "R39.10 golden retrieval eval set: fixture corpus manifest + query/expected-doc pairs. Runner: rust/crates/anchorcore/tests/retrieval_eval.rs. How to extend: tests/eval_data/README.md. Term discipline (distractor hygiene, summary terms, env markers) is documented there — read it before adding pairs.",
   "docs": [
     {
       "id": "deploy-runbook",
@@ -88,18 +88,18 @@
       "notes": "Prose postmortem; shares 'checkout/flow' with flags-json but wins on caused/outage/follow-up."
     },
     {
-      "id": "r38-2-exact-code",
+      "id": "r39-2-exact-code",
       "query": "ERR-90412",
       "expected": ["incident-postmortem"],
       "floor_only_keyword": true,
-      "notes": "R38.2 regression: bare opaque code. The code appears once in a long doc, so hash-embedding cosine stays under the 0.2 floor (like a real embedder's no-signal direction) and the summary carries no code tokens, so only the keyword leg fires. Fused must still hit via the keyword floor."
+      "notes": "R39.2 regression: bare opaque code. The code appears once in a long doc, so hash-embedding cosine stays under the 0.2 floor (like a real embedder's no-signal direction) and the summary carries no code tokens, so only the keyword leg fires. Fused must still hit via the keyword floor."
     },
     {
-      "id": "r38-2b-inc-code",
+      "id": "r39-2b-inc-code",
       "query": "INC-5521",
       "expected": ["incident-postmortem"],
       "floor_only_keyword": true,
-      "notes": "Second R38.2 pin: the postmortem's other unique all-caps code, same floor-only signature."
+      "notes": "Second R39.2 pin: the postmortem's other unique all-caps code, same floor-only signature."
     },
     {
       "id": "incident-02-midbody",

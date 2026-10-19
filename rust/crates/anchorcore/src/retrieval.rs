@@ -116,7 +116,7 @@ pub fn rrf_fuse_multi(lists: Vec<Vec<Hit>>, weights: Vec<f64>) -> Vec<Hit> {
     rrf_fuse_multi_named(lists, weights, &[])
 }
 
-/// RRF fusion with per-leg rank provenance (R38.1): each fused hit records
+/// RRF fusion with per-leg rank provenance (R39.1): each fused hit records
 /// every contributing list's name + 1-based rank, overwriting any earlier
 /// fusion's record (the outer fusion explains the final order). Unnamed lists
 /// read as `list{index}` — `toc_search` keeps this default; its output is
@@ -143,7 +143,7 @@ pub fn rrf_fuse_multi_named(lists: Vec<Vec<Hit>>, weights: Vec<f64>, legs: &[&st
 }
 
 /// One list's contribution to a fused hit: the RRF add plus the provenance
-/// record. Keyword/cosine evidence ORs across legs (the R38.3 gate reads the
+/// record. Keyword/cosine evidence ORs across legs (the R39.3 gate reads the
 /// union); decay is untouched — `fuse_and_rank` applies it after fusion.
 fn fuse_one_leg(entry: &mut Hit, hit: &Hit, leg: &str, rank: usize, weight: f64) {
     entry.provenance.push(LegMatch { leg: leg.to_string(), rank });
@@ -161,7 +161,7 @@ fn max_cosine(a: Option<f64>, b: Option<f64>) -> Option<f64> {
     }
 }
 
-/// R38.1: one contributing leg of a fused hit — which ranked list matched
+/// R39.1: one contributing leg of a fused hit — which ranked list matched
 /// and at which 1-based rank. Surfaced on search hits + ask citations.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LegMatch {
@@ -185,16 +185,16 @@ pub struct Hit {
     /// True when section expansion dropped siblings (byte cap / window) —
     /// `content` is not the whole section. Full bytes via the item endpoint.
     pub content_truncated: bool,
-    /// R38.1: contributing legs + ranks from the last fusion (or the
+    /// R39.1: contributing legs + ranks from the last fusion (or the
     /// single-list stamp). Empty for unranked hits (exact, boosted).
     pub provenance: Vec<LegMatch>,
-    /// R38.1: age-decay factor `fuse_and_rank` applied to `score` (1.0 = none).
+    /// R39.1: age-decay factor `fuse_and_rank` applied to `score` (1.0 = none).
     pub decay: f64,
-    /// R38.1: surfaced by filename boost above the ranked list, not by ranking.
+    /// R39.1: surfaced by filename boost above the ranked list, not by ranking.
     pub boosted: bool,
-    /// R38.3: a real BM25/FTS match on some leg (loaders set, fusion ORs).
+    /// R39.3: a real BM25/FTS match on some leg (loaders set, fusion ORs).
     pub keyword_matched: bool,
-    /// R38.3: raw vector cosine when a vec leg matched (fusion keeps the max).
+    /// R39.3: raw vector cosine when a vec leg matched (fusion keeps the max).
     pub cosine: Option<f64>,
 }
 
@@ -217,7 +217,7 @@ fn parse_created_at(v: &str) -> Option<DateTime<Utc>> {
         .map(|n| n.and_utc())
 }
 
-/// R38.6: age-decay floor — `ANCHOR_DECAY_FLOOR`, default 0.8, clamped to
+/// R39.6: age-decay floor — `ANCHOR_DECAY_FLOOR`, default 0.8, clamped to
 /// [0, 1]. Old evidence fades but never vanishes: a year-old chunk at a
 /// 365-day halflife keeps 0.8 instead of 0.5. (Deliberately uniform — no
 /// per-source-type decay.)
@@ -482,7 +482,7 @@ fn hits_from_distances(
         if let Some(d) = by_id.get(&h.chunk_id) {
             if let Some(score) = vec_score_from_distance(*d) {
                 h.score = score;
-                // R38.3: the RRF score won't survive fusion — carry the raw
+                // R39.3: the RRF score won't survive fusion — carry the raw
                 // cosine for the relevance gate.
                 h.cosine = Some(score);
                 out.push(h);
@@ -559,7 +559,7 @@ fn hits_from_ranks(
     for mut h in hits {
         if let Some(rank) = by_id.get(&h.chunk_id) {
             h.score = -rank;
-            // R38.3: an FTS row hit is a real BM25 match by construction.
+            // R39.3: an FTS row hit is a real BM25 match by construction.
             h.keyword_matched = true;
             out.push(h);
         }
@@ -1024,10 +1024,10 @@ fn extract_top_sections(conn: &Connection, summary_hits: &[Hit]) -> HashSet<i64>
     out
 }
 
-/// R38.8: the R36.10 `suspect` predicates (`extract.rs`, verbatim).
+/// R39.8: the R36.10 `suspect` predicates (`extract.rs`, verbatim).
 /// `items::pdf_quality_for` is private and `items.rs` is read-only under
 /// this scope, so the flag can't be called — and `crate::extract` doesn't
-/// resolve here either: the R38.10 eval target compiles this file
+/// resolve here either: the R39.10 eval target compiles this file
 /// standalone via `#[path]` (`{db, common, retrieval}` closure), while
 /// `extract`↔`chunking` form a cycle that only resolves in the full bin.
 /// The 30k word list stays single-sourced (`include_str!` of the same
@@ -1145,7 +1145,7 @@ mod suspect_pdf {
     }
 }
 
-/// R38.8: items whose summaries can't be trusted — the R36.10 `suspect`
+/// R39.8: items whose summaries can't be trusted — the R36.10 `suspect`
 /// branch of the item PDF flag (shredded stored text on a PDF row), batched
 /// into one query over in-scope PDF rows (the `LIKE` pre-filter only bounds
 /// the scan; `is_pdf_filename` + the spacing check decide). Suspect wins
@@ -1179,7 +1179,7 @@ fn suspect_pdf_items(conn: &Connection, source_ids: Option<&HashSet<i64>>) -> Ha
         .collect()
 }
 
-/// R38.8: keep flat-leg hits for suspect items only, appended after the
+/// R39.8: keep flat-leg hits for suspect items only, appended after the
 /// fenced legs (deduped by chunk — a fenced rank always stands).
 fn append_suspect_hits(fenced: &mut Vec<Hit>, flat: Vec<Hit>, suspects: &HashSet<i64>) {
     if flat.is_empty() {
@@ -1196,7 +1196,7 @@ fn append_suspect_hits(fenced: &mut Vec<Hit>, flat: Vec<Hit>, suspects: &HashSet
     }
 }
 
-/// R38.8: suspect-PDF fence skip — the TOC fence admits sections by summary
+/// R39.8: suspect-PDF fence skip — the TOC fence admits sections by summary
 /// match, but a suspect PDF's summaries are poor, so its leaf chunks would
 /// stay hidden. Run the flat leaf legs unfenced and splice the suspect-item
 /// hits into the fenced legs (same legs, trailing ranks — precision-first,
@@ -1260,7 +1260,7 @@ pub fn toc_search(
         .and_then(|emb| leaf_vector_search_filtered(conn, emb, source_ids, Some(&top_secs), top_k, qa_exclude_disputed))
         .unwrap_or_default();
     let mut leaf_kw = leaf_keyword_search_filtered(conn, query, source_ids, Some(&top_secs), top_k, qa_exclude_disputed);
-    // R38.8: suspect-PDF fence skip — poor summaries must not hide leaves.
+    // R39.8: suspect-PDF fence skip — poor summaries must not hide leaves.
     append_suspect_flat_legs(conn, query, query_emb, source_ids, top_k, qa_exclude_disputed, &mut leaf_vec, &mut leaf_kw);
     if leaf_vec.is_empty() && leaf_kw.is_empty() {
         return vec![];
@@ -1407,7 +1407,7 @@ pub fn fuse_evidence(mut lists: Vec<Vec<Hit>>, weights: Vec<f64>) -> Vec<Hit> {
     rrf_fuse_multi(lists, weights)
 }
 
-/// R38.1: single-list provenance — input order is the loader's rank order
+/// R39.1: single-list provenance — input order is the loader's rank order
 /// (loaders return sorted). Skips hits that already carry a fusion record:
 /// the TOC path feeds one pre-fused list through `fuse_and_rank` and its
 /// outer-fusion legs must survive.
@@ -1420,7 +1420,7 @@ fn stamp_single_leg(hits: &mut [Hit], leg: &str) {
 }
 
 /// Batched age decay (P1 4.7 — was N+1 per hit): multiplies each score by
-/// its factor and records the applied factor on the hit (R38.1).
+/// its factor and records the applied factor on the hit (R39.1).
 pub fn apply_age_decay(conn: &Connection, hits: &mut [Hit], halflife_days: f64) {
     if hits.is_empty() {
         return;
@@ -1502,11 +1502,11 @@ pub fn fuse_and_rank(
     // Live-first sits directly before the cut: any later score sort would
     // undo the partition, and the cut must choose from a live-led list.
     prefer_live_envs(conn, &mut fused, query);
-    // R38.7: authority tiers refine within the env classes (live-first
+    // R39.7: authority tiers refine within the env classes (live-first
     // still dominates — the partition sorts by (env, tier)); the cut
     // chooses from an authority-led list.
     prefer_authority_tiers(conn, &mut fused, query);
-    // R38.5: stale/disputed filter BEFORE the cut — excluded hits must not
+    // R39.5: stale/disputed filter BEFORE the cut — excluded hits must not
     // consume top-k slots (seeded corpora still return a full top_k).
     let hits: Vec<Hit> = fused.into_iter().filter(|h| status_ok(h.status.as_deref(), qa_exclude_disputed)).take(top_k).collect();
     // Raw ranked hits out — return-shape assembly (`parent_return`) runs
@@ -1967,14 +1967,14 @@ pub(crate) fn envs_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> HashMap<i
     chunk_item_env(conn, chunk_ids).into_iter().map(|(id, (p, head))| (id, env_for_item(&p, &head).to_string())).collect()
 }
 
-/// R38.7: source-authority tiers — a file-class prior as an ORDERING
+/// R39.7: source-authority tiers — a file-class prior as an ORDERING
 /// PARTITION (the `prefer_live_envs` pattern generalized, never a score
 /// multiplier — RRF fuses by rank and single-list BM25 gaps dwarf any
 /// multiplier, R32.7). Lower wins; ties keep score order (stable).
 ///
 /// | tier | class | markers |
 /// | 0 `Spec` | ADR/decision/spec docs | `adr/`, `rfc/`, `decisions/`, `design-docs/` dirs; `adr-*`/`rfc-*` names; `spec` in a prose filename |
-/// | 1 `Code` | source code | code extensions (self-contained list — the R38.10 eval target compiles this module standalone, so `extract.rs` helpers are out of reach) |
+/// | 1 `Code` | source code | code extensions (self-contained list — the R39.10 eval target compiles this module standalone, so `extract.rs` helpers are out of reach) |
 /// | 2 `Config` | config/data/operational | config extensions + `Dockerfile`/`Makefile`/… names |
 /// | 3 `Prose` | everything else (default) | runbooks, notes, unknown kinds |
 /// | 4 `Generated` | lint / generated / vendored / build output | `vendor/`, `generated/`, `node_modules/`-style output dirs; `lint`/`golangci`/`eslint`/… names; `*.generated.*`, `*.min.*`, lockfiles |
@@ -1996,7 +1996,7 @@ pub enum AuthorityTier {
     Generated,
 }
 
-/// R38.7: dir segments that demote to `Generated` (vendored deps + build
+/// R39.7: dir segments that demote to `Generated` (vendored deps + build
 /// output — overlaps `folder.rs::SKIP_DIRS`, which prunes most of these at
 /// ingest; the tier catches the rest: Drive sources, pre-skip rows).
 const GENERATED_DIR_MARKERS: &[&str] = &[
@@ -2005,26 +2005,26 @@ const GENERATED_DIR_MARKERS: &[&str] = &[
     "coverage", ".next", ".nuxt", "pods", "deriveddata",
 ];
 
-/// R38.7: dir segments that promote to `Spec` (bare `spec/` is NOT here —
+/// R39.7: dir segments that promote to `Spec` (bare `spec/` is NOT here —
 /// RSpec suites own that name; prose files under it promote via
 /// `SPEC_DIR_PROSE_ONLY`).
 const SPEC_DIR_MARKERS: &[&str] = &["adr", "adrs", "rfc", "rfcs", "decision", "decisions", "design-docs", "designdocs"];
 
-/// R38.7: dir segments that promote prose files only (see above).
+/// R39.7: dir segments that promote prose files only (see above).
 const SPEC_DIR_PROSE_ONLY: &[&str] = &["spec", "specs"];
 
-/// R38.7: whole-word `Spec` filename tokens (prose extensions only —
+/// R39.7: whole-word `Spec` filename tokens (prose extensions only —
 /// `foo.spec.ts` stays `Code`).
 const SPEC_NAME_TOKENS: &[&str] = &["spec", "specs", "rfc", "rfcs", "adr", "adrs", "decision", "decisions"];
 
-/// R38.7: lint-tool name fragments — a lint config is enforcement, not
+/// R39.7: lint-tool name fragments — a lint config is enforcement, not
 /// evidence (`api-lint.yml` matches on the `lint` token instead).
 const LINT_NAME_MARKERS: &[&str] = &["golangci", "eslint", "flake8", "pylint", "rubocop"];
 
-/// R38.7: prose extensions (gate the `Spec` filename/dir rules).
+/// R39.7: prose extensions (gate the `Spec` filename/dir rules).
 const PROSE_EXTENSIONS: &[&str] = &["md", "markdown", "rst", "txt", "adoc"];
 
-/// R38.7: source-code extensions (self-contained: the R38.10 eval target
+/// R39.7: source-code extensions (self-contained: the R39.10 eval target
 /// compiles this module standalone via `#[path]`, so `extract.rs` helpers
 /// are out of reach — keep this list in sync by shape, not by import).
 const CODE_EXTENSIONS: &[&str] = &[
@@ -2035,46 +2035,46 @@ const CODE_EXTENSIONS: &[&str] = &[
     "html", "htm", "css", "scss", "less", "sass", "proto", "graphql", "gql",
 ];
 
-/// R38.7: config/data extensions.
+/// R39.7: config/data extensions.
 const CONFIG_EXTENSIONS: &[&str] = &[
     "yml", "yaml", "json", "jsonc", "json5", "toml", "ini", "cfg", "conf", "config", "env",
     "properties", "xml", "csv", "tsv", "hcl", "tf", "tfvars", "nix",
 ];
 
-/// R38.7: extensionless operational filenames (compared against the stem,
+/// R39.7: extensionless operational filenames (compared against the stem,
 /// so `CMakeLists.txt` matches too) — build recipes, not implementation.
 const CONFIG_NAME_MARKERS: &[&str] =
     &["dockerfile", "containerfile", "makefile", "gnumakefile", "justfile", "gemfile", "vagrantfile", "brewfile", "cmakelists"];
 
-/// R38.7: last path segment (both separators — folder `external_id`s use
+/// R39.7: last path segment (both separators — folder `external_id`s use
 /// `/`, Drive titles and Windows rows may carry `\`).
 fn tier_basename(lower_path: &str) -> &str {
     lower_path.rsplit(['/', '\\']).next().unwrap_or(lower_path)
 }
 
-/// R38.7: extension after the last dot (`""` when dotless; `.env` → `env`).
+/// R39.7: extension after the last dot (`""` when dotless; `.env` → `env`).
 fn tier_extension(basename: &str) -> &str {
     basename.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("")
 }
 
-/// R38.7: stem (basename minus the last extension) for exact-name matches.
+/// R39.7: stem (basename minus the last extension) for exact-name matches.
 fn tier_stem(basename: &str) -> &str {
     basename.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(basename)
 }
 
-/// R38.7: dir segments (everything above the basename), lowercased already.
+/// R39.7: dir segments (everything above the basename), lowercased already.
 fn tier_dir_segments(lower_path: &str) -> Vec<&str> {
     let mut segs: Vec<&str> = lower_path.split(['/', '\\']).collect();
     segs.pop();
     segs
 }
 
-/// R38.7: basename tokens (lowercased already) for whole-word markers.
+/// R39.7: basename tokens (lowercased already) for whole-word markers.
 fn basename_tokens(basename: &str) -> Vec<String> {
     basename.split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()).map(|t| t.to_string()).collect()
 }
 
-/// R38.7: `Generated` wins over every other class — checked first.
+/// R39.7: `Generated` wins over every other class — checked first.
 fn is_generated_path(dir_segments: &[&str], basename: &str) -> bool {
     if dir_segments.iter().any(|s| GENERATED_DIR_MARKERS.contains(s)) {
         return true;
@@ -2088,7 +2088,7 @@ fn is_generated_path(dir_segments: &[&str], basename: &str) -> bool {
     basename.contains(".min.") || basename.contains(".bundle.") || basename.ends_with(".lock") || basename.contains("-lock.")
 }
 
-/// R38.7: `Spec` — decision/spec dirs and names. Runs after the generated
+/// R39.7: `Spec` — decision/spec dirs and names. Runs after the generated
 /// check, before extensions.
 fn is_spec_path(dir_segments: &[&str], basename: &str, ext: &str) -> bool {
     if dir_segments.iter().any(|s| SPEC_DIR_MARKERS.contains(s)) {
@@ -2106,7 +2106,7 @@ fn is_spec_path(dir_segments: &[&str], basename: &str, ext: &str) -> bool {
     basename_tokens(basename).iter().any(|t| SPEC_NAME_TOKENS.contains(&t.as_str()))
 }
 
-/// R38.7: file-class authority for one item path (case-insensitive).
+/// R39.7: file-class authority for one item path (case-insensitive).
 /// Precedence: generated → spec → code → config → prose default.
 pub fn authority_tier(path: &str) -> AuthorityTier {
     let lower = path.to_lowercase();
@@ -2128,7 +2128,7 @@ pub fn authority_tier(path: &str) -> AuthorityTier {
     AuthorityTier::Prose
 }
 
-/// R38.7 kill knob — `ANCHOR_AUTHORITY_TIERS`, default on; `0`/`false` off.
+/// R39.7 kill knob — `ANCHOR_AUTHORITY_TIERS`, default on; `0`/`false` off.
 pub fn authority_tiers_enabled() -> bool {
     match std::env::var("ANCHOR_AUTHORITY_TIERS") {
         Ok(v) => v != "0" && v.to_lowercase() != "false",
@@ -2136,7 +2136,7 @@ pub fn authority_tiers_enabled() -> bool {
     }
 }
 
-/// R38.7: authority-tier ordering — the `prefer_live_envs` pattern
+/// R39.7: authority-tier ordering — the `prefer_live_envs` pattern
 /// generalized to file classes. Stable sort by (env, tier): tiers refine
 /// WITHIN env classes and live-first still dominates. Never a score
 /// multiplier (same R32.7 argument — partitions reorder, multipliers don't).
@@ -2168,7 +2168,7 @@ pub fn prefer_authority_tiers(conn: &Connection, hits: &mut [Hit], query: &str) 
 
 /// Tokens that look like filenames (`routing-config.yml`, `service.go`):
 /// contain a dot, carry a letter (excludes `1.0.23`), long enough to matter.
-/// R38.4: version-like tokens (`v1.2`) never fire — a release label is not
+/// R39.4: version-like tokens (`v1.2`) never fire — a release label is not
 /// a filename mention.
 fn filename_tokens(query: &str) -> Vec<String> {
     query
@@ -2178,7 +2178,7 @@ fn filename_tokens(query: &str) -> Vec<String> {
         .collect()
 }
 
-/// R38.4: version-like tokens — an optional `v`/`V` prefix over digits and
+/// R39.4: version-like tokens — an optional `v`/`V` prefix over digits and
 /// dots only (`v1.2`, `V2.0.1`). Pure-numeric dotted tokens (`1.2.3`) match
 /// too (the letter rule already drops them; this is explicit).
 fn is_version_token(t: &str) -> bool {
@@ -2205,12 +2205,12 @@ fn named_item_ids(conn: &Connection, names: &[String]) -> Vec<i64> {
     names.iter().take(3).filter_map(|name| best_item_for_name(conn, name)).collect()
 }
 
-/// R38.4: last path segment — the unit whole-token filename matching compares.
+/// R39.4: last path segment — the unit whole-token filename matching compares.
 fn item_basename(external_id: &str) -> &str {
     external_id.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(external_id)
 }
 
-/// R38.4: match tier for one candidate — exact basename first (exact case,
+/// R39.4: match tier for one candidate — exact basename first (exact case,
 /// then case-insensitive for cross-platform paths), exact title alongside,
 /// everything else last.
 fn name_match_tier(name: &str, basename: &str, title: Option<&str>) -> u8 {
@@ -2223,7 +2223,7 @@ fn name_match_tier(name: &str, basename: &str, title: Option<&str>) -> u8 {
     }
 }
 
-/// R38.4: the one item a filename token names. Candidates come from the
+/// R39.4: the one item a filename token names. Candidates come from the
 /// substring LIKE (unchanged recall), but the winner is ranked, not
 /// lowest-id: exact basename beats substring (`service.go` over
 /// `myservice.go`), and among substring matches the shortest path wins.
@@ -2283,8 +2283,8 @@ fn first_chunk_for_item(conn: &Connection, item_id: i64) -> Option<i64> {
 /// item's best content match for the rest of the query (file head only when
 /// nothing matches). No-op when nothing matches. Kept in R33.3: the leaf
 /// pool never sees filenames, so no filter subsumes the bare-filename case.
-/// R38.4: whole-token matching (exact basename beats substring, shortest
-/// path among the rest) + version-like tokens never fire. R38.5: stale is
+/// R39.4: whole-token matching (exact basename beats substring, shortest
+/// path among the rest) + version-like tokens never fire. R39.5: stale is
 /// always excluded, disputed per `qa_exclude_disputed` (threaded from
 /// `orchestrate` — no hardcoded filter value on this path). Scoring is
 /// exactly `top + 1.0` — `mark_boosted_hits` detects boosted hits via
@@ -2324,7 +2324,7 @@ pub fn filename_boost_filtered(conn: &Connection, hits: &mut Vec<Hit>, query: &s
     sort_hits(hits);
 }
 
-/// R38.5: production default for the boost exclusion flag — mirrors
+/// R39.5: production default for the boost exclusion flag — mirrors
 /// `answer.rs::RetrievalConfig::from_env` (`ANCHOR_QA_EXCLUDE_DISPUTED`,
 /// default exclude). Only the legacy 3-arg wrapper resolves it here;
 /// `orchestrate` threads its cfg explicitly.
@@ -2335,18 +2335,18 @@ fn boost_exclude_disputed_default() -> bool {
 }
 
 /// Legacy 3-arg entry — unit tests call this; it resolves the production
-/// exclusion default from env. Production (`orchestrate_fusion`, R38.12)
+/// exclusion default from env. Production (`orchestrate_fusion`, R39.12)
 /// passes the flag to `filename_boost_filtered` explicitly.
 pub fn filename_boost(conn: &Connection, hits: &mut Vec<Hit>, query: &str) {
     filename_boost_filtered(conn, hits, query, boost_exclude_disputed_default())
 }
 
-/// R38.1: pre-boost max score — the snapshot `mark_boosted_hits` compares to.
+/// R39.1: pre-boost max score — the snapshot `mark_boosted_hits` compares to.
 pub fn top_score(hits: &[Hit]) -> f64 {
     hits.iter().map(|h| h.score).fold(0.0f64, f64::max)
 }
 
-/// R38.1: mark filename-boosted hits. `filename_boost` scores surfaced
+/// R39.1: mark filename-boosted hits. `filename_boost` scores surfaced
 /// chunks `top + 1.0`, so anything above the pre-boost max is boosted —
 /// detected here so the boost itself stays untouched.
 pub fn mark_boosted_hits(hits: &mut [Hit], prev_top: f64) {
@@ -2357,19 +2357,19 @@ pub fn mark_boosted_hits(hits: &mut [Hit], prev_top: f64) {
     }
 }
 
-/// R38.2: reserved keyword slots in the final top-k — `ANCHOR_KEYWORD_SLOTS`,
+/// R39.2: reserved keyword slots in the final top-k — `ANCHOR_KEYWORD_SLOTS`,
 /// default 2, 0 disables.
 pub fn keyword_slots() -> usize {
     std::env::var("ANCHOR_KEYWORD_SLOTS").ok().and_then(|v| v.parse().ok()).unwrap_or(2)
 }
 
-/// R38.2: pull top floor-keyword hits locked out by fusion into reserved
+/// R39.2: pull top floor-keyword hits locked out by fusion into reserved
 /// tail slots of the final top-k — via ordering, not weight changes. The
 /// TOC path fuses at TOC@1.0 vs floors@0.5, so a floor-only keyword match
 /// can never outrank a TOC hit and the fuse cut drops it; the reserved
 /// slots displace the lowest-ranked tail instead (the list is live-first,
 /// so tail eviction takes test hits before live ones). Decay applies to
-/// pulled hits like any fused hit; live-first + authority tiers (R38.7)
+/// pulled hits like any fused hit; live-first + authority tiers (R39.7)
 /// re-partition after the insert, so env/tier ordering still holds.
 pub fn apply_keyword_slots(
     conn: &Connection,
@@ -2392,12 +2392,12 @@ pub fn apply_keyword_slots(
     hits.truncate(hits.len().saturating_sub(overflow));
     hits.extend(take);
     prefer_live_envs(conn, hits, query);
-    // R38.7: the slot insert runs after the fuse cut, so the pulled hits
+    // R39.7: the slot insert runs after the fuse cut, so the pulled hits
     // need the same (env, tier) order the cut list already has.
     prefer_authority_tiers(conn, hits, query);
 }
 
-/// R38.3: minimum vector cosine for evidence without any BM25 match —
+/// R39.3: minimum vector cosine for evidence without any BM25 match —
 /// `ANCHOR_MIN_RELEVANCE_COSINE`, default 0.50. Calibrated 2026-10-19 on
 /// nomic-embed-text x sample/ (14 chunks, 800-char windows): direct 0.75,
 /// no-shared-term paraphrases 0.57-0.64, weak 0.56 | gibberish 0.46,
@@ -2407,7 +2407,7 @@ pub fn min_relevance_cosine() -> f64 {
     std::env::var("ANCHOR_MIN_RELEVANCE_COSINE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.50)
 }
 
-/// R38.3: minimum-relevance gate — some hit must carry a real BM25 match,
+/// R39.3: minimum-relevance gate — some hit must carry a real BM25 match,
 /// an explicit filename boost, or vector cosine at or above the floor, or
 /// the whole list is vector noise and `orchestrate` returns empty (ask
 /// answers mode "none"). Boosted hits pass as explicit intent: a bare
@@ -2418,8 +2418,8 @@ pub fn passes_relevance_gate(hits: &[Hit]) -> bool {
     hits.iter().any(|h| h.keyword_matched || h.boosted || h.cosine.map(|c| c >= floor).unwrap_or(false))
 }
 
-/// R38.12: TOC-branch fusion inputs — the TOC precision list at 1.0 over
-/// the discounted flat recall floor (0.5 legs), with leg names for R38.1
+/// R39.12: TOC-branch fusion inputs — the TOC precision list at 1.0 over
+/// the discounted flat recall floor (0.5 legs), with leg names for R39.1
 /// provenance. Empty floor legs stay out (no empty-list fusion noise).
 fn toc_fusion_lists(
     toc: Vec<Hit>,
@@ -2442,24 +2442,24 @@ fn toc_fusion_lists(
     (lists, weights, legs)
 }
 
-/// R38.12: post-cut finish shared by both branches — filename boost above
-/// a pre-boost snapshot (R38.1 detection still exact), then return-shape
+/// R39.12: post-cut finish shared by both branches — filename boost above
+/// a pre-boost snapshot (R39.1 detection still exact), then return-shape
 /// assembly (R36.3) over the final ranked list, so same-scope merging sees
 /// boosted hits too.
 fn boost_and_assemble(conn: &Connection, mut hits: Vec<Hit>, query: &str, qa_exclude_disputed: bool) -> Vec<Hit> {
     let prev_top = top_score(&hits);
-    // R38.5: the cfg exclusion flag threads in — the boost hardcodes nothing.
+    // R39.5: the cfg exclusion flag threads in — the boost hardcodes nothing.
     filename_boost_filtered(conn, &mut hits, query, qa_exclude_disputed);
     mark_boosted_hits(&mut hits, prev_top);
     parent_return(conn, hits)
 }
 
-/// R38.12: the pure fusion path — TOC-or-flat legs → RRF fuse →
+/// R39.12: the pure fusion path — TOC-or-flat legs → RRF fuse →
 /// `fuse_and_rank` → keyword slots → filename boost → `parent_return` →
 /// status re-filter → relevance gate. Everything `answer.rs::orchestrate`
 /// does minus scope resolution and embedding computation, which stay with
 /// the caller (`answer.rs` resolves project scope + the embedder; the
-/// R38.10 eval passes its own). Both call this — the eval's
+/// R39.10 eval passes its own). Both call this — the eval's
 /// `orchestrate_mirror` restatement is deleted, so production and the
 /// golden set can never drift again. R33.3: no graph leg — entity
 /// neighbors are entity chunks, and entities never enter retrieval.
@@ -2494,7 +2494,7 @@ pub fn orchestrate_fusion(
             if hits.is_empty() { None } else { Some(hits) }
         });
         let floor_kw = keyword_search(conn, query, scope, top_k, qa_exclude_disputed);
-        // R38.2: slot candidates — one clone per TOC-path query; fusion below consumes the original.
+        // R39.2: slot candidates — one clone per TOC-path query; fusion below consumes the original.
         let slot_pool = floor_kw.clone();
         let floor_kw_opt = if floor_kw.is_empty() { None } else { Some(floor_kw) };
         let (lists, weights, legs) = toc_fusion_lists(toc, floor_vec, floor_kw_opt);
@@ -2512,7 +2512,7 @@ pub fn orchestrate_fusion(
             qa_exclude_disputed,
             query,
         );
-        // R38.2: reserved keyword slots pull locked-out floor hits into the
+        // R39.2: reserved keyword slots pull locked-out floor hits into the
         // cut list before boost/return-shape (boost detection still exact —
         // the snapshot runs after the slots).
         apply_keyword_slots(conn, &mut cut, &slot_pool, top_k, halflife_days, query);
@@ -2541,11 +2541,11 @@ pub fn orchestrate_fusion(
         );
         boost_and_assemble(conn, fused, query, qa_exclude_disputed)
     };
-    // R38.5: status re-filtered after `parent_return` — return-shape
+    // R39.5: status re-filtered after `parent_return` — return-shape
     // assembly must never reintroduce excluded evidence — before the
     // relevance gate sees the final list.
     let hits: Vec<Hit> = hits.into_iter().filter(|h| status_ok(h.status.as_deref(), qa_exclude_disputed)).collect();
-    // R38.3: minimum-relevance gate — empty evidence unless some hit
+    // R39.3: minimum-relevance gate — empty evidence unless some hit
     // carries a real BM25 match, a boost, or cosine at the floor (ask
     // answers mode "none", search returns no hits).
     if hits.is_empty() || passes_relevance_gate(&hits) {
@@ -2653,7 +2653,7 @@ mod tests {
 
     #[test]
     fn rrf_fuse_named_records_contributing_ranks() {
-        // R38.1: every fused hit names its contributing legs + 1-based ranks.
+        // R39.1: every fused hit names its contributing legs + 1-based ranks.
         let fused = rrf_fuse_multi_named(
             vec![vec![blank_hit(1), blank_hit(2)], vec![blank_hit(2), blank_hit(3)]],
             vec![1.0, 1.0],
@@ -2671,7 +2671,7 @@ mod tests {
 
     #[test]
     fn fusion_preserves_keyword_and_cosine_evidence() {
-        // R38.1/38.3: the gate reads the union — keyword ORs, cosine maxes.
+        // R39.1/38.3: the gate reads the union — keyword ORs, cosine maxes.
         let mut v = blank_hit(1);
         v.cosine = Some(0.7);
         let mut k = blank_hit(1);
@@ -2685,7 +2685,7 @@ mod tests {
 
     #[test]
     fn fuse_and_rank_stamps_single_list_provenance_and_decay() {
-        // R38.1: single-list hits keep raw scores AND record leg + rank +
+        // R39.1: single-list hits keep raw scores AND record leg + rank +
         // applied decay; pre-fused lists keep their outer-fusion record.
         let (_dir, conn) = harness_db();
         let sid = insert_source(&conn, "s_prov", "internal");
@@ -2716,7 +2716,7 @@ mod tests {
 
     #[test]
     fn mark_boosted_hits_flags_above_prev_top() {
-        // R38.1: filename_boost scores surfaced chunks top + 1.0 — anything
+        // R39.1: filename_boost scores surfaced chunks top + 1.0 — anything
         // above the pre-boost max is boosted, everything else is not.
         let mut v = vec![blank_hit(1), blank_hit(2)];
         v[0].score = 5.0;
@@ -2729,7 +2729,7 @@ mod tests {
 
     #[test]
     fn relevance_gate_needs_keyword_boost_or_cosine() {
-        // R38.3: vector noise below the floor gates the whole list; any one
+        // R39.3: vector noise below the floor gates the whole list; any one
         // real signal (BM25, boost, cosine) passes it. Default floor 0.50.
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("ANCHOR_MIN_RELEVANCE_COSINE");
@@ -2766,7 +2766,7 @@ mod tests {
 
     #[test]
     fn age_decay_floors_at_08_by_default() {
-        // R38.6: max(0.8, decay); the knob clamps to [0, 1], 0 restores raw.
+        // R39.6: max(0.8, decay); the knob clamps to [0, 1], 0 restores raw.
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("ANCHOR_DECAY_FLOOR");
         let now = Utc.with_ymd_and_hms(2026, 1, 10, 12, 0, 0).unwrap();
@@ -3293,7 +3293,7 @@ mod tests {
         }
     }
 
-    // --- R38.8: suspect-PDF fence skip ---
+    // --- R39.8: suspect-PDF fence skip ---
 
     /// Shredded spacing that trips the R36.10 detector (same join shapes as
     /// the extractor's shredded fixture, enough suspects to clear the floor).
@@ -3307,7 +3307,7 @@ mod tests {
     /// Returns (db dir, conn, pdf leaf id, md leaf id).
     fn seed_suspect_toc_db(pdf_text: &str) -> (tempfile::TempDir, rusqlite::Connection, i64, i64) {
         let (_dir, conn) = harness_db();
-        let sid = insert_source(&conn, "s_r388", "internal");
+        let sid = insert_source(&conn, "s_r398", "internal");
         conn.execute(
             "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,'report.pdf','report.pdf',?2,'h')",
             rusqlite::params![sid, pdf_text],
@@ -3347,7 +3347,7 @@ mod tests {
         // R36.10 parity, batched: shredded PDF flags, clean PDF reads null,
         // shredded non-PDF never scores.
         let (_dir, conn) = harness_db();
-        let sid = insert_source(&conn, "s_r388_flag", "internal");
+        let sid = insert_source(&conn, "s_r398_flag", "internal");
         conn.execute(
             "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,'bad.pdf','bad.pdf',?2,'h')",
             rusqlite::params![sid, shredded_pdf_text()],
@@ -3873,7 +3873,7 @@ mod tests {
     fn fuse_and_rank_decays_sqlite_timestamps() {
         // F-10: writers store SQLite `CURRENT_TIMESTAMP`, not RFC 3339 —
         // decay must apply to real rows, not silently return 1.0.
-        // R38.6: the raw ~x0.5 now floors at 0.8 (factor recorded on the hit).
+        // R39.6: the raw ~x0.5 now floors at 0.8 (factor recorded on the hit).
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
         std::env::remove_var("ANCHOR_DECAY_FLOOR");
@@ -3903,7 +3903,7 @@ mod tests {
 
     #[test]
     fn decay_floor_flips_fuse_ordering() {
-        // R38.6: old(10) vs fresh(7) — floored 8.0 beats 7.0, raw 5.0 loses.
+        // R39.6: old(10) vs fresh(7) — floored 8.0 beats 7.0, raw 5.0 loses.
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
         std::env::remove_var("ANCHOR_DECAY_FLOOR");
@@ -4076,7 +4076,7 @@ mod tests {
 
     #[test]
     fn authority_tier_classes_file_kinds() {
-        // R38.7: the tier table — spec dirs/names, prose default, code and
+        // R39.7: the tier table — spec dirs/names, prose default, code and
         // config extensions, generated/lint/vendored last. Lowest authority
         // wins on overlap; `spec/` test suites and `*.spec.ts` stay out.
         use AuthorityTier::*;
@@ -4124,7 +4124,7 @@ mod tests {
 
     #[test]
     fn fuse_and_rank_partitions_authority_tiers() {
-        // R38.7: an ADR outranks a same-query lint config and a generated
+        // R39.7: an ADR outranks a same-query lint config and a generated
         // file through the partition even when both lead it on score in
         // every input list — and a generated hit never beats a same-score
         // ADR from either input order.
@@ -4175,7 +4175,7 @@ mod tests {
 
     #[test]
     fn authority_tiers_refine_within_live_first() {
-        // R38.7: tiers refine within env classes — a live lint config still
+        // R39.7: tiers refine within env classes — a live lint config still
         // outranks a test ADR (live-first dominates), while the live ADR
         // leads both.
         let _guard = ENV_LOCK.lock().unwrap();
@@ -4207,7 +4207,7 @@ mod tests {
 
     #[test]
     fn authority_tiers_filename_mention_and_knob_exempt() {
-        // R38.7 guards (the live-first analogues): a query naming the lint
+        // R39.7 guards (the live-first analogues): a query naming the lint
         // file keeps score order (explicit filename intent wins), and
         // ANCHOR_AUTHORITY_TIERS=0/false disables the partition.
         let _guard = ENV_LOCK.lock().unwrap();
@@ -4248,7 +4248,7 @@ mod tests {
 
     #[test]
     fn authority_tiers_rank_code_above_config_above_prose() {
-        // R38.7 middle chain: terse precise classes outrank verbose prose —
+        // R39.7 middle chain: terse precise classes outrank verbose prose —
         // a 1-term code/config match leads a 5-term prose match (the eval
         // `flags-01` shape: exact config answers must not sink under prose).
         let _guard = ENV_LOCK.lock().unwrap();
@@ -4417,7 +4417,7 @@ mod tests {
 
     #[test]
     fn version_like_tokens_never_fire_filename_boost() {
-        // R38.4: release labels are not filename mentions — `v1.2` must not
+        // R39.4: release labels are not filename mentions — `v1.2` must not
         // surface a file that merely contains that string.
         assert!(filename_tokens("deploy v1.2 now").is_empty());
         assert!(filename_tokens("upgrade to V2.0.1 today").is_empty());
@@ -4441,7 +4441,7 @@ mod tests {
 
     #[test]
     fn named_file_ranking_prefers_exact_basename_over_substring() {
-        // R38.4: `service.go` must surface service.go even when myservice.go
+        // R39.4: `service.go` must surface service.go even when myservice.go
         // (substring match, lower id) would win `%LIKE% + LIMIT 1`.
         let (_dir, conn) = harness_db();
         let sid = insert_source(&conn, "s_ex", "internal");
@@ -4466,7 +4466,7 @@ mod tests {
 
     #[test]
     fn named_item_ids_prefers_shortest_path_without_exact_match() {
-        // R38.4: no exact basename anywhere — the shallow candidate wins
+        // R39.4: no exact basename anywhere — the shallow candidate wins
         // over the deeply nested one even at a higher id.
         let (_dir, conn) = harness_db();
         let sid = insert_source(&conn, "s_sp", "internal");
@@ -4481,10 +4481,10 @@ mod tests {
 
     #[test]
     fn filename_boost_pulls_below_cut_chunk_at_top_plus_one() {
-        // R38.4 DoD pin: the named file's chunk is absent from the fused
+        // R39.4 DoD pin: the named file's chunk is absent from the fused
         // list (below the cut) — boost appends it at exactly max + 1.0, and
         // `mark_boosted_hits` flags exactly that hit via `score > prev_top`
-        // (the R38.1 detection contract — this formula must not change).
+        // (the R39.1 detection contract — this formula must not change).
         let (_dir, conn) = harness_db();
         let sid = insert_source(&conn, "s_top", "internal");
         let iid = insert_item(&conn, sid, "cfg");
@@ -4508,7 +4508,7 @@ mod tests {
 
     #[test]
     fn fuse_and_rank_filters_status_before_the_cut() {
-        // R38.5: stale/disputed hits ranked above the cut must not consume
+        // R39.5: stale/disputed hits ranked above the cut must not consume
         // top-k slots — a seeded corpus still returns a full live top_k.
         let (_dir, conn) = harness_db();
         let mk = |cid: i64, score: f64, status: Option<&str>| {
@@ -4548,7 +4548,7 @@ mod tests {
 
     #[test]
     fn filename_boost_filtered_respects_exclude_disputed() {
-        // R38.5: a disputed-only named file boosts when exclusion is off
+        // R39.5: a disputed-only named file boosts when exclusion is off
         // and stays out when it is on.
         let (_dir, conn) = harness_db();
         let sid = insert_source(&conn, "s_bd", "internal");
@@ -4575,7 +4575,7 @@ mod tests {
 
     #[test]
     fn filename_boost_filtered_always_excludes_stale() {
-        // R38.5: stale is out regardless of the disputed flag.
+        // R39.5: stale is out regardless of the disputed flag.
         let (_dir, conn) = harness_db();
         let sid = insert_source(&conn, "s_bs", "internal");
         let iid = insert_item(&conn, sid, "legacy");
@@ -4594,7 +4594,7 @@ mod tests {
 
     #[test]
     fn filename_boost_wrapper_excludes_disputed_by_default() {
-        // R38.5: the legacy 3-arg entry (frozen R38.10 eval mirror) resolves
+        // R39.5: the legacy 3-arg entry (frozen R39.10 eval mirror) resolves
         // the production default from env — exclude unless opted out.
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("ANCHOR_QA_EXCLUDE_DISPUTED");

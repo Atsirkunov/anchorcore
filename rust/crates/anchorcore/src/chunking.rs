@@ -344,7 +344,7 @@ fn numbered_heading_level(s: &str) -> i32 {
     1
 }
 
-/// TOC ghost-section suppression (R38.9): PDF contents pages (`8.1 Detection
+/// TOC ghost-section suppression (R39.9): PDF contents pages (`8.1 Detection
 /// ... 23`) otherwise become near-empty ghost sections next to the real ones,
 /// because the numbered/ALL-CAPS classifier section-izes every entry line.
 /// A blank-delimited block is a contents run when it holds at least
@@ -469,7 +469,7 @@ pub struct ChunkMeta {
 pub fn chunk_document_with_sections(text: &str) -> (Vec<SectionMeta>, Vec<ChunkMeta>) {
     let max_chars = env_usize("ANCHOR_CHUNK_MAX_CHARS", CHUNK_MAX_CHARS);
     let lines: Vec<&str> = text.split('\n').collect();
-    // R38.9: contents-page lines keep their bytes but never open sections.
+    // R39.9: contents-page lines keep their bytes but never open sections.
     let suppressed = toc_suppressed(&lines);
     let mut raw_sections: Vec<RawSection> = Vec::new();
     let mut stack: Vec<usize> = Vec::new();

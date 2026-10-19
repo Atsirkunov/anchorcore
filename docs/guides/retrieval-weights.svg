@@ -102,7 +102,7 @@
   <line x1="440" y1="724" x2="440" y2="734" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
   <rect x="40" y="736" width="800" height="62" rx="8" fill="#fefce8" stroke="#a16207" stroke-width="2"/>
   <text x="440" y="762" text-anchor="middle" font-size="13" font-weight="700" fill="#713f12">Filename boost (dotted tokens only): query names a file → its best chunk scores max + 1.0</text>
-  <text x="440" y="782" text-anchor="middle" font-size="12" fill="#713f12">runs AFTER the top_k cut — pulls below-cut chunks in; ranked file match (R38.4), disputed per flag (R38.5)</text>
+  <text x="440" y="782" text-anchor="middle" font-size="12" fill="#713f12">runs AFTER the top_k cut — pulls below-cut chunks in; ranked file match (R39.4), disputed per flag (R39.5)</text>
 
   <!-- parent return -->
   <line x1="440" y1="798" x2="440" y2="808" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
@@ -122,5 +122,5 @@
   <text x="440" y="998" text-anchor="middle" font-size="12" fill="#475569">min-relevance gate: some hit needs a BM25 match, a boost, or cosine ≥ 0.50 — else empty + “not found”</text>
 
   <text x="440" y="1040" text-anchor="middle" font-size="12" fill="#64748b">Knobs: ANCHOR_TOP_K · ANCHOR_RETRIEVAL_KEYWORD_WEIGHT · ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS · ANCHOR_RETRIEVAL_MAX_PER_SOURCE · ANCHOR_TEST_ENV_DEMOTE</text>
-  <text x="440" y="1060" text-anchor="middle" font-size="12" fill="#64748b">R38: ANCHOR_AUTHORITY_TIERS · ANCHOR_KEYWORD_SLOTS · ANCHOR_MIN_RELEVANCE_COSINE · ANCHOR_DECAY_FLOOR · provenance (legs + ranks + decay + boosted) on hits/citations</text>
+  <text x="440" y="1060" text-anchor="middle" font-size="12" fill="#64748b">R39: ANCHOR_AUTHORITY_TIERS · ANCHOR_KEYWORD_SLOTS · ANCHOR_MIN_RELEVANCE_COSINE · ANCHOR_DECAY_FLOOR · provenance (legs + ranks + decay + boosted) on hits/citations</text>
 </svg>

@@ -1,7 +1,7 @@
-//! R38.10 — golden retrieval eval set.
+//! R39.10 — golden retrieval eval set.
 //!
 //! A dozen-document fixture corpus plus query→expected-doc pairs that pin
-//! retrieval behavior while fusion is tuned (Phase 38). The runner reports
+//! retrieval behavior while fusion is tuned (Phase 39). The runner reports
 //! per-leg recall@k — vector leg, keyword leg, TOC leaf — **and** fused
 //! recall, so each leg can be measured independently before tuning fusion.
 //!
@@ -34,7 +34,7 @@
 //!   rusqlite (no vec0 module), including the TOC summary→keyword fallback.
 //! - Fused recall calls the production fusion path itself
 //!   (`retrieval::orchestrate_fusion`, shared with `answer.rs::orchestrate`
-//!   since R38.12 — the old `orchestrate_mirror` restatement is deleted, so
+//!   since R39.12 — the old `orchestrate_mirror` restatement is deleted, so
 //!   the eval can never drift from production): TOC-or-flat legs → RRF fuse
 //!   → `fuse_and_rank` → keyword slots → filename boost → `parent_return` →
 //!   status re-filter → relevance gate, at production defaults
@@ -42,7 +42,7 @@
 //!   disputed). The shared fn re-runs the same leg functions on the same
 //!   inputs, so it fuses the same outputs the table reports.
 //! - The set asserts the golden bar (fused recall 1.0 on every pair) plus
-//!   the R38.2 signature (bare opaque codes are keyword-floor-only); the
+//!   the R39.2 signature (bare opaque codes are keyword-floor-only); the
 //!   per-leg columns are reported, not asserted, so fusion tuning has room.
 //! - Corpus + pairs live in `tests/eval_data/` (`eval.json` manifest,
 //!   `corpus/` docs). See `tests/eval_data/README.md` for how to add pairs.
@@ -305,7 +305,7 @@ fn run_query(conn: &Connection, query: &str) -> LegResults {
     let vector = retrieval::vector_search(conn, &query_emb, None, K, true);
     let keyword = retrieval::keyword_search(conn, query, None, K, true);
     let toc = retrieval::toc_search(conn, query, Some(&query_emb), None, K, true);
-    // R38.12: the fused column calls the production fusion path itself
+    // R39.12: the fused column calls the production fusion path itself
     // (`retrieval::orchestrate_fusion`, shared with `answer.rs::orchestrate`)
     // at production defaults (keyword_weight 1.0, halflife 365d,
     // max_per_source 3, exclude disputed) — the old `orchestrate_mirror`
@@ -355,7 +355,7 @@ struct TableRow {
 
 fn print_table(rows: &[TableRow], means: [f64; 4], doc_count: usize, pair_count: usize) {
     println!(
-        "R38.10 golden retrieval eval — recall@{K} per leg ({doc_count} docs, {pair_count} pairs, hash-emb dim {DIM})"
+        "R39.10 golden retrieval eval — recall@{K} per leg ({doc_count} docs, {pair_count} pairs, hash-emb dim {DIM})"
     );
     println!(
         "{:<20} {:<26} {:>8} {:>8} {:>8} {:>8}",
@@ -464,7 +464,7 @@ fn eval_manifest_is_consistent() {
         assert!(!content.trim().is_empty(), "doc {} has an empty corpus file", doc.id);
         assert!(covered.contains(doc.id.as_str()), "doc {} is covered by no pair", doc.id);
     }
-    assert!(pairs.iter().any(|p| p.floor_only_keyword), "no floor-only R38.2 pair in eval.json");
+    assert!(pairs.iter().any(|p| p.floor_only_keyword), "no floor-only R39.2 pair in eval.json");
 }
 
 /// The whole fixture must classify as live env: a stray test-env marker in
@@ -534,13 +534,13 @@ fn eval_golden_recall() {
     }
 }
 
-/// R38.2 regression pin: a bare opaque code must be invisible to the vector
+/// R39.2 regression pin: a bare opaque code must be invisible to the vector
 /// leg (no lexical signal, cosine under the 0.2 floor — the hash proxy for a
 /// real embedder's no-signal direction) and to TOC (summaries carry no code
 /// tokens), while the keyword leg fires and the fused result still hits via
 /// the keyword floor.
 #[test]
-fn r38_2_exact_code_is_keyword_floor_only() {
+fn r39_2_exact_code_is_keyword_floor_only() {
     let (docs, pairs) = load_manifest();
     let flagged: Vec<&EvalPair> = pairs.iter().filter(|p| p.floor_only_keyword).collect();
     assert!(!flagged.is_empty(), "no floor_only_keyword pairs in eval.json");

@@ -1,7 +1,7 @@
-# R38.10 golden retrieval eval set
+# R39.10 golden retrieval eval set
 
 A dozen-document fixture corpus plus query→expected-doc pairs that pin
-retrieval behavior while fusion is tuned (Phase 38). The runner reports
+retrieval behavior while fusion is tuned (Phase 39). The runner reports
 per-leg recall@5 — vector leg, keyword leg, TOC leaf — **and** fused
 recall, so each retrieval leg can be measured independently before tuning
 fusion.
@@ -26,7 +26,7 @@ EVAL_VERBOSE=1 cargo test -p anchorcore --test retrieval_eval -- --nocapture
 ```
 
 Plain `cargo test` runs the same set with output captured; the
-assertions (fused recall 1.0 on every pair, the R38.2 floor-only
+assertions (fused recall 1.0 on every pair, the R39.2 floor-only
 signature, manifest consistency, all-live fixture) gate CI.
 
 ## How to add pairs
@@ -57,7 +57,7 @@ The corpus is small on purpose, so every shared word matters:
 - Exact token forms matter, not stems: `rollback` ≠ `roll back`,
   `calculated` ≠ `computed`, `limits` ≠ `limit`, `chose` ≠ `choose`.
   Write the query's exact tokens into the doc.
-- Bare-code pairs (R38.2) invert the rule: the code appears **once** in
+- Bare-code pairs (R39.2) invert the rule: the code appears **once** in
   a long doc and **never** in its summary, so vector and TOC miss while
   the keyword floor hits. Keep it that way.
 - Never put env markers in fixture paths or file heads: path segments
@@ -82,6 +82,6 @@ The corpus is small on purpose, so every shared word matters:
 - `fused`: `answer.rs::orchestrate` restated from its public pieces
   (TOC + discounted flat floor, else flat hybrid; production defaults),
   fusing exactly the reported leg outputs.
-- Only `fused` (1.0 on every pair) and the R38.2 signature are
+- Only `fused` (1.0 on every pair) and the R39.2 signature are
   asserted. The per-leg columns are the instrument: tune against them,
   then extend this set when a leg regresses in production.

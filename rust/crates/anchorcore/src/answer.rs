@@ -74,11 +74,11 @@ pub struct Citation {
     /// 1-based source lines (markdown chunks; 0/0 when untracked).
     pub line_start: i64,
     pub line_end: i64,
-    /// R38.1: contributing legs + ranks from the last fusion (`[]` unranked).
+    /// R39.1: contributing legs + ranks from the last fusion (`[]` unranked).
     pub provenance: Vec<retrieval::LegMatch>,
-    /// R38.1: age-decay factor applied to `score` (1.0 = none).
+    /// R39.1: age-decay factor applied to `score` (1.0 = none).
     pub decay: f64,
-    /// R38.1: surfaced by filename boost above the ranked list.
+    /// R39.1: surfaced by filename boost above the ranked list.
     pub boosted: bool,
 }
 
@@ -148,11 +148,11 @@ pub struct SearchHit {
     /// 1-based source lines (markdown chunks; 0/0 when untracked).
     pub line_start: i64,
     pub line_end: i64,
-    /// R38.1: contributing legs + ranks from the last fusion (`[]` unranked).
+    /// R39.1: contributing legs + ranks from the last fusion (`[]` unranked).
     pub provenance: Vec<retrieval::LegMatch>,
-    /// R38.1: age-decay factor applied to `score` (1.0 = none).
+    /// R39.1: age-decay factor applied to `score` (1.0 = none).
     pub decay: f64,
-    /// R38.1: surfaced by filename boost above the ranked list.
+    /// R39.1: surfaced by filename boost above the ranked list.
     pub boosted: bool,
 }
 
@@ -663,8 +663,8 @@ fn project_scope(conn: &Connection, project_id: Option<i64>, public_only: bool) 
 /// Ranked retrieval for ask + search: scope resolution and embedding stay
 /// here; the pure fusion path (TOC-or-flat legs → RRF fuse → `fuse_and_rank`
 /// → keyword slots → filename boost → `parent_return` → status re-filter →
-/// relevance gate) lives in `retrieval::orchestrate_fusion` (R38.12 —
-/// shared with the R38.10 eval so the two can never drift).
+/// relevance gate) lives in `retrieval::orchestrate_fusion` (R39.12 —
+/// shared with the R39.10 eval so the two can never drift).
 fn orchestrate(
     conn: &Connection,
     query: &str,
@@ -1419,7 +1419,7 @@ mod tests {
         assert!(!res.hits.is_empty(), "trusted provider must see the sensitive hit");
         assert!(res.refusal.is_none());
         assert_eq!(res.blocked, 0);
-        // R38.1: provenance + decay + boosted ride on every search hit.
+        // R39.1: provenance + decay + boosted ride on every search hit.
         for h in &res.hits {
             assert!(!h.provenance.is_empty(), "keyword single-list stamps its leg");
             assert_eq!(h.provenance[0].leg, "keyword");
@@ -1483,7 +1483,7 @@ mod tests {
         assert!(!res.citations.is_empty(), "keyword hit on ordinary source must survive");
         assert_eq!(res.mode, "context_only");
         assert_eq!(res.retrieval, "keyword_only");
-        // R38.1: citations carry the same provenance as search hits.
+        // R39.1: citations carry the same provenance as search hits.
         assert_eq!(res.citations[0].provenance.len(), 1);
         assert_eq!(res.citations[0].provenance[0].leg, "keyword");
         assert!(!res.citations[0].boosted);
@@ -2298,7 +2298,7 @@ mod tests {
 
     #[test]
     fn orchestrate_keyword_slots_rescue_floor_rank_one() {
-        // R38.2: 8+ TOC hits at weight 1.0 lock the floor-only keyword
+        // R39.2: 8+ TOC hits at weight 1.0 lock the floor-only keyword
         // rank-1 (B) out of the top-8 cut; the reserved slots (default 2)
         // pull it back via ordering. 0 disables.
         let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
@@ -2377,7 +2377,7 @@ mod tests {
 
     #[test]
     fn orchestrate_relevance_gate_hybrid_and_keyword_paths() {
-        // R38.3: hybrid evidence under the cosine floor (0.30, no BM25
+        // R39.3: hybrid evidence under the cosine floor (0.30, no BM25
         // match) gates to empty; near-identical cosine (0.99) passes, and
         // the keyword-only path passes on its BM25 match. 768-dim crafted
         // vectors = default ANCHOR_EMBED_DIM, so no env games.
@@ -2416,9 +2416,9 @@ mod tests {
 
     #[test]
     fn orchestrate_marks_filename_boosted_hits() {
-        // R38.1: a bare-filename query matches no content — the surfaced
+        // R39.1: a bare-filename query matches no content — the surfaced
         // chunk arrives via filename boost: boosted=true, empty provenance
-        // (it bypassed ranking), and it survives the relevance gate (R38.3)
+        // (it bypassed ranking), and it survives the relevance gate (R39.3)
         // as explicit intent.
         let dir = tempdir().unwrap();
         let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
@@ -2487,7 +2487,7 @@ mod tests {
 
     #[test]
     fn orchestrate_boost_never_surfaces_disputed_chunks() {
-        // R38.5 regression: a disputed chunk reachable ONLY via filename
+        // R39.5 regression: a disputed chunk reachable ONLY via filename
         // boost (a bare-filename query matches no content) must not surface —
         // and the `0` opt-out proves the cfg flag actually threads into the
         // boost instead of the old hardcoded value.
@@ -2526,7 +2526,7 @@ mod tests {
 
     #[test]
     fn orchestrate_seeded_status_corpus_returns_full_top_k() {
-        // R38.5 pin: live + stale + disputed chunks all matching — the fused
+        // R39.5 pin: live + stale + disputed chunks all matching — the fused
         // list still fills top_k with live hits (excluded rows never eat
         // slots, and the post-parent_return re-filter keeps only them out).
         let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
