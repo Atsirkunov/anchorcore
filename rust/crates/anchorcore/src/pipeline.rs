@@ -24,16 +24,21 @@ fn resolve_config(data_dir: &str, source_id: i64, mut config: serde_json::Value)
     let store = SecretStore::new(std::path::PathBuf::from(data_dir).join("secrets.enc"));
     if let Some(obj) = config.as_object_mut() {
         for &field in crate::secrets::SECRET_SOURCE_FIELDS {
-            if let Some(v) = obj.get(field).and_then(|x| x.as_str()) {
-                if v == "***set***" {
-                    if let Some(real) = store.get(&format!("source:{}:{}", source_id, field)) {
-                        obj.insert(field.to_string(), serde_json::Value::String(real));
-                    }
+            // The stored config never holds the secret: create/update strips
+            // it into the SecretStore, so "absent" is the normal case and
+            // must be filled — not just "***set***" placeholders (those only
+            // exist in GET /config output, never on disk). Any other value
+            // is legacy plaintext and stays untouched.
+            let needs_fill = matches!(obj.get(field).and_then(|x| x.as_str()), None | Some("***set***"));
+            if needs_fill {
+                if let Some(real) = store.get(&format!("source:{}:{}", source_id, field)) {
+                    obj.insert(field.to_string(), serde_json::Value::String(real));
                 }
             }
         }
         // linear uses api_key which is already in SECRET_SOURCE_FIELDS, but also handle "token" alias
-        if obj.get("api_key").and_then(|v| v.as_str()) == Some("***set***") {
+        let api_key_missing = matches!(obj.get("api_key").and_then(|v| v.as_str()), None | Some("***set***"));
+        if api_key_missing {
             if let Some(real) = store.get(&format!("source:{}:api_key", source_id))
                 .or_else(|| store.get(&format!("source:{}:token", source_id)))
             {
@@ -1811,6 +1816,73 @@ mod tests {
         }
         for c in ["rest", "slack", ""] {
             assert!(!connector_supports_purge(c), "{} must not purge", c);
+        }
+    }
+
+    #[test]
+    fn resolve_config_restores_stripped_secrets() {
+        // Sync-time regression: POST /sources strips secret fields into the
+        // SecretStore, so the stored config has NO api_key/token key at all —
+        // resolve_config must fill absent fields from the store, not just
+        // "***set***" placeholders (those only exist in GET /config output,
+        // never on disk). Without this every Linear/Jira/GDrive sync fails
+        // with "requires api_key (or token)".
+        let _lock = crate::secrets::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("ANCHOR_SECRETS_NO_KEYRING").ok();
+        std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", "1");
+
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let store = SecretStore::new(dir.path().join("secrets.enc"));
+        store.set("source:7:api_key", "lin_api_real");
+
+        // absent field (the as-stored shape) is filled from the store ...
+        let out = resolve_config(&data_dir, 7, serde_json::json!({"team": "ENG"}));
+        assert_eq!(out.get("api_key").and_then(|v| v.as_str()), Some("lin_api_real"));
+        // ... so the connector now builds
+        assert!(LinearConnector::new(&out).is_ok());
+        // placeholder is still resolved ...
+        let out = resolve_config(&data_dir, 7, serde_json::json!({"team": "ENG", "api_key": "***set***"}));
+        assert_eq!(out.get("api_key").and_then(|v| v.as_str()), Some("lin_api_real"));
+        // ... legacy plaintext is left untouched ...
+        let out = resolve_config(&data_dir, 7, serde_json::json!({"team": "ENG", "api_key": "plain"}));
+        assert_eq!(out.get("api_key").and_then(|v| v.as_str()), Some("plain"));
+        // ... nothing is invented when the store is empty ...
+        let out = resolve_config(&data_dir, 8, serde_json::json!({"team": "ENG"}));
+        assert!(out.get("api_key").is_none());
+        // ... and a token-only legacy source resolves through the alias
+        store.set("source:9:token", "lin_api_legacy");
+        let out = resolve_config(&data_dir, 9, serde_json::json!({"team": "ENG"}));
+        assert_eq!(out.get("api_key").and_then(|v| v.as_str()), Some("lin_api_legacy"));
+        assert!(LinearConnector::new(&out).is_ok());
+        // ... and the same stripped shape resolves for every other API
+        // connector (all had the identical sync failure through this one
+        // choke point: Jira "requires base_url, email, token", GDrive
+        // "requires token", REST bearer "requires token")
+        store.set("source:11:token", "jira_tok");
+        let out = resolve_config(&data_dir, 11, serde_json::json!({"base_url": "https://x.atlassian.net", "email": "a@b.c", "project": "PM"}));
+        assert!(JiraConnector::new(&out).is_ok());
+        store.set("source:12:token", "drive_tok");
+        let out = resolve_config(&data_dir, 12, serde_json::json!({"folder_id": "fld123"}));
+        assert!(GDriveConnector::new(&out).is_ok());
+        store.set("source:13:token", "rest_tok");
+        let out = resolve_config(&data_dir, 13, serde_json::json!({"base_url": "https://api.example.com", "list_path": "/items", "auth_mode": "bearer"}));
+        assert!(RestConnector::new(&out).is_ok());
+        // REST basic reads `password` — stripped at create, silently empty
+        // at sync (remote 401 rather than a local error), now restored
+        store.set("source:14:password", "rest_pw");
+        let out = resolve_config(&data_dir, 14, serde_json::json!({"base_url": "https://api.example.com", "list_path": "/items", "auth_mode": "basic", "email": "a@b.c"}));
+        assert_eq!(out.get("password").and_then(|v| v.as_str()), Some("rest_pw"));
+        // GDrive `access_token` alias resolves the same way and the
+        // connector accepts it (used to sit plaintext in the DB config)
+        store.set("source:15:access_token", "drive_at");
+        let out = resolve_config(&data_dir, 15, serde_json::json!({"folder_id": "fld123"}));
+        assert_eq!(out.get("access_token").and_then(|v| v.as_str()), Some("drive_at"));
+        assert!(GDriveConnector::new(&out).is_ok());
+
+        match prev {
+            Some(v) => std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", v),
+            None => std::env::remove_var("ANCHOR_SECRETS_NO_KEYRING"),
         }
     }
 

@@ -144,6 +144,10 @@ Key rules:
 - sqlite-vec native lib collected via `packaging.spec` (`*.dll`/`*.dylib`).
 - Secrets: never log/return raw tokens — `GET /sources/{id}/config` masks `token`/`api_key`/`password`
   as `***set***`; `RedactingFormatter` strips secrets from logs.
+- **Stored source configs carry no secrets** — create/update strips them into the SecretStore, so the
+  DB config has no `api_key`/`token` key at all. Sync-time `resolve_config` (`pipeline.rs`) must fill
+  absent fields from the store, not just `***set***` placeholders (those only exist in GET responses).
+  Resolving placeholders-only broke every API-connector sync with "requires api_key (or token)".
 - **Retrieval is index-backed (B33):** `vec_chunks` (sqlite-vec vec0, cosine) is created by migration
   `b33a0c1` and kept in sync by triggers; `AnswerEngine._vector_search` queries it (`k = :limit`)
   and falls back to the pure-Python cosine scan when the extension/table is unavailable or the

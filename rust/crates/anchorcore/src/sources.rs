@@ -407,4 +407,37 @@ mod tests {
             None => std::env::remove_var("ANCHOR_SECRETS_NO_KEYRING"),
         }
     }
+
+    #[test]
+    fn access_token_alias_is_keychain_backed() {
+        // The Drive `access_token` alias is a full secret-field citizen:
+        // stripped into the store on write, masked on read — never
+        // plaintext in the DB config (it used to be both stored and
+        // returned raw).
+        let _lock = crate::secrets::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("ANCHOR_SECRETS_NO_KEYRING").ok();
+        std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", "1");
+
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let mut cfg = serde_json::json!({"folder_id": "fld123", "access_token": "drive_at"});
+        store_secret_fields(&data_dir, 3, &mut cfg);
+        assert!(cfg.get("access_token").is_none(), "stripped from stored config: {cfg}");
+        assert_eq!(cfg.get("folder_id").and_then(|v| v.as_str()), Some("fld123"));
+        let store = secret_store(&data_dir);
+        assert_eq!(store.get(&crate::secrets::source_secret_key(3, "access_token")).as_deref(), Some("drive_at"));
+        // masked on read (stored secret, absent field) ...
+        let mut out = serde_json::json!({"folder_id": "fld123"});
+        mask_secrets(&data_dir, 3, &mut out);
+        assert_eq!(out.get("access_token").and_then(|v| v.as_str()), Some("***set***"));
+        // ... and legacy plaintext rows mask too
+        let mut legacy = serde_json::json!({"folder_id": "fld123", "access_token": "plain"});
+        mask_secrets(&data_dir, 4, &mut legacy);
+        assert_eq!(legacy.get("access_token").and_then(|v| v.as_str()), Some("***set***"));
+
+        match prev {
+            Some(v) => std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", v),
+            None => std::env::remove_var("ANCHOR_SECRETS_NO_KEYRING"),
+        }
+    }
 }

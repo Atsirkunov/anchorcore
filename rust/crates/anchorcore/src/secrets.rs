@@ -2,7 +2,11 @@ use crate::fernet;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-pub const SECRET_SOURCE_FIELDS: &[&str] = &["token", "api_key", "password", "client_secret"];
+pub const SECRET_SOURCE_FIELDS: &[&str] = &["token", "api_key", "password", "client_secret", "access_token"];
+// `access_token` is the Drive connector's `token` alias (gdrive.rs): without
+// it here the alias stayed plaintext in the DB config and unmasked in
+// GET /config. Every site driven by this list (strip/mask/resolve/delete/
+// backup bundle) picks the alias up together — keep it that way.
 const SERVICE: &str = "AnchorCore";
 
 /// Serializes `ANCHOR_SECRETS_NO_KEYRING` mutation between test modules that
