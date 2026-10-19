@@ -325,6 +325,17 @@ export type MergeProposal = {
   reason: string;
 };
 
+export type VocabProposal = {
+  id: number;
+  term: string;
+  expansion: string;
+  origin: string;
+  confirmations: number;
+  item_id: number;
+  item_title: string;
+  external_id: string;
+};
+
 export type Job = {
   id: number;
   source_id: number;

@@ -43,6 +43,11 @@ Env vars (effective at call time, no restart):
   scales scores — ordering-only since R33.3.)
 - `ANCHOR_KEYWORD_SLOTS` (2) - reserved tail slots for top floor-keyword
   hits locked out by fusion; `0` disables (R39.2).
+- `ANCHOR_TYPE_SLOTS` (2) - reserved tail slots for the best below-cut
+  hit of each doc kind (`doc_type`) missing from the cut, so sparse
+  kinds survive ADR/code crowding; `0` disables (R40.4). Eviction
+  prefers duplicated-kind tail (singleton kinds survive); when
+  singletons cover the whole tail, keyword slots win the collision.
 - `ANCHOR_MIN_RELEVANCE_COSINE` (0.50) - vector-cosine floor for evidence
   with no BM25 match; below it on every hit returns empty (R39.3).
 - `ANCHOR_AUTHORITY_TIERS` (on) - set `0`/`false` to disable the (env, tier) ordering partition (R39.7).
@@ -129,6 +134,36 @@ Code constants (need a rebuild; change only with a failing test in hand):
 - Mixed score scales: fixed by R40.2. Keyword-slot hits rescored into RRF
   range (the floor leg's 0.5/(60+rank) share) instead of raw BM25 (~14
   next to ~0.01); provenance keeps the real keyword rank.
+- Heading-prefixed vectors: since R38.2 every embed path
+  (`embed_chunks`, backup re-embed, scheduler backfill) embeds
+  `embed_input(chunks.path, content)` — breadcrumb + text — on every
+  sectioned doc type, not just markdown. R40.5 pinned it: the prose
+  splitter no longer emits leading-`" > "` paths, and the golden pair
+  `rfp-escrow-01` proves a continuation chunk (heading in path, not in
+  bytes) clears the vector leg only with the prefix. Backfill story:
+  vectors embedded before 1.0.28 are bare and stay bare — they refresh
+  only on force re-sync (re-chunk NULLs embeddings, re-embed prefixes
+  them); the scheduler backfill fills NULLs with prefixed input. No
+  silent mass re-embed (recorded 2026-10-19, `rust/docs/decisions.md`).
+- Corpus vocabulary (R40.7): FTS query terms expand through the
+  `vocabulary` table (migration 20) on top of the R40.6 curated map.
+  Tier-1 rules (parenthetical acronyms, glossary lines) are active
+  immediately, no model needed; Tier-2 LLM pairs (`defined_terms` on the
+  classify call, zero extra calls) stay `proposed` until a second
+  independent item corroborates, a rule row confirms, or R40.8 review
+  approves — single witnesses never expand. Lookup is project-scoped
+  (`source_ids`); expansion adds terms only, chunk label/status gates
+  still apply downstream. Known gap: `vocabulary` is not in backup
+  archives yet — restore + force re-sync rebuilds it (rules fully, LLM
+  pairs re-proposed).
+- Vocabulary approval (R40.8): the third activation path. `GET
+  /review/vocabulary` lists proposed pairs (term ↔ expansion, witness
+  doc, origin, witness count; rule-touched pairs never list);
+  `POST /review/vocabulary/{id} {decision: approve|reject}` decides the
+  whole pair family. Approve activates, reject hides the pair for good
+  (survives re-sync via the R40.7 store skip). The Entities tab folds the
+  queue inline ("Words to confirm") next to the doubles strip — no
+  separate Review surface (R31.2 folded it).
 - Still open: suspect detector duplicated pending reunification (R39.13,
   P3); cross-encoder reranker deferred (R39.11, owner call).
 

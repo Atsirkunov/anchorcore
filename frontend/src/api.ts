@@ -1,4 +1,4 @@
-import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, ConflictLink, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult, UpdateStatus } from "./types";
+import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, ConflictLink, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult, UpdateStatus, VocabProposal } from "./types";
 
 export class RequestAbortedError extends Error {
   constructor(message = "Request cancelled") {
@@ -185,6 +185,13 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ proposal_id: proposalId, decision }),
+    }),
+  vocabulary: () => request<VocabProposal[]>("/review/vocabulary"),
+  decideVocab: (id: number, decision: "approve" | "reject") =>
+    request<{ approved: boolean; term: string; expansion: string }>(`/review/vocabulary/${id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision }),
     }),
 
   ask: (question: string, history: AskTurn[] = [], projectId?: number, signal?: AbortSignal, publicOnly = false) =>

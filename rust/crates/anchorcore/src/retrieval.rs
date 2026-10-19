@@ -39,7 +39,8 @@ pub fn is_who_knows(query: &str) -> bool {
 
 /// Shared query terms for FTS matching and match-centered snippets:
 /// Unicode word runs, lowercased, len ≥ 2, stopwords removed.
-fn query_terms(question: &str) -> Vec<String> {
+/// Crate-visible for `vocab.rs` (multiword-expansion subset checks).
+pub(crate) fn query_terms(question: &str) -> Vec<String> {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| Regex::new(r"[\p{L}\p{N}_§\-]+").unwrap());
     static STOPWORDS: OnceLock<HashSet<&str>> = OnceLock::new();
@@ -60,13 +61,75 @@ fn query_terms(question: &str) -> Vec<String> {
         .collect()
 }
 
+/// R40.6: curated synonym clusters for the FTS keyword leg only — never the
+/// vector leg, never snippets (`query_terms` stays unexpanded). A query term
+/// that is a member of a cluster pulls the cluster's other members into the
+/// FTS `OR` query. Every cluster cites the eval pair that justifies it; the
+/// golden set (`tests/eval_data/eval.json`) is the immune system — all
+/// existing pairs must stay green. R40.7 merges corpus-extracted vocabulary
+/// into this same expansion path.
+pub const SYNONYM_CLUSTERS: &[&[&str]] = &[
+    // Pair `rfp-reversal-01` (1.0.29 field case): the RFP says "reversal",
+    // users ask about "cancellation". Both directions expand.
+    &[
+        "cancel", "cancelled", "cancelling", "cancellation", "cancellations", "reverse",
+        "reversed", "reversing", "reversal", "reversals", "withdraw", "withdrawal", "withdrawals",
+    ],
+    // Pair `rfp-reversal-01`: the query's "CA" is the doc's "Corporate
+    // Action". Phrased as one unit so a loose "action" never matches —
+    // that would be over-expansion (`action` is everywhere).
+    &["ca", "direct-debit"],
+];
+
+/// Expand FTS terms with curated synonyms (R40.6). Original terms keep
+/// their order and come first; synonyms append deduped.
+fn expand_fts_terms(terms: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = terms.to_vec();
+    for cluster in SYNONYM_CLUSTERS {
+        if !terms.iter().any(|t| cluster.contains(&t.as_str())) {
+            continue;
+        }
+        for syn in *cluster {
+            if !out.iter().any(|t| t == syn) {
+                out.push((*syn).to_string());
+            }
+        }
+    }
+    out
+}
+
 /// Mirrors `answer_engine.py:71` _fts_match_query — R8.2: Unicode-aware (was [a-z0-9_])
+/// R40.6: terms expand through [`SYNONYM_CLUSTERS`] before the `OR` join.
+/// This stays the pure curated-only form (unit-pinned, no DB) — production
+/// legs call [`fts_match_query_scoped`] for the vocabulary merge.
 pub fn fts_match_query(question: &str) -> Option<String> {
     let terms = query_terms(question);
     if terms.is_empty() {
         return None;
     }
-    Some(terms.iter().map(|t| format!("\"{}\"", t)).collect::<Vec<_>>().join(" OR "))
+    let expanded = expand_fts_terms(&terms);
+    Some(expanded.iter().map(|t| format!("\"{}\"", t)).collect::<Vec<_>>().join(" OR "))
+}
+
+/// R40.7: FTS query with corpus-vocabulary expansion — curated synonyms
+/// (R40.6) plus active project-scoped vocab pairs, deduped. Multiword
+/// expansions quote as FTS phrases.
+pub fn fts_match_query_scoped(
+    conn: &Connection,
+    question: &str,
+    source_ids: Option<&HashSet<i64>>,
+) -> Option<String> {
+    let terms = query_terms(question);
+    if terms.is_empty() {
+        return None;
+    }
+    let mut expanded = expand_fts_terms(&terms);
+    for extra in crate::vocab::vocab_expansion_terms(conn, &terms, source_ids) {
+        if !expanded.iter().any(|t| t == &extra) {
+            expanded.push(extra);
+        }
+    }
+    Some(expanded.iter().map(|t| format!("\"{}\"", t)).collect::<Vec<_>>().join(" OR "))
 }
 
 /// Earliest query-term occurrence in lowercased `hay`: byte offset + term char len.
@@ -582,7 +645,7 @@ fn exec_fts_search(
     qa_exclude_disputed: bool,
     scope: KindScope,
 ) -> Vec<Hit> {
-    let Some(match_q) = fts_match_query(query) else { return vec![] };
+    let Some(match_q) = fts_match_query_scoped(conn, query, source_ids) else { return vec![] };
     if let Some(ids) = section_ids {
         if ids.is_empty() && scope.empty_section_is_empty() {
             return vec![];
@@ -1508,7 +1571,13 @@ pub fn fuse_and_rank(
     prefer_authority_tiers(conn, &mut fused, query);
     // R39.5: stale/disputed filter BEFORE the cut — excluded hits must not
     // consume top-k slots (seeded corpora still return a full top_k).
-    let hits: Vec<Hit> = fused.into_iter().filter(|h| status_ok(h.status.as_deref(), qa_exclude_disputed)).take(top_k).collect();
+    // R40.4: split cut + pool so missing doc kinds pull tail slots from
+    // below the cut line (both branches — the pool only exists here).
+    let mut ordered: Vec<Hit> =
+        fused.into_iter().filter(|h| status_ok(h.status.as_deref(), qa_exclude_disputed)).collect();
+    let pool = ordered.split_off(top_k.min(ordered.len()));
+    let mut hits = ordered;
+    apply_type_slots(conn, &mut hits, &pool, top_k, query);
     // Raw ranked hits out — return-shape assembly (`parent_return`) runs
     // once in `orchestrate`, after graph + filename boost, so same-scope
     // merging sees the final list.
@@ -2295,7 +2364,7 @@ pub fn filename_boost_filtered(conn: &Connection, hits: &mut Vec<Hit>, query: &s
         return;
     }
     let content_q = strip_filename_tokens(query, &names);
-    let match_q = fts_match_query(&content_q);
+    let match_q = fts_match_query_scoped(conn, &content_q, None);
     let mut cids: Vec<i64> = Vec::new();
     for iid in named_item_ids(conn, &names).into_iter().take(3) {
         let cid = match_q
@@ -2389,12 +2458,132 @@ pub fn apply_keyword_slots(
     }
     apply_age_decay(conn, &mut take, halflife_days);
     let overflow = hits.len().saturating_add(take.len()).saturating_sub(top_k);
-    hits.truncate(hits.len().saturating_sub(overflow));
+    // R40.4: diversity-preserving eviction (uniform-kind lists truncate the
+    // plain tail, exactly as before).
+    evict_for_slots(conn, hits, overflow);
     hits.extend(take);
     prefer_live_envs(conn, hits, query);
     // R39.7: the slot insert runs after the fuse cut, so the pulled hits
     // need the same (env, tier) order the cut list already has.
     prefer_authority_tiers(conn, hits, query);
+}
+
+/// R40.4: reserved per-doc-type slots in the final top-k —
+/// `ANCHOR_TYPE_SLOTS`, default 2, 0 disables.
+pub fn type_slots() -> usize {
+    std::env::var("ANCHOR_TYPE_SLOTS").ok().and_then(|v| v.parse().ok()).unwrap_or(2)
+}
+
+/// R40.4: batch `doc_type` lookup for slot diversity (mirrors the
+/// `envs_for_chunks` batching — one query, not one per hit). Empty/unset
+/// reads as absent; `slot_kind` renders those `"unknown"`.
+fn doc_types_for_items(conn: &Connection, item_ids: &[i64]) -> HashMap<i64, String> {
+    if item_ids.is_empty() {
+        return HashMap::new();
+    }
+    let placeholders = item_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("SELECT id, doc_type FROM ingested_items WHERE id IN ({placeholders})");
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    let params: Vec<rusqlite::types::Value> =
+        item_ids.iter().map(|id| rusqlite::types::Value::Integer(*id)).collect();
+    stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+    })
+    .map(|m| {
+        m.filter_map(|r| r.ok())
+            .filter_map(|(id, dt)| dt.filter(|s| !s.is_empty()).map(|d| (id, d)))
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// R40.4: slot kind of a hit — its item's `doc_type`, `"unknown"` when the
+/// item is missing or untyped. Unknowns never pull (fallback artifacts
+/// carry no diversity value) but count as present.
+fn slot_kind(hit: &Hit, kinds: &HashMap<i64, String>) -> String {
+    hit.item_id.and_then(|i| kinds.get(&i).cloned()).unwrap_or_else(|| "unknown".to_string())
+}
+
+/// R40.4: pull the best below-cut hit of each doc kind missing from the cut
+/// into reserved tail slots — the R39.2 keyword-slot pattern (ordering, not
+/// weights) for the ADR-heavy-corpus crowding case (a PDF match ranked 6th
+/// of top-5 would otherwise never surface). Runs inside `fuse_and_rank`,
+/// so both the TOC and flat branches get it; the (env, tier) re-partition
+/// after the insert keeps live-first + authority order. The pool is the
+/// below-cut tail of the already-decayed fuse list, so no re-decay (unlike
+/// keyword slots, whose pool never saw decay). Precedence on tail
+/// collision: keyword slots run after (TOC branch) and `evict_for_slots`
+/// protects singleton-kind hits, so a type pull usually survives — when
+/// singletons cover the whole tail, keyword relevance wins the eviction.
+pub fn apply_type_slots(conn: &Connection, cut: &mut Vec<Hit>, pool: &[Hit], top_k: usize, query: &str) {
+    let slots = type_slots();
+    if slots == 0 || pool.is_empty() || top_k == 0 {
+        return;
+    }
+    let ids: Vec<i64> =
+        cut.iter().filter_map(|h| h.item_id).chain(pool.iter().filter_map(|h| h.item_id)).collect();
+    let kinds = doc_types_for_items(conn, &ids);
+    let present: HashSet<String> = cut.iter().map(|h| slot_kind(h, &kinds)).collect();
+    let mut pulled: HashSet<String> = HashSet::new();
+    let mut take: Vec<Hit> = Vec::new();
+    for h in pool {
+        if take.len() >= slots {
+            break;
+        }
+        let kind = slot_kind(h, &kinds);
+        if kind == "unknown" || present.contains(&kind) || pulled.contains(&kind) {
+            continue;
+        }
+        pulled.insert(kind);
+        take.push(h.clone());
+    }
+    if take.is_empty() {
+        return;
+    }
+    let overflow = cut.len().saturating_add(take.len()).saturating_sub(top_k);
+    evict_for_slots(conn, cut, overflow);
+    cut.extend(take);
+    prefer_live_envs(conn, cut, query);
+    prefer_authority_tiers(conn, cut, query);
+}
+
+/// R40.4: tail eviction that preserves diversity — removes `n` hits,
+/// preferring duplicated-kind hits (lowest-ranked first) so singleton-kind
+/// hits (type-slot pulls included) survive slot pressure from keyword
+/// slots running later. `"unknown"` is always evictable (no diversity
+/// value); when singletons cover the whole tail it falls back to plain
+/// tail truncation. Uniform-kind lists remove exactly the lowest `n`,
+/// so pre-R40.4 truncation behavior is unchanged there.
+fn evict_for_slots(conn: &Connection, hits: &mut Vec<Hit>, n: usize) {
+    if n == 0 || hits.is_empty() {
+        return;
+    }
+    let ids: Vec<i64> = hits.iter().filter_map(|h| h.item_id).collect();
+    let kinds = doc_types_for_items(conn, &ids);
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for h in hits.iter() {
+        *counts.entry(slot_kind(h, &kinds)).or_insert(0) += 1;
+    }
+    let mut evicted = 0usize;
+    let mut idx = hits.len();
+    while evicted < n && idx > 0 {
+        idx -= 1;
+        let kind = slot_kind(&hits[idx], &kinds);
+        if kind == "unknown" || counts.get(&kind).copied().unwrap_or(0) > 1 {
+            hits.remove(idx);
+            if let Some(c) = counts.get_mut(&kind) {
+                *c = c.saturating_sub(1);
+            }
+            evicted += 1;
+        }
+    }
+    while evicted < n && !hits.is_empty() {
+        hits.pop();
+        evicted += 1;
+    }
 }
 
 /// R39.3: minimum vector cosine for evidence without any BM25 match —
@@ -2593,6 +2782,69 @@ mod tests {
     }
 
     #[test]
+    fn synonym_expansion_pulls_cluster_members() {
+        // R40.6: "cancellation" expands to the cancel/reverse/withdraw family;
+        // originals first, synonyms appended deduped.
+        let q = fts_match_query("how does cancellation work").expect("terms");
+        assert!(q.starts_with("\"cancellation\" OR \"work\""), "originals first: {q}");
+        for syn in ["cancel", "reversal", "reverse", "withdrawal"] {
+            assert!(q.contains(&format!("\"{syn}\"")), "missing synonym {syn}: {q}");
+        }
+        // Both directions: "reversal" pulls "cancellation" back.
+        let back = fts_match_query("reversal notifications").expect("terms");
+        assert!(back.contains("\"cancellation\""), "reverse direction: {back}");
+    }
+
+    #[test]
+    fn synonym_expansion_acronym_stays_phrased() {
+        // R40.6: "CA" expands to the "direct-debit" phrase — a loose
+        // "action" term would over-match (it is everywhere).
+        let q = fts_match_query("the CA process").expect("terms");
+        assert!(q.contains("\"direct-debit\""), "phrased acronym: {q}");
+        assert!(!q.split(" OR ").any(|t| t == "\"action\""), "no loose action: {q}");
+        assert!(!q.split(" OR ").any(|t| t == "\"corporate\""), "no loose corporate: {q}");
+    }
+
+    #[test]
+    fn synonym_expansion_leaves_other_queries_alone() {
+        // R40.6 immune check at the unit level: no cluster member, no change.
+        assert_eq!(
+            fts_match_query("who knows about Phoenix?"),
+            Some("\"knows\" OR \"phoenix\"".to_string())
+        );
+        assert_eq!(fts_match_query("the and or"), None);
+    }
+
+    #[test]
+    fn scoped_fts_query_merges_active_vocab() {
+        // R40.7: active vocab pairs join the FTS OR behind curated synonyms
+        // (proposed rows never do); project scope filters.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "sv", "internal");
+        let iid = insert_item(&conn, sid, "doc");
+        let dunning = crate::vocab::normalize_pair("dunning", "payment reminder").unwrap();
+        let solo = crate::vocab::normalize_pair("solo", "only here").unwrap();
+        crate::vocab::store_vocab(&conn, iid, sid, &[dunning], &[solo]).unwrap();
+        assert_eq!(
+            fts_match_query_scoped(&conn, "what is dunning", None),
+            Some("\"dunning\" OR \"payment reminder\"".to_string())
+        );
+        assert_eq!(
+            fts_match_query_scoped(&conn, "solo mission", None),
+            Some("\"solo\" OR \"mission\"".to_string()),
+            "proposed pair contributes nothing"
+        );
+        let other: HashSet<i64> = [sid + 100].into_iter().collect();
+        assert_eq!(
+            fts_match_query_scoped(&conn, "what is dunning", Some(&other)),
+            Some("\"dunning\"".to_string()),
+            "other project sees no vocab"
+        );
+        // The pure form is vocab-blind (sees the DB-free curated map only).
+        assert_eq!(fts_match_query("what is dunning"), Some("\"dunning\"".to_string()));
+    }
+
+    #[test]
     fn match_snippet_centers_on_query_term() {
         // 1.0.24 retest: the routing-config.yml hit previewed its first 3 KB
         // with no ACME text — previews must center on the match instead.
@@ -2672,6 +2924,217 @@ mod tests {
         assert!((out[0].score - 0.5 / (RRF_K + 1.0)).abs() < 1e-9, "rank-1 slot scores its floor RRF share, got {}", out[0].score);
         assert!((out[1].score - 0.5 / (RRF_K + 2.0)).abs() < 1e-9, "rank-2 slot scores its floor RRF share, got {}", out[1].score);
         assert!(out.iter().all(|h| h.score < 1.0), "no BM25-scale survivor");
+    }
+
+    // --- R40.4: reserved per-doc-type slots ---
+
+    /// Seed one item + chunk with doc_type + external path (R40.4 slot tests).
+    fn insert_typed_item(
+        conn: &rusqlite::Connection,
+        sid: i64,
+        title: &str,
+        doc_type: &str,
+        external: &str,
+        content: &str,
+    ) -> (i64, i64) {
+        let iid = insert_item(conn, sid, title);
+        conn.execute(
+            "UPDATE ingested_items SET doc_type=?1, external_id=?2 WHERE id=?3",
+            rusqlite::params![doc_type, external, iid],
+        )
+        .unwrap();
+        let cid = insert_chunk(conn, Some(iid), None, content);
+        (iid, cid)
+    }
+
+    fn slot_hit(cid: i64, iid: i64, sid: i64, score: f64, content: &str) -> Hit {
+        Hit {
+            chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None,
+            path: String::new(), score, content: content.into(), source_ref: "ref".into(),
+            is_pii: false, status: Some("unverified".into()), content_truncated: false,
+            provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
+        }
+    }
+
+    #[test]
+    fn type_slots_pull_pdf_below_cut_into_tail() {
+        // R40.4: ADR-heavy seeded corpus — the PDF match ranked 6th of top-5
+        // pulls a reserved tail slot (ordering, not weights); live-first +
+        // tiers still hold on the slotted list.
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_TYPE_SLOTS");
+        std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s40", "internal");
+        let names = ["alpha", "beta", "gamma", "delta", "epsilon"];
+        let mut adr = Vec::new();
+        for (i, name) in names.iter().enumerate() {
+            adr.push(insert_typed_item(
+                &conn,
+                sid,
+                name,
+                "record",
+                &format!("decisions/adr-{:03}.md", i + 1),
+                &format!("adr {name} billing routes ledger entry"),
+            ));
+        }
+        let (tst_iid, tst_cid) =
+            insert_typed_item(&conn, sid, "dup", "record", "test/adr-dup.md", "adr duplicate billing routes ledger entry");
+        let (pdf_iid, pdf_cid) =
+            insert_typed_item(&conn, sid, "rfp", "reference", "docs/rfp.pdf", "rfp reversal direct debit schedule");
+        // Scores: the test-env ADR outranks everything raw, the PDF trails.
+        let mut hits = vec![slot_hit(tst_cid, tst_iid, sid, 9.0, "adr duplicate billing routes ledger entry")];
+        for (rank, (iid, cid)) in adr.iter().enumerate() {
+            hits.push(slot_hit(*cid, *iid, sid, 8.0 - rank as f64, &format!("adr {} billing routes ledger entry", names[rank])));
+        }
+        hits.push(slot_hit(pdf_cid, pdf_iid, sid, 3.0, "rfp reversal direct debit schedule"));
+        let out = fuse_and_rank(&conn, None, Some(hits), 1.0, 365.0, 3, 5, true, "billing routes");
+        assert_eq!(out.len(), 5);
+        let order: Vec<i64> = out.iter().map(|h| h.chunk_id).collect();
+        // Live-first drops the test ADR below the live PDF before the cut;
+        // the PDF (reference, missing from the all-record cut) pulls the
+        // tail slot, displacing the lowest live ADR; tiers keep Spec ADRs
+        // above the Prose PDF.
+        assert!(!order.contains(&tst_cid), "test-env hit stays out: {order:?}");
+        assert_eq!(order, vec![adr[0].1, adr[1].1, adr[2].1, adr[3].1, pdf_cid], "slotted order: {order:?}");
+    }
+
+    #[test]
+    fn type_slots_knob_zero_disables() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("ANCHOR_TYPE_SLOTS", "0");
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s40b", "internal");
+        let mut hits = Vec::new();
+        for (i, name) in ["alpha", "beta", "gamma"].iter().enumerate() {
+            let (iid, cid) = insert_typed_item(
+                &conn, sid, name, "record",
+                &format!("decisions/adr-{:03}.md", i + 1),
+                &format!("adr {name} billing routes ledger entry"),
+            );
+            hits.push(slot_hit(cid, iid, sid, 9.0 - i as f64, &format!("adr {name} billing routes ledger entry")));
+        }
+        let (pdf_iid, pdf_cid) =
+            insert_typed_item(&conn, sid, "rfp", "reference", "docs/rfp.pdf", "rfp reversal direct debit schedule");
+        hits.push(slot_hit(pdf_cid, pdf_iid, sid, 1.0, "rfp reversal direct debit schedule"));
+        let out = fuse_and_rank(&conn, None, Some(hits), 1.0, 365.0, 3, 3, true, "billing routes");
+        assert_eq!(out.len(), 3);
+        assert!(!out.iter().any(|h| h.chunk_id == pdf_cid), "slots=0 pulls nothing");
+        std::env::remove_var("ANCHOR_TYPE_SLOTS");
+    }
+
+    #[test]
+    fn type_slots_noop_when_covered_or_single_kind() {
+        // Covered: the missing kind is already in the cut (live PDF above
+        // test ADRs), pool holds only covered kinds → list identical.
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_TYPE_SLOTS");
+        std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s40c", "internal");
+        let (pdf_iid, pdf_cid) =
+            insert_typed_item(&conn, sid, "rfp", "reference", "docs/rfp.pdf", "rfp reversal direct debit schedule");
+        let mut hits = vec![slot_hit(pdf_cid, pdf_iid, sid, 2.0, "rfp reversal direct debit schedule")];
+        let mut tst = Vec::new();
+        for i in 0..4 {
+            let (iid, cid) = insert_typed_item(
+                &conn, sid, &format!("t{i}"), "record",
+                &format!("test/adr-dup-{i}.md"),
+                &format!("adr duplicate {i} billing routes ledger entry"),
+            );
+            hits.push(slot_hit(cid, iid, sid, 9.0 - i as f64, &format!("adr duplicate {i} billing routes ledger entry")));
+            tst.push(cid);
+        }
+        let out = fuse_and_rank(&conn, None, Some(hits), 1.0, 365.0, 3, 3, true, "billing routes");
+        let order: Vec<i64> = out.iter().map(|h| h.chunk_id).collect();
+        assert_eq!(order, vec![pdf_cid, tst[0], tst[1]], "covered cut is untouched: {order:?}");
+        // Single-kind: everything is record → nothing to pull, plain top-3.
+        let (_dir2, conn2) = harness_db();
+        let sid2 = insert_source(&conn2, "s40d", "internal");
+        let mut hits2 = Vec::new();
+        let mut cids = Vec::new();
+        for (i, name) in ["alpha", "beta", "gamma", "delta", "epsilon"].iter().enumerate() {
+            let (iid, cid) = insert_typed_item(
+                &conn2, sid2, name, "record",
+                &format!("decisions/adr-{:03}.md", i + 1),
+                &format!("adr {name} billing routes ledger entry"),
+            );
+            hits2.push(slot_hit(cid, iid, sid2, 9.0 - i as f64, &format!("adr {name} billing routes ledger entry")));
+            cids.push(cid);
+        }
+        let out2 = fuse_and_rank(&conn2, None, Some(hits2), 1.0, 365.0, 3, 3, true, "billing routes");
+        let order2: Vec<i64> = out2.iter().map(|h| h.chunk_id).collect();
+        assert_eq!(order2, cids[..3].to_vec(), "single-kind cut is untouched: {order2:?}");
+    }
+
+    #[test]
+    fn type_slots_skip_unknown_kind() {
+        // A below-cut hit with no item never pulls (no diversity value);
+        // the next missing kind still does.
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_TYPE_SLOTS");
+        std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s40e", "internal");
+        let mut cut = Vec::new();
+        for (i, name) in ["alpha", "beta", "gamma"].iter().enumerate() {
+            let (iid, cid) = insert_typed_item(
+                &conn, sid, name, "record",
+                &format!("decisions/adr-{:03}.md", i + 1),
+                &format!("adr {name} billing routes ledger entry"),
+            );
+            cut.push(slot_hit(cid, iid, sid, 9.0 - i as f64, &format!("adr {name} billing routes ledger entry")));
+        }
+        let (pdf_iid, pdf_cid) =
+            insert_typed_item(&conn, sid, "rfp", "reference", "docs/rfp.pdf", "rfp reversal direct debit schedule");
+        let mut orphan = blank_hit(4242);
+        orphan.content = "orphan bytes with no item".to_string();
+        let pool = vec![orphan, slot_hit(pdf_cid, pdf_iid, sid, 1.0, "rfp reversal direct debit schedule")];
+        apply_type_slots(&conn, &mut cut, &pool, 3, "billing routes");
+        assert_eq!(cut.len(), 3);
+        assert!(cut.iter().any(|h| h.chunk_id == pdf_cid), "PDF pulls past the orphan");
+        assert!(!cut.iter().any(|h| h.chunk_id == 4242), "item-less hit never pulls");
+    }
+
+    #[test]
+    fn keyword_slots_preserve_singleton_type_pull() {
+        // R40.4 × R39.2 composition: keyword slots run after type slots and
+        // evict duplicated-kind tail first, so a singleton type pull
+        // survives the collision (both mechanisms hold their hits).
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_TYPE_SLOTS");
+        std::env::remove_var("ANCHOR_KEYWORD_SLOTS");
+        std::env::remove_var("ANCHOR_TEST_ENV_DEMOTE");
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s40f", "internal");
+        let mut cut = Vec::new();
+        for (i, name) in ["alpha", "beta", "gamma", "delta"].iter().enumerate() {
+            let (iid, cid) = insert_typed_item(
+                &conn, sid, name, "record",
+                &format!("decisions/adr-{:03}.md", i + 1),
+                &format!("adr {name} billing routes ledger entry"),
+            );
+            cut.push(slot_hit(cid, iid, sid, 9.0 - i as f64, &format!("adr {name} billing routes ledger entry")));
+        }
+        let (pdf_iid, pdf_cid) =
+            insert_typed_item(&conn, sid, "rfp", "reference", "docs/rfp.pdf", "rfp reversal direct debit schedule");
+        cut.push(slot_hit(pdf_cid, pdf_iid, sid, 4.0, "rfp reversal direct debit schedule"));
+        let mut floor = Vec::new();
+        for (i, name) in ["one", "two"].iter().enumerate() {
+            let (iid, cid) = insert_typed_item(
+                &conn, sid, name, "record",
+                &format!("docs/note-{name}.md"),
+                &format!("note {name} billing routes keyword lockout"),
+            );
+            let mut h = slot_hit(cid, iid, sid, 14.0 - i as f64, &format!("note {name} billing routes keyword lockout"));
+            h.keyword_matched = true;
+            floor.push(h);
+        }
+        apply_keyword_slots(&conn, &mut cut, &floor, 5, 365.0, "billing routes");
+        assert_eq!(cut.len(), 5);
+        let order: Vec<i64> = cut.iter().map(|h| h.chunk_id).collect();
+        assert!(order.contains(&pdf_cid), "singleton type pull survives: {order:?}");
+        assert!(order.contains(&floor[0].chunk_id) && order.contains(&floor[1].chunk_id), "keyword pulls land: {order:?}");
     }
 
     #[test]

@@ -62,6 +62,10 @@ mod common;
 #[path = "../src/retrieval.rs"]
 mod retrieval;
 
+#[allow(dead_code)]
+#[path = "../src/vocab.rs"]
+mod vocab;
+
 /// Minimal `embedder` shim: `retrieval.rs`'s inner unit-test module is
 /// compiled into this target (`cfg(test)` is set for test builds) and calls
 /// `crate::embedder::pack_single`. This is byte-identical to
@@ -148,6 +152,17 @@ struct EvalDoc {
     file: String,
     title: String,
     summary: String,
+    /// R40.5: optional section heading. When present, the leaf chunk's
+    /// *embedding input* is `heading + "\n" + content` — modeling production
+    /// `markdown::embed_input(chunks.path, content)` (R38.2) — while FTS and
+    /// snippets still see the raw content. Pairs that put query terms in the
+    /// heading but not the body measure the vector-leg gain of the prefix.
+    heading: Option<String>,
+    /// R40.7: optional per-doc vocabulary, seeded as ACTIVE rule rows for
+    /// the doc's item (`[[term, expansion], ...]`). Pairs whose query term
+    /// matches a seeded term (but appears in no body) measure the
+    /// query-time vocab expansion end to end.
+    vocab: Vec<(String, String)>,
 }
 
 struct EvalPair {
@@ -198,6 +213,26 @@ fn load_manifest() -> (Vec<EvalDoc>, Vec<EvalPair>) {
                 file: str_field(d, "file", &ctx),
                 title: str_field(d, "title", &ctx),
                 summary: str_field(d, "summary", &ctx),
+                heading: d.get("heading").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                vocab: d
+                    .get("vocab")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|e| {
+                                let pair = e.as_array().unwrap_or_else(|| {
+                                    panic!("{ctx}: vocab entries are [term, expansion] pairs")
+                                });
+                                assert_eq!(pair.len(), 2, "{ctx}: vocab entries are [term, expansion] pairs");
+                                let term = pair[0].as_str().unwrap_or_else(|| panic!("{ctx}: vocab term must be a string")).to_string();
+                                let expansion =
+                                    pair[1].as_str().unwrap_or_else(|| panic!("{ctx}: vocab expansion must be a string")).to_string();
+                                assert!(!term.trim().is_empty() && !expansion.trim().is_empty(), "{ctx}: vocab pair must be non-empty");
+                                (term, expansion)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             }
         })
         .collect();
@@ -233,8 +268,9 @@ fn insert_chunk(
     kind: &str,
     source_ref: &str,
     content: &str,
+    embed_text: &str,
 ) -> i64 {
-    let embedding = embedder::pack_single(&hash_embed(content));
+    let embedding = embedder::pack_single(&hash_embed(embed_text));
     conn.execute(
         "INSERT INTO chunks (item_id, entity_id, source_ref, content, embedding, kind, section_id, level, path, is_pii, created_at) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, 0, '', 0, datetime('now'))",
         params![item_id, source_ref, content, embedding, kind, section_id],
@@ -251,14 +287,25 @@ fn insert_doc(conn: &Connection, source_id: i64, doc: &EvalDoc) {
     )
     .expect("insert item");
     let item_id = conn.last_insert_rowid();
+    // R40.7: per-doc vocabulary, seeded active (rule-origin) for the doc's item.
+    for (term, expansion) in &doc.vocab {
+        conn.execute(
+            "INSERT INTO vocabulary (term, expansion, item_id, source_id, origin, status) VALUES (?1,?2,?3,?4,'rule','active')",
+            params![term, expansion, item_id, source_id],
+        )
+        .expect("insert vocab");
+    }
     conn.execute(
         "INSERT INTO sections (item_id, parent_id, level, title, path, chunk_range, summary, summary_hash, created_at) VALUES (?1, NULL, 0, ?2, ?2, '', ?3, '', datetime('now'))",
         params![item_id, doc.title, doc.summary],
     )
     .expect("insert section");
     let section_id = conn.last_insert_rowid();
-    insert_chunk(conn, item_id, section_id, "document", &doc.title, &content);
-    insert_chunk(conn, item_id, section_id, "section_summary", &doc.title, &doc.summary);
+    // R40.5: a declared heading prefixes the leaf *embedding input only*
+    // (production `embed_input` split); FTS/snippet content stays raw.
+    let leaf_embed = doc.heading.as_ref().map(|h| format!("{h}\n{content}")).unwrap_or_else(|| content.clone());
+    insert_chunk(conn, item_id, section_id, "document", &doc.title, &content, &leaf_embed);
+    insert_chunk(conn, item_id, section_id, "section_summary", &doc.title, &doc.summary, &doc.summary);
 }
 
 /// Fresh temp DB per test: real `init_db` migration chain (FTS triggers,

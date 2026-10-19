@@ -513,10 +513,12 @@ pub fn chunk_document_with_sections(text: &str) -> (Vec<SectionMeta>, Vec<ChunkM
                 }
             }
             let parent = stack.last().copied();
-            let path = if let Some(p) = parent {
-                format!("{} > {}", raw_sections[p].path, title)
-            } else {
-                title.clone()
+            // R40.5: skip an empty parent segment (mirrors `push_symbol`) —
+            // top-level paths used to start with `" > "` (" > 8.3 …"), which
+            // rode into user-visible breadcrumbs and embed prefixes verbatim.
+            let path = match parent.map(|p| raw_sections[p].path.clone()) {
+                Some(pp) if !pp.is_empty() => format!("{pp} > {title}"),
+                _ => title.clone(),
             };
             let idx = raw_sections.len();
             raw_sections.push(RawSection {
@@ -1642,6 +1644,26 @@ mod tests {
     }
 
     #[test]
+    fn prose_child_of_empty_root_has_no_leading_separator() {
+        // R40.5: a top-level heading under the empty preamble root used to
+        // build `" > 8.3 …"` paths (PDF-style); breadcrumbs and embed
+        // prefixes must carry the bare heading instead.
+        let doc = "Some intro paragraph spanning a visual line here.\n8.3 Reversal notifications\nThe beneficiary receives a reversal notice.\n";
+        let (secs, chunks) = chunk_document_with_sections(doc);
+        let sec = secs.iter().find(|s| s.title == "8.3 Reversal notifications").expect("section");
+        assert_eq!(sec.path, "8.3 Reversal notifications");
+        let chunk = chunks.iter().find(|c| c.section_idx == secs.iter().position(|s| s.title == sec.title)).expect("chunk");
+        assert_eq!(chunk.path, "8.3 Reversal notifications");
+        assert!(secs.iter().all(|s| !s.path.starts_with('>')), "no leading separator: {:?}", secs.iter().map(|s| &s.path).collect::<Vec<_>>());
+        // The embed prefix for this chunk is heading + text (production
+        // `embed_chunks` calls `markdown::embed_input` with the stored path).
+        assert_eq!(
+            crate::markdown::embed_input(&chunk.path, &chunk.content),
+            format!("8.3 Reversal notifications\n{}", chunk.content)
+        );
+    }
+
+    #[test]
     fn config_yaml_every_key_splits() {
         // every mapping key (leaves included) opens an indent-nested section
         let yaml = "server:\n  host: example.com\n  tls:\n    cert_file: /etc/cert.pem\nreplicas: 3\n";
@@ -2022,4 +2044,5 @@ mod tests {
         let (secs_code, _) = chunk_for_doc_type("code", "lib.rs", code);
         assert!(secs_code.iter().any(|s| s.title == "fn f"));
     }
+
 }

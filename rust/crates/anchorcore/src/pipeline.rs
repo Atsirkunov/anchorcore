@@ -880,7 +880,8 @@ impl ClassifyCtx {
         }
         let classified = classify_all(&self.classifier, &jobs, &self.doc_type, self.classify_trusted, &self.data_dir, self.job_id).await?;
         let mut total = 0usize;
-        for ((index, source_ref, window), items) in jobs.iter().zip(classified) {
+        let mut llm_terms: Vec<crate::vocab::DefinedTerm> = Vec::new();
+        for ((index, source_ref, window), output) in jobs.iter().zip(classified) {
             if job_cancelled(&self.data_dir, self.job_id).await? {
                 return Err("job cancelled".to_string());
             }
@@ -888,9 +889,38 @@ impl ClassifyCtx {
             if !self.force {
                 delete_stale_entities(self, Some(*index)).await?;
             }
-            total += store_batch(self, prepare_items(items, window, source_ref, *index)).await?;
+            total += store_batch(self, prepare_items(output.items, window, source_ref, *index)).await?;
+            for term in output.defined_terms {
+                if !llm_terms.contains(&term) {
+                    llm_terms.push(term);
+                }
+            }
         }
+        self.store_vocab(llm_terms).await?;
         Ok(total)
+    }
+
+    /// R40.7: Tier-1 rules over the full text + Tier-2 union across windows,
+    /// stored (proposed until corroborated). Skipped for structured files
+    /// (code/config carry no vocabulary) and for hash-skipped items (the
+    /// early return above leaves existing rows valid).
+    async fn store_vocab(&self, llm_terms: Vec<crate::vocab::DefinedTerm>) -> Result<(), String> {
+        if self.skips_extraction() {
+            return Ok(());
+        }
+        if job_cancelled(&self.data_dir, self.job_id).await? {
+            return Err("job cancelled".to_string());
+        }
+        let rules = crate::vocab::extract_vocab_rules(&self.full_text);
+        if rules.is_empty() && llm_terms.is_empty() {
+            return Ok(());
+        }
+        let item_id = self.item_id;
+        let source_id = self.source_id;
+        run_db(&self.data_dir, move |conn| {
+            crate::vocab::store_vocab(conn, item_id, source_id, &rules, &llm_terms)
+        })
+        .await
     }
 
     /// F-08: prompt cooperative cancellation — every finalize phase
@@ -1214,8 +1244,9 @@ async fn classify_all(
     trusted: bool,
     data_dir: &str,
     job_id: i64,
-) -> Result<Vec<Vec<crate::classifier::ClassifiedItem>>, String> {
-    let mut out: Vec<Vec<crate::classifier::ClassifiedItem>> = vec![Vec::new(); jobs.len()];
+) -> Result<Vec<crate::classifier::ClassifyOutput>, String> {
+    let empty = || crate::classifier::ClassifyOutput { items: Vec::new(), defined_terms: Vec::new() };
+    let mut out: Vec<crate::classifier::ClassifyOutput> = (0..jobs.len()).map(|_| empty()).collect();
     let mut start = 0usize;
     for batch in jobs.chunks(classify_concurrency()) {
         if job_cancelled(data_dir, job_id).await? {
@@ -1228,13 +1259,13 @@ async fn classify_all(
             let source_ref = source_ref.clone();
             let window = window.clone();
             set.spawn(async move {
-                let items = classifier.classify(&window, &source_ref, &doc_type, trusted).await;
-                (offset, items)
+                let output = classifier.classify(&window, &source_ref, &doc_type, trusted).await;
+                (offset, output)
             });
         }
         while let Some(joined) = set.join_next().await {
             match joined {
-                Ok((offset, items)) => out[start + offset] = items,
+                Ok((offset, output)) => out[start + offset] = output,
                 Err(e) => tracing::warn!("classification task failed: {}", e),
             }
         }
@@ -1997,10 +2028,10 @@ mod tests {
         let mut stmt = conn.prepare("SELECT path FROM sections WHERE item_id=?1 ORDER BY id").unwrap();
         let paths: Vec<String> = stmt.query_map([iid], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
         assert!(paths.iter().any(|p| p == "(p. 1)"), "root section names its page: {paths:?}");
-        // (The `" > "` prefix is the prose splitter's empty-root parenting,
-        // pre-existing — the page suffix appends to whatever path exists.)
-        assert!(paths.iter().any(|p| p == " > Terms (p. 1)"), "page-1 section: {paths:?}");
-        assert!(paths.iter().any(|p| p == " > Scope (p. 2)"), "page-2 section: {paths:?}");
+        // (R40.5: the prose splitter no longer prefixes top-level paths with
+        // `" > "` — the page suffix appends to the bare heading instead.)
+        assert!(paths.iter().any(|p| p == "Terms (p. 1)"), "page-1 section: {paths:?}");
+        assert!(paths.iter().any(|p| p == "Scope (p. 2)"), "page-2 section: {paths:?}");
         let mut stmt = conn.prepare("SELECT content, path FROM chunks WHERE item_id=?1 AND kind='document' ORDER BY id").unwrap();
         let chunks: Vec<(String, String)> = stmt.query_map([iid], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(|r| r.ok()).collect();
         assert!(!chunks.is_empty());
@@ -2012,7 +2043,82 @@ mod tests {
             assert!(path.ends_with("(p. 1)") || path.ends_with("(p. 2)"), "chunk path carries its page: {path:?}");
         }
         assert!(chunks.iter().any(|(_, p)| p.is_empty()), "root chunks keep the empty-path file fallback: {chunks:?}");
-        assert!(chunks.iter().any(|(_, p)| p == " > Terms (p. 1)"), "sectioned chunks carry pages: {chunks:?}");
+        assert!(chunks.iter().any(|(_, p)| p == "Terms (p. 1)"), "sectioned chunks carry pages: {chunks:?}");
+    }
+
+    #[tokio::test]
+    async fn classify_windows_stores_rule_vocab_without_llm() {
+        // R40.7 Tier-1 end of the hook: glossary-shaped doc text yields
+        // active rule rows through classify_windows with no model running
+        // (rules fallback per window); structured files store nothing.
+        // Dead-port base + short timeout: the per-window LLM attempt must
+        // fail fast (sandboxed connects hang to the timeout).
+        let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
+        std::env::set_var("ANCHOR_CLASSIFIER_BASE_URL", "http://localhost:1");
+        std::env::set_var("ANCHOR_CLASSIFIER_TIMEOUT", "2");
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('s','folder','{}',1,'',0)", []).unwrap();
+        let sid = conn.last_insert_rowid();
+        conn.execute("INSERT INTO jobs (source_id, kind, status, total, processed, result, created_at) VALUES (?1,'sync','running',1,0,'{}',datetime('now'))", [sid]).unwrap();
+        let jid = conn.last_insert_rowid();
+        conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale) VALUES (?1,'terms.md','terms.md','t','h','',0)", [sid]).unwrap();
+        let iid = conn.last_insert_rowid();
+        conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale) VALUES (?1,'values.yaml','values.yaml','t','h','',0)", [sid]).unwrap();
+        let yid = conn.last_insert_rowid();
+        drop(conn);
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let settings = Arc::new(crate::settings::SettingsService::new(store));
+        settings.set_data_dir(dir.path());
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let text = "Each Long Form (CODE) row carries a reason.\n\n## Glossary\nCA - Direct Debit record\n".to_string();
+        let doc = IngestionDoc {
+            external_id: "terms.md".to_string(),
+            title: "terms.md".to_string(),
+            text: text.clone(),
+            author: String::new(),
+            updated_at: None,
+            source_ref: "terms.md".to_string(),
+        };
+        let mut ctx = ClassifyCtx::new(&data_dir, sid, jid, &doc, false, settings.clone(), classifier.clone(), embedder.clone());
+        ctx.item_id = iid;
+        ctx.doc_type = "reference".to_string();
+        ctx.classify_windows().await.unwrap();
+        let ydoc = IngestionDoc {
+            external_id: "values.yaml".to_string(),
+            title: "values.yaml".to_string(),
+            text,
+            author: String::new(),
+            updated_at: None,
+            source_ref: "values.yaml".to_string(),
+        };
+        let mut yctx = ClassifyCtx::new(&data_dir, sid, jid, &ydoc, false, settings, classifier, embedder);
+        yctx.item_id = yid;
+        yctx.doc_type = "reference".to_string();
+        yctx.classify_windows().await.unwrap();
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let rows: Vec<(String, String, String, String)> = conn
+            .prepare("SELECT term, expansion, origin, status FROM vocabulary WHERE item_id=?1 ORDER BY term")
+            .unwrap()
+            .query_map([iid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            rows.contains(&("ca".to_string(), "direct debit record".to_string(), "rule".to_string(), "active".to_string())),
+            "glossary row: {rows:?}"
+        );
+        assert!(
+            rows.contains(&("code".to_string(), "long form".to_string(), "rule".to_string(), "active".to_string())),
+            "parenthetical row: {rows:?}"
+        );
+        let yn: i64 = conn.query_row("SELECT COUNT(*) FROM vocabulary WHERE item_id=?1", [yid], |r| r.get(0)).unwrap();
+        assert_eq!(yn, 0, "structured files carry no vocabulary");
+        std::env::remove_var("ANCHOR_CLASSIFIER_BASE_URL");
+        std::env::remove_var("ANCHOR_CLASSIFIER_TIMEOUT");
     }
 
     #[test]
