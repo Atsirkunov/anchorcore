@@ -42,6 +42,7 @@ mod secrets;
 mod sections;
 mod security;
 mod settings;
+mod skills_setup;
 mod sources;
 mod stubs;
 mod system;
@@ -514,6 +515,8 @@ fn build_router(state: health::AppState) -> Router {
         .route("/system/ollama/pull", post(ollama::pull_handler))
         .route("/system/ollama/pulls", get(ollama::pulls_handler))
         .route("/system/skills/:name", get(system::skills_handler))
+        .route("/system/skills/install-targets", get(skills_setup::install_targets_handler))
+        .route("/system/skills/:name/install", post(skills_setup::install_handler))
         // auth (R6.3 B40)
         .route("/auth/status", get(auth::status_handler))
         .route("/auth/signup", post(auth::signup_handler))
