@@ -692,7 +692,8 @@ fn orchestrate_inner(
         // the snapshot runs after the slots).
         retrieval::apply_keyword_slots(conn, &mut hits, &slot_pool, cfg.top_k, cfg.halflife, query);
         let prev_top = retrieval::top_score(&hits);
-        retrieval::filename_boost(conn, &mut hits, query);
+        // R38.5: thread the cfg exclusion flag — boost no longer hardcodes it.
+        retrieval::filename_boost_filtered(conn, &mut hits, query, cfg.qa_exclude_disputed);
         retrieval::mark_boosted_hits(&mut hits, prev_top);
         // R36.3: return-shape assembly runs once, over the final ranked
         // list, so same-scope merging sees boosted hits too.
@@ -720,7 +721,8 @@ fn orchestrate_inner(
         query,
     );
     let prev_top = retrieval::top_score(&hits);
-    retrieval::filename_boost(conn, &mut hits, query);
+    // R38.5: thread the cfg exclusion flag — boost no longer hardcodes it.
+    retrieval::filename_boost_filtered(conn, &mut hits, query, cfg.qa_exclude_disputed);
     retrieval::mark_boosted_hits(&mut hits, prev_top);
     // R36.3: return-shape assembly runs once, over the final ranked list.
     retrieval::parent_return(conn, hits)
@@ -737,7 +739,13 @@ fn orchestrate(
     scope: Option<HashSet<i64>>,
     cfg: &RetrievalConfig,
 ) -> Vec<crate::retrieval::Hit> {
-    let hits = orchestrate_inner(conn, query, query_embedding, scope, cfg);
+    // R38.5: status re-filtered after `parent_return` (inside
+    // `orchestrate_inner`) — return-shape assembly must never reintroduce
+    // excluded evidence — before the relevance gate sees the final list.
+    let hits: Vec<crate::retrieval::Hit> = orchestrate_inner(conn, query, query_embedding, scope, cfg)
+        .into_iter()
+        .filter(|h| retrieval::status_ok(h.status.as_deref(), cfg.qa_exclude_disputed))
+        .collect();
     if hits.is_empty() || retrieval::passes_relevance_gate(&hits) {
         hits
     } else {
@@ -2521,6 +2529,92 @@ mod tests {
             hits.iter().all(|h| h.entity_id.is_none()),
             "no entity chunk — direct or graph neighbor — may surface: {:?}",
             hits.iter().map(|h| (h.chunk_id, h.entity_id)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn orchestrate_boost_never_surfaces_disputed_chunks() {
+        // R38.5 regression: a disputed chunk reachable ONLY via filename
+        // boost (a bare-filename query matches no content) must not surface —
+        // and the `0` opt-out proves the cfg flag actually threads into the
+        // boost instead of the old hardcoded value.
+        let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
+        std::env::set_var("ANCHOR_QA_EXCLUDE_DISPUTED", "1");
+        let dir = tempdir().unwrap();
+        let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (connector, name) VALUES ('folder','ordinary')", []).unwrap();
+        let sid: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h','routing-config.yml','docs/routing-config.yml','treasury config content here')",
+            [sid],
+        )
+        .unwrap();
+        let iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE title='routing-config.yml'", [], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO entities (item_id, kind, summary, status) VALUES (?1,'note','treasury config','disputed')", [iid]).unwrap();
+        let eid: i64 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO chunks (item_id, entity_id, source_ref, content) VALUES (?1,?2,'routing-config.yml','treasury config content here')",
+            rusqlite::params![iid, eid],
+        )
+        .unwrap();
+        let cfg = RetrievalConfig::from_env_with_top_k(8);
+        assert!(cfg.qa_exclude_disputed);
+        let hits = orchestrate(&conn, "routing-config.yml", None, None, &cfg);
+        assert!(hits.is_empty(), "disputed-only boost must surface nothing, got {:?}", hits.iter().map(|h| h.chunk_id).collect::<Vec<_>>());
+        std::env::set_var("ANCHOR_QA_EXCLUDE_DISPUTED", "0");
+        let cfg_off = RetrievalConfig::from_env_with_top_k(8);
+        assert!(!cfg_off.qa_exclude_disputed);
+        let off = orchestrate(&conn, "routing-config.yml", None, None, &cfg_off);
+        assert_eq!(off.len(), 1, "opt-out must surface the disputed chunk via boost");
+        assert!(off[0].boosted);
+        std::env::remove_var("ANCHOR_QA_EXCLUDE_DISPUTED");
+    }
+
+    #[test]
+    fn orchestrate_seeded_status_corpus_returns_full_top_k() {
+        // R38.5 pin: live + stale + disputed chunks all matching — the fused
+        // list still fills top_k with live hits (excluded rows never eat
+        // slots, and the post-parent_return re-filter keeps only them out).
+        let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_QA_EXCLUDE_DISPUTED");
+        let dir = tempdir().unwrap();
+        let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (connector, name) VALUES ('folder','ordinary')", []).unwrap();
+        let sid: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
+        for n in 1..=5 {
+            conn.execute(
+                "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h',?2,?3,'x')",
+                rusqlite::params![sid, format!("live{n}.md"), format!("docs/live{n}.md")],
+            )
+            .unwrap();
+            let iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE title=?1", [format!("live{n}.md")], |r| r.get(0)).unwrap();
+            conn.execute("INSERT INTO chunks (item_id, source_ref, content) VALUES (?1,'ref','tungsten ledger body words here')", [iid]).unwrap();
+        }
+        for (title, status) in [("stale.md", "stale"), ("disputed.md", "disputed")] {
+            conn.execute(
+                "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h',?2,?3,'x')",
+                rusqlite::params![sid, title, format!("docs/{title}")],
+            )
+            .unwrap();
+            let iid: i64 = conn.query_row("SELECT id FROM ingested_items WHERE title=?1", [title], |r| r.get(0)).unwrap();
+            conn.execute("INSERT INTO entities (item_id, kind, summary, status) VALUES (?1,'note','tungsten ledger',?2)", rusqlite::params![iid, status]).unwrap();
+            let eid: i64 = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO chunks (item_id, entity_id, source_ref, content) VALUES (?1,?2,'ref','tungsten ledger')",
+                rusqlite::params![iid, eid],
+            )
+            .unwrap();
+        }
+        let cfg = RetrievalConfig::from_env_with_top_k(3);
+        assert!(cfg.qa_exclude_disputed);
+        let hits = orchestrate(&conn, "tungsten ledger", None, None, &cfg);
+        assert_eq!(hits.len(), 3, "seeded corpus must still fill top_k, got {:?}", hits.iter().map(|h| h.chunk_id).collect::<Vec<_>>());
+        assert!(
+            hits.iter().all(|h| h.status.as_deref() != Some("stale") && h.status.as_deref() != Some("disputed")),
+            "no excluded status may surface: {:?}",
+            hits.iter().map(|h| (h.chunk_id, h.status.clone())).collect::<Vec<_>>()
         );
     }
 }
