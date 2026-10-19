@@ -1,6 +1,6 @@
 ---
 name: anchorcore-search
-description: Read-only retrieval over the user's indexed AnchorCore sources through its local REST API when MCP is unavailable or blocked — ranked search, whole-file fetch, section outlines. Never writes, resyncs, or reclassifies. Use when the user asks to search, look up, or answer from their AnchorCore knowledge base and no MCP tools are configured; or to check "is it implemented as documented" against indexed code and docs.
+description: Read-only retrieval over the user's indexed AnchorCore sources through its local REST API when MCP is unavailable, blocked, or can't be installed — ranked search, whole-file fetch, section outlines. Never writes, resyncs, or reclassifies. Use when the user asks to search, look up, or answer from their AnchorCore knowledge base and MCP is not installed, blocked, or unreachable; or to check "is it implemented as documented" against indexed code and docs.
 ---
 
 # AnchorCore search
@@ -8,9 +8,19 @@ description: Read-only retrieval over the user's indexed AnchorCore sources thro
 Read-only retrieval over the user's indexed sources. Never write, resync or
 reclassify; that changes the user's index.
 
-MCP-first: this skill is the fallback for when MCP is unavailable or blocked
-(see the anchorcore-setup skill, step 5). If MCP tools get configured later,
-drop this skill — with both active, agents duplicate effort.
+MCP-first: use the anchorcore MCP tools when they work — this skill is the
+fallback for when MCP can't be used (install/verify: anchorcore-setup skill,
+step 5). Either/or, never both: with MCP tools *and* this skill active,
+agents duplicate effort.
+
+Use this skill's HTTP API when any of these holds:
+- MCP can't be installed (the harness has no MCP support, or no way to add
+  a server entry).
+- MCP is blocked (the harness can't spawn the local `anchorcore mcp`
+  process, or `tools/list` still shows no anchorcore tools after a restart).
+- MCP is not reachable (its tools error or time out) while the app itself
+  answers `GET /health` — talk to the app directly.
+If MCP starts working later, drop this skill again.
 
 ## Connect
 

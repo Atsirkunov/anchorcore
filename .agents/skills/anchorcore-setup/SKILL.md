@@ -1,6 +1,6 @@
 ---
 name: anchorcore-setup
-description: Install, update, launch, connect, and fully configure AnchorCore (local-first company memory) through its local REST API — always check the installed build and any installer copy on the PC against the newest GitHub release and update when stale, first-run setup on Windows/macOS/Linux, answer-model choice (local Ollama or the user's own OpenAI-compatible AI), classification/embedding models, sources (folder, Jira, Linear, Google Drive, generic REST), source labels and cloud-trust rules, projects, manual PII marking, MCP agent connection, and end-to-end verification of cited answers. Use when the user asks to set up, configure, install, update, upgrade, connect, audit, or troubleshoot AnchorCore; add their documents or trackers to it; point its answers at their own model; or asks why answers are context-only, keyword-only, or uncited.
+description: Install, update, launch, connect, and fully configure AnchorCore (local-first company memory) through its local REST API — always check the installed build and any installer copy on the PC against the newest GitHub release and update when stale, first-run setup on Windows/macOS/Linux, answer-model choice (local Ollama or the user's own OpenAI-compatible AI), classification/embedding models, sources (folder, Jira, Linear, Google Drive, generic REST), source labels and cloud-trust rules, projects, manual PII marking, MCP agent connection (REST-API fallback when MCP can't be installed), and end-to-end verification of cited answers. Use when the user asks to set up, configure, install, update, upgrade, connect, audit, or troubleshoot AnchorCore; add their documents or trackers to it; point its answers at their own model; or asks why answers are context-only, keyword-only, or uncited.
 ---
 
 # AnchorCore setup
@@ -193,7 +193,10 @@ repo's `sample/` corpus (release zips do not include it; clone
 - Housekeeping: `GET /review/low-confidence`, `GET /review/duplicates`,
   `POST /review/merge {"proposal_id":…,"decision":"merge"|"dismiss"}`.
 
-## 5. Connect the user's agent (MCP)
+## 5. Connect the user's agent (MCP preferred, API fallback)
+
+End this step with exactly one working connection: MCP when it goes in, the
+API fallback below when it doesn't. MCP first:
 
 `GET /system/mcp` returns the canonical command (`command`+`args:["mcp"]` on
 current builds). Builds up to 1.0.14 have no such endpoint: the MCP helper sits
@@ -225,20 +228,25 @@ and `search "…"` returns cited chunks. Calls are audited (rows under
 `/system/errors?component=mcp`; `GET /system/mcp` reports the counter on builds
 that have it).
 
-### MCP blocked? — fall back to the search skill
+### MCP can't be installed, blocked, or unreachable — fall back to the API skill
 
-Prefer MCP above — it is the live connection. Fall back only when MCP is
-unavailable or blocked: the harness has no MCP support, it cannot spawn the
-local `anchorcore mcp` process (sandboxed harness), or `tools/list` still shows
-no anchorcore tools after a harness restart.
+Prefer MCP above — it is the live connection. When MCP can't go in, fall back
+to the plain REST API instead of leaving the agent unconnected:
+
+- MCP can't be installed (the harness has no MCP support, or no way to add
+  a server entry).
+- MCP is blocked (the harness can't spawn the local `anchorcore mcp`
+  process, or `tools/list` still shows no anchorcore tools after a restart).
+- MCP is not reachable (its tools error or time out) while the app itself
+  answers `GET /health`.
 
 The fallback is the read-only `anchorcore-search` skill: ranked search,
 whole-file fetch, and section outlines over the same local REST API (same base
-URL, CSRF, and auth rules as this skill) — no MCP needed. It never writes,
-resyncs, or reclassifies. **Either/or, never both:** with MCP tools *and* the
-search skill active, agents duplicate effort (the same query goes out over MCP
-and over plain HTTP). If you install the skill, do not also connect MCP — and
-if MCP later starts working, remove the skill again.
+URL, CSRF, and auth rules as this skill) — no MCP process needed. It never
+writes, resyncs, or reclassifies. **Either/or, never both:** with MCP tools
+*and* the search skill active, agents duplicate effort (the same query goes
+out over MCP and over plain HTTP). If you install the skill, do not also
+connect MCP — and if MCP later starts working, remove the skill again.
 
 Install it from the repo — the app does not serve skills yet (release zips
 ship only the binary), so the source is
