@@ -6,6 +6,15 @@ Read this before doing anything. It is the distilled backend/architecture logic 
 a fresh session doesn't have to re-explore the whole repo. Update it whenever you
 learn something that would have helped at the start of a session.
 
+## Session start
+
+- **Always check latest changes in git before work**: `git fetch origin`, then
+  compare `HEAD` vs `origin/main` (`git log --oneline HEAD..origin/main`,
+  `git tag --sort=-v:refname | head`) before planning anything. Never assume
+  the checkout is current — releases and other sessions move `main` while you
+  sit on a stale base (Phase 38 was built on 1.0.27 after 1.0.28 shipped).
+  If behind, reconcile (merge/rebase) before writing code, not after.
+
 ## What this is
 
 Local-first "company memory": connect sources (folder, Jira, Linear) → classify into
@@ -204,6 +213,7 @@ Key rules:
 - **B12 cleaning is prose-only; `chunk_text` snaps to boundaries** (2026-10-13): `clean_doc_text` (page numbers, controls, repeated headers — archived `cleaning.py` parity incl. banker's rounding) runs in `store_doc_chunks` only when `!skips_extraction()` — collapsing whitespace destroys YAML nesting and Python indentation, so code/config keep raw text (pinned by the config breadcrumb test). `chunk_text` pulls window ends back to sentence ends else word breaks (bounded by overlap, tail always covered) and advances starts to word starts clamped to the previous end — same coverage, no mid-word/mid-sentence cuts. `classify_windows` keeps the old blind loop (LLM windows don't need it).
 
 - **One-shot migration backfills live in real `M::up` SQL, never `ensure_columns`** (F-03, 2026-10-13): `ensure_columns` re-runs on every fresh `init_db`, so a `WHERE processed_hash IS NULL` backfill there would silently re-mark items an interrupted sync left unprocessed — on every boot. Real migration SQL runs once per DB (tracked); `ensure_columns` only carries the idempotent `try_add_column`. When adding migration N, extend the `migrate_pending_with_vec_triggers_and_no_vec0` test the same way (drop the new column to simulate v10, bump the version assert).
+- **Discounted RRF floors are structurally locked out (Phase 38, 2026-10-19):** `orchestrate` fuses TOC@1.0 vs flat floors@0.5, so every one of the 40 TOC hits beats the best floor-only hit whenever TOC returns 8+ — a rank-1 keyword-only match can never surface. Fixed by R38.2 slot reservation (ordering, never re-tuning the 0.5 weight); hits/citations now carry leg provenance (R38.1), empty evidence gates on BM25/boost/cosine>=0.50 (R38.3), decay floors at 0.8 (R38.6). Related: `filename_boost` runs after the cut, pulls below-cut chunks at `max+1.0`, and loads with `qa_exclude_disputed=false` — it could inject disputed hits until R38.5 landed (flag threaded + post-shape re-filter); whole-token ranked matching (R38.4), suspect-PDF fence skip (R38.8), authority tiers Spec<Code<Config<Prose<Generated as an (env,tier) stable sort after live-first (R38.7, kill knob ANCHOR_AUTHORITY_TIERS=0; generated-wins-on-overlap), fusion shared by ask+eval via retrieval::orchestrate_fusion (R38.12). Diagram: `docs/guides/retrieval-weights.svg`; knobs: `docs/guides/retrieval-tuning.md`.
 - **Sync completion is two markers** (F-03): `content_hash` = what is stored, `processed_hash` = what fully finished classify+finalize (`mark_item_processed`, carries the stat fingerprint). Upsert returns "needs work" unless both match; backup round-trips the marker (old archives adopt `content_hash`). `store_doc_chunks` delete+insert is one manual `BEGIN IMMEDIATE`/`COMMIT` (`run_db` hands out `&Connection`, so no `conn.transaction()` — early `?` returns roll back on drop of the fresh per-call connection).
 
 ## UI notes

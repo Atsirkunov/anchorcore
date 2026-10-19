@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 1082" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="880" height="1082" rx="12" fill="#ffffff"/>
+
+  <text x="440" y="34" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">AnchorCore chunk weighting — retrieval pipeline</text>
+  <text x="440" y="56" text-anchor="middle" font-size="12.5" fill="#64748b">Every weight is deterministic code (retrieval.rs · answer.rs) — the model never scores a chunk.</text>
+
+  <!-- legend -->
+  <rect x="40" y="70" width="14" height="14" rx="3" fill="#f1f5f9" stroke="#334155" stroke-width="1.5"/>
+  <text x="60" y="82" font-size="12" fill="#334155">deterministic code</text>
+  <rect x="700" y="70" width="14" height="14" rx="3" fill="#faf5ff" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <text x="720" y="82" font-size="12" fill="#334155">LLM / model</text>
+
+  <!-- query -->
+  <rect x="290" y="92" width="300" height="38" rx="19" fill="#0f172a"/>
+  <text x="440" y="116" text-anchor="middle" font-size="14" font-weight="600" fill="#ffffff">User query</text>
+
+  <!-- bus 1 -->
+  <line x1="440" y1="130" x2="440" y2="140" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="166" y1="140" x2="713" y2="140" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="166" y1="140" x2="166" y2="146" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="440" y1="140" x2="440" y2="146" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="713" y1="140" x2="713" y2="146" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- prep row -->
+  <rect x="40" y="148" width="253" height="64" rx="8" fill="#faf5ff" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <text x="166" y="174" text-anchor="middle" font-size="13" font-weight="700" fill="#4c1d95">Embed query</text>
+  <text x="166" y="194" text-anchor="middle" font-size="12" fill="#475569">model → query vector</text>
+
+  <rect x="313" y="148" width="253" height="64" rx="8" fill="#f1f5f9" stroke="#334155" stroke-width="1.5"/>
+  <text x="440" y="174" text-anchor="middle" font-size="13" font-weight="700" fill="#0f172a">FTS terms</text>
+  <text x="440" y="194" text-anchor="middle" font-size="12" fill="#475569">words, stopwords removed</text>
+
+  <rect x="586" y="148" width="253" height="64" rx="8" fill="#faf5ff" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <text x="713" y="174" text-anchor="middle" font-size="13" font-weight="700" fill="#4c1d95">Rewrite follow-up</text>
+  <text x="713" y="194" text-anchor="middle" font-size="12" fill="#475569">LLM, optional (+ heuristic)</text>
+
+  <!-- bus 2 -->
+  <line x1="440" y1="212" x2="440" y2="222" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="166" y1="222" x2="713" y2="222" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="166" y1="222" x2="166" y2="228" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="440" y1="222" x2="440" y2="228" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="713" y1="222" x2="713" y2="228" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- legs row -->
+  <rect x="40" y="230" width="253" height="78" rx="8" fill="#f1f5f9" stroke="#334155" stroke-width="1.5"/>
+  <text x="166" y="254" text-anchor="middle" font-size="13" font-weight="700" fill="#0f172a">Vector leg</text>
+  <text x="166" y="274" text-anchor="middle" font-size="12" fill="#475569">cosine similarity · floor 0.2</text>
+  <text x="166" y="292" text-anchor="middle" font-size="12" fill="#475569">over-fetch top_k × 10</text>
+
+  <rect x="313" y="230" width="253" height="78" rx="8" fill="#f1f5f9" stroke="#334155" stroke-width="1.5"/>
+  <text x="440" y="254" text-anchor="middle" font-size="13" font-weight="700" fill="#0f172a">Keyword leg</text>
+  <text x="440" y="274" text-anchor="middle" font-size="12" fill="#475569">FTS5 BM25 · score = −rank</text>
+  <text x="440" y="292" text-anchor="middle" font-size="12" fill="#475569">over-fetch top_k × 10</text>
+
+  <rect x="586" y="230" width="253" height="78" rx="8" fill="#f1f5f9" stroke="#334155" stroke-width="1.5"/>
+  <text x="713" y="254" text-anchor="middle" font-size="13" font-weight="700" fill="#0f172a">who_knows leg</text>
+  <text x="713" y="274" text-anchor="middle" font-size="12" fill="#475569">who/owns queries only</text>
+  <text x="713" y="292" text-anchor="middle" font-size="12" fill="#475569">conf × overlap × decay</text>
+
+  <!-- TOC -->
+  <line x1="440" y1="308" x2="440" y2="318" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="40" y="320" width="800" height="66" rx="8" fill="#f1f5f9" stroke="#334155" stroke-width="1.5"/>
+  <text x="440" y="346" text-anchor="middle" font-size="13" font-weight="700" fill="#0f172a">TOC coarse-to-fine: tag prune → summary search (top 15) → top sections</text>
+  <text x="440" y="366" text-anchor="middle" font-size="12" fill="#475569">leaf vector + keyword fenced to those sections → RRF(1.0, 1.0)</text>
+
+  <!-- union / RRF -->
+  <line x1="440" y1="386" x2="440" y2="396" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="40" y="398" width="800" height="82" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="440" y="424" text-anchor="middle" font-size="13" font-weight="700" fill="#1e3a8a">Union + RRF fuse:  score += weight / (60 + rank)  — rank-based, not score-based</text>
+  <text x="440" y="446" text-anchor="middle" font-size="12" fill="#1e40af">TOC list @ 1.0  ·  flat vector floor @ 0.5  ·  flat keyword floor @ 0.5</text>
+  <text x="440" y="466" text-anchor="middle" font-size="12" fill="#1e40af">flat-only fallback (TOC empty): vector @ 1.0, keyword @ ANCHOR_RETRIEVAL_KEYWORD_WEIGHT (1.0)</text>
+
+  <!-- fuse_and_rank stages -->
+  <line x1="440" y1="480" x2="440" y2="490" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="120" y="492" width="640" height="36" rx="8" fill="#f1f5f9" stroke="#334155" stroke-width="1.5"/>
+  <text x="440" y="515" text-anchor="middle" font-size="12.5" fill="#0f172a">× age decay  0.5^(age ÷ halflife) · halflife 365d <tspan fill="#64748b">(after fusion — before would be rank-invisible)</tspan></text>
+
+  <line x1="440" y1="528" x2="440" y2="538" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="120" y="540" width="640" height="36" rx="8" fill="#f1f5f9" stroke="#334155" stroke-width="1.5"/>
+  <text x="440" y="563" text-anchor="middle" font-size="12.5" fill="#0f172a">sort by score → diversity cap 3 per item → drop near-dupes</text>
+
+  <line x1="440" y1="576" x2="440" y2="586" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="120" y="588" width="640" height="36" rx="8" fill="#f1f5f9" stroke="#334155" stroke-width="1.5"/>
+  <text x="440" y="611" text-anchor="middle" font-size="12.5" fill="#0f172a">live-first + authority tiers: sort by (env, tier) — Spec&lt;Code&lt;Config&lt;Prose&lt;Generated</text>
+
+  <line x1="440" y1="624" x2="440" y2="634" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="120" y="636" width="640" height="36" rx="8" fill="#f1f5f9" stroke="#334155" stroke-width="1.5"/>
+  <text x="440" y="659" text-anchor="middle" font-size="12.5" fill="#0f172a">cut to top_k (8) · drop stale / disputed</text>
+
+  <!-- keyword slots -->
+  <line x1="440" y1="672" x2="440" y2="682" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="120" y="684" width="640" height="40" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="440" y="709" text-anchor="middle" font-size="12.5" fill="#1e3a8a">keyword slots (2): locked-out floor hits displace the tail, then live-first re-partitions</text>
+
+  <!-- filename boost -->
+  <line x1="440" y1="724" x2="440" y2="734" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="40" y="736" width="800" height="62" rx="8" fill="#fefce8" stroke="#a16207" stroke-width="2"/>
+  <text x="440" y="762" text-anchor="middle" font-size="13" font-weight="700" fill="#713f12">Filename boost (dotted tokens only): query names a file → its best chunk scores max + 1.0</text>
+  <text x="440" y="782" text-anchor="middle" font-size="12" fill="#713f12">runs AFTER the top_k cut — pulls below-cut chunks in; ranked file match (R38.4), disputed per flag (R38.5)</text>
+
+  <!-- parent return -->
+  <line x1="440" y1="798" x2="440" y2="808" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="120" y="810" width="640" height="38" rx="8" fill="#f1f5f9" stroke="#334155" stroke-width="1.5"/>
+  <text x="440" y="834" text-anchor="middle" font-size="12.5" fill="#0f172a">parent_return: merge hits sharing a section (shape only — scores untouched)</text>
+
+  <!-- final -->
+  <line x1="440" y1="848" x2="440" y2="858" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="40" y="860" width="800" height="62" rx="8" fill="#faf5ff" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <text x="440" y="884" text-anchor="middle" font-size="13" font-weight="700" fill="#4c1d95">Final hits → LLM writes the answer (temp 0.2, context + citations only)</text>
+  <text x="440" y="904" text-anchor="middle" font-size="12" fill="#6d28d9">ranking is frozen before the model sees anything — no LLM reranker</text>
+
+  <!-- gates note -->
+  <rect x="40" y="936" width="800" height="80" rx="8" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="440" y="958" text-anchor="middle" font-size="12" font-weight="700" fill="#475569">Binary gates — not weights: stale excluded · disputed excluded (default) · project / public_only scope</text>
+  <text x="440" y="978" text-anchor="middle" font-size="12" fill="#475569">sensitive + pii sources excluded from untrusted cloud answers</text>
+  <text x="440" y="998" text-anchor="middle" font-size="12" fill="#475569">min-relevance gate: some hit needs a BM25 match, a boost, or cosine ≥ 0.50 — else empty + “not found”</text>
+
+  <text x="440" y="1040" text-anchor="middle" font-size="12" fill="#64748b">Knobs: ANCHOR_TOP_K · ANCHOR_RETRIEVAL_KEYWORD_WEIGHT · ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS · ANCHOR_RETRIEVAL_MAX_PER_SOURCE · ANCHOR_TEST_ENV_DEMOTE</text>
+  <text x="440" y="1060" text-anchor="middle" font-size="12" fill="#64748b">R38: ANCHOR_AUTHORITY_TIERS · ANCHOR_KEYWORD_SLOTS · ANCHOR_MIN_RELEVANCE_COSINE · ANCHOR_DECAY_FLOOR · provenance (legs + ranks + decay + boosted) on hits/citations</text>
+</svg>
