@@ -1298,12 +1298,13 @@ pub fn fuse_and_rank(
     // Live-first sits directly before the cut: any later score sort would
     // undo the partition, and the cut must choose from a live-led list.
     prefer_live_envs(conn, &mut fused, query);
-    let hits: Vec<Hit> = fused.into_iter().take(top_k).collect();
+    // R38.5: stale/disputed filter BEFORE the cut — excluded hits must not
+    // consume top-k slots (seeded corpora still return a full top_k).
+    let hits: Vec<Hit> = fused.into_iter().filter(|h| status_ok(h.status.as_deref(), qa_exclude_disputed)).take(top_k).collect();
     // Raw ranked hits out — return-shape assembly (`parent_return`) runs
     // once in `orchestrate`, after graph + filename boost, so same-scope
     // merging sees the final list.
-    // filter stale/disputed again (already in load, but for fused graph hits)
-    hits.into_iter().filter(|h| status_ok(h.status.as_deref(), qa_exclude_disputed)).collect()
+    hits
 }
 
 pub fn dedupe_similar(mut hits: Vec<Hit>) -> Vec<Hit> {
@@ -1760,12 +1761,22 @@ pub(crate) fn envs_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> HashMap<i
 
 /// Tokens that look like filenames (`routing-config.yml`, `service.go`):
 /// contain a dot, carry a letter (excludes `1.0.23`), long enough to matter.
+/// R38.4: version-like tokens (`v1.2`) never fire — a release label is not
+/// a filename mention.
 fn filename_tokens(query: &str) -> Vec<String> {
     query
         .split_whitespace()
         .map(|t| t.trim_matches(|c: char| !(c.is_alphanumeric() || c == '.' || c == '-' || c == '_')).to_string())
-        .filter(|t| t.contains('.') && t.len() >= 4 && t.chars().any(|c| c.is_alphabetic()))
+        .filter(|t| t.contains('.') && t.len() >= 4 && t.chars().any(|c| c.is_alphabetic()) && !is_version_token(t))
         .collect()
+}
+
+/// R38.4: version-like tokens — an optional `v`/`V` prefix over digits and
+/// dots only (`v1.2`, `V2.0.1`). Pure-numeric dotted tokens (`1.2.3`) match
+/// too (the letter rule already drops them; this is explicit).
+fn is_version_token(t: &str) -> bool {
+    let core = t.strip_prefix('v').or_else(|| t.strip_prefix('V')).unwrap_or(t);
+    !core.is_empty() && core.contains('.') && core.chars().any(|c| c.is_ascii_digit()) && core.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
 fn escape_like(s: &str) -> String {
@@ -1782,24 +1793,52 @@ fn strip_filename_tokens(query: &str, names: &[String]) -> String {
     out
 }
 
-/// Item ids for up to 3 named files (external id or title LIKE match).
+/// Item ids for up to 3 named files — one ranked winner per token.
 fn named_item_ids(conn: &Connection, names: &[String]) -> Vec<i64> {
-    let mut out = Vec::new();
-    for name in names.iter().take(3) {
-        let pat = format!("%{}%", escape_like(name));
-        let mut stmt = match conn.prepare(
-            "SELECT id FROM ingested_items WHERE external_id LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' ORDER BY id LIMIT 1",
-        ) {
-            Ok(s) => s,
-            Err(_) => return out,
-        };
-        let id: Option<i64> = stmt
-            .query_map(rusqlite::params![pat, pat], |r| r.get(0))
-            .map(|rows| rows.flatten().next())
-            .unwrap_or_default();
-        out.extend(id);
+    names.iter().take(3).filter_map(|name| best_item_for_name(conn, name)).collect()
+}
+
+/// R38.4: last path segment — the unit whole-token filename matching compares.
+fn item_basename(external_id: &str) -> &str {
+    external_id.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(external_id)
+}
+
+/// R38.4: match tier for one candidate — exact basename first (exact case,
+/// then case-insensitive for cross-platform paths), exact title alongside,
+/// everything else last.
+fn name_match_tier(name: &str, basename: &str, title: Option<&str>) -> u8 {
+    if basename == name || title == Some(name) {
+        0
+    } else if basename.eq_ignore_ascii_case(name) || title.is_some_and(|t| t.eq_ignore_ascii_case(name)) {
+        1
+    } else {
+        2
     }
-    out
+}
+
+/// R38.4: the one item a filename token names. Candidates come from the
+/// substring LIKE (unchanged recall), but the winner is ranked, not
+/// lowest-id: exact basename beats substring (`service.go` over
+/// `myservice.go`), and among substring matches the shortest path wins.
+fn best_item_for_name(conn: &Connection, name: &str) -> Option<i64> {
+    let pat = format!("%{}%", escape_like(name));
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, external_id, title FROM ingested_items WHERE external_id LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' ORDER BY id LIMIT 25",
+        )
+        .ok()?;
+    let rows: Vec<(i64, String, Option<String>)> = stmt
+        .query_map(rusqlite::params![pat, pat], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .ok()?
+        .flatten()
+        .collect();
+    rows.into_iter()
+        .map(|(id, ext, title)| {
+            let tier = name_match_tier(name, item_basename(&ext), title.as_deref());
+            (tier, ext.len(), id)
+        })
+        .min()
+        .map(|(_, _, id)| id)
 }
 
 /// Best content-matching chunk of one item for an FTS match expression.
@@ -1837,7 +1876,13 @@ fn first_chunk_for_item(conn: &Connection, item_id: i64) -> Option<i64> {
 /// item's best content match for the rest of the query (file head only when
 /// nothing matches). No-op when nothing matches. Kept in R33.3: the leaf
 /// pool never sees filenames, so no filter subsumes the bare-filename case.
-pub fn filename_boost(conn: &Connection, hits: &mut Vec<Hit>, query: &str) {
+/// R38.4: whole-token matching (exact basename beats substring, shortest
+/// path among the rest) + version-like tokens never fire. R38.5: stale is
+/// always excluded, disputed per `qa_exclude_disputed` (threaded from
+/// `orchestrate` — no hardcoded filter value on this path). Scoring is
+/// exactly `top + 1.0` — `mark_boosted_hits` detects boosted hits via
+/// `score > pre-boost max`, so this formula must not change.
+pub fn filename_boost_filtered(conn: &Connection, hits: &mut Vec<Hit>, query: &str, qa_exclude_disputed: bool) {
     let names = filename_tokens(query);
     if names.is_empty() {
         return;
@@ -1864,12 +1909,29 @@ pub fn filename_boost(conn: &Connection, hits: &mut Vec<Hit>, query: &str) {
         return;
     }
     let top = hits.iter().map(|h| h.score).fold(0.0f64, f64::max);
-    let mut boosted = load_hits_filtered(conn, &fresh, None, None, false);
+    let mut boosted = load_hits_filtered(conn, &fresh, None, None, qa_exclude_disputed);
     for h in boosted.iter_mut() {
         h.score = top + 1.0;
     }
     hits.extend(boosted);
     sort_hits(hits);
+}
+
+/// R38.5: production default for the boost exclusion flag — mirrors
+/// `answer.rs::RetrievalConfig::from_env` (`ANCHOR_QA_EXCLUDE_DISPUTED`,
+/// default exclude). Only the legacy 3-arg wrapper resolves it here;
+/// `orchestrate` threads its cfg explicitly.
+fn boost_exclude_disputed_default() -> bool {
+    std::env::var("ANCHOR_QA_EXCLUDE_DISPUTED")
+        .map(|v| v != "0" && v.to_lowercase() != "false")
+        .unwrap_or(true)
+}
+
+/// Legacy 3-arg entry — the frozen R38.10 eval mirror calls this; it
+/// resolves the production exclusion default from env. New callers pass
+/// the flag to `filename_boost_filtered` explicitly.
+pub fn filename_boost(conn: &Connection, hits: &mut Vec<Hit>, query: &str) {
+    filename_boost_filtered(conn, hits, query, boost_exclude_disputed_default())
 }
 
 /// R38.1: pre-boost max score — the snapshot `mark_boosted_hits` compares to.
@@ -3499,5 +3561,208 @@ mod tests {
         assert_eq!(ids.len(), 2, "only the two document chunks compete, got {ids:?}");
         assert_eq!(ids[0], c_live, "live config must lead on term merit without any patch");
         assert_eq!(ids[1], c_fixture);
+    }
+
+    #[test]
+    fn version_like_tokens_never_fire_filename_boost() {
+        // R38.4: release labels are not filename mentions — `v1.2` must not
+        // surface a file that merely contains that string.
+        assert!(filename_tokens("deploy v1.2 now").is_empty());
+        assert!(filename_tokens("upgrade to V2.0.1 today").is_empty());
+        assert_eq!(filename_tokens("see service.go"), vec!["service.go".to_string()]);
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_ver", "internal");
+        let iid = insert_item(&conn, sid, "rel");
+        conn.execute("UPDATE ingested_items SET external_id='docs/release-v1.2.md', title='release-v1.2.md' WHERE id=?1", [iid]).unwrap();
+        insert_chunk(&conn, Some(iid), None, "ship the release candidate notes");
+        let other = insert_item(&conn, sid, "other");
+        let c_other = insert_chunk(&conn, Some(other), None, "unrelated notes");
+        let mut other_hit = blank_hit(c_other);
+        other_hit.item_id = Some(other);
+        other_hit.score = 15.0;
+        let mut hits = vec![other_hit];
+        filename_boost_filtered(&conn, &mut hits, "ship v1.2", true);
+        assert_eq!(hits.len(), 1, "a version token must leave the list untouched");
+        assert_eq!(hits[0].chunk_id, c_other);
+        assert_eq!(hits[0].score, 15.0);
+    }
+
+    #[test]
+    fn named_file_ranking_prefers_exact_basename_over_substring() {
+        // R38.4: `service.go` must surface service.go even when myservice.go
+        // (substring match, lower id) would win `%LIKE% + LIMIT 1`.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_ex", "internal");
+        let mine = insert_item(&conn, sid, "mine");
+        conn.execute("UPDATE ingested_items SET external_id='myservice.go', title='myservice.go' WHERE id=?1", [mine]).unwrap();
+        insert_chunk(&conn, Some(mine), None, "myservice legacy work routines");
+        let svc = insert_item(&conn, sid, "svc");
+        conn.execute("UPDATE ingested_items SET external_id='src/service.go', title='service.go' WHERE id=?1", [svc]).unwrap();
+        let c_svc = insert_chunk(&conn, Some(svc), None, "service bootstrap work routines");
+        assert!(mine < svc, "regression shape needs the substring match at the lower id");
+        let other = insert_item(&conn, sid, "other");
+        let c_other = insert_chunk(&conn, Some(other), None, "unrelated notes");
+        let mut other_hit = blank_hit(c_other);
+        other_hit.item_id = Some(other);
+        other_hit.score = 15.0;
+        let mut hits = vec![other_hit];
+        filename_boost_filtered(&conn, &mut hits, "how does service.go work", true);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].chunk_id, c_svc, "exact basename must beat the substring match");
+        assert_eq!(hits[0].item_id, Some(svc));
+    }
+
+    #[test]
+    fn named_item_ids_prefers_shortest_path_without_exact_match() {
+        // R38.4: no exact basename anywhere — the shallow candidate wins
+        // over the deeply nested one even at a higher id.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_sp", "internal");
+        let deep = insert_item(&conn, sid, "deep");
+        conn.execute("UPDATE ingested_items SET external_id='a/very/deep/dir/svc.go.bak' WHERE id=?1", [deep]).unwrap();
+        let shallow = insert_item(&conn, sid, "shallow");
+        conn.execute("UPDATE ingested_items SET external_id='svc.go.bak' WHERE id=?1", [shallow]).unwrap();
+        assert!(deep < shallow, "regression shape needs the long path at the lower id");
+        let ids = named_item_ids(&conn, &["svc.go".to_string()]);
+        assert_eq!(ids, vec![shallow], "shortest path must win among substring matches");
+    }
+
+    #[test]
+    fn filename_boost_pulls_below_cut_chunk_at_top_plus_one() {
+        // R38.4 DoD pin: the named file's chunk is absent from the fused
+        // list (below the cut) — boost appends it at exactly max + 1.0, and
+        // `mark_boosted_hits` flags exactly that hit via `score > prev_top`
+        // (the R38.1 detection contract — this formula must not change).
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_top", "internal");
+        let iid = insert_item(&conn, sid, "cfg");
+        conn.execute("UPDATE ingested_items SET external_id='cfg/routing-config.yml', title='routing-config.yml' WHERE id=?1", [iid]).unwrap();
+        let cid = insert_chunk(&conn, Some(iid), None, "ACME_FEE routing table content here");
+        let other = insert_item(&conn, sid, "other");
+        let c_other = insert_chunk(&conn, Some(other), None, "unrelated notes");
+        let mut other_hit = blank_hit(c_other);
+        other_hit.item_id = Some(other);
+        other_hit.score = 15.0;
+        let mut hits = vec![other_hit];
+        let prev_top = top_score(&hits);
+        filename_boost_filtered(&conn, &mut hits, "routing-config.yml ACME_FEE", true);
+        mark_boosted_hits(&mut hits, prev_top);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].chunk_id, cid);
+        assert_eq!(hits[0].score, 16.0, "boost scores exactly top + 1.0");
+        assert!(hits[0].boosted, "the surfaced chunk must read as boosted");
+        assert!(!hits[1].boosted, "pre-existing hits must not read as boosted");
+    }
+
+    #[test]
+    fn fuse_and_rank_filters_status_before_the_cut() {
+        // R38.5: stale/disputed hits ranked above the cut must not consume
+        // top-k slots — a seeded corpus still returns a full live top_k.
+        let (_dir, conn) = harness_db();
+        let mk = |cid: i64, score: f64, status: Option<&str>| {
+            let mut h = blank_hit(cid);
+            h.item_id = Some(100 + cid);
+            h.score = score;
+            h.status = status.map(|s| s.to_string());
+            h.content = format!("distinct fused content {cid}");
+            h
+        };
+        let out = fuse_and_rank(
+            &conn,
+            None,
+            Some(vec![mk(1, 9.0, Some("stale")), mk(2, 8.0, Some("disputed")), mk(3, 7.0, None), mk(4, 6.0, Some("unverified"))]),
+            1.0,
+            365.0,
+            3,
+            2,
+            true,
+            "plain query",
+        );
+        assert_eq!(out.iter().map(|h| h.chunk_id).collect::<Vec<_>>(), vec![3, 4], "excluded hits must not eat the cut");
+        // The flag still flows: disputed survives when exclusion is off.
+        let out2 = fuse_and_rank(
+            &conn,
+            None,
+            Some(vec![mk(1, 9.0, Some("stale")), mk(2, 8.0, Some("disputed")), mk(3, 7.0, None), mk(4, 6.0, Some("unverified"))]),
+            1.0,
+            365.0,
+            3,
+            2,
+            false,
+            "plain query",
+        );
+        assert_eq!(out2.iter().map(|h| h.chunk_id).collect::<Vec<_>>(), vec![2, 3]);
+    }
+
+    #[test]
+    fn filename_boost_filtered_respects_exclude_disputed() {
+        // R38.5: a disputed-only named file boosts when exclusion is off
+        // and stays out when it is on.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_bd", "internal");
+        let iid = insert_item(&conn, sid, "cfg");
+        conn.execute("UPDATE ingested_items SET external_id='docs/config.yml', title='config.yml' WHERE id=?1", [iid]).unwrap();
+        let eid = insert_entity(&conn, iid, "config treasury decision", "disputed", "");
+        insert_chunk(&conn, Some(iid), Some(eid), "config treasury content here");
+        let other = insert_item(&conn, sid, "other");
+        let c_other = insert_chunk(&conn, Some(other), None, "unrelated notes");
+        let mk_hits = || {
+            let mut h = blank_hit(c_other);
+            h.item_id = Some(other);
+            h.score = 15.0;
+            vec![h]
+        };
+        let mut on = mk_hits();
+        filename_boost_filtered(&conn, &mut on, "config.yml", true);
+        assert_eq!(on.len(), 1, "disputed chunk must not boost when excluded");
+        let mut off = mk_hits();
+        filename_boost_filtered(&conn, &mut off, "config.yml", false);
+        assert_eq!(off.len(), 2, "disputed chunk boosts when exclusion is off");
+        assert_eq!(off[0].score, 16.0);
+    }
+
+    #[test]
+    fn filename_boost_filtered_always_excludes_stale() {
+        // R38.5: stale is out regardless of the disputed flag.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_bs", "internal");
+        let iid = insert_item(&conn, sid, "legacy");
+        conn.execute("UPDATE ingested_items SET external_id='docs/legacy.yml', title='legacy.yml' WHERE id=?1", [iid]).unwrap();
+        let eid = insert_entity(&conn, iid, "legacy treasury decision", "stale", "");
+        insert_chunk(&conn, Some(iid), Some(eid), "legacy treasury content here");
+        let other = insert_item(&conn, sid, "other");
+        let c_other = insert_chunk(&conn, Some(other), None, "unrelated notes");
+        let mut h = blank_hit(c_other);
+        h.item_id = Some(other);
+        h.score = 15.0;
+        let mut hits = vec![h];
+        filename_boost_filtered(&conn, &mut hits, "legacy.yml", false);
+        assert_eq!(hits.len(), 1, "stale chunk must never boost");
+    }
+
+    #[test]
+    fn filename_boost_wrapper_excludes_disputed_by_default() {
+        // R38.5: the legacy 3-arg entry (frozen R38.10 eval mirror) resolves
+        // the production default from env — exclude unless opted out.
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ANCHOR_QA_EXCLUDE_DISPUTED");
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_bw", "internal");
+        let iid = insert_item(&conn, sid, "cfg");
+        conn.execute("UPDATE ingested_items SET external_id='docs/config.yml', title='config.yml' WHERE id=?1", [iid]).unwrap();
+        let eid = insert_entity(&conn, iid, "config treasury decision", "disputed", "");
+        insert_chunk(&conn, Some(iid), Some(eid), "config treasury content here");
+        let other = insert_item(&conn, sid, "other");
+        let c_other = insert_chunk(&conn, Some(other), None, "unrelated notes");
+        let mut h = blank_hit(c_other);
+        h.item_id = Some(other);
+        h.score = 15.0;
+        let mut hits = vec![h];
+        filename_boost(&conn, &mut hits, "config.yml");
+        assert_eq!(hits.len(), 1, "wrapper must exclude disputed under the production default");
+        std::env::set_var("ANCHOR_QA_EXCLUDE_DISPUTED", "0");
+        filename_boost(&conn, &mut hits, "config.yml");
+        assert_eq!(hits.len(), 2, "opt-out restores the legacy include-disputed boost");
+        std::env::remove_var("ANCHOR_QA_EXCLUDE_DISPUTED");
     }
 }
