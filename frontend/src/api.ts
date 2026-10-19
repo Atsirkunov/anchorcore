@@ -245,9 +245,9 @@ export const api = {
       body: JSON.stringify({ client }),
     }),
   logDownloadUrl: (name: string) => `/system/logs/${encodeURIComponent(name)}`,
-  skillUrl: () => "/system/skill",
-  fetchSkill: async (): Promise<string> => {
-    const res = await fetch("/system/skill");
+  skillUrl: (name: string) => `/system/skills/${encodeURIComponent(name)}`,
+  fetchSkill: async (name: string): Promise<string> => {
+    const res = await fetch(`/system/skills/${encodeURIComponent(name)}`);
     if (!res.ok) throw new Error(await errorMessage(res));
     return res.text();
   },
