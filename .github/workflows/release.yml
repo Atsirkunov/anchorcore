@@ -239,11 +239,11 @@ jobs:
           try {
             $up = $false
             for ($i = 0; $i -lt 30; $i++) {
-              & curl.exe -sf http://127.0.0.1:8129/health -o $null 2>$null
+              & curl.exe -sf http://127.0.0.1:8129/health -o NUL 2>$null
               if ($LASTEXITCODE -eq 0) { $up = $true; break }
               Start-Sleep -Seconds 1
             }
-            if (-not $up) { throw "FAULT: skill-smoke server did not start" }
+            if (-not $up) { Get-Content (Join-Path $dataDir "smoke.log") -Raw -ErrorAction SilentlyContinue; Get-Content (Join-Path $dataDir "smoke.err.log") -Raw -ErrorAction SilentlyContinue; throw "FAULT: skill-smoke server did not start" }
             foreach ($skill in @("setup", "search")) {
               & curl.exe -sf -D (Join-Path $env:TEMP "skill-headers.txt") "http://127.0.0.1:8129/system/skills/$skill" -o (Join-Path $env:TEMP "skill-served.md") 2>$null
               if ($LASTEXITCODE -ne 0) { throw "FAULT: /system/skills/$skill request failed" }
@@ -254,7 +254,7 @@ jobs:
               $same = ($served.Length -eq $repo.Length) -and (-not (Compare-Object $served $repo -SyncWindow 0))
               if (-not $same) { throw "FAULT: /system/skills/$skill bytes differ from the repo SKILL.md" }
             }
-            & curl.exe -sf http://127.0.0.1:8129/system/skills/nope -o $null 2>$null
+            & curl.exe -sf http://127.0.0.1:8129/system/skills/nope -o NUL 2>$null
             if ($LASTEXITCODE -eq 0) { throw "FAULT: unknown skill did not 404" }
             Write-Host "ok (windows): /system/skills/:name serves setup + search byte-identical"
           } finally {
