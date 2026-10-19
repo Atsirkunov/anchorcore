@@ -156,6 +156,14 @@ Code constants (need a rebuild; change only with a failing test in hand):
   still apply downstream. Known gap: `vocabulary` is not in backup
   archives yet — restore + force re-sync rebuilds it (rules fully, LLM
   pairs re-proposed).
+- Vocabulary approval (R40.8): the third activation path. `GET
+  /review/vocabulary` lists proposed pairs (term ↔ expansion, witness
+  doc, origin, witness count; rule-touched pairs never list);
+  `POST /review/vocabulary/{id} {decision: approve|reject}` decides the
+  whole pair family. Approve activates, reject hides the pair for good
+  (survives re-sync via the R40.7 store skip). The Entities tab folds the
+  queue inline ("Words to confirm") next to the doubles strip — no
+  separate Review surface (R31.2 folded it).
 - Still open: suspect detector duplicated pending reunification (R39.13,
   P3); cross-encoder reranker deferred (R39.11, owner call).
 

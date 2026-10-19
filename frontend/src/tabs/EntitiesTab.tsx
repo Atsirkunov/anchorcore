@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { theme } from "../theme";
 import { basename, docTypeLabel, kindLabel, needsLook, shortRef, statusLabel } from "../entityLabels";
-import type { ConflictLink, Dispute, Entity, MergeProposal, Section } from "../types";
+import type { ConflictLink, Dispute, Entity, MergeProposal, Section, VocabProposal } from "../types";
 
 type RowContext = {
   source_name: string | null;
@@ -478,6 +478,60 @@ function DuplicatesSection({
   );
 }
 
+function VocabularySection({
+  proposals,
+  busyId,
+  onDecide,
+}: {
+  proposals: VocabProposal[];
+  busyId: number | null;
+  onDecide: (id: number, decision: "approve" | "reject") => void;
+}) {
+  if (proposals.length === 0) return null;
+  return (
+    <section style={{ ...styles.docCard, borderLeft: `4px solid ${theme.amber}`, marginBottom: 12 }}>
+      <div style={{ fontWeight: 700, fontSize: 13 }}>Words to confirm ({proposals.length})</div>
+      <div style={{ fontSize: 12, color: theme.textDim, margin: "2px 0 8px" }}>
+        The app noticed these terms while reading your documents. Confirming teaches search that the
+        short form means the long one — rejecting hides the pair for good.
+      </div>
+      <div style={{ display: "grid", gap: 8 }}>
+        {proposals.map((p) => (
+          <article key={p.id} style={styles.cardSmall}>
+            <div style={{ fontSize: 12 }}>
+              <span style={{ fontWeight: 700, color: theme.text }}>
+                “{p.term}” means “{p.expansion}”
+              </span>{" "}
+              <span style={{ color: theme.textDim }}>
+                · seen in {p.item_title || p.external_id}
+                {p.confirmations > 1 ? ` (+${p.confirmations - 1} more)` : ""}
+              </span>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button
+                style={{ ...styles.button, background: theme.greenBg, ...(busyId !== null ? styles.disabled : {}) }}
+                disabled={busyId !== null}
+                onClick={() => onDecide(p.id, "approve")}
+                title={`Teach search that "${p.term}" means "${p.expansion}"`}
+              >
+                {busyId === p.id ? "Confirming…" : "Confirm"}
+              </button>
+              <button
+                style={{ ...styles.button, ...(busyId !== null ? styles.disabled : {}) }}
+                disabled={busyId !== null}
+                onClick={() => onDecide(p.id, "reject")}
+                title="Hide this pair — it will never be suggested again"
+              >
+                {busyId === p.id ? "…" : "Reject"}
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 const KNOWN_STATUSES = ["unverified", "verified", "disputed"];
 const KIND_ORDER = ["decision", "action", "note", "document"];
 
@@ -504,6 +558,8 @@ export function EntitiesTab() {
   const [sectionsByItem, setSectionsByItem] = useState<Record<number, Section[]>>({});
   const [dupes, setDupes] = useState<MergeProposal[]>([]);
   const [busyProposal, setBusyProposal] = useState<number | null>(null);
+  const [vocab, setVocab] = useState<VocabProposal[]>([]);
+  const [busyVocab, setBusyVocab] = useState<number | null>(null);
   const [extras, setExtras] = useState<Record<number, Entity>>({});
   const [disputeTarget, setDisputeTarget] = useState<DisputeTarget>(null);
   const [disputeReason, setDisputeReason] = useState("");
@@ -535,8 +591,16 @@ export function EntitiesTab() {
       .catch((e) => setError(String(e)));
   }, []);
 
+  const refreshVocab = useCallback(() => {
+    api
+      .vocabulary()
+      .then(setVocab)
+      .catch((e) => setError(String(e)));
+  }, []);
+
   useEffect(() => refresh(), [refresh]);
   useEffect(() => refreshDupes(), [refreshDupes]);
+  useEffect(() => refreshVocab(), [refreshVocab]);
 
   const byId = useMemo(() => {
     const m = new Map<number, Entity>();
@@ -674,6 +738,19 @@ export function EntitiesTab() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusyProposal(null);
+    }
+  }
+
+  async function decideVocab(id: number, decision: "approve" | "reject") {
+    setBusyVocab(id);
+    setError(null);
+    try {
+      await api.decideVocab(id, decision);
+      await refreshVocab();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyVocab(null);
     }
   }
 
@@ -856,6 +933,7 @@ export function EntitiesTab() {
       </div>
       {error && <p style={{ color: theme.red }}>{error}</p>}
       <DuplicatesSection dupes={dupes} lookup={lookup} busyId={busyProposal} onDecide={decide} />
+      <VocabularySection proposals={vocab} busyId={busyVocab} onDecide={decideVocab} />
       {entities.length === 0 ? (
         <p style={{ color: theme.textDim }}>No entities yet. Ingest a source first.</p>
       ) : filtered.length === 0 ? (

@@ -480,6 +480,8 @@ fn build_router(state: health::AppState) -> Router {
         .route("/review/low-confidence", get(review::low_confidence_handler))
         .route("/review/duplicates", get(review::duplicates_handler))
         .route("/review/merge", post(review::merge_handler))
+        .route("/review/vocabulary", get(review::vocabulary_handler))
+        .route("/review/vocabulary/:id", post(review::vocabulary_decide_handler))
         // projects (R4.4)
         .route("/projects", get(projects::list_handler).post(projects::create_handler))
         .route("/projects/default", get(projects::default_handler))
