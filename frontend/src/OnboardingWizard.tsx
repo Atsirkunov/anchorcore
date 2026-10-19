@@ -27,16 +27,19 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ total: number; processed: number } | null>(null);
   const [question, setQuestion] = useState("");
-  const [answer, setAnswer] = useState<{ text: string; citations: Citation[] } | null>(null);
+  const [answer, setAnswer] = useState<{ text: string; citations: Citation[]; mode?: string; warning?: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const hints = platformHints();
   // Configure model (new step 1)
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState("http://localhost:11434");
   const [answerBaseUrl, setAnswerBaseUrl] = useState("");
   const [answerApiKey, setAnswerApiKey] = useState("");
+  const [answerKeyStored, setAnswerKeyStored] = useState(false);
   const [answerModel, setAnswerModel] = useState("");
   const [savingConfig, setSavingConfig] = useState(false);
   const [configMsg, setConfigMsg] = useState<string | null>(null);
+  const [testingAnswer, setTestingAnswer] = useState(false);
+  const [answerTestMsg, setAnswerTestMsg] = useState<string | null>(null);
   const pull = useModelPull();
   const [startingOllama, setStartingOllama] = useState(false);
   const [startMsg, setStartMsg] = useState<string | null>(null);
@@ -54,6 +57,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
         setOllamaBaseUrl((s as unknown as Record<string, string>).ollama_base_url || "http://localhost:11434");
         setAnswerBaseUrl((s as unknown as Record<string, string>).answer_base_url || "");
         const k = (s as unknown as Record<string, string>).answer_api_key || "";
+        setAnswerKeyStored(k === "***set***");
         setAnswerApiKey(k === "***set***" ? "" : k);
         setAnswerModel((s as unknown as Record<string, string>).answer_model || "");
       }).catch(() => {});
@@ -83,6 +87,22 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
       setConfigMsg(e instanceof Error ? e.message : String(e));
     } finally {
       setSavingConfig(false);
+    }
+  }
+
+  // R23.4: one-flow BYOM in the wizard — test the saved answer endpoint
+  // here; the real compose probe is the step-3 question (mode must be
+  // "composed", anything else banners loudly).
+  async function testAnswerConnection() {
+    setTestingAnswer(true);
+    setAnswerTestMsg(null);
+    try {
+      const r = await api.testConnection("answer");
+      setAnswerTestMsg(r.ok ? `Connected: ${r.message}` : `Not connected: ${r.message} — save settings first, then test.`);
+    } catch (e) {
+      setAnswerTestMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTestingAnswer(false);
     }
   }
 
@@ -175,7 +195,8 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
     setError(null);
     try {
       const res = await api.ask(question);
-      setAnswer({ text: res.answer, citations: res.citations });
+      const warning = (res as unknown as { warning?: string | null }).warning ?? null;
+      setAnswer({ text: res.answer, citations: res.citations, mode: res.mode, warning });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -311,21 +332,41 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
               <input style={styles.input} value={ollamaBaseUrl} onChange={(e) => setOllamaBaseUrl(e.target.value)} placeholder="http://localhost:11434" />
               <label style={{ fontSize: 13, color: theme.textMuted }}>Answer API base URL — http://localhost:11434/v1 for Ollama, or a cloud URL</label>
               <input style={styles.input} value={answerBaseUrl} onChange={(e) => setAnswerBaseUrl(e.target.value)} placeholder="http://localhost:11434/v1 (Ollama) or https://api.openai.com/v1 (cloud)" />
+              <div style={{ fontSize: 12, color: theme.textDim }}>
+                Local-only? Set the Ollama URL explicitly — answers never fall back to Ollama on their own.
+              </div>
               <label style={{ fontSize: 13, color: theme.textMuted }}>Answer API key (if cloud) — stored in OS keychain</label>
-              <input style={styles.input} type="password" value={answerApiKey} onChange={(e) => setAnswerApiKey(e.target.value)} placeholder="sk-..." />
+              <input
+                style={styles.input}
+                type="password"
+                value={answerApiKey}
+                onChange={(e) => setAnswerApiKey(e.target.value)}
+                placeholder={answerKeyStored ? "•••••••• (stored — type to replace, blank keeps it)" : "sk-... (not needed for local Ollama)"}
+              />
               <label style={{ fontSize: 13, color: theme.textMuted }}>Answer model</label>
               <input style={styles.input} value={answerModel} onChange={(e) => setAnswerModel(e.target.value)} placeholder="gpt-4o-mini or llama3.2:3b" />
-              <button
-                style={{ ...styles.button, background: theme.bgHover, border: `1px solid ${theme.border}`, justifySelf: "start" }}
-                onClick={() => {
-                  setAnswerBaseUrl("http://localhost:11434/v1");
-                  if (!answerModel.trim()) setAnswerModel("llama3.2:3b");
-                  setConfigMsg("Using Ollama for answers — Save & continue to apply.");
-                }}
-              >
-                Use Ollama for answers (free, local)
-              </button>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  style={{ ...styles.button, background: theme.bgHover, border: `1px solid ${theme.border}`, justifySelf: "start" }}
+                  onClick={() => {
+                    setAnswerBaseUrl("http://localhost:11434/v1");
+                    if (!answerModel.trim()) setAnswerModel("llama3.2:3b");
+                    setConfigMsg("Using Ollama for answers — Save & continue to apply.");
+                  }}
+                >
+                  Use Ollama for answers (free, local)
+                </button>
+                <button
+                  style={{ ...styles.button, background: theme.bgHover, border: `1px solid ${theme.border}`, justifySelf: "start" }}
+                  disabled={testingAnswer}
+                  onClick={testAnswerConnection}
+                  title="Checks the saved answer endpoint (save first)"
+                >
+                  {testingAnswer ? "Testing…" : "Test answer connection"}
+                </button>
+              </div>
             </div>
+            {answerTestMsg && <div style={{ fontSize: 12, color: theme.accentAlt }}>{answerTestMsg}</div>}
             {configMsg && <div style={{ fontSize: 12, color: theme.accentAlt }}>{configMsg}</div>}
             <div style={styles.actions}>
               <button style={styles.button} onClick={() => setStep(0)}>← Back</button>
@@ -407,6 +448,13 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
             </div>
             {answer && (
               <div style={styles.answerBox}>
+                {answer.warning ? (
+                  <div style={styles.degradedNote}>{answer.warning}</div>
+                ) : answer.mode && answer.mode !== "composed" ? (
+                  <div style={styles.degradedNote}>
+                    Not a composed answer (mode: {answer.mode}) — go back to step 1 and configure an answer model.
+                  </div>
+                ) : null}
                 <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{answer.text}</div>
                 {answer.citations.length > 0 && (
                   <div style={{ marginTop: 10, fontSize: 12, color: theme.textMuted }}>
@@ -518,5 +566,14 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 14,
     maxHeight: 260,
     overflowY: "auto",
+  },
+  degradedNote: {
+    background: theme.amberBg,
+    color: theme.amber,
+    border: `1px solid ${theme.amber}`,
+    borderRadius: 8,
+    padding: "0.45rem 0.7rem",
+    fontSize: 12,
+    marginBottom: 10,
   },
 };

@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import { stripPlaceholders } from "../placeholders";
 import { theme } from "../theme";
-import type { AppSettings } from "../types";
+import type { AppSettings, AskResponse } from "../types";
+
+type ProbeResult = { status: "pass" | "fail" | "inconclusive"; message: string };
 
 type ProviderId = "local" | "cloud";
 
@@ -19,6 +21,8 @@ export function SettingsTab() {
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ provider: string; ok: boolean; message: string } | null>(null);
   const [testBusy, setTestBusy] = useState<string | null>(null);
+  const [probeBusy, setProbeBusy] = useState(false);
+  const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
 
   const refresh = useCallback(() => {
     api
@@ -90,6 +94,35 @@ export function SettingsTab() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setTestBusy(null);
+    }
+  }
+
+  // R23.4: the one-flow BYOM check — a real ask whose mode must be
+  // "composed". Save first (the probe reads the saved endpoint), then test
+  // the connection, then probe: only composed means answers really work.
+  async function runComposeProbe() {
+    setProbeBusy(true);
+    setProbeResult(null);
+    setError(null);
+    try {
+      const raw = await api.ask("Summarize what this memory contains in one sentence.", [], undefined, undefined, false);
+      const res = raw as AskResponse & { warning?: string | null };
+      if (res.mode === "composed") {
+        setProbeResult({ status: "pass", message: "Composed answer confirmed (mode: composed) — your answer model is working." });
+      } else if (res.refusal) {
+        setProbeResult({ status: "fail", message: res.warning ?? "Probe refused: relevant knowledge is gated from this provider." });
+      } else if ((res.citations?.length ?? 0) === 0) {
+        setProbeResult({
+          status: "inconclusive",
+          message: "No matching content to compose from — sync a source first, then probe again. (An empty memory reports mode: none even with a working model.)",
+        });
+      } else {
+        setProbeResult({ status: "fail", message: res.warning ?? `No answer model ran (mode: ${res.mode ?? "unknown"}). Save settings, then probe again.` });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProbeBusy(false);
     }
   }
 
@@ -257,9 +290,39 @@ export function SettingsTab() {
           <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
             Cloud (o-series, gpt-5): sends <code>reasoning_effort</code>. Local Ollama: enables thinking on reasoning models (deepseek-r1, qwen3, llama3.3-thinking).
           </div>
-          <button style={styles.button} disabled={testBusy === "answer"} onClick={() => testConnection("answer")}>
-            {testBusy === "answer" ? "Testing…" : "Test answer model"}
-          </button>
+          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+            Local-only? Set the Ollama URL explicitly here — answers never fall back to Ollama on their own (classifier/embeddings do).
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={styles.button} disabled={testBusy === "answer"} onClick={() => testConnection("answer")}>
+              {testBusy === "answer" ? "Testing…" : "Test answer model"}
+            </button>
+            <button
+              style={styles.button}
+              disabled={probeBusy}
+              onClick={runComposeProbe}
+              title="Save first, then probe: asks a real question and requires a composed answer (mode: composed)"
+            >
+              {probeBusy ? "Probing…" : "Run compose probe"}
+            </button>
+          </div>
+          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+            One flow: pick local Ollama or your own endpoint → Save → Test → Probe. Only a probe reporting mode: composed means answers really work.
+          </div>
+          {probeResult && (
+            <div
+              style={{
+                marginTop: 8,
+                padding: "0.5rem 0.75rem",
+                borderRadius: 6,
+                background: probeResult.status === "pass" ? theme.greenBg : probeResult.status === "fail" ? theme.redBg : theme.amberBg,
+                color: probeResult.status === "pass" ? theme.greenText : probeResult.status === "fail" ? theme.redText : theme.amber,
+                fontSize: 13,
+              }}
+            >
+              {probeResult.message}
+            </div>
+          )}
         </div>
 
         {testResult && (

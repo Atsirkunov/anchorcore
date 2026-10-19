@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { api, RequestAbortedError } from "../api";
 import { theme } from "../theme";
 import { modeBannerNotes } from "../answerMode";
-import type { AskTurn } from "../types";
+import type { AskResponse, AskTurn } from "../types";
+
+// R23.4: the server warns in plain language whenever no answer model ran
+// (`AskResponse.warning`, Some unless mode == "composed"). Carried per turn
+// so degraded output can never render without the banner.
+type Turn = AskTurn & { warning?: string | null };
 
 const SAMPLE_QUESTIONS = [
   "What was decided about instant payments, and why?",
@@ -36,7 +41,7 @@ function TagChips({ tags }: { tags?: string[] }) {
   );
 }
 export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSources?: () => void }) {
-  const [turns, setTurns] = useState<AskTurn[]>([]);
+  const [turns, setTurns] = useState<Turn[]>([]);
   const [question, setQuestion] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,10 +73,11 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
     abortRef.current = controller;
     try {
       const response = await api.ask(question, history, projectId, controller.signal, publicOnly);
+      const warning = (response as AskResponse & { warning?: string | null }).warning ?? null;
       setTurns((prev) => [
         ...prev,
         { role: "user", content: question },
-        { role: "assistant", content: response.answer, citations: response.citations, mode: response.mode, retrieval: response.retrieval },
+        { role: "assistant", content: response.answer, citations: response.citations, mode: response.mode, retrieval: response.retrieval, warning },
       ]);
       setQuestion("");
     } catch (e) {
@@ -180,6 +186,7 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
                 style={{ ...styles.bubble, background: theme.bgCard, animation: `popIn 0.45s ease both`, animationDelay: stagger }}
               >
                 <div style={{ fontSize: 11, color: theme.purple, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>AnchorCore</div>
+                {t.warning ? <div style={styles.degradedNote}>{t.warning}</div> : null}
                 {modeBannerNotes(t.mode, t.retrieval).map((note) => (
                   <div key={note} style={styles.degradedNote}>
                     {note}

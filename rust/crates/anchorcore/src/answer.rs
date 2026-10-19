@@ -40,6 +40,10 @@ pub struct AskResponse {
     /// B58: how retrieval ranked — "hybrid" (vector + keyword on a real
     /// query embedding) or "keyword_only" (embedder unavailable).
     pub retrieval: String,
+    /// R23.4: plain-language degradation warning — None only when
+    /// `mode == "composed"`. UIs render it as the banner; MCP `ask`
+    /// passes it through so agents never quote context as an answer.
+    pub warning: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -568,6 +572,7 @@ pub async fn ask(
             refusal: None,
             mode: "none".to_string(),
             retrieval: retrieval.to_string(),
+            warning: degraded_warning("none", None),
         };
     }
 
@@ -590,6 +595,7 @@ pub async fn ask(
                     refusal: Some("gated_provider".to_string()),
                     mode: "none".to_string(),
                     retrieval: retrieval.to_string(),
+                    warning: degraded_warning("none", Some("gated_provider")),
                 };
             }
         }
@@ -609,7 +615,25 @@ pub async fn ask(
     let want_content = req.include_content.unwrap_or(false);
     let citations = build_citations(&hits, &data_dir_string, want_content, citations_limit(), &question);
     let mode = if composed { "composed" } else { "context_only" };
-    AskResponse { answer, citations, refusal: None, mode: mode.to_string(), retrieval: retrieval.to_string() }
+    let warning = degraded_warning(mode, None);
+    AskResponse { answer, citations, refusal: None, mode: mode.to_string(), retrieval: retrieval.to_string(), warning }
+}
+
+/// R23.4: plain-language degradation warning — `None` only when an answer
+/// model actually composed the text (`mode == "composed"`). Every other
+/// mode warns, so UIs and agents can never render degraded output without
+/// saying so. Surfaced as `AskResponse.warning` + MCP `ask` output.
+fn degraded_warning(mode: &str, refusal: Option<&str>) -> Option<String> {
+    if mode == "composed" {
+        return None;
+    }
+    if refusal == Some("gated_provider") {
+        return Some("Relevant knowledge exists but is sensitive/PII and the answer provider is not approved for it, so no answer was composed. Do not treat this as an answer.".to_string());
+    }
+    if mode == "none" {
+        return Some("No relevant knowledge was found, so no answer was composed. Do not treat this as an answer.".to_string());
+    }
+    Some("No answer model ran — this is matching context, not a composed answer. Do not quote it as an answer; verify against the citations, or configure an answer model (Settings → Answer model: local Ollama or your own OpenAI-compatible endpoint).".to_string())
 }
 
 fn settings_snapshot(settings: &SettingsService) -> std::collections::HashMap<String, String> {
@@ -1530,6 +1554,9 @@ mod tests {
         assert!(!res.citations.is_empty(), "keyword hit on ordinary source must survive");
         assert_eq!(res.mode, "context_only");
         assert_eq!(res.retrieval, "keyword_only");
+        // R23.4: degraded output always warns — UIs banner it, MCP passes it.
+        let warning = res.warning.clone().unwrap_or_default();
+        assert!(warning.contains("No answer model ran"), "warning: {warning}");
         // R39.1: citations carry the same provenance as search hits.
         assert_eq!(res.citations[0].provenance.len(), 1);
         assert_eq!(res.citations[0].provenance[0].leg, "keyword");
@@ -1552,9 +1579,71 @@ mod tests {
         assert_eq!(res.mode, "none");
         assert!(res.citations.is_empty(), "no-match ask must cite nothing");
         assert_eq!(res.retrieval, "keyword_only");
+        // R23.4: even an empty answer warns — nothing renders silently.
+        let warning = res.warning.clone().unwrap_or_default();
+        assert!(warning.contains("No relevant knowledge was found"), "warning: {warning}");
         let sreq = SearchRequest { query: "xqzt blorpt wumpus".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
         let sres = search(&settings, &embedder, sreq, &data_dir).await;
         assert!(sres.hits.is_empty(), "no-match search must return no hits");
+    }
+
+    #[test]
+    fn degraded_warning_only_composed_is_silent() {
+        // R23.4: the contract in one place — composed stays quiet, every
+        // other mode warns in plain language (gated refusal names the gate).
+        assert!(degraded_warning("composed", None).is_none());
+        let ctx = degraded_warning("context_only", None).expect("context_only must warn");
+        assert!(ctx.contains("No answer model ran"), "ctx: {ctx}");
+        assert!(ctx.contains("Do not quote it as an answer"), "ctx: {ctx}");
+        let none = degraded_warning("none", None).expect("none must warn");
+        assert!(none.contains("No relevant knowledge was found"), "none: {none}");
+        let gated = degraded_warning("none", Some("gated_provider")).expect("gated refusal must warn");
+        assert!(gated.contains("not approved"), "gated: {gated}");
+    }
+
+    #[tokio::test]
+    async fn ask_gated_refusal_carries_warning() {
+        // R23.4: the gate refuses AND warns — agents must not fill the gap.
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
+        let req = AskRequest { question: "moonvault".to_string(), history: None, project_id: None, public_only: None, include_content: None };
+        let res = ask(&settings, &embedder, req, &data_dir).await;
+        assert_eq!(res.mode, "none");
+        assert_eq!(res.refusal.as_deref(), Some("gated_provider"));
+        assert!(res.citations.is_empty());
+        let warning = res.warning.clone().unwrap_or_default();
+        assert!(warning.contains("not approved"), "warning: {warning}");
+    }
+
+    #[tokio::test]
+    async fn ask_composed_carries_no_warning() {
+        // R23.4: the one-flow probe target — a working endpoint composes
+        // with no warning (hermetic mock OpenAI-compatible server).
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let _ = sock.read(&mut buf).await;
+                let body = r#"{"choices":[{"message":{"content":"mocked answer"}}]}"#;
+                let head = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len());
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body.as_bytes()).await;
+            }
+        });
+        settings.set("answer_base_url", &format!("http://127.0.0.1:{}", port), &conn).unwrap();
+        let req = AskRequest { question: "sunshine".to_string(), history: None, project_id: None, public_only: None, include_content: None };
+        let res = ask(&settings, &embedder, req, &data_dir).await;
+        assert_eq!(res.mode, "composed");
+        assert!(res.warning.is_none(), "composed must not warn, got {:?}", res.warning);
+        assert_eq!(res.answer, "mocked answer");
+        assert!(!res.citations.is_empty());
     }
 
     #[tokio::test]
