@@ -37,7 +37,7 @@ needs custom glue; MCP is the glue.
 
 | Tool | Parameters | Returns | Maps to |
 |---|---|---|---|
-| `ask` | `question` (required), `project_id?`, `public_only?`, `include_content?` | composed answer + citations with provenance (item id + file path + title + env class on every citation; full chunk bytes on opt-in, capped at 4000 chars with `content_truncated`) | `POST /qa`, `POST /qa/public` |
+| `ask` | `question` (required), `project_id?`, `public_only?`, `include_content?` | composed answer + citations with provenance (item id + file path + title + env class on every citation; full chunk bytes on opt-in, capped at 4000 chars with `content_truncated`) + `mode`/`warning` degradation flags (§3.1) | `POST /qa`, `POST /qa/public` |
 | `search` | `query` (required), `k` (default 8, max 50), `project_id?`, `public_only?`, `env?` (`live`/`test`) | cited chunks with provenance (item id/title/path, env class, source ref, score); summaries/snippets window on the match; test fixtures rank below live hits unless the query names them; long chunks capped at 4000 chars with `content_truncated` flagged | `POST /qa/search` |
 | `get_entity` | `entity_id` | entity + parent item/chunk links (`item_id`, `chunk_id`) + legacy item PII flag (deprecated) | Entity graph |
 | `get_source` | `source_id` | source details (no config/secrets) | Sources |
@@ -51,6 +51,32 @@ feed their own reasoning loop. `ask` is for humans; `search` is for agents.
 All results respect status filtering — disputed/stale entities excluded, same
 as Q&A — so agents never cite contested facts. With `public_only`, only
 sources labeled public are searched (the share-safe surface).
+
+### 3.1 Bring your own model (BYOM) — the answer contract (R23.4)
+
+AnchorCore never picks a model behind the user's back. The contract:
+
+- **Harness agents prefer `search` + their own model.** `search` returns
+  cited chunks (verbatim bytes on `fields: all`, capped at 4000 chars with
+  `content_truncated`); the harness composes the answer with whatever model
+  the user already runs. No server-side model is involved at all.
+- **`ask` uses the server's configured answer model — the user's own.**
+  Local Ollama or the user's own OpenAI-compatible endpoint (Settings →
+  Answer model, or the onboarding wizard's "Configure model" step). There
+  is no silent fallback to a model the user did not choose.
+- **Degraded answers stay visible, never silent.** Every `ask` result
+  carries `mode` (`composed` | `context_only` | `none`) and — whenever
+  `mode != composed` — a plain-language `warning`. Agents must not quote
+  warned text as an answer: use the citations, or fall back to `search` +
+  their own model. The Ask tab renders the same warning as an amber
+  banner, so humans see it too.
+- **No Ollama fallback for answers.** `answer_base_url` defaults to
+  `https://api.openai.com/v1` — unlike classifier/embed, it never falls
+  back to Ollama. A local-only setup must set
+  `http://localhost:11434/v1` explicitly, or answers stay `context_only`
+  with the warning shown. The Settings "Run compose probe" button (and
+  the wizard's step-3 question) verifies the endpoint end to end: only
+  `mode: "composed"` means answers really work.
 
 ## 4. Transports
 

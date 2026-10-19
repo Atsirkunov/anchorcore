@@ -190,8 +190,33 @@ async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool, in
     // B58: pass degradation flags through ("unknown" against an older backend).
     let mode = result.get("mode").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
     let retrieval = result.get("retrieval").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+    // R23.4: the server warns in plain language whenever no model composed
+    // the text; older backends without the field get the local fallback —
+    // either way a degraded ask never leaves here without a warning.
+    let warning = result
+        .get("warning")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| fallback_ask_warning(&mode));
     let citations: Vec<Value> = result.get("citations").and_then(|v| v.as_array()).cloned().unwrap_or_default().into_iter().map(|c| citation_json(&c)).collect();
-    Ok(json!({"answer": answer, "citations": citations, "refusal": refusal, "mode": mode, "retrieval": retrieval}))
+    Ok(json!({"answer": answer, "citations": citations, "refusal": refusal, "mode": mode, "retrieval": retrieval, "warning": warning}))
+}
+
+/// R23.4: MCP-side fallback when the server predates `AskResponse.warning`
+/// (or omits it) — any non-composed mode warns in plain language, never
+/// silent. Mirrors `answer::degraded_warning` for harness agents.
+fn fallback_ask_warning(mode: &str) -> Option<String> {
+    if mode == "composed" {
+        return None;
+    }
+    if mode == "none" {
+        return Some("No answer was composed — no relevant knowledge matched (or it was gated from the answer provider). Do not treat the text as an answer; prefer the `search` tool and compose from cited chunks with your own model.".to_string());
+    }
+    if mode == "context_only" {
+        return Some("This is NOT a composed answer — no answer model ran on the server. Do not quote the text as an answer; use the citations, or prefer `search` + your own model.".to_string());
+    }
+    Some("Answer mode is unknown (older server?) — treat the text as uncomposed context, not an answer. Prefer `search` + your own model.".to_string())
 }
 
 /// R36.6: optional `/qa/search` filters, shared by the MCP tool and its
@@ -323,7 +348,7 @@ fn tool_defs() -> Value {
     json!([
         {
             "name": "ask",
-            "description": "Policy-gated composed answer from AnchorCore memory, with citations. Use when the material may be sensitive/PII or you want the server to enforce PII/provider policy before you see bytes. Otherwise prefer search so your own model composes from verbatim cited chunks.",
+            "description": "Policy-gated composed answer from AnchorCore memory, with citations. Uses the server's configured answer model (the user's own — local Ollama or their OpenAI-compatible endpoint). Use when the material may be sensitive/PII or you want the server to enforce PII/provider policy before you see bytes. Otherwise prefer search so your own model composes from verbatim cited chunks. When no model composed the text the result carries mode != composed plus a plain-language warning — never quote warned text as an answer.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -568,6 +593,32 @@ mod tests {
         let clegacy = citation_json(&json!({}));
         assert!(clegacy.get("chunk_id").is_none_or(|v| v.is_null()));
         assert_eq!(clegacy.get("breadcrumb").and_then(|v| v.as_str()), Some(""));
+    }
+
+    #[test]
+    fn fallback_ask_warning_only_composed_is_silent() {
+        // R23.4: older backends without `warning` still warn locally —
+        // composed stays quiet, every other mode (incl. unknown) warns.
+        assert!(fallback_ask_warning("composed").is_none());
+        let ctx = fallback_ask_warning("context_only").expect("context_only must warn");
+        assert!(ctx.contains("NOT a composed answer"), "ctx: {ctx}");
+        let none = fallback_ask_warning("none").expect("none must warn");
+        assert!(none.contains("No answer was composed"), "none: {none}");
+        let unknown = fallback_ask_warning("unknown").expect("unknown mode must warn");
+        assert!(unknown.contains("unknown"), "unknown: {unknown}");
+        for w in [ctx, none, unknown] {
+            assert!(w.contains("search"), "fallback must point at search: {w}");
+        }
+    }
+
+    #[test]
+    fn ask_tool_description_states_warning_contract() {
+        // R23.4: harness agents learn the contract from the tool itself.
+        let defs = tool_defs();
+        let ask = defs.as_array().unwrap().iter().find(|t| t.get("name").and_then(|n| n.as_str()) == Some("ask")).expect("ask tool");
+        let desc = ask.get("description").and_then(|d| d.as_str()).unwrap_or("");
+        assert!(desc.contains("warning"), "ask description must name the warning: {desc}");
+        assert!(desc.contains("server's configured answer model"), "ask description must name BYOM: {desc}");
     }
 
     #[test]
