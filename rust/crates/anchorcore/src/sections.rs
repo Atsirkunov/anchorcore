@@ -19,9 +19,13 @@ use crate::health::AppState;
 pub struct ListQuery {
     pub item_id: Option<i64>,
     pub source_id: Option<i64>,
+    /// Outline depth cap: only sections with `level <= depth` (huge markdown
+    /// files can hold thousands of headings — walk the tree incrementally).
+    pub depth: Option<i64>,
 }
 
 fn section_row(row: &rusqlite::Row) -> rusqlite::Result<Value> {
+    let meta_text: String = row.get(11)?;
     Ok(json!({
         "id": row.get::<_, i64>(0)?,
         "item_id": row.get::<_, i64>(1)?,
@@ -31,7 +35,11 @@ fn section_row(row: &rusqlite::Row) -> rusqlite::Result<Value> {
         "path": row.get::<_, String>(5)?,
         "chunk_range": row.get::<_, String>(6)?,
         "summary": row.get::<_, String>(7)?,
-        "created_at": row.get::<_, Option<String>>(8)?,
+        "line_start": row.get::<_, i64>(8)?,
+        "line_end": row.get::<_, i64>(9)?,
+        "kind": row.get::<_, String>(10)?,
+        "meta": serde_json::from_str::<Value>(&meta_text).unwrap_or(Value::Null),
+        "created_at": row.get::<_, Option<String>>(12)?,
     }))
 }
 
@@ -42,12 +50,13 @@ pub async fn list_handler(
     let data_dir = state.data_dir.clone();
     let item_id = q.item_id;
     let source_id = q.source_id;
+    let depth = q.depth;
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path)
             .unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let mut sql = String::from(
-            "SELECT id, item_id, parent_id, level, title, path, chunk_range, summary, created_at FROM sections WHERE 1=1",
+            "SELECT id, item_id, parent_id, level, title, path, chunk_range, summary, line_start, line_end, kind, meta, created_at FROM sections WHERE 1=1",
         );
         let mut params: Vec<rusqlite::types::Value> = Vec::new();
         if let Some(id) = item_id {
@@ -57,6 +66,10 @@ pub async fn list_handler(
         if let Some(sid) = source_id {
             sql.push_str(" AND item_id IN (SELECT id FROM ingested_items WHERE source_id = ?)");
             params.push(rusqlite::types::Value::Integer(sid));
+        }
+        if let Some(d) = depth {
+            sql.push_str(" AND level <= ?");
+            params.push(rusqlite::types::Value::Integer(d));
         }
         sql.push_str(" ORDER BY level ASC, id ASC");
         let mut stmt = match conn.prepare(&sql) {
@@ -86,6 +99,10 @@ struct SectionNode {
     path: String,
     chunk_count: i64,
     total_chars: i64,
+    line_start: i64,
+    line_end: i64,
+    kind: String,
+    meta: String,
 }
 
 fn node_json(n: &SectionNode) -> Value {
@@ -98,6 +115,10 @@ fn node_json(n: &SectionNode) -> Value {
         "path": n.path.clone(),
         "chunk_count": n.chunk_count,
         "total_chars": n.total_chars,
+        "line_start": n.line_start,
+        "line_end": n.line_end,
+        "kind": n.kind.clone(),
+        "meta": serde_json::from_str::<Value>(&n.meta).unwrap_or(Value::Null),
     })
 }
 
@@ -111,10 +132,14 @@ fn node_from_row(row: &rusqlite::Row) -> rusqlite::Result<SectionNode> {
         path: row.get(5)?,
         chunk_count: row.get(6)?,
         total_chars: row.get(7)?,
+        line_start: row.get(8)?,
+        line_end: row.get(9)?,
+        kind: row.get(10)?,
+        meta: row.get(11)?,
     })
 }
 
-const NODE_SIZES_SELECT: &str = "SELECT s.id, s.item_id, s.parent_id, s.level, s.title, s.path, COUNT(c.id), COALESCE(SUM(LENGTH(c.content)), 0) FROM sections s LEFT JOIN chunks c ON c.section_id = s.id";
+const NODE_SIZES_SELECT: &str = "SELECT s.id, s.item_id, s.parent_id, s.level, s.title, s.path, COUNT(c.id), COALESCE(SUM(LENGTH(c.content)), 0), s.line_start, s.line_end, s.kind, s.meta FROM sections s LEFT JOIN chunks c ON c.section_id = s.id";
 
 /// Whole item's sections with sizes, ordered for tree rendering (`level`,
 /// then insertion order — same as the list handler).
@@ -130,16 +155,29 @@ fn one_section(conn: &rusqlite::Connection, section_id: i64) -> Option<SectionNo
     conn.query_row(&format!("{NODE_SIZES_SELECT} WHERE s.id = ?1 GROUP BY s.id"), [section_id], node_from_row).ok()
 }
 
+#[derive(Deserialize)]
+pub struct OutlineQuery {
+    /// Depth cap: only nodes with `level <= depth` (huge markdown files can
+    /// hold thousands of headings — walk the outline incrementally).
+    pub depth: Option<i64>,
+}
+
 pub async fn outline_handler(
     State(state): State<AppState>,
     Path(item_id): Path<i64>,
+    Query(q): Query<OutlineQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
+    let depth = q.depth;
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
         crate::common::require_row(&conn, "ingested_items", item_id, "Item not found")?;
         let nodes = item_sections(&conn, item_id);
-        let sections: Vec<Value> = nodes.iter().map(node_json).collect();
+        let sections: Vec<Value> = nodes
+            .iter()
+            .filter(|n| depth.map(|d| n.level <= d).unwrap_or(true))
+            .map(node_json)
+            .collect();
         let count = sections.len();
         Ok(json!({"item_id": item_id, "section_count": count, "sections": sections}))
     })
@@ -230,7 +268,7 @@ pub async fn chunks_handler(
         let conn = crate::db::init_db(&db_path)
             .unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let mut stmt = match conn.prepare(
-            "SELECT id, item_id, source_ref, content, level, path, created_at FROM chunks WHERE section_id = ?1 ORDER BY id",
+            "SELECT id, item_id, source_ref, content, level, path, line_start, line_end, created_at FROM chunks WHERE section_id = ?1 ORDER BY id",
         ) {
             Ok(s) => s,
             Err(e) => return Json(json!({"error": e.to_string()})),
@@ -244,7 +282,9 @@ pub async fn chunks_handler(
                     "content": r.get::<_, String>(3)?,
                     "level": r.get::<_, i64>(4)?,
                     "path": r.get::<_, String>(5)?,
-                    "created_at": r.get::<_, Option<String>>(6)?,
+                    "line_start": r.get::<_, i64>(6)?,
+                    "line_end": r.get::<_, i64>(7)?,
+                    "created_at": r.get::<_, Option<String>>(8)?,
                 }))
             })
             .unwrap();
@@ -341,17 +381,29 @@ mod tests {
         let (dir, conn, iid, intro, _api, _sym) = seed_tree();
         drop(conn);
         let state = app_state(&dir);
-        let Json(v) = outline_handler(State(state.clone()), Path(iid)).await.expect("outline must succeed");
+        let Json(v) = outline_handler(State(state.clone()), Path(iid), Query(OutlineQuery { depth: None })).await.expect("outline must succeed");
         assert_eq!(v.get("item_id").and_then(|i| i.as_i64()), Some(iid));
         assert_eq!(v.get("section_count").and_then(|c| c.as_i64()), Some(3));
         let sections = v.get("sections").and_then(|s| s.as_array()).cloned().unwrap_or_default();
         assert_eq!(sections.len(), 3);
         assert_eq!(sections[0].get("id").and_then(|i| i.as_i64()), Some(intro));
         assert_eq!(sections[0].get("chunk_count").and_then(|c| c.as_i64()), Some(1));
-        match outline_handler(State(state), Path(iid + 99)).await {
+        match outline_handler(State(state), Path(iid + 99), Query(OutlineQuery { depth: None })).await {
             Err((s, _)) => assert_eq!(s, StatusCode::NOT_FOUND),
             Ok(_) => panic!("outline on missing item must 404"),
         }
+    }
+
+    #[tokio::test]
+    async fn outline_handler_depth_caps_levels() {
+        // R38.3: `?depth=0` serves roots only (the seed tree is two roots +
+        // one level-1 child); absent depth serves everything.
+        let (dir, conn, iid, intro, api, _sym) = seed_tree();
+        drop(conn);
+        let state = app_state(&dir);
+        let Json(v) = outline_handler(State(state.clone()), Path(iid), Query(OutlineQuery { depth: Some(0) })).await.expect("outline must succeed");
+        assert_eq!(v.get("section_count").and_then(|c| c.as_i64()), Some(2));
+        assert_eq!(ids(&v, "sections"), vec![intro, api]);
     }
 
     #[tokio::test]

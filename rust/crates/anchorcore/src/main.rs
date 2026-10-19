@@ -29,6 +29,7 @@ mod health;
 mod items;
 mod jobs;
 mod license;
+mod markdown;
 mod mcp;
 mod mcp_setup;
 mod ollama;

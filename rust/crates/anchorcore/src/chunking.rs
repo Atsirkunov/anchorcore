@@ -450,6 +450,10 @@ pub struct SectionMeta {
     pub level: i32,
     pub parent: Option<usize>,
     pub path: String,
+    pub line_start: i64,
+    pub line_end: i64,
+    pub kind: String,
+    pub meta: String,
 }
 
 #[derive(Debug, Clone)]
@@ -458,6 +462,8 @@ pub struct ChunkMeta {
     pub section_idx: Option<usize>,
     pub level: i32,
     pub path: String,
+    pub line_start: i64,
+    pub line_end: i64,
 }
 
 pub fn chunk_document_with_sections(text: &str) -> (Vec<SectionMeta>, Vec<ChunkMeta>) {
@@ -806,6 +812,12 @@ fn materialize_opts(
             level: r.level,
             parent: r.parent,
             path: r.path.clone(),
+            // The prose/code/config splitters don't track source lines — only
+            // the markdown path fills ranges/kind/meta (migration 19 columns).
+            line_start: 0,
+            line_end: 0,
+            kind: "section".to_string(),
+            meta: "{}".to_string(),
         })
         .collect();
     let mut chunks: Vec<ChunkMeta> = Vec::new();
@@ -821,6 +833,8 @@ fn materialize_opts(
                 section_idx: Some(idx),
                 level: rs.level,
                 path: rs.path.clone(),
+                line_start: 0,
+                line_end: 0,
             });
         }
     }
@@ -949,9 +963,10 @@ fn is_minified(text: &str) -> bool {
     text.len() / newlines.max(1) > 2000
 }
 
-/// Pipeline entry: configs split by key/table, code by symbols, the rest by
-/// headings. The extension is ground truth for the format — a `.yml` file's
-/// structure is keys whatever its doc_type.
+/// Pipeline entry: configs split by key/table, markdown by blocks + `#`
+/// headings, code by symbols, the rest by headings. The extension is ground
+/// truth for the format — a `.yml` file's structure is keys and a `.md`
+/// file's is blocks whatever their doc_type.
 pub fn chunk_for_doc_type(
     doc_type: &str,
     filename: &str,
@@ -959,6 +974,8 @@ pub fn chunk_for_doc_type(
 ) -> (Vec<SectionMeta>, Vec<ChunkMeta>) {
     if crate::extract::is_config_filename(filename) {
         chunk_config_with_sections(text, filename)
+    } else if crate::markdown::is_markdown_filename(filename) {
+        crate::markdown::chunk_markdown(text, filename)
     } else if doc_type == "code" {
         chunk_code_with_sections(text, filename)
     } else {
@@ -1568,8 +1585,11 @@ mod tests {
         let code = "pub fn classify(text: &str) -> Vec<String> {\n    vec![]\n}\n";
         let (secs_code, _) = chunk_for_doc_type("code", "lib.rs", code);
         assert!(secs_code.iter().any(|s| s.title == "fn classify"));
-        let (secs_prose, _) = chunk_for_doc_type("meeting", "n.md", code);
+        let (secs_prose, _) = chunk_for_doc_type("meeting", "notes.txt", code);
         assert!(secs_prose.iter().all(|s| s.title.is_empty()));
+        // Markdown filenames take the block splitter even for prose doc types.
+        let (secs_md, _) = chunk_for_doc_type("meeting", "n.md", "# Hi\ntext\n");
+        assert_eq!(secs_md[0].title, "Hi");
     }
 
     #[test]

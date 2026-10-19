@@ -225,9 +225,9 @@ impl Scheduler {
     /// ingest, where only a sensitive label gates).
     fn backfill_select_sql(trusted: bool) -> &'static str {
         if trusted {
-            "SELECT id, content FROM chunks WHERE embedding IS NULL ORDER BY id LIMIT ?1"
+            "SELECT id, content, path FROM chunks WHERE embedding IS NULL ORDER BY id LIMIT ?1"
         } else {
-            "SELECT c.id, c.content FROM chunks c \
+            "SELECT c.id, c.content, c.path FROM chunks c \
              LEFT JOIN entities e ON e.id = c.entity_id \
              LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
              LEFT JOIN sources s ON s.id = i.source_id \
@@ -244,10 +244,10 @@ impl Scheduler {
         // backfill doesn't defeat the source label. Ordinary sources still
         // drain ungated (no IDF gate here — that stays the safety net).
         let trusted = self.embedder.cloud_trusted();
-        let batch: Vec<(i64, String)> = run_db(&data_dir, move |conn| {
+        let batch: Vec<(i64, String, String)> = run_db(&data_dir, move |conn| {
             let mut stmt = conn.prepare(Self::backfill_select_sql(trusted)).map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map([BACKFILL_BATCH as i64], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+                .query_map([BACKFILL_BATCH as i64], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
                 .map_err(|e| e.to_string())?;
             Ok(rows.filter_map(|r| r.ok()).collect())
         })
@@ -256,12 +256,13 @@ impl Scheduler {
             return Ok((0, false));
         }
         let has_more = batch.len() == BACKFILL_BATCH;
-        let texts: Vec<String> = batch.iter().map(|(_, c)| c.clone()).collect();
+        // Same breadcrumb-prefixed input as the gated paths — one vector space.
+        let texts: Vec<String> = batch.iter().map(|(_, c, p)| crate::markdown::embed_input(p, c)).collect();
         let vectors = self.embedder.embed(texts).await?;
         if vectors.len() != batch.len() {
             return Err(format!("embedder returned {} vectors for {} chunks", vectors.len(), batch.len()));
         }
-        let updates: Vec<(i64, Vec<u8>)> = batch.iter().map(|(id, _)| *id).zip(vectors).map(|(id, v)| (id, pack_single(&v))).collect();
+        let updates: Vec<(i64, Vec<u8>)> = batch.iter().map(|(id, _, _)| *id).zip(vectors).map(|(id, v)| (id, pack_single(&v))).collect();
         let embedded = updates.len();
         let embedder = self.embedder.clone();
         run_db(&data_dir, move |conn| {

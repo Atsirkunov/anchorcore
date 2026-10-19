@@ -136,15 +136,23 @@ impl Embedder {
     /// Returns packed bytes for storage; skips low-signal chunks and gated sources.
     /// R35.1: the per-chunk PII skip is gone with auto-detect — `gated` (source
     /// label vs provider trust) is the only remaining gate.
+    ///
+    /// `contents` is the stored text (drives the IDF gate); `embed_texts` is
+    /// what actually gets embedded — breadcrumb + link-stripped text
+    /// (`markdown::embed_input`, R38.2). The split is deliberate: a repeated
+    /// breadcrumb dilutes mean-IDF and would gate short-but-meaningful chunks
+    /// ("Approved" under an ADR heading), so gating stays on raw content.
     pub async fn embed_gated(
         &self,
         contents: Vec<String>,
+        embed_texts: Vec<String>,
         gated: bool,
         embed_min_signal: f64,
     ) -> Result<Vec<Option<Vec<u8>>>, String> {
         if contents.is_empty() {
             return Ok(vec![]);
         }
+        let embed_texts = if embed_texts.len() == contents.len() { embed_texts } else { contents.clone() };
         // IDF gate: signal(content, corpus) >= threshold
         let corpus: Vec<String> = contents.clone();
         let mut embeddable_idx: Vec<usize> = Vec::new();
@@ -163,7 +171,7 @@ impl Embedder {
         if embeddable_idx.is_empty() {
             return Ok(vec![None; contents.len()]);
         }
-        let to_embed: Vec<String> = embeddable_idx.iter().map(|&i| contents[i].clone()).collect();
+        let to_embed: Vec<String> = embeddable_idx.iter().map(|&i| embed_texts[i].clone()).collect();
         let vectors = self.embed(to_embed).await?;
         let mut out: Vec<Option<Vec<u8>>> = vec![None; contents.len()];
         for (pos, vec) in embeddable_idx.into_iter().zip(vectors) {

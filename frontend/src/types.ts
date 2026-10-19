@@ -252,6 +252,8 @@ export type Citation = {
   content: string;
   item_title: string;
   content_truncated: boolean;
+  line_start?: number;
+  line_end?: number;
 };
 
 export type Section = {
@@ -263,6 +265,10 @@ export type Section = {
   path: string;
   chunk_range: string;
   summary: string;
+  line_start?: number;
+  line_end?: number;
+  kind?: string;
+  meta?: Record<string, string> | null;
   created_at: string;
 };
 
@@ -282,6 +288,8 @@ export type ChunkInfo = {
   source_ref: string;
   content: string;
   path: string;
+  line_start?: number;
+  line_end?: number;
   created_at: string;
 };
 

@@ -369,7 +369,7 @@ impl Pipeline {
                 return Err("job cancelled".to_string());
             }
             let batch = fetch_embed_batch(data_dir, source_id, last_id).await?;
-            let Some(last) = batch.last().map(|(id, _)| *id) else {
+            let Some(last) = batch.last().map(|(id, _, _)| *id) else {
                 break;
             };
             last_id = last;
@@ -381,16 +381,17 @@ impl Pipeline {
                 Ok(())
             })
             .await;
-            let contents: Vec<String> = batch.iter().map(|(_, c)| c.clone()).collect();
+            let contents: Vec<String> = batch.iter().map(|(_, c, _)| c.clone()).collect();
+            let embed_texts: Vec<String> = batch.iter().map(|(_, c, p)| crate::markdown::embed_input(p, c)).collect();
             let out = self
                 .embedder
-                .embed_gated(contents, gated, embed_min_signal())
+                .embed_gated(contents, embed_texts, gated, embed_min_signal())
                 .await
                 .unwrap_or_else(|_| vec![None; batch.len()]);
             let updates: Vec<(i64, Vec<u8>)> = batch
                 .iter()
                 .zip(out)
-                .filter_map(|((id, _), blob)| blob.map(|b| (*id, b)))
+                .filter_map(|((id, _, _), blob)| blob.map(|b| (*id, b)))
                 .collect();
             if updates.is_empty() {
                 continue;
@@ -991,9 +992,9 @@ fn create_summaries_inner(
     force: bool,
 ) -> Result<(), String> {
     let mut stmt = conn
-        .prepare("SELECT id, title, path, level, summary_hash, summary FROM sections WHERE item_id=?1 ORDER BY id")
+        .prepare("SELECT id, title, path, level, summary_hash, summary, line_start, line_end FROM sections WHERE item_id=?1 ORDER BY id")
         .map_err(|e| e.to_string())?;
-    let secs: Vec<(i64, String, String, i64, String, String)> = stmt
+    let secs: Vec<(i64, String, String, i64, String, String, i64, i64)> = stmt
         .query_map([item_id], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -1002,15 +1003,17 @@ fn create_summaries_inner(
                 r.get::<_, i64>(3)?,
                 r.get::<_, String>(4)?,
                 r.get::<_, String>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, i64>(7)?,
             ))
         })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
     // R15.4: one batched read for all section texts (was one query per section).
-    let sec_ids: Vec<i64> = secs.iter().map(|(id, _, _, _, _, _)| *id).collect();
+    let sec_ids: Vec<i64> = secs.iter().map(|(id, _, _, _, _, _, _, _)| *id).collect();
     let mut section_chunks = load_section_chunks(conn, &sec_ids)?;
-    for (sec_id, title, path, level, stored_hash, stored_summary) in secs {
+    for (sec_id, title, path, level, stored_hash, stored_summary, line_start, line_end) in secs {
         if title.is_empty() && path.is_empty() && level == 0 {
             continue;
         }
@@ -1048,8 +1051,8 @@ fn create_summaries_inner(
             format!("{} summary: {}", base_ref, title)
         };
         conn.execute(
-            "INSERT INTO chunks (item_id, section_id, kind, source_ref, content, level, path, created_at, uid) VALUES (?1,?2,'section_summary',?3,?4,?5,?6,datetime('now'),?7)",
-            rusqlite::params![item_id, sec_id, src_ref, summary, level, path, crate::db::new_uid()],
+            "INSERT INTO chunks (item_id, section_id, kind, source_ref, content, level, path, line_start, line_end, created_at, uid) VALUES (?1,?2,'section_summary',?3,?4,?5,?6,?7,?8,datetime('now'),?9)",
+            rusqlite::params![item_id, sec_id, src_ref, summary, level, path, line_start, line_end, crate::db::new_uid()],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -1082,8 +1085,8 @@ fn create_summaries_inner(
     )
     .map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO chunks (item_id, kind, source_ref, content, level, path, created_at, uid) VALUES (?1,'doc_summary',?2,?3,0,'',datetime('now'),?4)",
-        rusqlite::params![item_id, format!("{} summary", base_ref), doc_summary, crate::db::new_uid()],
+        "INSERT INTO chunks (item_id, kind, source_ref, content, level, path, line_start, line_end, created_at, uid) VALUES (?1,'doc_summary',?2,?3,0,'',1,?4,datetime('now'),?5)",
+        rusqlite::params![item_id, format!("{} summary", base_ref), doc_summary, full_text.split('\n').count().max(1) as i64, crate::db::new_uid()],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -1404,7 +1407,13 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
     let base_ref = ctx.base_ref.clone();
     // B12 cleaning is prose-only — code/config splitters read indentation
     // (Python nesting, YAML levels), which whitespace collapsing destroys.
-    let skip_clean = ctx.skips_extraction();
+    // Markdown joins them (R38.1): the block splitter reads list/code
+    // indentation, and cleaning drops lines, which would shift the stored
+    // 1-based line ranges away from the raw item text. Extraction + distill
+    // still run for markdown — only the cleaning step is skipped.
+    let skip_clean = ctx.skips_extraction()
+        || crate::markdown::is_markdown_filename(&ctx.external_id)
+        || crate::markdown::is_markdown_filename(&ctx.base_ref);
     run_db(&ctx.data_dir, move |conn| {
         // F-03: delete+insert is one transaction — a crash between the
         // DELETEs and the re-inserts used to strand the item chunk-less.
@@ -1432,8 +1441,8 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
         for meta in &metas {
             let parent_db = meta.parent.and_then(|p| section_ids.get(p).copied());
             conn.execute(
-                "INSERT INTO sections (item_id, parent_id, level, title, path, created_at, uid) VALUES (?1,?2,?3,?4,?5,datetime('now'),?6)",
-                rusqlite::params![item_id, parent_db, meta.level, meta.title, meta.path, crate::db::new_uid()],
+                "INSERT INTO sections (item_id, parent_id, level, title, path, line_start, line_end, kind, meta, created_at, uid) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,datetime('now'),?10)",
+                rusqlite::params![item_id, parent_db, meta.level, meta.title, meta.path, meta.line_start, meta.line_end, meta.kind, meta.meta, crate::db::new_uid()],
             )
             .map_err(|e| e.to_string())?;
             section_ids.push(conn.last_insert_rowid());
@@ -1448,8 +1457,8 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
                 base_ref.clone()
             };
             conn.execute(
-                "INSERT INTO chunks (item_id, kind, source_ref, content, section_id, level, path, created_at, uid) VALUES (?1,'document',?2,?3,?4,?5,?6,datetime('now'),?7)",
-                rusqlite::params![item_id, r, cm.content, sec_db, cm.level, cm.path, crate::db::new_uid()],
+                "INSERT INTO chunks (item_id, kind, source_ref, content, section_id, level, path, line_start, line_end, created_at, uid) VALUES (?1,'document',?2,?3,?4,?5,?6,?7,?8,datetime('now'),?9)",
+                rusqlite::params![item_id, r, cm.content, sec_db, cm.level, cm.path, cm.line_start, cm.line_end, crate::db::new_uid()],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -1582,11 +1591,11 @@ async fn update_distill_hashes(ctx: &ClassifyCtx) -> Result<(), String> {
 // embed (gated) — wire embedder.embed_gated + sync_vec (P0 3.2)
 /// One batch of chunks of `source_id` that still need a vector (ascending ids
 /// so iteration always advances, even when the IDF gate embeds nothing).
-async fn fetch_embed_batch(data_dir: &str, source_id: i64, last_id: i64) -> Result<Vec<(i64, String)>, String> {
+async fn fetch_embed_batch(data_dir: &str, source_id: i64, last_id: i64) -> Result<Vec<(i64, String, String)>, String> {
     run_db(data_dir, move |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, content FROM chunks \
+                "SELECT id, content, path FROM chunks \
                  WHERE id > ?1 AND embedding IS NULL AND ( \
                    item_id IN (SELECT id FROM ingested_items WHERE source_id = ?2) \
                    OR entity_id IN (SELECT e.id FROM entities e JOIN ingested_items i ON i.id = e.item_id WHERE i.source_id = ?2)) \
@@ -1595,7 +1604,7 @@ async fn fetch_embed_batch(data_dir: &str, source_id: i64, last_id: i64) -> Resu
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(rusqlite::params![last_id, source_id], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
             })
             .map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -1620,18 +1629,19 @@ async fn embed_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
     let embed_min_signal = embed_min_signal();
     let gated = sensitive_label(&ctx.label) && !(ctx.classify_trusted && ctx.embed_trusted);
     let item_id = ctx.item_id;
-    let chunks: Vec<(i64, String)> = run_db(&ctx.data_dir, move |conn| {
-        let mut stmt = conn.prepare("SELECT id, content FROM chunks WHERE (item_id=?1 OR entity_id IN (SELECT id FROM entities WHERE item_id=?1)) AND embedding IS NULL").unwrap();
-        let rows = stmt.query_map([item_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).unwrap().filter_map(|r| r.ok()).collect();
+    let chunks: Vec<(i64, String, String)> = run_db(&ctx.data_dir, move |conn| {
+        let mut stmt = conn.prepare("SELECT id, content, path FROM chunks WHERE (item_id=?1 OR entity_id IN (SELECT id FROM entities WHERE item_id=?1)) AND embedding IS NULL").unwrap();
+        let rows = stmt.query_map([item_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).unwrap().filter_map(|r| r.ok()).collect();
         Ok(rows)
     }).await?;
     if chunks.is_empty() {
         return Ok(());
     }
-    let pending_ids: Vec<i64> = chunks.iter().map(|(id, _)| *id).collect();
-    let contents: Vec<String> = chunks.iter().map(|(_, c)| c.clone()).collect();
+    let pending_ids: Vec<i64> = chunks.iter().map(|(id, _, _)| *id).collect();
+    let contents: Vec<String> = chunks.iter().map(|(_, c, _)| c.clone()).collect();
+    let embed_texts: Vec<String> = chunks.iter().map(|(_, c, p)| crate::markdown::embed_input(p, c)).collect();
     // call embedder (graceful fallback inside embed_gated on remote failure)
-    let out = ctx.embedder.embed_gated(contents, gated, embed_min_signal).await.unwrap_or_else(|_| vec![None; pending_ids.len()]);
+    let out = ctx.embedder.embed_gated(contents, embed_texts, gated, embed_min_signal).await.unwrap_or_else(|_| vec![None; pending_ids.len()]);
     let updates: Vec<(i64, Vec<u8>)> = out
         .into_iter()
         .enumerate()
@@ -1729,6 +1739,69 @@ mod tests {
         assert_eq!((total, processed), (10, 10), "changed items must not clobber scanned totals");
         assert!(result.contains("\"items\":3"), "result: {}", result);
         assert!(result.contains("\"unchanged\":7"), "result: {}", result);
+    }
+
+    #[tokio::test]
+    async fn markdown_doc_chunks_persist_with_ranges() {
+        // R38.1 wiring: a real `ClassifyCtx` through `store_doc_chunks` +
+        // `create_summaries_inner` — sections/chunks/summaries carry the
+        // markdown tree, line ranges, kinds and ADR meta (no sockets).
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('s','folder','{}',1,'',0)", []).unwrap();
+        let sid = conn.last_insert_rowid();
+        let md = "---\ntitle: ADR 005\nstatus: accepted\n---\n\n# ADR 005\n\nintro line\n\n## Cancel\nbody here\n";
+        conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale) VALUES (?1,'adr-005.md','adr-005.md','t','h','',0)", [sid]).unwrap();
+        let iid = conn.last_insert_rowid();
+        drop(conn);
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let settings = Arc::new(crate::settings::SettingsService::new(store));
+        settings.set_data_dir(dir.path());
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let doc = IngestionDoc {
+            external_id: "adr-005.md".to_string(),
+            title: "adr-005.md".to_string(),
+            text: md.to_string(),
+            author: String::new(),
+            updated_at: None,
+            source_ref: "adr-005.md".to_string(),
+        };
+        let mut ctx = ClassifyCtx::new(&data_dir, sid, 0, &doc, false, settings, classifier, embedder);
+        ctx.item_id = iid;
+        ctx.doc_type = "decision_log".to_string();
+        store_doc_chunks(&ctx).await.unwrap();
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let secs: Vec<(String, String, i64, i64, String, String)> = conn
+            .prepare("SELECT title, path, line_start, line_end, kind, meta FROM sections WHERE item_id=?1 ORDER BY id")
+            .unwrap()
+            .query_map([iid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(secs.len(), 3, "root + front matter + Cancel: {:?}", secs.iter().map(|s| &s.0).collect::<Vec<_>>());
+        assert_eq!(secs[0].0, "ADR 005");
+        assert_eq!(secs[0].1, "ADR 005");
+        assert_eq!((secs[0].2, secs[0].3), (1, 12));
+        assert!(secs[0].5.contains("\"adr_number\":\"5\""), "root meta: {}", secs[0].5);
+        assert!(secs[0].5.contains("\"status\":\"accepted\""), "root meta: {}", secs[0].5);
+        assert_eq!(secs[1].4, "front_matter");
+        assert_eq!((secs[1].2, secs[1].3), (1, 4));
+        assert_eq!(secs[2].1, "ADR 005 > Cancel");
+        assert_eq!((secs[2].2, secs[2].3), (10, 12));
+        let (ranged, total): (i64, i64) = conn
+            .query_row("SELECT COUNT(CASE WHEN line_start > 0 THEN 1 END), COUNT(*) FROM chunks WHERE item_id=?1 AND kind='document'", [iid], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert!(total >= 3, "root + FM + Cancel chunks");
+        assert_eq!(ranged, total, "every markdown document chunk carries a line range");
+        // Section-level entries exist for every section incl. the root (§4).
+        create_summaries_inner(&conn, iid, md, "adr-005.md", false).unwrap();
+        let summaries: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE item_id=?1 AND kind='section_summary'", [iid], |r| r.get(0)).unwrap();
+        assert_eq!(summaries, 3, "root + FM + Cancel summaries");
+        let root_sum: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE section_id=(SELECT id FROM sections WHERE item_id=?1 AND level=0) AND kind='section_summary'", [iid], |r| r.get(0)).unwrap();
+        assert_eq!(root_sum, 1, "markdown root is summarized (prose empty roots skip)");
     }
 
     #[test]
@@ -1874,13 +1947,13 @@ mod tests {
     fn page_plan_unit_spans_suffixes_and_skips() {
         use crate::chunking::{ChunkMeta, SectionMeta};
         let metas = vec![
-            SectionMeta { title: String::new(), level: 0, parent: None, path: String::new() },
-            SectionMeta { title: "Late".to_string(), level: 1, parent: None, path: "Late".to_string() },
+            SectionMeta { title: String::new(), level: 0, parent: None, path: String::new(), line_start: 0, line_end: 0, kind: "section".to_string(), meta: "{}".to_string() },
+            SectionMeta { title: "Late".to_string(), level: 1, parent: None, path: "Late".to_string(), line_start: 0, line_end: 0, kind: "section".to_string(), meta: "{}".to_string() },
         ];
         let chunks = vec![
-            ChunkMeta { content: "[page 2]\nspanning words".to_string(), section_idx: Some(1), level: 1, path: "Late".to_string() },
-            ChunkMeta { content: "more words\n[page 3]\ntail".to_string(), section_idx: Some(1), level: 1, path: "Late".to_string() },
-            ChunkMeta { content: "[page 4]".to_string(), section_idx: Some(0), level: 0, path: String::new() },
+            ChunkMeta { content: "[page 2]\nspanning words".to_string(), section_idx: Some(1), level: 1, path: "Late".to_string(), line_start: 0, line_end: 0 },
+            ChunkMeta { content: "more words\n[page 3]\ntail".to_string(), section_idx: Some(1), level: 1, path: "Late".to_string(), line_start: 0, line_end: 0 },
+            ChunkMeta { content: "[page 4]".to_string(), section_idx: Some(0), level: 0, path: String::new(), line_start: 0, line_end: 0 },
         ];
         let (metas, chunks) = apply_page_plan(metas, chunks, "[page 2]\nx");
         assert_eq!(metas[0].path, "(p. 1)", "chunk-less root defaults to page 1");
@@ -1890,8 +1963,8 @@ mod tests {
         assert_eq!(chunks[1].path, "Late (pp. 2-3)");
         assert!(!chunks.iter().any(|c| crate::extract::has_page_markers(&c.content)));
         // No markers anywhere: inputs pass through untouched (same shapes).
-        let metas = vec![SectionMeta { title: String::new(), level: 0, parent: None, path: String::new() }];
-        let chunks = vec![ChunkMeta { content: "plain words".to_string(), section_idx: Some(0), level: 0, path: String::new() }];
+        let metas = vec![SectionMeta { title: String::new(), level: 0, parent: None, path: String::new(), line_start: 0, line_end: 0, kind: "section".to_string(), meta: "{}".to_string() }];
+        let chunks = vec![ChunkMeta { content: "plain words".to_string(), section_idx: Some(0), level: 0, path: String::new(), line_start: 0, line_end: 0 }];
         let (metas, chunks) = apply_page_plan(metas, chunks, "plain words");
         assert_eq!(metas[0].path, "");
         assert_eq!(chunks[0].content, "plain words");
