@@ -1,0 +1,13 @@
+{
+  "_note": "Every flag gates one rollout; a flag flips without a release.",
+  "flags": {
+    "new_checkout": {
+      "enabled": false,
+      "description": "Feature flag that gates the new checkout flow rollout."
+    },
+    "legacy_search": {
+      "enabled": true,
+      "description": "Keeps the previous search path while the new flow ramps."
+    }
+  }
+}

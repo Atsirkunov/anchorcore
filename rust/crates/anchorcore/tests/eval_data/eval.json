@@ -1,0 +1,177 @@
+{
+  "_comment": "R38.10 golden retrieval eval set: fixture corpus manifest + query/expected-doc pairs. Runner: rust/crates/anchorcore/tests/retrieval_eval.rs. How to extend: tests/eval_data/README.md. Term discipline (distractor hygiene, summary terms, env markers) is documented there — read it before adding pairs.",
+  "docs": [
+    {
+      "id": "deploy-runbook",
+      "file": "docs/deploy-runbook.md",
+      "title": "Production deploy runbook",
+      "summary": "Runbook for production deploys: rollout steps and how to roll back a bad deploy."
+    },
+    {
+      "id": "incident-postmortem",
+      "file": "docs/incident-postmortem.md",
+      "title": "Postmortem: checkout outage",
+      "summary": "Postmortem for the October checkout outage: cause, timeline, and follow-up actions."
+    },
+    {
+      "id": "glossary",
+      "file": "docs/glossary.md",
+      "title": "Glossary",
+      "summary": "Glossary entry: what a remittance advice is."
+    },
+    {
+      "id": "adr-007-pagination",
+      "file": "decisions/adr-007-cursor-pagination.md",
+      "title": "ADR-007: cursor pagination",
+      "summary": "ADR recording why we choose cursor pagination for list endpoints."
+    },
+    {
+      "id": "adr-012-billing",
+      "file": "decisions/adr-012-billing-provider.md",
+      "title": "ADR-012: billing provider selection",
+      "summary": "ADR on which billing provider was selected and why."
+    },
+    {
+      "id": "api-design-sync",
+      "file": "notes/api-design-sync.md",
+      "title": "API design sync notes",
+      "summary": "Notes from the api design sync: rate limits decision."
+    },
+    {
+      "id": "session-py",
+      "file": "src/auth/session.py",
+      "title": "session.py: session token rotation",
+      "summary": "Session module: session token rotation and refresh work together."
+    },
+    {
+      "id": "proration-rs",
+      "file": "src/billing/proration.rs",
+      "title": "proration.rs: mid-cycle proration",
+      "summary": "Proration math for mid-cycle plan upgrades, calculated per day."
+    },
+    {
+      "id": "pagination-ts",
+      "file": "src/web/pagination.ts",
+      "title": "pagination.ts: cursor helper",
+      "summary": "Helper that encodes the pagination cursor."
+    },
+    {
+      "id": "api-lint-yml",
+      "file": "config/api-lint.yml",
+      "title": "api-lint.yml: lint rules",
+      "summary": "Lint rule set: the rule that forbids offset pagination, plus required cursor checks enforced in review."
+    },
+    {
+      "id": "pagerduty-yml",
+      "file": "config/pagerduty.yml",
+      "title": "pagerduty.yml: paging policy",
+      "summary": "Paging policy: who gets paged for a sev1 payments alert."
+    },
+    {
+      "id": "flags-json",
+      "file": "config/flags.json",
+      "title": "flags.json: feature flags",
+      "summary": "Feature flag list: the flag that gates the new checkout flow."
+    }
+  ],
+  "pairs": [
+    {
+      "id": "deploy-01",
+      "query": "how do I roll back a production deploy",
+      "expected": ["deploy-runbook"],
+      "notes": "Prose runbook; multi-term query, every leg should fire."
+    },
+    {
+      "id": "incident-01",
+      "query": "what caused the checkout outage and what is the follow-up",
+      "expected": ["incident-postmortem"],
+      "notes": "Prose postmortem; shares 'checkout/flow' with flags-json but wins on caused/outage/follow-up."
+    },
+    {
+      "id": "r38-2-exact-code",
+      "query": "ERR-90412",
+      "expected": ["incident-postmortem"],
+      "floor_only_keyword": true,
+      "notes": "R38.2 regression: bare opaque code. The code appears once in a long doc, so hash-embedding cosine stays under the 0.2 floor (like a real embedder's no-signal direction) and the summary carries no code tokens, so only the keyword leg fires. Fused must still hit via the keyword floor."
+    },
+    {
+      "id": "r38-2b-inc-code",
+      "query": "INC-5521",
+      "expected": ["incident-postmortem"],
+      "floor_only_keyword": true,
+      "notes": "Second R38.2 pin: the postmortem's other unique all-caps code, same floor-only signature."
+    },
+    {
+      "id": "incident-02-midbody",
+      "query": "when did the gateway alert page the on-call engineer",
+      "expected": ["incident-postmortem"],
+      "notes": "Mid-body signal the TOC fence hides (R36.7 ai-03 shape): no summary carries gateway/alert/page/call/engineer except pagerduty's ('alert'), so TOC admits only the wrong section while both flat legs fire; fused must still hit via the discounted floor."
+    },
+    {
+      "id": "pagination-adr-01",
+      "query": "why did we choose cursor pagination for list endpoints",
+      "expected": ["adr-007-pagination"],
+      "notes": "Prose ADR; pagination-ts and api-lint.yml share cursor/pagination but lack choose/list/endpoints."
+    },
+    {
+      "id": "adr-lint-01",
+      "query": "where is cursor pagination required and how is it enforced",
+      "expected": ["adr-007-pagination", "api-lint-yml"],
+      "notes": "Same-query ADR-vs-lint-config pair: the decision (prose) and its enforcement (config) must BOTH surface; scored with partial credit."
+    },
+    {
+      "id": "billing-01",
+      "query": "which billing provider was selected and why",
+      "expected": ["adr-012-billing"],
+      "notes": "Prose ADR; proration-rs deliberately avoids provider/selected vocabulary."
+    },
+    {
+      "id": "session-01",
+      "query": "how does session token rotation work",
+      "expected": ["session-py"],
+      "notes": "Code retrieval via docstrings/comments; session/token/rotation appear nowhere else."
+    },
+    {
+      "id": "proration-01",
+      "query": "how is proration calculated for mid-cycle plan upgrades",
+      "expected": ["proration-rs"],
+      "notes": "Code retrieval; adr-012 uses 'roadmap' so 'plan' stays exclusive to this doc."
+    },
+    {
+      "id": "cursor-code-01",
+      "query": "which helper encodes the pagination cursor",
+      "expected": ["pagination-ts"],
+      "notes": "Code retrieval; helper/encodes are exclusive to the .ts file."
+    },
+    {
+      "id": "lint-01",
+      "query": "which lint rule forbids offset pagination",
+      "expected": ["api-lint-yml"],
+      "notes": "Config retrieval via YAML comments; lint/rule/forbids/offset co-occur only here."
+    },
+    {
+      "id": "paging-01",
+      "query": "who gets paged for a sev1 payments alert",
+      "expected": ["pagerduty-yml"],
+      "notes": "Config retrieval; the postmortem shares only 'alert'."
+    },
+    {
+      "id": "flags-01",
+      "query": "which flag gates the new checkout flow",
+      "expected": ["flags-json"],
+      "notes": "Config retrieval via JSON description fields; runbook/postmortem share at most 2 of 5 terms."
+    },
+    {
+      "id": "glossary-01",
+      "query": "what is a remittance advice",
+      "expected": ["glossary"],
+      "notes": "Two-term query; payout/confirmation appear in no other doc."
+    },
+    {
+      "id": "sync-01",
+      "query": "what did the api design sync decide about rate limits",
+      "expected": ["api-design-sync"],
+      "notes": "Prose notes; 'api' is shared but decide/rate/limits/sync/design converge only here."
+    }
+  ]
+}
