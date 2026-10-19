@@ -1024,6 +1024,208 @@ fn extract_top_sections(conn: &Connection, summary_hits: &[Hit]) -> HashSet<i64>
     out
 }
 
+/// R38.8: the R36.10 `suspect` predicates (`extract.rs`, verbatim).
+/// `items::pdf_quality_for` is private and `items.rs` is read-only under
+/// this scope, so the flag can't be called — and `crate::extract` doesn't
+/// resolve here either: the R38.10 eval target compiles this file
+/// standalone via `#[path]` (`{db, common, retrieval}` closure), while
+/// `extract`↔`chunking` form a cycle that only resolves in the full bin.
+/// The 30k word list stays single-sourced (`include_str!` of the same
+/// sibling file); only the small predicates duplicate. Reunify by moving
+/// the detector to `common.rs` (or extending the eval includes).
+mod suspect_pdf {
+    pub(super) fn is_pdf_filename(name: &str) -> bool {
+        let base = name.rsplit(['/', '\\']).next().unwrap_or(name).to_ascii_lowercase();
+        match base.rsplit('.').next() {
+            Some(ext) if ext != base.as_str() => ext == "pdf",
+            _ => false,
+        }
+    }
+
+    pub(super) fn pdf_spacing_suspect(text: &str) -> bool {
+        let (splits, tokens) = split_suspects(text);
+        pdf_trips_detector(splits, tokens)
+    }
+
+    /// Short tokens that are real words — never split-word fragments.
+    const COMMON_SHORT_WORDS: &[&str] = &[
+        "a", "i", "am", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "it", "me", "my", "no",
+        "of", "on", "or", "so", "to", "up", "us", "we", "vs", "ok", "ex", "re", "and", "the", "for", "are",
+        "but", "not", "you", "all", "any", "can", "had", "her", "was", "one", "our", "out", "day", "get",
+        "has", "him", "his", "how", "man", "new", "now", "old", "see", "two", "way", "who", "did", "its",
+        "let", "put", "say", "she", "too", "use", "etc", "per", "via", "pro", "aka", "that", "with", "have",
+        "this", "will", "your", "from", "they", "them", "then", "than",
+    ];
+
+    /// English frequency set for the split-word catcher: top-30k wordfreq
+    /// 3.1.1 words (`^[a-z]{2,}$`), Apache-2.0 — see `pdf_words.NOTICE`.
+    fn pdf_words() -> &'static std::collections::HashSet<&'static str> {
+        static WORDS: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
+            std::sync::OnceLock::new();
+        WORDS.get_or_init(|| include_str!("pdf_words.txt").split_whitespace().collect())
+    }
+
+    /// Domain abbreviations below the frequency cutoff — real tokens, never
+    /// split fragments. Two-to-four lowercase letters only (the fragment
+    /// shape); longer tokens never query this set.
+    const TECH_ALLOW_WORDS: &[&str] = &[
+        "cli", "json", "yaml", "csv", "orm", "jwt", "cors", "csrf", "crud", "sdk", "xls", "jsx", "tsx",
+        "scss", "ssl", "tls", "udp", "grpc", "tiff", "bmp", "webp", "avif", "mkv", "exe", "dll", "dmg",
+        "deb", "rpm", "apk", "epub", "mobi", "faq", "wip", "tbd", "fyi", "asap", "eta", "eod", "pto",
+        "ooo", "kpi", "okr", "sla", "sop", "rfp", "poc", "mvp", "arr", "mrr", "cac", "ltv", "yoy", "qoq",
+        "ai", "llm", "rag", "nlp", "ocr", "vpn", "lan", "wan", "nat", "iam", "sso", "mfa", "kms",
+        "mttr", "mtbf", "qbr", "kyc", "pii", "ttl", "aml", "gdpr", "ccpa", "pci", "dss", "iso", "nist",
+        "oecd", "dpa", "sar", "ofac", "itil", "fips", "cc", "bcc", "oss", "bss",
+    ];
+
+    fn is_known_word(tok: &str) -> bool {
+        COMMON_SHORT_WORDS.contains(&tok) || TECH_ALLOW_WORDS.contains(&tok) || pdf_words().contains(tok)
+    }
+
+    /// Split-word suspects over lowercased tokens: a short unknown fragment
+    /// beside a lowercase neighbour ("noti fi", "cati ons"), or a pair whose
+    /// join is a known word while at least one side is not ("Cancellati"+"ons").
+    /// Two known words never trip ("sun day", "the rapist", "on line").
+    /// Returns (suspect_count, token_count).
+    fn split_suspects(text: &str) -> (usize, usize) {
+        let toks: Vec<String> = text
+            .split_whitespace()
+            .map(|raw| raw.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect();
+        let mut splits = 0usize;
+        for (i, tok) in toks.iter().enumerate() {
+            if is_split_fragment(tok, toks.get(i.wrapping_sub(1)), toks.get(i + 1)) {
+                splits += 1;
+            }
+            if let Some(next) = toks.get(i + 1) {
+                if is_split_join(tok, next) {
+                    splits += 1;
+                }
+            }
+        }
+        (splits, toks.len())
+    }
+
+    fn is_pure_alpha(tok: &str) -> bool {
+        !tok.is_empty() && tok.chars().all(|c| c.is_ascii_lowercase())
+    }
+
+    /// Short unknown token (single letters are math variables, never splits)
+    /// touching a lowercase neighbour on either side.
+    fn is_split_fragment(tok: &str, prev: Option<&String>, next: Option<&String>) -> bool {
+        let n = tok.chars().count();
+        if !(2..=4).contains(&n) || !is_pure_alpha(tok) || is_known_word(tok) {
+            return false;
+        }
+        prev.map(|p| p.chars().last().is_some_and(|c| c.is_ascii_lowercase())).unwrap_or(false)
+            || next.map(|n| n.chars().next().is_some_and(|c| c.is_ascii_lowercase())).unwrap_or(false)
+    }
+
+    /// Adjacent pure-alpha pair whose join is a known word with at least one
+    /// unknown side — the rejoin test for ngram-artifact fragments.
+    fn is_split_join(a: &str, b: &str) -> bool {
+        if a.chars().count() < 2 || b.chars().count() < 2 || !is_pure_alpha(a) || !is_pure_alpha(b) {
+            return false;
+        }
+        let joined = format!("{a}{b}");
+        if joined.chars().count() < 5 || !is_known_word(&joined) {
+            return false;
+        }
+        !is_known_word(a) || !is_known_word(b)
+    }
+
+    /// Detector trip wire: an absolute floor (short clean texts stay silent)
+    /// plus a density ceiling (scattered false positives stay silent).
+    const PDF_TRIP_MIN_SPLITS: usize = 6;
+    const PDF_TRIP_PER_MILLE: usize = 6;
+
+    fn pdf_trips_detector(splits: usize, tokens: usize) -> bool {
+        splits >= PDF_TRIP_MIN_SPLITS && splits.saturating_mul(1000) >= tokens.saturating_mul(PDF_TRIP_PER_MILLE)
+    }
+}
+
+/// R38.8: items whose summaries can't be trusted — the R36.10 `suspect`
+/// branch of the item PDF flag (shredded stored text on a PDF row), batched
+/// into one query over in-scope PDF rows (the `LIKE` pre-filter only bounds
+/// the scan; `is_pdf_filename` + the spacing check decide). Suspect wins
+/// over repair state at read time, so no events lookup is needed.
+fn suspect_pdf_items(conn: &Connection, source_ids: Option<&HashSet<i64>>) -> HashSet<i64> {
+    let mut sql = String::from(
+        "SELECT i.id, i.title, i.external_id, i.text FROM ingested_items i \
+         WHERE (i.title LIKE '%.pdf' OR i.external_id LIKE '%.pdf')",
+    );
+    let mut params: Vec<rusqlite::types::Value> = vec![];
+    append_source_filter(&mut sql, &mut params, source_ids);
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return HashSet::new(),
+    };
+    let rows: Vec<(i64, String, String, String)> = match stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
+        .and_then(|m| m.collect())
+    {
+        Ok(v) => v,
+        Err(_) => return HashSet::new(),
+    };
+    rows.into_iter()
+        .filter(|(_, title, external_id, text)| {
+            (suspect_pdf::is_pdf_filename(title) || suspect_pdf::is_pdf_filename(external_id))
+                && suspect_pdf::pdf_spacing_suspect(text)
+        })
+        .map(|(id, _, _, _)| id)
+        .collect()
+}
+
+/// R38.8: keep flat-leg hits for suspect items only, appended after the
+/// fenced legs (deduped by chunk — a fenced rank always stands).
+fn append_suspect_hits(fenced: &mut Vec<Hit>, flat: Vec<Hit>, suspects: &HashSet<i64>) {
+    if flat.is_empty() {
+        return;
+    }
+    let mut seen: HashSet<i64> = fenced.iter().map(|h| h.chunk_id).collect();
+    for h in flat {
+        if !h.item_id.is_some_and(|iid| suspects.contains(&iid)) {
+            continue;
+        }
+        if seen.insert(h.chunk_id) {
+            fenced.push(h);
+        }
+    }
+}
+
+/// R38.8: suspect-PDF fence skip — the TOC fence admits sections by summary
+/// match, but a suspect PDF's summaries are poor, so its leaf chunks would
+/// stay hidden. Run the flat leaf legs unfenced and splice the suspect-item
+/// hits into the fenced legs (same legs, trailing ranks — precision-first,
+/// recall for the untrustworthy). No-op when nothing is suspect: clean
+/// corpora never run the extra legs.
+#[allow(clippy::too_many_arguments)]
+fn append_suspect_flat_legs(
+    conn: &Connection,
+    query: &str,
+    query_emb: Option<&[f32]>,
+    source_ids: Option<&HashSet<i64>>,
+    top_k: usize,
+    qa_exclude_disputed: bool,
+    leaf_vec: &mut Vec<Hit>,
+    leaf_kw: &mut Vec<Hit>,
+) {
+    let suspects = suspect_pdf_items(conn, source_ids);
+    if suspects.is_empty() {
+        return;
+    }
+    if let Some(emb) = query_emb {
+        if let Some(flat) = leaf_vector_search_filtered(conn, emb, source_ids, None, top_k, qa_exclude_disputed) {
+            append_suspect_hits(leaf_vec, flat, &suspects);
+        }
+    }
+    let flat = leaf_keyword_search_filtered(conn, query, source_ids, None, top_k, qa_exclude_disputed);
+    append_suspect_hits(leaf_kw, flat, &suspects);
+}
+
 pub fn toc_search(
     conn: &Connection,
     query: &str,
@@ -1054,10 +1256,12 @@ pub fn toc_search(
     if top_secs.is_empty() {
         return vec![];
     }
-    let leaf_vec = query_emb
+    let mut leaf_vec = query_emb
         .and_then(|emb| leaf_vector_search_filtered(conn, emb, source_ids, Some(&top_secs), top_k, qa_exclude_disputed))
         .unwrap_or_default();
-    let leaf_kw = leaf_keyword_search_filtered(conn, query, source_ids, Some(&top_secs), top_k, qa_exclude_disputed);
+    let mut leaf_kw = leaf_keyword_search_filtered(conn, query, source_ids, Some(&top_secs), top_k, qa_exclude_disputed);
+    // R38.8: suspect-PDF fence skip — poor summaries must not hide leaves.
+    append_suspect_flat_legs(conn, query, query_emb, source_ids, top_k, qa_exclude_disputed, &mut leaf_vec, &mut leaf_kw);
     if leaf_vec.is_empty() && leaf_kw.is_empty() {
         return vec![];
     }
@@ -2744,6 +2948,108 @@ mod tests {
         if !hits_auth.is_empty() {
             assert!(hits_auth.iter().any(|h| h.chunk_id == leaf_auth));
         }
+    }
+
+    // --- R38.8: suspect-PDF fence skip ---
+
+    /// Shredded spacing that trips the R36.10 detector (same join shapes as
+    /// the extractor's shredded fixture, enough suspects to clear the floor).
+    fn shredded_pdf_text() -> String {
+        "Cancellati ons and Correcti ons with noti fi cati ons for processi ng of subscripti ons and installati on guides".to_string()
+    }
+
+    /// Two-file TOC corpus: a PDF whose summary matches nothing (poor-summary
+    /// stand-in) but whose leaf holds the query term, plus a clean md file
+    /// whose summary matches — keeps the TOC path alive so the fence is real.
+    /// Returns (db dir, conn, pdf leaf id, md leaf id).
+    fn seed_suspect_toc_db(pdf_text: &str) -> (tempfile::TempDir, rusqlite::Connection, i64, i64) {
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_r388", "internal");
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,'report.pdf','report.pdf',?2,'h')",
+            rusqlite::params![sid, pdf_text],
+        )
+        .unwrap();
+        let pdf = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,'alpha.md','alpha.md','plain words','h')",
+            [sid],
+        )
+        .unwrap();
+        let md = conn.last_insert_rowid();
+        let mut leaves = Vec::new();
+        for (iid, summary, body) in [
+            (pdf, "quarterly planning notes nothing matching", "quasarion refund policy details"),
+            (md, "quasarion overview notes", "quasarion overview body text"),
+        ] {
+            conn.execute("INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,1,'S','S')", [iid]).unwrap();
+            let sec = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO chunks (item_id, section_id, kind, source_ref, content) VALUES (?1,?2,'section_summary','ref',?3)",
+                rusqlite::params![iid, sec, summary],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO chunks (item_id, section_id, source_ref, content) VALUES (?1,?2,'ref',?3)",
+                rusqlite::params![iid, sec, body],
+            )
+            .unwrap();
+            leaves.push(conn.last_insert_rowid());
+        }
+        (_dir, conn, leaves[0], leaves[1])
+    }
+
+    #[test]
+    fn suspect_pdf_items_flags_only_shredded_pdfs() {
+        // R36.10 parity, batched: shredded PDF flags, clean PDF reads null,
+        // shredded non-PDF never scores.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s_r388_flag", "internal");
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,'bad.pdf','bad.pdf',?2,'h')",
+            rusqlite::params![sid, shredded_pdf_text()],
+        )
+        .unwrap();
+        let bad = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,'good.pdf','good.pdf','Cancellations and notifications for processing.','h')",
+            [sid],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1,'n.md','n.md',?2,'h')",
+            rusqlite::params![sid, shredded_pdf_text()],
+        )
+        .unwrap();
+        assert_eq!(suspect_pdf_items(&conn, None), HashSet::from([bad]));
+        assert!(suspect_pdf_items(&conn, Some(&HashSet::from([sid + 999]))).is_empty(), "source scope must bound the scan");
+    }
+
+    #[test]
+    fn toc_search_rescues_suspect_pdf_leaf_behind_poor_summaries() {
+        let (_dir, conn, pdf_leaf, md_leaf) = seed_suspect_toc_db(&shredded_pdf_text());
+        // The fence is real: the md summary admits only its own section, so
+        // the flat leg sees the pdf leaf but the summary stage cannot.
+        let flat = keyword_search(&conn, "quasarion", None, 8, true);
+        assert!(flat.iter().any(|h| h.chunk_id == pdf_leaf), "flat leg must see the pdf leaf: {:?}", flat.iter().map(|h| h.chunk_id).collect::<Vec<_>>());
+        let hits = toc_search(&conn, "quasarion", None, None, 8, true);
+        let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+        assert!(ids.contains(&md_leaf), "fenced md leaf kept: {ids:?}");
+        assert!(ids.contains(&pdf_leaf), "suspect-pdf leaf must skip the fence: {ids:?}");
+        // Fenced ranks stand: the admitted md leaf outranks the rescue.
+        let pos = |id: i64| ids.iter().position(|c| *c == id).unwrap();
+        assert!(pos(md_leaf) < pos(pdf_leaf), "rescue appends after fenced ranks: {ids:?}");
+    }
+
+    #[test]
+    fn toc_search_fence_still_holds_for_clean_pdfs() {
+        let (_dir, conn, pdf_leaf, md_leaf) = seed_suspect_toc_db("Cancellations and notifications for processing.");
+        let flat = keyword_search(&conn, "quasarion", None, 8, true);
+        assert!(flat.iter().any(|h| h.chunk_id == pdf_leaf), "control: flat leg sees the clean-pdf leaf too");
+        let hits = toc_search(&conn, "quasarion", None, None, 8, true);
+        let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+        assert!(ids.contains(&md_leaf), "fenced md leaf kept: {ids:?}");
+        assert!(!ids.contains(&pdf_leaf), "clean-pdf leaf stays fenced out: {ids:?}");
     }
 
     #[test]
