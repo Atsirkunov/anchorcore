@@ -344,6 +344,101 @@ fn numbered_heading_level(s: &str) -> i32 {
     1
 }
 
+/// TOC ghost-section suppression (R38.9): PDF contents pages (`8.1 Detection
+/// ... 23`) otherwise become near-empty ghost sections next to the real ones,
+/// because the numbered/ALL-CAPS classifier section-izes every entry line.
+/// A blank-delimited block is a contents run when it holds at least
+/// `TOC_MIN_ENTRIES` page-numbered entries at `>= 1/2` density; every line of
+/// a flagged block stays prose (bytes kept, chunked normally) and the
+/// `Contents`-style header above the block is suppressed with it. Real
+/// sections survive: their headings carry no trailing page number, and a lone
+/// digit-ending heading never reaches the run threshold on its own.
+const TOC_MIN_ENTRIES: usize = 3;
+
+/// Pre-scan: one flag per line — `true` keeps the line's bytes but skips
+/// section-izing it. Blocks are maximal blank-delimited runs.
+fn toc_suppressed(lines: &[&str]) -> Vec<bool> {
+    let mut out = vec![false; lines.len()];
+    let mut start = 0;
+    while start < lines.len() {
+        if lines[start].trim().is_empty() {
+            start += 1;
+            continue;
+        }
+        let mut end = start;
+        while end < lines.len() && !lines[end].trim().is_empty() {
+            end += 1;
+        }
+        if toc_block_flagged(&lines[start..end]) {
+            toc_mark_block(&mut out, lines, start, end);
+        }
+        start = end;
+    }
+    out
+}
+
+/// Flagged when page-numbered would-be headings dominate the block.
+fn toc_block_flagged(block: &[&str]) -> bool {
+    let mut entries = 0usize;
+    for line in block {
+        if toc_entry_candidate(line) {
+            entries += 1;
+        }
+    }
+    entries >= TOC_MIN_ENTRIES && entries * 2 >= block.len()
+}
+
+/// Suppress the whole block (wrapped entry lines and an in-block `CONTENTS`
+/// header are prose too) plus a `Contents`-style header line above it.
+fn toc_mark_block(out: &mut [bool], lines: &[&str], start: usize, end: usize) {
+    for flag in out[start..end].iter_mut() {
+        *flag = true;
+    }
+    let mut j = start;
+    while j > 0 {
+        j -= 1;
+        if lines[j].trim().is_empty() {
+            continue;
+        }
+        if toc_title_line(lines[j]) {
+            out[j] = true;
+        }
+        break;
+    }
+}
+
+/// A contents entry: a would-be heading (`8.1 Detection`, `INTRODUCTION`)
+/// plus a trailing page number (`23`, `... 23`). The classifier decides the
+/// prefix, so only lines that could ghost ever count.
+fn toc_entry_candidate(line: &str) -> bool {
+    let s = line.trim();
+    if s.is_empty() || s.len() > 80 {
+        return false;
+    }
+    match strip_trailing_page_number(s) {
+        Some(rest) => classify_heading(rest).is_some(),
+        None => false,
+    }
+}
+
+/// `Contents` / `Table of Contents` / `Index`, any case — the header above a
+/// contents run. Only the ALL-CAPS forms could ghost; matching the rest is
+/// harmless (they were body text anyway).
+fn toc_title_line(line: &str) -> bool {
+    matches!(
+        line.trim().to_lowercase().as_str(),
+        "contents" | "table of contents" | "index"
+    )
+}
+
+/// Split `8.1 Detection ... 23` into `8.1 Detection ...`; bare numbers
+/// (`42`), bare markers (`8.1`, `Article 12`) and 5+-digit tails never match.
+fn strip_trailing_page_number(s: &str) -> Option<&str> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"^(.*\S)\s+\d{1,4}$").unwrap());
+    re.captures(s).and_then(|cap| cap.get(1)).map(|m| m.as_str())
+}
+
 pub fn chunk_document(text: &str) -> Vec<String> {
     chunk_document_with_sections(text).1.into_iter().map(|c| c.content).collect()
 }
@@ -368,11 +463,14 @@ pub struct ChunkMeta {
 pub fn chunk_document_with_sections(text: &str) -> (Vec<SectionMeta>, Vec<ChunkMeta>) {
     let max_chars = env_usize("ANCHOR_CHUNK_MAX_CHARS", CHUNK_MAX_CHARS);
     let lines: Vec<&str> = text.split('\n').collect();
+    // R38.9: contents-page lines keep their bytes but never open sections.
+    let suppressed = toc_suppressed(&lines);
     let mut raw_sections: Vec<RawSection> = Vec::new();
     let mut stack: Vec<usize> = Vec::new();
 
-    for line in lines {
-        if let Some(level) = classify_heading(line) {
+    for (idx, line) in lines.iter().enumerate() {
+        let level = if suppressed[idx] { None } else { classify_heading(line) };
+        if let Some(level) = level {
             let title = section_title(line);
             // pop stack to find parent
             while let Some(&top) = stack.last() {
@@ -1748,6 +1846,85 @@ mod tests {
                 "{needle} missing"
             );
         }
+    }
+
+    #[test]
+    fn toc_contents_page_yields_no_ghost_sections() {
+        // PDF-ish fixture: contents page first, real sections after.
+        let doc = "Contents\n\
+             8.1 Detection 23\n\
+             8.2 Prevention 24\n\
+             8.3 Response 25\n\
+             8.4 Recovery 26\n\
+             \n\
+             8.1 Detection\n\
+             Body text about detection methods and monitoring coverage here.\n\
+             \n\
+             8.2 Prevention\n\
+             Body text about prevention controls and hardening steps here.\n";
+        let (secs, chunks) = chunk_document_with_sections(doc);
+        let titles: Vec<&str> = secs.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, vec!["", "8.1 Detection", "8.2 Prevention"]);
+        // entries stay in the root chunk — suppressed, never dropped.
+        assert!(chunks[0].content.contains("8.1 Detection 23"));
+        assert!(chunks[0].content.contains("8.4 Recovery 26"));
+        assert!(chunks[0].content.contains("Contents"));
+    }
+
+    #[test]
+    fn toc_dot_leaders_caps_and_in_block_header_suppressed() {
+        let doc = "CONTENTS\n\
+             8.1 Detection ........ 23\n\
+             INTRODUCTION 5\n\
+             8.2 Prevention ..... 24\n\
+             8.3 Response ..... 25\n";
+        let (secs, chunks) = chunk_document_with_sections(doc);
+        assert!(secs.iter().all(|s| s.title.is_empty()), "{secs:?}");
+        assert_eq!(chunks.len(), 1);
+        for needle in ["CONTENTS", "8.1 Detection ........ 23", "INTRODUCTION 5"] {
+            assert!(chunks[0].content.contains(needle), "{needle} missing");
+        }
+    }
+
+    #[test]
+    fn toc_title_header_across_blank_line_suppressed() {
+        let doc = "TABLE OF CONTENTS\n\n8.1 Detection 23\n8.2 Prevention 24\n8.3 Response 25\n";
+        let (secs, chunks) = chunk_document_with_sections(doc);
+        assert!(secs.iter().all(|s| s.title.is_empty()), "{secs:?}");
+        assert!(chunks.iter().any(|c| c.content.contains("TABLE OF CONTENTS")));
+    }
+
+    #[test]
+    fn toc_lone_and_short_runs_still_split() {
+        // a single digit-ending heading is a heading, not a contents page
+        let (secs, _) = chunk_document_with_sections("8.1 Summary 2024\nBody text here.\n");
+        assert_eq!(secs.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(), vec!["8.1 Summary 2024"]);
+        // two entries are below the run threshold — both still split
+        let (secs2, _) = chunk_document_with_sections("8.1 Detection 23\n8.2 Prevention 24\n");
+        assert_eq!(secs2.len(), 2);
+        // real numbered sections with body text always split
+        let real = "8.1 Detection\nBody text about detection here.\n8.2 Prevention\nMore body text here.\n";
+        let (secs3, _) = chunk_document_with_sections(real);
+        assert_eq!(
+            secs3.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(),
+            vec!["8.1 Detection", "8.2 Prevention"]
+        );
+    }
+
+    #[test]
+    fn toc_entry_probe_rejects_bare_markers_and_numbers() {
+        assert!(toc_entry_candidate("8.1 Detection 23"));
+        assert!(toc_entry_candidate("8.1 Detection ........ 23"));
+        assert!(toc_entry_candidate("INTRODUCTION 5"));
+        assert!(!toc_entry_candidate("8.1 Detection"));
+        assert!(!toc_entry_candidate("QUARTERLY PLAN"));
+        assert!(!toc_entry_candidate("42"));
+        assert!(!toc_entry_candidate("Article 12"));
+        assert!(!toc_entry_candidate("Item 12345"));
+        assert!(!toc_entry_candidate(""));
+        assert!(!toc_title_line("Contents page footer"));
+        assert!(toc_title_line("Contents"));
+        assert!(toc_title_line("TABLE OF CONTENTS"));
     }
 
     #[test]
