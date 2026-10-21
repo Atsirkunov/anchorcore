@@ -132,11 +132,11 @@
         <div class="duo">
           <div class="fig">
             <div class="toc">
-              <p class="toc-head"><span>TOC — sections tree</span><span>§3 · §4 · 4.2</span></p>
+              <p class="toc-head"><span>TOC — sections tree</span><span>§3 · §4 · 3.2</span></p>
               <ul class="toc-tree">
                 <li><span class="toc-tag">section</span><b>§3 Billing migration</b><small>§3 Billing — 3 passages · webhooks</small></li>
                 <li><span class="toc-tag">section</span><b>§4 Instant payments</b><small>§4 Transfers — 2 passages · payout</small></li>
-                <li class="child"><span class="toc-tag">under §3</span><b>4.2 Parallel-run plan</b><small>path: §3 Billing › 4.2 Parallel-run plan — breadcrumb</small></li>
+                <li class="child"><span class="toc-tag">under §3</span><b>3.2 Parallel-run plan</b><small>path: §3 Billing › 3.2 Parallel-run plan — breadcrumb</small></li>
               </ul>
               <div class="toc-side">
                 <p class="toc-side-h">TAGS — auto topics</p>
@@ -145,10 +145,10 @@
                 <p class="toc-hr"></p>
                 <p class="toc-side-h">HOW A SEARCH RUNS</p>
                 <p class="toc-side-p ink">topics → summaries → passages</p>
-                <p class="toc-side-p">5,000 docs searched in milliseconds</p>
+                <p class="toc-side-p">~7 ms per search on a <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/guides/hierarchical-toc.md" target="_blank" rel="noreferrer">30k-chunk benchmark</a></p>
               </div>
             </div>
-            <p class="cap">Headings become a sections tree — answers cite §4.2, not “somewhere in the PDF”.</p>
+            <p class="cap">Headings become a sections tree — answers cite §3.2, not “somewhere in the PDF”.</p>
           </div>
           <div class="fig">
             <div id="graph-mini"></div>
@@ -171,7 +171,7 @@
               <span class="seal-chip">Every answer cited</span>
               <span class="seal-chip">On your machine</span>
             </div>
-            <p class="seal-verify">Source-available — <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">verify it in the code</a>: no telemetry, and the app only contacts the endpoints you configure (<code>answer.rs</code>, <code>security.rs</code>).</p>
+            <p class="seal-verify">Source-available — <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">verify it in the code</a>: no telemetry, and the app only contacts the endpoints you configure.</p>
             <details class="seal-more">
               <summary>How sensitive data is gated</summary>
               <table class="matrix">
@@ -179,7 +179,7 @@
                 <tr><th scope="row">ordinary sources</th><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
                 <tr><th scope="row">sensitive</th><td class="y">✓</td><td class="y">✓</td><td class="n">✗ refused, audited</td></tr>
               </table>
-              <p class="cap">You approve each cloud provider explicitly (<code>ANCHOR_TRUSTED_PROVIDERS</code>). Public answers and agent access only ever see sources you marked public.</p>
+              <p class="cap">You approve each cloud provider explicitly. Public answers and agent access only ever see sources you marked public.</p>
             </details>
           </div>
         </div>
@@ -201,9 +201,9 @@
           <div class="col"><h3>From your agent — via MCP</h3><p>Claude Code, Codex, opencode, Cursor. Same memory over MCP — <code>ask</code> and <code>search</code> return the same cited answers, no browser needed. Same privacy gates; every agent answer is logged.</p><code>anchorcore mcp</code></div>
         </div>
         <div class="fig termwrap">
-          <div class="term-bar"><span>agent → anchorcore mcp · stdio JSON-RPC</span><button id="term-replay" class="btn small secondary" type="button">Replay</button></div>
+          <div class="term-bar"><span>agent → anchorcore mcp</span><button id="term-replay" class="btn small secondary" type="button">Replay</button></div>
           <div class="term-body" id="term-body"></div>
-          <p class="cap">Abbreviated session — the wire carries full JSON-RPC <code>tools/call</code> returning the same cited answers as the browser UI.</p>
+          <p class="cap">Abbreviated session — the agent gets the same cited answers as the browser UI.</p>
         </div>
         <p class="small">Personal use needs no Docker and no account — your data stays in a folder on your machine. Full protocol reference: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">agent docs (MCP)</a>.</p>
         <div class="fig">
@@ -220,7 +220,7 @@
         <p class="sub">Your coding agent sets AnchorCore up for you — install, models, sources, verification — by driving the local API. Claude Code, Codex, opencode, Cursor.</p>
         <div class="cols two">
           <div class="col"><h3>Setup from your agent</h3><p>Copy the <code>anchorcore-setup</code> skill into your agent's skills folder, then ask: “set up AnchorCore”. It probes the app, pulls the models, connects your folders, and proves the first cited answer — asking you only for secrets and approvals.</p><code>copy skill → ask → verified</code></div>
-          <div class="col"><h3>What the skill does</h3><p>Health check → answer-model choice (your agent's own model, local Ollama, or your OpenAI-compatible endpoint) → sources with trust labels → agent connection → end-to-end verification. It reads the honesty flags (<code>mode</code>, <code>retrieval</code>) and says so when answers are degraded.</p><code>setup → verify → report</code></div>
+          <div class="col"><h3>What the skill does</h3><p>Health check → answer-model choice (your agent's own model, local Ollama, or your OpenAI-compatible endpoint) → sources with trust labels → agent connection → end-to-end verification. It checks how the app is running and says so when answers are degraded.</p><code>setup → verify → report</code></div>
         </div>
         <div class="code">npx skills add Atsirkunov/anchorcore --skill anchorcore-setup</div>
         <p class="small">Installs into your agent's skills folder — no <code>npx</code>? Copy it by hand instead:</p>
@@ -228,7 +228,7 @@
         <div class="fig termwrap">
           <div class="term-bar"><span>agent + anchorcore-setup skill · local REST</span><button id="skill-term-replay" class="btn small secondary" type="button">Replay</button></div>
           <div class="term-body" id="skill-term-body"></div>
-          <p class="cap">Abbreviated session — the skill drives the local REST API (health → models → sources → sync → ask) and checks the honesty flags before reporting back.</p>
+          <p class="cap">Abbreviated session — the skill drives the local REST API (health → models → sources → sync → ask) and checks the app is healthy before reporting back.</p>
         </div>
         <p class="small">Skill file: <a href="https://raw.githubusercontent.com/Atsirkunov/anchorcore/main/.agents/skills/anchorcore-setup/SKILL.md">anchorcore-setup (copy/download)</a> — the CLI installs it into whatever skills dir your agent reads. Agent access protocol: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">Connect your agent (MCP)</a>.</p>
       </div>
@@ -294,7 +294,7 @@
           <div class="qa"><h3>Can I move to a new computer?</h3><p>Yes. System → Backup &amp; restore exports your whole memory — sources, entities, review state — into one portable <code>.anchorcore-backup</code> file. Import it on the new machine (preview the dry run first); credentials stay behind unless you opt into the passphrase-encrypted bundle. Full guide: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/backup.md">Backup, export &amp; device migration</a>.</p></div>
           <div class="qa"><h3>Can I check the code myself?</h3><p>Yes — AnchorCore is source-available. The repository is public: read exactly what the Rust app does (no telemetry; it only contacts endpoints you configure) or build it yourself. Personal use is free; team and commercial use need a paid license — see <a href="https://github.com/Atsirkunov/anchorcore/blob/main/LICENSE.md">LICENSE.md</a>.</p></div>
           <div class="qa"><h3>How does it read documents?</h3><p>It splits documents at their headings (§4.2, 3.1.1, Article 12…) and packs the text into short passages. Each section gets a summary and topic tags, so answers cite the exact section — not “somewhere in the PDF”.</p></div>
-          <div class="qa"><h3>Does it stay fast as my library grows?</h3><p>Yes. It narrows thousands of documents to the few relevant sections via tags and summaries, then searches only those. Measured at ~7ms per search on a <a href="https://github.com/Atsirkunov/anchorcore/blob/main/rust/scripts/bench_retrieval.py">30k-chunk benchmark</a> — projected to stay well under 50ms at 5,000 documents.</p></div>
+          <div class="qa"><h3>Does it stay fast as my library grows?</h3><p>Yes. It narrows thousands of documents to the few relevant sections via tags and summaries, then searches only those. Measured at ~7ms per search on a 30k-chunk benchmark (<a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/guides/hierarchical-toc.md">results</a>, <a href="https://github.com/Atsirkunov/anchorcore/blob/main/rust/scripts/bench_retrieval.py">script</a>); larger libraries are projected, not yet measured.</p></div>
           <div class="qa"><h3>Is it free?</h3><p>Personal local app — free. Team self-hosted (one Docker container, your VPC) is a one-time platform license, perpetual including a year of support and updates. Hosted is coming soon — join the waitlist.</p></div>
           <div class="qa"><h3>Do I need Ollama?</h3><p>No. Without it you still get full-text search over everything. Add Ollama (one install, two free models) for AI answers with citations.</p></div>
           <div class="qa"><h3>Citations you can click?</h3><p>Every answer lists its sources with section links like <code>Art 12 › 12.3</code> — click to jump to the passage. Coding agents get the same cited format.</p></div>
