@@ -417,6 +417,8 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/20_vocabulary.sql")),
         // R45.0: drop a Python-era vec0 index this binary cannot load
         M::up_with_hook(include_str!("../migrations/21_drop_orphan_vec0.sql"), drop_orphan_vec0),
+        // R45.5: vector provenance (chunks.embed_fp + embed_state) with one-shot backfill
+        M::up(include_str!("../migrations/22_vector_provenance.sql")),
     ])
 }
 
@@ -524,6 +526,16 @@ mod tests {
             // so migration 20 has real work to do (same rule).
             conn.execute("DROP TABLE vocabulary", [])
                 .unwrap_or_else(|e| panic!("drop vocabulary: {e}"));
+            // A real v10 DB also predates R45.5 — drop the provenance column,
+            // index and state table so migration 22 has real work to do, and
+            // seed one legacy vector (2 floats) for its one-shot backfill.
+            // Before removing vec_chunks: DROP COLUMN re-validates triggers.
+            conn.execute("DROP INDEX ix_chunks_embed_fp", []).unwrap();
+            conn.execute("ALTER TABLE chunks DROP COLUMN embed_fp", []).unwrap();
+            conn.execute("DROP TABLE embed_state", []).unwrap();
+            let item: i64 = conn.query_row("SELECT id FROM ingested_items", [], |r| r.get(0)).unwrap();
+            conn.execute("INSERT INTO chunks (item_id, content, embedding) VALUES (?1, 'legacy', zeroblob(8))", [item])
+                .unwrap();
             conn.execute("DROP TABLE vec_chunks", []).unwrap();
             conn.pragma_update(None, "writable_schema", "ON").unwrap();
             conn.execute(
@@ -545,7 +557,15 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         run_migrations(&mut conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 21);
+        assert_eq!(v, 22);
+        // R45.5 (migration 22): legacy vectors are stamped with the default
+        // HTTP-embedder fingerprint; the state table exists, empty.
+        let fp: String = conn
+            .query_row("SELECT embed_fp FROM chunks WHERE content = 'legacy'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fp, "ollama:nomic-embed-text:2");
+        let states: i64 = conn.query_row("SELECT COUNT(*) FROM embed_state", [], |r| r.get(0)).unwrap();
+        assert_eq!(states, 0);
         let vocab: String = conn
             .query_row("SELECT name FROM sqlite_master WHERE type='table' AND name='vocabulary'", [], |r| r.get(0))
             .unwrap();
@@ -584,6 +604,10 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         let before = vec_trigger_sql(&conn);
         assert!(!before.is_empty(), "ensure_vec must create fallback triggers");
+        // Rewinding to 20 re-runs migration 22 too: drop its artifacts first.
+        conn.execute("DROP INDEX ix_chunks_embed_fp", []).unwrap();
+        conn.execute("ALTER TABLE chunks DROP COLUMN embed_fp", []).unwrap();
+        conn.execute("DROP TABLE embed_state", []).unwrap();
         conn.pragma_update(None, "user_version", 20).unwrap();
         run_migrations(&mut conn).unwrap();
         assert!(table_exists(&conn, "vec_chunks"));
