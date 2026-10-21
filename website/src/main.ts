@@ -194,7 +194,7 @@ function initHashNav() {
       a.style.textDecoration = isActive ? "underline" : "none";
       a.style.textUnderlineOffset = isActive ? "3px" : "";
       a.style.color = isActive ? "var(--sage)" : "var(--ink)";
-      if (isActive) a.setAttribute("aria-current", "true");
+      if (isActive) a.setAttribute("aria-current", "location");
       else a.removeAttribute("aria-current");
     });
   };
