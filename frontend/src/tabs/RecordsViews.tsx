@@ -55,19 +55,21 @@ export function DecisionsView() {
   const [q, setQ] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      setError(null);
-      const res = await api.listDecisions({ status: status === "all" ? undefined : status, q: q.trim() || undefined });
-      setRows(res.decisions);
-      setGate({ blocked: res.blocked, refusal: res.refusal });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load decisions");
-    }
+  const load = useCallback(() => {
+    api
+      .listDecisions({ status: status === "all" ? undefined : status, q: q.trim() || undefined })
+      .then((res) => {
+        setRows(res.decisions);
+        setGate({ blocked: res.blocked, refusal: res.refusal });
+        setError(null);
+      })
+      .catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : "Failed to load decisions");
+      });
   }, [status, q]);
 
   useEffect(() => {
-    void load();
+    load();
   }, [load]);
 
   return (
@@ -131,19 +133,21 @@ export function ActionsView() {
   const [error, setError] = useState<string | null>(null);
   const today = new Date().toISOString().slice(0, 10);
 
-  const load = useCallback(async () => {
-    try {
-      setError(null);
-      const res = await api.listActions({ owner: owner.trim() || undefined, state, overdue });
-      setRows(res.actions);
-      setGate({ blocked: res.blocked, refusal: res.refusal });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load actions");
-    }
+  const load = useCallback(() => {
+    api
+      .listActions({ owner: owner.trim() || undefined, state, overdue })
+      .then((res) => {
+        setRows(res.actions);
+        setGate({ blocked: res.blocked, refusal: res.refusal });
+        setError(null);
+      })
+      .catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : "Failed to load actions");
+      });
   }, [owner, state, overdue]);
 
   useEffect(() => {
-    void load();
+    load();
   }, [load]);
 
   return (

@@ -1761,8 +1761,9 @@ mod tests {
 
     #[tokio::test]
     async fn local_mode_expands_unknown_acronyms_once_and_agent_mode_never() {
-        // R45.13: one budgeted call per new acronym set, cached; known
-        // vocabulary skips the call; agent mode and the off switch make none.
+        // R45.13: opt-in (owner 2026-10-21) — unset makes no call; when on,
+        // one budgeted call per new acronym set, cached; known vocabulary
+        // skips the call; agent mode and the off switch make none.
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let (dir, conn, settings) = seed_gate_db();
         let data_dir = dir.path().to_string_lossy().to_string();
@@ -1784,6 +1785,9 @@ mod tests {
         settings.set("answer_base_url", &base, &conn).unwrap();
         settings.set("answer_model", "expand-test-model", &conn).unwrap();
         let n = || calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(expand_acronyms(&settings, "the QQX trend", &data_dir).await, "the QQX trend");
+        assert_eq!(n(), 0, "unset switch makes no call (opt-in)");
+        settings.set("acronym_expansion", "true", &conn).unwrap();
         let q = expand_acronyms(&settings, "what is the QZX trend", &data_dir).await;
         assert_eq!(q, "what is the QZX trend quarterly zebra index");
         assert_eq!(n(), 1);
