@@ -18,8 +18,8 @@ on your machine — nothing leaves it unless you configure a cloud model.
 The app keeps running in the system tray (Windows) / menu bar (macOS) — quit
 it from there; closing the browser tab doesn't stop it.
 
-> First launch: on macOS right-click → Open (the app isn't Apple-notarized yet);
-> on Windows click "More info → Run anyway" on the SmartScreen prompt.
+> First launch: move AnchorCore to `/Applications`. macOS: open it, then System Settings → Privacy & Security → Open Anyway (the app isn't Apple-notarized yet).
+> Windows: SmartScreen → More info → Run anyway.
 
 ## 60-second start
 
