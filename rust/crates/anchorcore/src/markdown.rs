@@ -933,6 +933,70 @@ fn char_chunks(word: &str, cap: usize) -> Vec<String> {
         .collect()
 }
 
+/// R43.4: line-based oversize split with verbatim whitespace — whole lines
+/// pack greedily to cap (joined with `\n`, indentation intact); a single
+/// line over cap falls back to `split_long_line`. Replaces `split_words`
+/// for code/list/table oversize units, where collapsing newlines and
+/// indentation destroyed structure.
+fn split_verbatim_lines(text: &str, cap: usize) -> Vec<String> {
+    let cap = cap.max(1);
+    let mut pieces = Vec::new();
+    let mut cur: Vec<&str> = Vec::new();
+    let mut cur_len = 0;
+    for line in text.lines() {
+        let llen = chars_len(line);
+        if llen > cap {
+            if !cur.is_empty() {
+                pieces.push(cur.join("\n"));
+                cur.clear();
+                cur_len = 0;
+            }
+            pieces.extend(split_long_line(line, cap));
+        } else if cur_len + llen + 1 > cap && !cur.is_empty() {
+            pieces.push(cur.join("\n"));
+            cur.clear();
+            cur.push(line);
+            cur_len = llen;
+        } else {
+            if !cur.is_empty() {
+                cur_len += 1;
+            }
+            cur.push(line);
+            cur_len += llen;
+        }
+    }
+    if !cur.is_empty() {
+        pieces.push(cur.join("\n"));
+    }
+    pieces
+}
+
+/// R43.4: over-long single line, split greedily after the last whitespace
+/// within cap (hard slice when a run has no whitespace). Every byte lands
+/// in exactly one piece — unlike `split_words`, nothing is collapsed, so
+/// indentation and inner spacing survive verbatim.
+fn split_long_line(line: &str, cap: usize) -> Vec<String> {
+    let cap = cap.max(1);
+    let chars: Vec<char> = line.chars().collect();
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let mut end = (start + cap).min(chars.len());
+        if end < chars.len() {
+            let mut br = end;
+            while br > start + 1 && !chars[br - 1].is_whitespace() {
+                br -= 1;
+            }
+            if br > start + 1 || chars[start].is_whitespace() {
+                end = br.max(start + 1);
+            }
+        }
+        pieces.push(chars[start..end].iter().collect());
+        start = end;
+    }
+    pieces
+}
+
 /// Lists split at item boundaries; continuation lines stay with their item.
 fn split_list(text: &str) -> Vec<String> {
     let mut items: Vec<String> = Vec::new();
@@ -949,7 +1013,7 @@ fn split_list(text: &str) -> Vec<String> {
     let mut units: Vec<String> = Vec::new();
     for item in items {
         if chars_len(&item) > MD_CAP {
-            units.extend(split_words(&item, MD_CAP));
+            units.extend(split_verbatim_lines(&item, MD_CAP));
         } else {
             units.push(item);
         }
@@ -962,7 +1026,7 @@ fn split_list(text: &str) -> Vec<String> {
 fn split_table(text: &str) -> Vec<String> {
     let lines: Vec<&str> = text.lines().collect();
     if lines.len() < 2 {
-        return split_words(text, MD_CAP);
+        return split_verbatim_lines(text, MD_CAP);
     }
     let head = format!("{}\n{}", lines[0], lines[1]);
     let head_len = chars_len(&head);
@@ -973,7 +1037,7 @@ fn split_table(text: &str) -> Vec<String> {
         let rlen = chars_len(row);
         if rlen + 1 + head_len > MD_CAP {
             // A single cell wider than the cap: word-split it, still headed.
-            for frag in split_words(row, MD_CAP.saturating_sub(head_len + 1).max(64)) {
+            for frag in split_long_line(row, MD_CAP.saturating_sub(head_len + 1).max(64)) {
                 pieces.push(format!("{}\n{}", head, frag));
             }
             continue;
@@ -1021,9 +1085,20 @@ fn split_code(block: &Block) -> Vec<String> {
     if chars_len(&block.text) <= MD_CODE_CAP {
         return vec![block.text.clone()];
     }
+    let (ch, len) = block.fence.unwrap_or(('`', 3));
     let inner: Vec<&str> = block.text.lines().collect();
-    // Strip the stored fences; they are re-added per piece below.
-    let body = if inner.len() >= 2 { &inner[1..inner.len() - 1] } else { &inner[..] };
+    // Strip the stored fences; they are re-added per piece below. The last
+    // line is only a fence when it reads as one — an unclosed fence keeps
+    // its last code line (it used to be dropped as a phantom close).
+    let fence = Fence { ch, len };
+    let shut = inner.last().is_some_and(|l| is_fence_close(l, &fence));
+    let body = if shut && inner.len() >= 2 {
+        &inner[1..inner.len() - 1]
+    } else if inner.len() > 1 {
+        &inner[1..]
+    } else {
+        &inner[..]
+    };
     let mut groups: Vec<String> = Vec::new();
     let mut cur: Vec<&str> = Vec::new();
     for line in body {
@@ -1039,7 +1114,6 @@ fn split_code(block: &Block) -> Vec<String> {
     if !cur.is_empty() {
         groups.push(cur.join("\n"));
     }
-    let (ch, len) = block.fence.unwrap_or(('`', 3));
     let lang = fence_lang(&block.text);
     let open = format!("{}{}", ch.to_string().repeat(len), lang);
     let close = ch.to_string().repeat(len);
@@ -1050,7 +1124,7 @@ fn split_code(block: &Block) -> Vec<String> {
     for group in groups {
         let budget = MD_CAP.saturating_sub(chars_len(&open) + chars_len(&close) + 2).max(64);
         if chars_len(&group) > budget {
-            units.extend(split_words(&group, budget));
+            units.extend(split_verbatim_lines(&group, budget));
         } else {
             units.push(group);
         }
@@ -1178,6 +1252,61 @@ mod tests {
             assert!(chunk.content.trim_end().ends_with("```"));
             assert!(chars_len(&chunk.content) <= MD_CAP + chars_len("# Doc\n\n"));
         }
+    }
+
+    #[test]
+    fn split_long_line_preserves_bytes() {
+        // R43.4: greedy break after the last whitespace in cap; every byte
+        // lands in exactly one piece (whitespace included, never collapsed).
+        assert_eq!(
+            split_long_line("aaa bbb ccc ddd eee fff", 10),
+            vec!["aaa bbb ", "ccc ddd ", "eee fff"]
+        );
+        let indented = "        deep = call(arg1, arg2)";
+        let pieces = split_long_line(indented, 16);
+        assert_eq!(pieces, vec!["        deep = ", "call(arg1, arg2)"]);
+        assert_eq!(pieces.concat(), indented);
+        assert_eq!(
+            split_long_line("abcdefghij1234567890", 10),
+            vec!["abcdefghij", "1234567890"]
+        );
+    }
+
+    #[test]
+    fn oversized_list_item_keeps_newlines_and_indent() {
+        // R43.4: an over-cap list item splits line-based — continuation
+        // lines and their indentation survive (split_words collapsed them).
+        let item = format!("- {}\n    continued = value\n    more = data", "x".repeat(1480));
+        let out = split_list(&item);
+        assert!(out.len() > 1);
+        assert!(out.iter().any(|u| u.contains('\n')));
+        assert!(out.join("\n").contains("    continued = value"));
+    }
+
+    #[test]
+    fn oversized_table_row_preserves_spacing() {
+        // R43.4: an over-cap table row slices verbatim — inner spacing
+        // survives (split_words collapsed multi-space runs to one).
+        let row = format!("| {} |", "cell  with  double  spaces  ".repeat(60));
+        let out = split_table(&format!("| name | notes |\n|---|---|\n{row}"));
+        assert!(out.len() > 1);
+        assert!(out.iter().all(|p| p.starts_with("| name | notes |")));
+        assert!(out.concat().contains("cell  with  double"));
+    }
+
+    #[test]
+    fn split_code_unclosed_fence_keeps_last_line() {
+        // R43.4: an unclosed over-cap fence keeps its last code line (it
+        // used to be dropped as a phantom closing fence).
+        let md = format!(
+            "# Doc\n\n```python\n{}final_result = combine(all_values)\n",
+            "y = compute(value) + offset\n".repeat(150)
+        );
+        let (_, chunks) = chunk_markdown(&md, "d.md");
+        assert!(chunks.len() > 1);
+        assert!(chunks
+            .iter()
+            .any(|c| c.content.contains("final_result = combine(all_values)")));
     }
 
     #[test]
