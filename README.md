@@ -37,8 +37,9 @@ Verify a download against `SHA256SUMS` on the release page.
    Claude Desktop to the same index — the app writes the client config for you, so
    there is nothing to build. The onboarding wizard's last step offers the same card.
 
-Tip: install [Ollama](https://ollama.com) and pull `llama3.2:3b` +
-`nomic-embed-text` for full hybrid search — without it, keyword search still works.
+Tip: install [Ollama](https://ollama.com) and pull `nomic-embed-text` for full
+hybrid search — without it, keyword search still works. Indexing needs no chat
+model: entities are extracted by rules unless you opt into `extract_entities=llm`.
 
 ## Editions
 
@@ -98,8 +99,8 @@ root; pushing a `v*` tag builds all platform zips automatically (see `docs/relea
 **Prerequisites:** Rust (stable) + Node 20+ for local dev, Python 3.12 only for the archived conformance suite, [Ollama](https://ollama.com):
 
 ```bash
-ollama pull llama3.2:3b       # classifier
 ollama pull nomic-embed-text  # embeddings
+ollama pull llama3.2:3b       # optional: local answers, or extract_entities=llm
 ```
 
 **Tests — Rust is source:** `cargo test -p anchorcore` (all green, `cargo check` clean) + `cargo build --release` embeds `frontend/dist` (`9.8M`). Conformance vs Python: `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=backend/tests/test_mcp.py` (honest accounting). Legacy Python unit: `python -m pytest backend/tests -q` (`backend/tests/README.md`).
@@ -112,7 +113,7 @@ never in the DB):
 
 | Section | Local | Cloud |
 |---|---|---|
-| Classification | Ollama (`llama3.2:3b`) | any OpenAI-compatible + key |
+| Classification (opt-in: `extract_entities=llm` / `distill_enabled`; default is rules, no model) | Ollama (`llama3.2:3b`) | any OpenAI-compatible + key |
 | Embeddings | Ollama (`nomic-embed-text`) | any OpenAI-compatible + key |
 | Answer (Q&A) | Ollama | any OpenAI-compatible + key, reasoning effort (none/low/medium/high) |
 
