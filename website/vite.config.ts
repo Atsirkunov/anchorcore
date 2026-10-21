@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from "vite";
 import { readFileSync } from "node:fs";
 import { seo } from "./scripts/seo";
+import { sessionHtml } from "./scripts/session-html";
 
 // Guides are prerendered by scripts/build-guides.mjs into guides/<slug>.html (R44.15);
 // the same list drives the Vite entries and the sitemap, so they cannot drift.
@@ -24,7 +25,7 @@ function sitemap(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [sitemap(), seo()],
+  plugins: [sitemap(), sessionHtml(), seo()],
   server: { port: 5174 },
   build: {
     outDir: "dist",
