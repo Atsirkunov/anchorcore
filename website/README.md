@@ -96,7 +96,7 @@ placeholder would be worse than the deferral. When it exists, add the block to
 
 The card shows a real run of AnchorCore's MCP `search` tool on the `sample/` dataset. Claude Code calls `anchorcore - search (MCP)(query: "billing provider migration rollback plan owner", k: 8)`, reads the hits, and writes the answer itself; AnchorCore does not compose it. Only the `search` response is captured data; the answer text in `claude-session.data.json` is authored from facts present in the shown hits.
 
-`scripts/demo-capture.json` is the raw `search` response (never edit it). Captured with AnchorCore 1.0.32 built from commit `6e86b3e` (includes the R43.28 test-env fix; older builds mis-rank this corpus). To regenerate:
+`scripts/demo-capture.json` is the raw `search` response (never edit it). Captured with AnchorCore 1.0.32 built from commit `23e2949` (the R43.28 test-env fix; the same change is `6e86b3e` on main; older builds mis-rank this corpus). To regenerate:
 
 1. Run the app on a spare port with a fresh data dir: `ANCHOR_OPEN_BROWSER=0 ANCHOR_SECRETS_NO_KEYRING=1 ANCHOR_TRAY=0 anchorcore --port 8794 --data-dir <tmp> --no-tray`. Copy `sample/` to a neutral path first (hits carry absolute `source_ref` paths).
 2. Add it as a folder source labelled `public` (`GET /csrf`, then `POST /sources` and `POST /sources/1/sync` with `x-csrf-token` and `Origin` headers); wait for `GET /sources/jobs` to report `done`.
