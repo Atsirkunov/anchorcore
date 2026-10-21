@@ -4,6 +4,13 @@ ADR log. Append newest first.
 
 ---
 
+## 2026-10-21 — R43.29: the LAN gate warns inside containers (revises R43.8)
+
+* **Decision:** `lan_bind_gate` takes `in_container` (`/.dockerenv` or `/run/.containerenv`): personal-edition containers boot with a loud warning naming the host-side `-p` control instead of refusing. Bare-metal personal still refuses; Team still refuses everywhere with no opt-out. The probe itself is deliberately unit-untested (asserting it would fail for anyone running `cargo test` in a container); the pure matrix pins the logic.
+* **Context:** 1.0.33 refused every personal container boot (CI `ac-smoke` curl exit 7) because the image must bind 0.0.0.0 to reach the host mapping. Alternatives were a CI-only env var (leaves every personal-docker user bricked) and downgrading the gate to warn-everywhere (surrenders the bare-metal protection); the carve-out keeps both.
+
+---
+
 ## 2026-10-21 — R36.18a: section-granular line ranges
 
 * **Decision:** every chunk carries the line range of its own section — markdown/verbatim report real 1-based source lines, code/config sections start at their symbol line via `push_symbol(line_no)`, prose blocks are relative to their section. Prose ranges are cleaned-text-relative (cleaning shifts lines; the mapping is documented, not stored). Joined continuation lines still report the starter line.

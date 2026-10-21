@@ -138,7 +138,7 @@ fn team_auth_gate(edition_team: bool, host: &str, auth_enabled: bool) -> Result<
     if !edition_team || auth_enabled {
         return Ok(());
     }
-    if matches!(host.trim(), "127.0.0.1" | "localhost" | "::1") {
+    if is_loopback_host(host) {
         return Ok(());
     }
     Err(format!(
@@ -146,16 +146,38 @@ fn team_auth_gate(edition_team: bool, host: &str, auth_enabled: bool) -> Result<
     ))
 }
 
+/// R43.29: containers are detectable (`/.dockerenv` on Docker/containerd,
+/// `/run/.containerenv` on Podman). Untestable by unit test on purpose —
+/// it reads the real filesystem, so asserting it would fail for anyone
+/// running `cargo test` inside a container; the pure gate matrix below
+/// covers the logic.
+fn running_in_container() -> bool {
+    std::path::Path::new("/.dockerenv").exists() || std::path::Path::new("/run/.containerenv").exists()
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host.trim(), "127.0.0.1" | "localhost" | "::1")
+}
+
 /// R43.8: personal edition fails closed too — a non-loopback bind without
 /// `ANCHOR_AUTH_SECRET` exposes every endpoint to the LAN with no login.
 /// Team keeps its stricter gate above (no opt-out); personal offers an
 /// explicit `ANCHOR_LAN_NO_AUTH=1` escape hatch for trusted LANs. Pure so
 /// tests can cover the matrix without env juggling.
-fn lan_bind_gate(host: &str, auth_enabled: bool, lan_no_auth: bool) -> Result<(), String> {
+///
+/// R43.29: inside a container the gate warns instead of refusing — 0.0.0.0
+/// is the only bind that reaches the host's port mapping, and LAN exposure
+/// is governed host-side (`-p 127.0.0.1:…` vs `-p …`), so refusing bricks
+/// every personal container without teaching anything. The call site logs
+/// the warning; Team still refuses everywhere.
+fn lan_bind_gate(host: &str, auth_enabled: bool, lan_no_auth: bool, in_container: bool) -> Result<(), String> {
     if auth_enabled || lan_no_auth {
         return Ok(());
     }
-    if matches!(host.trim(), "127.0.0.1" | "localhost" | "::1") {
+    if is_loopback_host(host) {
+        return Ok(());
+    }
+    if in_container {
         return Ok(());
     }
     Err(format!(
@@ -303,15 +325,19 @@ mod cli_tests {
     fn lan_bind_gate_matrix() {
         // R43.8: personal LAN bind without auth refuses; secret, loopback,
         // or the explicit ANCHOR_LAN_NO_AUTH=1 opt-out boots.
-        let err = super::lan_bind_gate("0.0.0.0", false, false).unwrap_err();
+        let err = super::lan_bind_gate("0.0.0.0", false, false, false).unwrap_err();
         assert!(err.contains("ANCHOR_AUTH_SECRET"), "{err}");
         assert!(err.contains("ANCHOR_LAN_NO_AUTH=1"), "{err}");
-        assert!(super::lan_bind_gate("0.0.0.0", true, false).is_ok());
-        assert!(super::lan_bind_gate("0.0.0.0", false, true).is_ok());
-        assert!(super::lan_bind_gate("192.168.1.5", false, false).is_err());
-        assert!(super::lan_bind_gate("127.0.0.1", false, false).is_ok());
-        assert!(super::lan_bind_gate("localhost", false, false).is_ok());
-        assert!(super::lan_bind_gate("::1", false, false).is_ok());
+        assert!(super::lan_bind_gate("0.0.0.0", true, false, false).is_ok());
+        assert!(super::lan_bind_gate("0.0.0.0", false, true, false).is_ok());
+        assert!(super::lan_bind_gate("192.168.1.5", false, false, false).is_err());
+        assert!(super::lan_bind_gate("127.0.0.1", false, false, false).is_ok());
+        assert!(super::lan_bind_gate("localhost", false, false, false).is_ok());
+        assert!(super::lan_bind_gate("::1", false, false, false).is_ok());
+        // R43.29: inside a container the gate permits (call site warns) —
+        // 0.0.0.0 is the only bind that reaches the host port mapping.
+        assert!(super::lan_bind_gate("0.0.0.0", false, false, true).is_ok());
+        assert!(super::lan_bind_gate("192.168.1.5", false, false, true).is_ok());
     }
 
     /// The boot banner must reflect the running binary: write-if-absent
@@ -690,11 +716,21 @@ async fn main() {
     } else {
         // R43.8: personal edition fails closed on LAN binds without auth
         // too (was F-01 team-only). Explicit opt-out for trusted LANs.
+        // R43.29: containers warn instead of refusing (see lan_bind_gate).
         let lan_no_auth = std::env::var("ANCHOR_LAN_NO_AUTH").as_deref() == Ok("1");
-        if let Err(msg) = lan_bind_gate(&resolve_host(&args.host), auth::auth_enabled(), lan_no_auth) {
+        let host = resolve_host(&args.host);
+        let auth_enabled = auth::auth_enabled();
+        if let Err(msg) = lan_bind_gate(&host, auth_enabled, lan_no_auth, running_in_container()) {
             tracing::error!("{}", msg);
             eprintln!("{msg}");
             std::process::exit(2);
+        }
+        if running_in_container() && !auth_enabled && !lan_no_auth && !is_loopback_host(&host) {
+            let msg = format!(
+                "binding {host} without ANCHOR_AUTH_SECRET inside a container (no login): LAN visibility is controlled by the host's port mapping — use -p 127.0.0.1:<port>:8000 to keep it local, or set ANCHOR_AUTH_SECRET"
+            );
+            tracing::warn!("{}", msg);
+            eprintln!("{msg}");
         }
     }
     install_panic_hook(&data_dir);
