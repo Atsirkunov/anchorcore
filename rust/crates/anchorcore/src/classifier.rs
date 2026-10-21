@@ -147,6 +147,11 @@ pub struct ClassifiedItem {
     pub window_text: String,
     #[serde(default)]
     pub window_index: Option<i64>,
+    /// R45.8: parser-filled owner + record fields (empty for LLM rows).
+    #[serde(default)]
+    pub owner: String,
+    #[serde(default)]
+    pub record: crate::records::RecordFields,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -331,7 +336,7 @@ fn normalize_items(items: Vec<serde_json::Value>, source_ref: &str, bucket: &str
             let reasoning = obj.get("reasoning").and_then(|v| v.as_str()).unwrap_or("").trim().chars().take(1000).collect();
             let confidence = obj.get("confidence").and_then(|v| v.as_f64()).map(|f| f.clamp(0.0,1.0)).unwrap_or(0.5);
             let author = obj.get("author").and_then(|v| v.as_str()).unwrap_or("").trim().chars().take(300).collect();
-            out.push(ClassifiedItem { kind, summary, reasoning, confidence, author, source_ref: source_ref.to_string(), window_text: String::new(), window_index: None });
+            out.push(ClassifiedItem { kind, summary, reasoning, confidence, author, source_ref: source_ref.to_string(), window_text: String::new(), window_index: None, owner: String::new(), record: Default::default() });
         }
     }
     out
@@ -391,57 +396,17 @@ fn split_sentences(text: &str) -> Vec<String> {
     out
 }
 
-pub fn classify_rules(text: &str, source_ref: &str) -> Vec<ClassifiedItem> {
-    let mut items = Vec::new();
-    for sentence in split_sentences(text) {
-        let s = sentence.trim();
-        if s.is_empty() { continue; }
-        // R33.6: rules emit decision/action only (the `document` arm is
-        // deleted with the kind — status sentences yield nothing).
-        if let Some(kind) = rule_kind(s) {
-            let conf = match kind.as_str() {
-                "decision" => 0.78,
-                "action" => 0.72,
-                _ => 0.52,
-            };
-            items.push(ClassifiedItem {
-                kind,
-                summary: s.chars().take(240).collect(),
-                reasoning: "rule-based classifier".to_string(),
-                confidence: conf,
-                author: String::new(),
-                source_ref: source_ref.to_string(),
-                window_text: String::new(),
-                window_index: None,
-            });
-        }
-    }
-    // Rules run for the record bucket only (see `classify_rules_typed`) —
-    // normalize as record so decision/action survive.
-    normalize_items(items.into_iter().map(|i| serde_json::json!({"kind": i.kind, "summary": i.summary, "reasoning": i.reasoning, "confidence": i.confidence, "author": i.author})).collect(), source_ref, "record")
-}
-
-/// Rules fallback, bucket-aware: only `record` extracts without the LLM.
+/// Rules extraction, bucket-aware: only `record` extracts without the LLM.
 /// `reference` (+ legacy types, + `code`) emit nothing — chunks still make
 /// them findable, and the LLM reference prompt extracts notes when online.
+/// R45.8: records are read by the deterministic parser (`records.rs`), not
+/// sentence regexes — those turned code tables and field paths into
+/// decisions/actions.
 pub fn classify_rules_typed(text: &str, source_ref: &str, doc_type: &str) -> Vec<ClassifiedItem> {
     if !is_record_bucket(doc_type) {
         return Vec::new();
     }
-    classify_rules(text, source_ref)
-}
-
-fn rule_kind(sentence: &str) -> Option<String> {
-    static RE_DECISION: OnceLock<Regex> = OnceLock::new();
-    static RE_ACTION: OnceLock<Regex> = OnceLock::new();
-    let lower = sentence.to_lowercase();
-    if RE_DECISION.get_or_init(|| Regex::new(r"\b(we (decided|agreed|chose|approved|rejected|postponed)\b|decision\s*[:\-](\s|$)|(decided|agreed) (to|that|on)\b|(approved|rejected) the\b)").unwrap()).is_match(&lower) {
-        return Some("decision".to_string());
-    }
-    if RE_ACTION.get_or_init(|| Regex::new(r"\b(action item|todo|to-do|next step|owner|assign|follow[- ]up|deadline|due)\b").unwrap()).is_match(&lower) {
-        return Some("action".to_string());
-    }
-    None
+    crate::records::record_items(&crate::records::parse_record(text), source_ref)
 }
 
 pub fn distill_rules(text: &str) -> Vec<DistilledUnit> {
@@ -468,25 +433,14 @@ mod tests {
     use std::sync::Arc;
     use tempfile::tempdir;
     #[test]
-    fn rule_kind_decision() {
-        assert_eq!(rule_kind("We decided to launch next month."), Some("decision".to_string()));
-        assert_eq!(rule_kind("No match here."), None);
-    }
-    #[test]
-    fn rule_kind_status_sentences_yield_nothing() {
-        // R33.6: the `document` arm is deleted with the kind — status
-        // sentences yield nothing from rules (the LLM reference prompt
-        // turns them into notes when online).
-        assert_eq!(rule_kind("Status update as of now."), None);
-        assert_eq!(rule_kind("The current state is green."), None);
-    }
-    #[test]
-    fn classify_rules_fallback() {
-        let items = classify_rules("We decided to approve the budget. Status update as of now. Owner: Alice will review the transfer checklist.", "ref");
-        let kinds: Vec<String> = items.iter().map(|i| i.kind.clone()).collect();
-        assert!(kinds.contains(&"decision".to_string()), "kinds: {kinds:?}");
-        assert!(kinds.contains(&"action".to_string()), "kinds: {kinds:?}");
-        assert!(!kinds.iter().any(|k| k == "document"), "rules never emit document: {kinds:?}");
+    fn classify_rules_reads_record_structure() {
+        let text = "# Decision: Approve the budget — D0007\n\n**Status:** Approved. Owner: Alice.\n\n## Action items\n- Bob: draft the plan. Due: Friday.\n";
+        let items = classify_rules_typed(text, "ref", "record");
+        let kinds: Vec<&str> = items.iter().map(|i| i.kind.as_str()).collect();
+        assert_eq!(kinds, ["decision", "action"]);
+        assert_eq!((items[0].owner.as_str(), items[0].record.record_id.as_str()), ("Alice", "D0007"));
+        assert_eq!((items[1].owner.as_str(), items[1].record.due.as_str()), ("Bob", "Friday"));
+        assert!(classify_rules_typed(text, "ref", "reference").is_empty(), "reference never extracts");
     }
     #[test]
     fn distill_rules_pairs() {
@@ -571,18 +525,15 @@ mod tests {
     }
 
     #[test]
-    fn record_rules_may_emit_decision_and_action() {
-        let items = classify_rules_typed("We decided to approve the budget. Next step: Alice will draft the plan.", "ref", "record");
-        let kinds: Vec<&str> = items.iter().map(|i| i.kind.as_str()).collect();
-        assert!(kinds.contains(&"decision"), "record may emit decisions: {kinds:?}");
-        assert!(kinds.contains(&"action"), "record may emit actions: {kinds:?}");
-        assert!(!kinds.contains(&"document"), "new extraction never emits document: {kinds:?}");
-    }
-
-    #[test]
-    fn decision_mentions_are_not_decisions() {
-        let items = classify_rules("The decision-making process is described below. What was decided about the transfer?", "ref");
-        assert!(items.iter().all(|i| i.kind != "decision"));
+    fn prose_sentences_are_not_records() {
+        // R45.8: "we decided" / "next step" / "owner" in running prose no
+        // longer mint entities — only record structure does.
+        for text in [
+            "We decided to approve the budget. Next step: Alice will draft the plan.",
+            "The decision-making process is described below. What was decided about the transfer?",
+        ] {
+            assert!(classify_rules_typed(text, "ref", "record").is_empty(), "{text}");
+        }
     }
 
     fn items_of(kinds: &[&str]) -> Vec<serde_json::Value> {
