@@ -1,6 +1,6 @@
 # Try the sample company
 
-> The demo corpus lives in the repo's `sample/` folder — clone the repo (or grab the folder from GitHub) and point your source at it; release zips ship the app only.
+> Download [sample.zip](https://anchorcore.dev/sample.zip) from the website and unzip it anywhere, then point your source at the extracted `sample/` folder. (The zip is built from the repo's `sample/` at every site build; release zips ship the app only.)
 
 A fictional payments company ("the payments team"): decisions, meetings, specs,
 and people — designed so you can try every part of the product in a minute.
