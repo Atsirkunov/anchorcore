@@ -112,7 +112,7 @@ Rules that must not break:
 ## UI notes
 
 - `App.tsx` — tabs + header (project picker scopes Ask); mounts `OnboardingWizard` on first launch with no sources (dismissable via `localStorage`).
-- `OnboardingWizard.tsx` — Ollama checks → connect a folder or the bundled `sample/` corpus (dev checkout only; packaged apps report unavailable) → ask with cited answer.
+- `OnboardingWizard.tsx` — mode choice (who writes answers) + Ollama checks → connect a folder or the bundled `sample/` corpus (dev checkout only; packaged apps report unavailable) → ask with cited answer.
 - `FolderPicker.tsx` — folder browser (`GET /system/fs`: child dirs only, no canonicalization). Keep the typed-path input.
 - `AskTab` renders turns newest-first. `SourcesTab` is a thin composition (`tabs/sources/*`); job polling is the single `useJobsPoll` hook; `projects` state lives in `ProjectsContext`.
 - `theme.ts` tokens (no inline hex); `api.ts request()` throws `Error(detail)`, 30s timeout, `RequestAbortedError` on cancel; `types.ts` mirrors backend schemas; `main.tsx` error boundaries per tab.
