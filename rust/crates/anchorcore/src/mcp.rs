@@ -26,6 +26,22 @@ fn http_client() -> &'static reqwest::Client {
     })
 }
 
+/// R43.7 follow-up: the MCP hop must outlast a legitimately slow backend.
+/// The shared client times out at 10 s, but answer generation honors the
+/// backend's `answer_timeout` setting (default 120 s) — without an override
+/// every slow answer fails at the MCP hop first. Ask calls (`POST /qa` and
+/// `POST /qa/public`) get their own budget, default 180 s; every other
+/// tool keeps the fast 10 s default.
+fn ask_timeout_secs() -> u64 {
+    std::env::var("ANCHOR_MCP_ASK_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|t| t.is_finite() && *t > 0.0)
+        .map(|t| t.min(3600.0) as u64)
+        .filter(|t| *t > 0)
+        .unwrap_or(180)
+}
+
 static CSRF_TOKEN: OnceLock<tokio::sync::Mutex<Option<String>>> = OnceLock::new();
 fn csrf_cache() -> &'static tokio::sync::Mutex<Option<String>> {
     CSRF_TOKEN.get_or_init(|| tokio::sync::Mutex::new(None))
@@ -64,6 +80,9 @@ async fn http_call(method: &str, path: &str, body: Option<Value>) -> Result<Valu
         "POST" => client.post(&url),
         _ => return Err(format!("unsupported method {method}")),
     };
+    if method == "POST" && (path == "/qa" || path == "/qa/public") {
+        req = req.timeout(std::time::Duration::from_secs(ask_timeout_secs()));
+    }
     if let Some(b) = body {
         req = req.json(&b);
     }
@@ -619,6 +638,129 @@ mod tests {
         let desc = ask.get("description").and_then(|d| d.as_str()).unwrap_or("");
         assert!(desc.contains("warning"), "ask description must name the warning: {desc}");
         assert!(desc.contains("server's configured answer model"), "ask description must name BYOM: {desc}");
+    }
+
+    #[test]
+    fn ask_timeout_secs_default_and_clamp() {
+        let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
+        let saved = std::env::var("ANCHOR_MCP_ASK_TIMEOUT").ok();
+        std::env::remove_var("ANCHOR_MCP_ASK_TIMEOUT");
+        assert_eq!(ask_timeout_secs(), 180);
+        for (raw, want) in [("30", 30), ("1.9", 1), ("0.5", 180), ("99999", 3600)] {
+            std::env::set_var("ANCHOR_MCP_ASK_TIMEOUT", raw);
+            assert_eq!(ask_timeout_secs(), want, "{raw}");
+        }
+        for raw in ["0", "-5", "soon", "NaN", "inf"] {
+            std::env::set_var("ANCHOR_MCP_ASK_TIMEOUT", raw);
+            assert_eq!(ask_timeout_secs(), 180, "{raw}");
+        }
+        if let Some(v) = saved {
+            std::env::set_var("ANCHOR_MCP_ASK_TIMEOUT", v);
+        } else {
+            std::env::remove_var("ANCHOR_MCP_ASK_TIMEOUT");
+        }
+    }
+
+    /// Guard that stops the mock server when the test ends (including on
+    /// assertion failure) — an accept loop never returns on its own, and a
+    /// live `spawn_blocking` server wedges `#[tokio::test]` runtime shutdown
+    /// forever (the tests passed; only teardown hung).
+    struct MockGuard {
+        base: String,
+        task: tokio::task::JoinHandle<()>,
+    }
+    impl Drop for MockGuard {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    /// Raw-socket mock backend: `/csrf` answers fast with a token, `/qa`
+    /// answers fast or slow per `slow_qa`.
+    async fn spawn_ask_mock(slow_qa: bool) -> MockGuard {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind mock");
+        let addr = listener.local_addr().expect("mock addr");
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut s, _) = match listener.accept().await {
+                    Ok(x) => x,
+                    Err(_) => break,
+                };
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                if slow_qa && head.contains("POST /qa ") {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
+                let body = if head.contains("/csrf") {
+                    "{\"csrf_token\":\"t\"}"
+                } else {
+                    "{\"answer\":\"ok\"}"
+                };
+                let _ = s
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+            }
+        });
+        MockGuard { base: format!("http://{}", addr), task }
+    }
+
+    #[tokio::test]
+    async fn qa_path_uses_ask_timeout_override() {
+        let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
+        let mock = spawn_ask_mock(true).await;
+        let base = mock.base.clone();
+        let saved_url = std::env::var("ANCHOR_BACKEND_URL").ok();
+        let saved_to = std::env::var("ANCHOR_MCP_ASK_TIMEOUT").ok();
+        std::env::set_var("ANCHOR_BACKEND_URL", &base);
+        std::env::set_var("ANCHOR_MCP_ASK_TIMEOUT", "1");
+        let err = http_call("POST", "/qa", Some(serde_json::json!({"q": "x"})))
+            .await
+            .expect_err("slow /qa must hit the 1 s override");
+        assert!(err.contains("backend unreachable"), "{err}");
+        if let Some(v) = saved_url {
+            std::env::set_var("ANCHOR_BACKEND_URL", v);
+        } else {
+            std::env::remove_var("ANCHOR_BACKEND_URL");
+        }
+        if let Some(v) = saved_to {
+            std::env::set_var("ANCHOR_MCP_ASK_TIMEOUT", v);
+        } else {
+            std::env::remove_var("ANCHOR_MCP_ASK_TIMEOUT");
+        }
+    }
+
+    #[tokio::test]
+    async fn qa_path_fast_backend_ok() {
+        let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
+        let mock = spawn_ask_mock(false).await;
+        let base = mock.base.clone();
+        let saved_url = std::env::var("ANCHOR_BACKEND_URL").ok();
+        let saved_to = std::env::var("ANCHOR_MCP_ASK_TIMEOUT").ok();
+        std::env::set_var("ANCHOR_BACKEND_URL", &base);
+        std::env::set_var("ANCHOR_MCP_ASK_TIMEOUT", "30");
+        let v = http_call("POST", "/qa", Some(serde_json::json!({"q": "x"})))
+            .await
+            .expect("fast /qa must succeed");
+        assert_eq!(v.get("answer").and_then(|a| a.as_str()), Some("ok"));
+        if let Some(v) = saved_url {
+            std::env::set_var("ANCHOR_BACKEND_URL", v);
+        } else {
+            std::env::remove_var("ANCHOR_BACKEND_URL");
+        }
+        if let Some(v) = saved_to {
+            std::env::set_var("ANCHOR_MCP_ASK_TIMEOUT", v);
+        } else {
+            std::env::remove_var("ANCHOR_MCP_ASK_TIMEOUT");
+        }
     }
 
     #[test]

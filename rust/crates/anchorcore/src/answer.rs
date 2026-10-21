@@ -75,7 +75,7 @@ pub struct Citation {
     pub content: String,
     pub item_title: String,
     pub content_truncated: bool,
-    /// 1-based source lines (markdown chunks; 0/0 when untracked).
+    /// 1-based source lines (0/0 when untracked).
     pub line_start: i64,
     pub line_end: i64,
     /// R39.1: contributing legs + ranks from the last fusion (`[]` unranked).
@@ -149,7 +149,7 @@ pub struct SearchHit {
     pub conflicts_with: Vec<i64>,
     pub score: f64,
     pub content_truncated: bool,
-    /// 1-based source lines (markdown chunks; 0/0 when untracked).
+    /// 1-based source lines (0/0 when untracked).
     pub line_start: i64,
     pub line_end: i64,
     /// R39.1: contributing legs + ranks from the last fusion (`[]` unranked).
@@ -605,12 +605,8 @@ pub async fn ask(
     // Build context and generate (no DB borrow across await) — R10.6 UTF-8 safe (was byte slice).
     // R36.3: parent hits center the window on the match mark (a head cut
     // could drop the match); unmarked hits keep the byte-identical head.
-    let sections: Vec<String> = hits.iter().enumerate().map(|(i, h)| {
-        let window = crate::retrieval::content_window(&h.content, h.chunk_id, 2000)
-            .unwrap_or_else(|| h.content.chars().take(2000).collect::<String>());
-        format!("[S{}] {}", i + 1, window)
-    }).collect();
-    let context = sections.join("\n\n");
+    // R43.7: whole-section assembly under a token budget (rank order kept).
+    let context = build_answer_context(&hits);
     let (answer, composed) = generate_answer(settings, &question, &context, &history_for_gen).await;
     let want_content = req.include_content.unwrap_or(false);
     let citations = build_citations(&hits, &data_dir_string, want_content, citations_limit(), &question);
@@ -1149,12 +1145,65 @@ fn turn_text(turn: &AskTurn) -> String {
     format!("{}: {}", turn.role, turn.content)
 }
 
+/// R43.7: answer-model HTTP timeout, shared by generation and the
+/// follow-up rewrite (one knob — both call the same model endpoint, so a
+/// laptop-slow model must not fail one path but not the other). Wires the
+/// existing `answer_timeout` setting (seconds, default 120: prompt eval +
+/// generation on a laptop regularly exceed the old 10s); env
+/// `ANCHOR_ANSWER_TIMEOUT` works via the generic settings fallback.
+/// Fractional values are honored (handy for hermetic timeout tests);
+/// missing/bogus/non-positive values fall back to the default; capped at
+/// one hour (matches the `ollama.rs` long-poll ceiling).
+fn answer_timeout(settings: &SettingsService) -> std::time::Duration {
+    const DEFAULT_SECS: f64 = 120.0;
+    const MAX_SECS: f64 = 3600.0;
+    let secs = settings.get_float("answer_timeout", DEFAULT_SECS);
+    let secs = if secs.is_finite() && secs > 0.0 { secs } else { DEFAULT_SECS };
+    std::time::Duration::from_secs_f64(secs.min(MAX_SECS))
+}
+
+/// R43.7: generation-context token budget (chars/4 estimate). Per-hit
+/// windows are 2000 chars and `ask` fetches top_k (default 8), so default
+/// prompts fit untouched — the budget only bites when `ANCHOR_TOP_K` is
+/// raised or windows grow, bounding prompt growth instead of overflowing
+/// a small local context window.
+const ANSWER_CONTEXT_TOKEN_BUDGET: usize = 6000;
+const CHARS_PER_TOKEN_ESTIMATE: usize = 4;
+
+/// R43.7: ranked, whole-section context assembly. Sections keep their
+/// `[S..]` rank numbering (contiguous from S1, matching citation order);
+/// trailing sections that would exceed the token budget are dropped, so
+/// the model always sees the top-ranked evidence first.
+fn build_answer_context(hits: &[retrieval::Hit]) -> String {
+    let budget_chars = ANSWER_CONTEXT_TOKEN_BUDGET * CHARS_PER_TOKEN_ESTIMATE;
+    let mut sections: Vec<String> = Vec::with_capacity(hits.len());
+    let mut used_chars = 0usize;
+    for (i, h) in hits.iter().enumerate() {
+        let window = crate::retrieval::content_window(&h.content, h.chunk_id, 2000)
+            .unwrap_or_else(|| h.content.chars().take(2000).collect::<String>());
+        let section = format!("[S{}] {}", i + 1, window);
+        let add = section.chars().count() + if sections.is_empty() { 0 } else { 2 };
+        if used_chars + add > budget_chars {
+            if sections.is_empty() {
+                // Unreachable while the per-hit window (2000) stays below
+                // the budget, but the cap must hold even if the window
+                // grows later — hard-truncate, UTF-8 safe.
+                sections.push(section.chars().take(budget_chars).collect());
+            }
+            break;
+        }
+        used_chars += add;
+        sections.push(section);
+    }
+    sections.join("\n\n")
+}
+
 async fn llm_rewrite(settings: &SettingsService, transcript: &str, question: &str) -> Option<String> {
     let base = settings.get("answer_base_url", None).unwrap_or_default();
     let key = settings.get("answer_api_key", None).unwrap_or_default();
     let model = settings.get("answer_model", None).unwrap_or_else(|| "gpt-4o-mini".to_string());
     let url = format!("{}/chat/completions", base.trim_end_matches('/'));
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().ok()?;
+    let client = reqwest::Client::builder().timeout(answer_timeout(settings)).build().ok()?;
     let mut headers = reqwest::header::HeaderMap::new();
     if !key.is_empty() {
         if let Ok(h) = format!("Bearer {}", key).parse() {
@@ -1235,7 +1284,7 @@ async fn generate_answer(settings: &SettingsService, question: &str, context: &s
     // Try to call LLM if configured (best-effort, like Python fallback)
     let model = settings.get("answer_model", None).unwrap_or_else(|| "gpt-4o-mini".to_string());
     let url = format!("{}/chat/completions", base.trim_end_matches('/'));
-    let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build() {
+    let client = match reqwest::Client::builder().timeout(answer_timeout(settings)).build() {
         Ok(c) => c,
         Err(_) => return (format!("Answer for: {}\n\n{}", question, context.chars().take(1500).collect::<String>()), false),
     };
@@ -1808,6 +1857,80 @@ mod tests {
         let (text, composed) = generate_answer(&settings, "q", "ctx", &[]).await;
         assert!(composed, "mock model must yield composed=true, got: {}", text.chars().take(120).collect::<String>());
         assert_eq!(text, "mocked answer");
+    }
+
+    #[test]
+    fn answer_timeout_default_clamp_and_fractional() {
+        // R43.7: the `answer_timeout` setting (seconds) defaults to 120,
+        // honors fractional values, and falls back on bogus input.
+        let saved = std::env::var("ANCHOR_ANSWER_TIMEOUT").ok();
+        std::env::remove_var("ANCHOR_ANSWER_TIMEOUT");
+        let (_dir, conn, settings) = seed_gate_db();
+        assert_eq!(answer_timeout(&settings), std::time::Duration::from_secs(120));
+        settings.set("answer_timeout", "0.1", &conn).unwrap();
+        assert_eq!(answer_timeout(&settings), std::time::Duration::from_millis(100));
+        settings.set("answer_timeout", "bogus", &conn).unwrap();
+        assert_eq!(answer_timeout(&settings), std::time::Duration::from_secs(120));
+        settings.set("answer_timeout", "0", &conn).unwrap();
+        assert_eq!(answer_timeout(&settings), std::time::Duration::from_secs(120));
+        settings.set("answer_timeout", "99999", &conn).unwrap();
+        assert_eq!(answer_timeout(&settings), std::time::Duration::from_secs(3600));
+        if let Some(v) = saved {
+            std::env::set_var("ANCHOR_ANSWER_TIMEOUT", v);
+        }
+    }
+
+    #[tokio::test]
+    async fn generate_answer_timeout_falls_back_gracefully() {
+        // R43.7: a model slower than `answer_timeout` must degrade to the
+        // unreachable-model fallback (composed=false), not hang or error.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (_dir, conn, settings) = seed_gate_db();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let _ = sock.read(&mut buf).await;
+                // Far slower than the 100ms client timeout below.
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                let body = r#"{"choices":[{"message":{"content":"too slow"}}]}"#;
+                let head = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len());
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body.as_bytes()).await;
+            }
+        });
+        settings.set("answer_base_url", &format!("http://127.0.0.1:{}", port), &conn).unwrap();
+        settings.set("answer_timeout", "0.1", &conn).unwrap();
+        let (text, composed) = generate_answer(&settings, "q", "ctx", &[]).await;
+        assert!(!composed, "slow model must not compose, got: {}", text.chars().take(120).collect::<String>());
+        assert!(text.contains("Answer model unreachable"), "text: {}", text.chars().take(160).collect::<String>());
+    }
+
+    #[test]
+    fn build_answer_context_enforces_token_budget() {
+        // R43.7: short hits assemble verbatim in rank order; past the
+        // 6000-token (24000-char) budget, trailing sections drop while
+        // numbering stays contiguous from S1.
+        let mut short = mk_hit(1, false);
+        short.content = "alpha".to_string();
+        let mut short2 = mk_hit(1, false);
+        short2.content = "beta".to_string();
+        assert_eq!(build_answer_context(&[short, short2]), "[S1] alpha\n\n[S2] beta");
+        assert!(build_answer_context(&[]).is_empty());
+        let long: Vec<crate::retrieval::Hit> = (0..15)
+            .map(|_| {
+                let mut h = mk_hit(1, false);
+                h.content = "w".repeat(5000);
+                h
+            })
+            .collect();
+        let ctx = build_answer_context(&long);
+        let budget_chars = ANSWER_CONTEXT_TOKEN_BUDGET * CHARS_PER_TOKEN_ESTIMATE;
+        assert!(ctx.chars().count() <= budget_chars, "len {}", ctx.chars().count());
+        assert!(ctx.starts_with("[S1] www"), "head: {}", ctx.chars().take(12).collect::<String>());
+        assert!(ctx.contains("[S11]"), "must keep ~11 sections, got {} chars", ctx.chars().count());
+        assert!(!ctx.contains("[S12]"), "trailing sections must drop past the budget");
     }
 
     #[test]
