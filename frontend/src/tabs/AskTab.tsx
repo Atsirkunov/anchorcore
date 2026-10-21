@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, RequestAbortedError } from "../api";
 import { theme } from "../theme";
-import { modeBannerNotes } from "../answerMode";
+import { AGENT_COMPOSE_HINT, isAgentCompose, modeBannerNotes } from "../answerMode";
 import type { AskResponse, AskTurn } from "../types";
 
 // R23.4: the server warns in plain language whenever no answer model ran
@@ -73,7 +73,7 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
     abortRef.current = controller;
     try {
       const response = await api.ask(question, history, projectId, controller.signal, publicOnly);
-      const warning = (response as AskResponse & { warning?: string | null }).warning ?? null;
+      const warning = (response as AskResponse).warning ?? null;
       setTurns((prev) => [
         ...prev,
         { role: "user", content: question },
@@ -192,11 +192,16 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
                     {note}
                   </div>
                 ))}
-                <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.7 }}>{t.content}</div>
+                {isAgentCompose(t.mode) ? (
+                  // R45.2: agent mode — evidence view, neutral hint, no answer text.
+                  <div style={styles.agentNote}>{AGENT_COMPOSE_HINT}</div>
+                ) : (
+                  <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.7 }}>{t.content}</div>
+                )}
                 {t.citations && t.citations.length > 0 && (
                   <div style={{ marginTop: 14 }}>
                     <div style={{ fontSize: 12, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                      Sources · {t.citations.length}
+                      {isAgentCompose(t.mode) ? "Evidence" : "Sources"} · {t.citations.length}
                     </div>
                     {t.citations.map((c, j) => (
                       <div
@@ -205,6 +210,9 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
                         style={{ ...styles.cite, animation: `rise 0.4s ease both`, animationDelay: `${Math.min(j * 0.08, 0.4)}s` }}
                       >
                         <span style={{ color: theme.purple }}>[{c.kind}]</span>{c.doc_type === "code" && <span style={{ color: theme.blue }}> [code]</span>} {c.summary}
+                        {isAgentCompose(t.mode) && c.snippet && (
+                          <div style={{ whiteSpace: "pre-wrap", color: theme.text, margin: "6px 0" }}>{c.snippet}</div>
+                        )}
                         <div style={{ color: theme.textDim, fontSize: 12 }}>{c.source_ref} · score {c.score}</div>
                         {c.conflicts_with && c.conflicts_with.length > 0 && (
                           <div style={{ color: theme.amber, fontSize: 12 }}>contradicts {c.conflicts_with.map((id) => `#${id}`).join(", ")}</div>
@@ -276,6 +284,16 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "0.45rem 0.7rem",
     fontSize: 12,
     marginBottom: 10,
+  },
+  agentNote: {
+    background: theme.blueBg,
+    color: theme.blue,
+    border: `1px solid ${theme.blue}`,
+    borderRadius: 8,
+    padding: "0.45rem 0.7rem",
+    fontSize: 12,
+    marginBottom: 10,
+    lineHeight: 1.5,
   },
   cite: {
     marginTop: 8,
