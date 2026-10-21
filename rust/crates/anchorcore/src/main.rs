@@ -146,6 +146,23 @@ fn team_auth_gate(edition_team: bool, host: &str, auth_enabled: bool) -> Result<
     ))
 }
 
+/// R43.8: personal edition fails closed too — a non-loopback bind without
+/// `ANCHOR_AUTH_SECRET` exposes every endpoint to the LAN with no login.
+/// Team keeps its stricter gate above (no opt-out); personal offers an
+/// explicit `ANCHOR_LAN_NO_AUTH=1` escape hatch for trusted LANs. Pure so
+/// tests can cover the matrix without env juggling.
+fn lan_bind_gate(host: &str, auth_enabled: bool, lan_no_auth: bool) -> Result<(), String> {
+    if auth_enabled || lan_no_auth {
+        return Ok(());
+    }
+    if matches!(host.trim(), "127.0.0.1" | "localhost" | "::1") {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing to bind {host} without ANCHOR_AUTH_SECRET (LAN-visible with no login): set ANCHOR_AUTH_SECRET (openssl rand -hex 32), bind loopback (--host 127.0.0.1), or explicitly opt out with ANCHOR_LAN_NO_AUTH=1"
+    ))
+}
+
 fn format_panic_message(
     payload: &(dyn std::any::Any + Send),
     location: Option<&std::panic::Location>,
@@ -280,6 +297,21 @@ mod cli_tests {
         assert!(super::team_auth_gate(true, "localhost", false).is_ok());
         assert!(super::team_auth_gate(true, "::1", false).is_ok());
         assert!(super::team_auth_gate(false, "0.0.0.0", false).is_ok());
+    }
+
+    #[test]
+    fn lan_bind_gate_matrix() {
+        // R43.8: personal LAN bind without auth refuses; secret, loopback,
+        // or the explicit ANCHOR_LAN_NO_AUTH=1 opt-out boots.
+        let err = super::lan_bind_gate("0.0.0.0", false, false).unwrap_err();
+        assert!(err.contains("ANCHOR_AUTH_SECRET"), "{err}");
+        assert!(err.contains("ANCHOR_LAN_NO_AUTH=1"), "{err}");
+        assert!(super::lan_bind_gate("0.0.0.0", true, false).is_ok());
+        assert!(super::lan_bind_gate("0.0.0.0", false, true).is_ok());
+        assert!(super::lan_bind_gate("192.168.1.5", false, false).is_err());
+        assert!(super::lan_bind_gate("127.0.0.1", false, false).is_ok());
+        assert!(super::lan_bind_gate("localhost", false, false).is_ok());
+        assert!(super::lan_bind_gate("::1", false, false).is_ok());
     }
 
     /// The boot banner must reflect the running binary: write-if-absent
@@ -651,6 +683,15 @@ async fn main() {
     // gate above; CLI export/import already exited — they serve nothing).
     if std::env::var("ANCHOR_EDITION").as_deref() == Ok(license::TEAM_EDITION) {
         if let Err(msg) = team_auth_gate(true, &resolve_host(&args.host), auth::auth_enabled()) {
+            tracing::error!("{}", msg);
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+    } else {
+        // R43.8: personal edition fails closed on LAN binds without auth
+        // too (was F-01 team-only). Explicit opt-out for trusted LANs.
+        let lan_no_auth = std::env::var("ANCHOR_LAN_NO_AUTH").as_deref() == Ok("1");
+        if let Err(msg) = lan_bind_gate(&resolve_host(&args.host), auth::auth_enabled(), lan_no_auth) {
             tracing::error!("{}", msg);
             eprintln!("{msg}");
             std::process::exit(2);

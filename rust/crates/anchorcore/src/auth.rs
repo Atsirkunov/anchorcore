@@ -211,40 +211,27 @@ pub fn decode_token(token: &str) -> Result<serde_json::Value, String> {
     Ok(data)
 }
 
-// --- Middleware (R7.2 route-based) ---
-// NOTE (R13.6): CCN 22 is an accepted decision table — do NOT refactor (Phase 13 acceptance excludes it).
+// --- Middleware (R7.2 route-based, R43.8 default-deny) ---
+// NOTE (R43.8): flat decision table — keep it flat (no nested API-prefix
+// detection) so CCN stays ≤ 15. Replaces the R13.6 table (CCN 22), whose
+// "any non-API GET is public" fallback left /items, /sections, /nodes,
+// /tags (and every future route) wide open when auth was on.
 fn is_public_path(path: &str, method: &axum::http::Method) -> bool {
     // CORS preflight
     if method == axum::http::Method::OPTIONS {
         return true;
     }
-    // Explicit public endpoints
+    // Explicit public endpoints: health, CSRF token fetch, auth bootstrap
     if path == "/health" || path == "/csrf" || path == "/auth/status" || path == "/auth/signup" || path == "/auth/login" {
         return true;
     }
-    // Frontend assets: SPA fallback + static files — must be public so login page can load when auth is on
+    // Frontend shell + static files (GET/HEAD only) so the login page can
+    // load when auth is on. The SPA is state-based (tabs via useState, no
+    // path routes — App.tsx), so the only public bytes are the shell, the
+    // bundle dir, and the favicon (verified against frontend/dist).
+    // Default-deny: every other path requires auth when enabled.
     if method == axum::http::Method::GET || method == axum::http::Method::HEAD {
-        if path == "/" || path == "/index.html" || path.starts_with("/assets/") {
-            return true;
-        }
-        // allow any path that doesn't look like API and has a file extension (e.g. /vite.svg, /favicon.ico)
-        // API routes are under /sources, /entities, /review, /pii, /projects, /qa, /system, /settings, /auth
-        let is_api = path.starts_with("/sources")
-            || path.starts_with("/entities")
-            || path.starts_with("/review")
-            || path.starts_with("/pii")
-            || path.starts_with("/projects")
-            || path.starts_with("/qa")
-            || path.starts_with("/system")
-            || path.starts_with("/settings")
-            || path.starts_with("/auth");
-        if !is_api {
-            // fallback SPA route (e.g. / or /login) — serve index.html, must be public
-            // also static files with extension
-            if !path.contains('.') {
-                return true; // SPA client route
-            }
-            // file with extension but not API
+        if path == "/" || path == "/index.html" || path == "/favicon.svg" || path.starts_with("/assets/") {
             return true;
         }
     }
@@ -529,5 +516,141 @@ mod tests {
         assert_ne!(resp3.status(), StatusCode::UNAUTHORIZED);
         // GET / with frontend fallback should be public too
         std::env::remove_var("ANCHOR_AUTH_SECRET");
+    }
+
+    fn route_table_state() -> (tempfile::TempDir, crate::health::AppState) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let svc = std::sync::Arc::new(crate::settings::SettingsService::new(store));
+        let jobs = crate::jobs::JobManager::new();
+        let embedder = std::sync::Arc::new(crate::embedder::Embedder::new(svc.clone()));
+        let state = crate::health::AppState {
+            data_dir: dir.path().to_string_lossy().to_string(),
+            settings: svc,
+            jobs,
+            csrf_token: "test-csrf".to_string(),
+            embedder,
+        };
+        let db_path = crate::db::resolve_db_path(&state.data_dir);
+        let _ = crate::db::init_db(&db_path).unwrap();
+        (dir, state)
+    }
+
+    /// R43.8: default-deny — with auth on, every `build_router` route 401s
+    /// without a token except the `is_public_path` allowlist. Request-level
+    /// (oneshot) against the real router; CSRF middleware is a no-op when
+    /// auth is on, so 401s come from the auth layer alone.
+    #[tokio::test]
+    async fn route_table_default_deny() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+        let _g = env_lock();
+        std::env::set_var("ANCHOR_AUTH_SECRET", "test-secret-12345");
+        let (_dir, state) = route_table_state();
+        let app = crate::build_router(state);
+        // Every registered route × its methods (`:id` params as `1`).
+        let protected = [
+            ("GET", "/sources"), ("POST", "/sources"),
+            ("POST", "/sources/jira/projects"),
+            ("POST", "/sources/rest/preview"),
+            ("GET", "/sources/jobs"),
+            ("GET", "/sources/jobs/running"),
+            ("GET", "/sources/jobs/1"),
+            ("POST", "/sources/jobs/1/cancel"),
+            ("GET", "/sources/1"), ("PUT", "/sources/1"), ("DELETE", "/sources/1"),
+            ("GET", "/sources/1/config"),
+            ("POST", "/sources/1/sync"),
+            ("POST", "/sources/1/reclassify"),
+            ("GET", "/entities"), ("GET", "/entities/1"), ("PATCH", "/entities/1"),
+            ("GET", "/entities/1/related"),
+            ("POST", "/entities/1/dispute"),
+            ("GET", "/entities/1/disputes"),
+            ("GET", "/entities/1/conflicts"), ("POST", "/entities/1/conflicts"),
+            ("DELETE", "/entities/1/conflicts/2"),
+            ("GET", "/items"), ("GET", "/items/1"), ("PATCH", "/items/1"),
+            ("GET", "/items/1/outline"),
+            ("GET", "/entities/1/context"),
+            ("GET", "/review/low-confidence"),
+            ("GET", "/review/duplicates"),
+            ("POST", "/review/merge"),
+            ("GET", "/review/vocabulary"),
+            ("POST", "/review/vocabulary/1"),
+            ("GET", "/projects"), ("POST", "/projects"),
+            ("GET", "/projects/default"),
+            ("GET", "/projects/1"), ("PATCH", "/projects/1"), ("DELETE", "/projects/1"),
+            ("GET", "/sections"),
+            ("GET", "/sections/1/chunks"),
+            ("GET", "/nodes/1"),
+            ("GET", "/tags"),
+            ("GET", "/tags/1/chunks"),
+            ("POST", "/qa"),
+            ("POST", "/qa/public"),
+            ("POST", "/qa/search"),
+            ("GET", "/settings"), ("PUT", "/settings"),
+            ("POST", "/settings/test-connection"),
+            ("GET", "/system/status"),
+            ("GET", "/system/onboarding"),
+            ("GET", "/system/update"),
+            ("GET", "/system/errors"),
+            ("GET", "/system/fs"),
+            ("GET", "/system/mcp"),
+            ("GET", "/system/mcp/clients"),
+            ("POST", "/system/mcp/connect"),
+            ("POST", "/system/mcp/disconnect"),
+            ("GET", "/system/logs"),
+            ("GET", "/system/logs/anchorcore.log"),
+            ("POST", "/system/ollama/start"),
+            ("POST", "/system/ollama/pull"),
+            ("GET", "/system/ollama/pulls"),
+            ("GET", "/system/skills/foo"),
+            ("GET", "/system/skills/install-targets"),
+            ("POST", "/system/skills/foo/install"),
+            ("GET", "/auth/me"),
+            ("POST", "/backup/export"),
+            ("POST", "/backup/import"),
+            // Unknown paths: the old hole (any non-API GET was public).
+            ("GET", "/login"), ("GET", "/items2"), ("GET", "/favicon.ico"),
+            ("GET", "/nope.txt"), ("HEAD", "/items"), ("POST", "/items"),
+        ];
+        for (method, uri) in protected {
+            let req = Request::builder().uri(uri).method(method).body(Body::empty()).unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{method} {uri} must require auth");
+        }
+        // The allowlist stays reachable without a token.
+        let public = [
+            ("GET", "/health"), ("HEAD", "/health"),
+            ("GET", "/csrf"),
+            ("GET", "/auth/status"),
+            ("POST", "/auth/signup"), ("POST", "/auth/login"),
+            ("GET", "/"), ("HEAD", "/"),
+            ("GET", "/index.html"),
+            ("GET", "/favicon.svg"),
+            ("GET", "/assets/missing-xyz.js"), // public path, 404s in fallback
+            ("OPTIONS", "/sources"), ("OPTIONS", "/qa"), ("OPTIONS", "/items"),
+        ];
+        for (method, uri) in public {
+            let req = Request::builder().uri(uri).method(method).body(Body::empty()).unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_ne!(resp.status(), StatusCode::UNAUTHORIZED, "{method} {uri} must stay public");
+        }
+        std::env::remove_var("ANCHOR_AUTH_SECRET");
+    }
+
+    /// R43.8: direct method×path corners the router can't reach (405s).
+    #[test]
+    fn public_path_method_corners() {
+        use axum::http::Method;
+        assert!(is_public_path("/assets/app.js", &Method::HEAD));
+        assert!(is_public_path("/favicon.svg", &Method::HEAD));
+        assert!(!is_public_path("/", &Method::POST));
+        assert!(!is_public_path("/index.html", &Method::POST));
+        // Explicit endpoints are public for any method (the router 405s
+        // unregistered ones); only /auth/me among /auth/* needs a token.
+        assert!(is_public_path("/health", &Method::DELETE));
+        assert!(!is_public_path("/auth/me", &Method::GET));
+        assert!(!is_public_path("/pii", &Method::GET));
+        assert!(!is_public_path("/mcp", &Method::GET));
     }
 }
