@@ -8,7 +8,7 @@
     "guides": "node scripts/build-guides.mjs",
     "dev": "npm run sample-zip && npm run guides && vite",
     "check-session": "node scripts/check-session-quotes.mjs",
-    "build": "npm run sample-zip && npm run check-session && npm run guides && vite build",
+    "build": "npm run sample-zip && npm run check-session && npm run guides && vite build && node scripts/check-session-quotes.mjs --dist",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src"

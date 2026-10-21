@@ -1,7 +1,9 @@
 {
   "prompt": "Can we start the billing migration Monday? What's the rollback, and who owns it?",
-  "tool": { "name": "anchorcore.ask", "done": "done · 3 sources · local" },
-  "simLabel": "Simulated from the sample dataset",
+  "tool": {
+    "server": "anchorcore",
+    "name": "ask"
+  },
   "footer": "3 citations · answered on your machine",
   "sources": [
     {
@@ -32,15 +34,47 @@
       "kind": "meeting notes",
       "title": "Q3 Planning",
       "tone": "sage",
-      "quotes": ["Billing provider migration parallel-run starts Monday. Sarah owns it."]
+      "quotes": [
+        "Billing provider migration parallel-run starts Monday. Sarah owns it."
+      ]
     }
   ],
   "answer": [
-    { "text": "The billing provider migration's parallel run is scheduled to start Monday", "cite": ["S3"] },
-    { "text": " and it is write-only, with no customer impact", "cite": ["S2"] },
-    { "text": ". Rollback is a feature flag that toggles a tenant back to the legacy provider", "cite": ["S1"] },
-    { "text": ", and the runbook says it can flip any tenant back within five minutes", "cite": ["S2"] },
-    { "text": ". Sarah owns it", "cite": ["S1", "S3"] },
-    { "text": "." }
-  ]
+    {
+      "text": "The billing provider migration's parallel run is scheduled to start Monday",
+      "cite": [
+        "S3"
+      ]
+    },
+    {
+      "text": " and it is write-only, with no customer impact",
+      "cite": [
+        "S2"
+      ]
+    },
+    {
+      "text": ". Rollback is a feature flag that toggles a tenant back to the legacy provider",
+      "cite": [
+        "S1"
+      ]
+    },
+    {
+      "text": ", and the runbook says it can flip any tenant back within five minutes",
+      "cite": [
+        "S2"
+      ]
+    },
+    {
+      "text": ". Sarah owns it",
+      "cite": [
+        "S1",
+        "S3"
+      ]
+    },
+    {
+      "text": "."
+    }
+  ],
+  "title": "~/sample",
+  "tag": "sample dataset"
 }
