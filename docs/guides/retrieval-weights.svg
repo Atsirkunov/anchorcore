@@ -59,9 +59,9 @@
   <text x="440" y="292" text-anchor="middle" font-size="12" fill="#475569">over-fetch top_k × 10</text>
 
   <rect x="586" y="230" width="253" height="78" rx="8" fill="#f1f5f9" stroke="#334155" stroke-width="1.5"/>
-  <text x="713" y="254" text-anchor="middle" font-size="13" font-weight="700" fill="#0f172a">who_knows leg</text>
-  <text x="713" y="274" text-anchor="middle" font-size="12" fill="#475569">who/owns queries only</text>
-  <text x="713" y="292" text-anchor="middle" font-size="12" fill="#475569">conf × overlap × decay</text>
+  <text x="713" y="254" text-anchor="middle" font-size="13" font-weight="700" fill="#0f172a">Ownership: not a leg</text>
+  <text x="713" y="274" text-anchor="middle" font-size="12" fill="#475569">who_knows deleted (R45.9)</text>
+  <text x="713" y="292" text-anchor="middle" font-size="12" fill="#475569">owners → GET /actions</text>
 
   <!-- TOC -->
   <line x1="440" y1="308" x2="440" y2="318" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
