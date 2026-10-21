@@ -13,7 +13,7 @@
   </script>
   <script type="application/ld+json">
   {"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
-    {"@type":"Question","name":"Is my data private?","acceptedAnswer":{"@type":"Answer","text":"Yes. AnchorCore runs on your own machine, stores data locally, and keeps secrets in the OS keychain. Sensitive sources are never sent to cloud AI you have not approved."}},
+    {"@type":"Question","name":"Is my data private?","acceptedAnswer":{"@type":"Answer","text":"Yes. AnchorCore runs on your own machine, stores data locally, and keeps secrets in your OS keychain (macOS, Windows) or, where none is available, an encrypted file in your data folder. Sensitive sources are never sent to cloud AI you have not approved."}},
     {"@type":"Question","name":"How is this different from NotebookLM or ChatGPT file search?","acceptedAnswer":{"@type":"Answer","text":"Those are cloud-only uploads. AnchorCore is local-first and self-hostable, connects to folders, Drive, Jira and Linear directly, and gates sensitive sources per your model policy."}},
     {"@type":"Question","name":"Do I need Ollama?","acceptedAnswer":{"@type":"Answer","text":"No. Full-text search works without it. Add Ollama for AI answers with citations."}},
     {"@type":"Question","name":"Is it free?","acceptedAnswer":{"@type":"Answer","text":"Yes, the personal local app is free. Team self-hosted is a one-time platform license, perpetual including a year of support and updates. Hosted is coming soon."}},
@@ -163,7 +163,7 @@
             <p class="seal-head">Sealed by design — nothing leaves your machine.</p>
             <div class="seal-chips">
               <span class="seal-chip">Private by default</span>
-              <span class="seal-chip">OS keychain</span>
+              <span class="seal-chip">Secrets stored locally</span>
               <span class="seal-chip">Every answer cited</span>
               <span class="seal-chip">On your machine</span>
             </div>
@@ -199,7 +199,7 @@
             <ul class="trust-out">
               <li><span class="trust-when t-never">default</span><b>Nothing else.</b> No background connections. Indexing, search and local answers need no network.</li>
               <li><span class="trust-when t-ask">only when you click</span><b>api.github.com</b>: "Check for updates" fetches the newest release tag. Nothing about you or your knowledge is sent. An optional once-at-startup check is off by default.</li>
-              <li><span class="trust-when t-cfg">only if you connect it</span><b>Jira, Linear, Google Drive, a REST API</b>: each connector sends requests to the URL you configure for it (the REST connector to any address you enter, including local ones), with credentials you provide (kept in your OS keychain).</li>
+              <li><span class="trust-when t-cfg">only if you connect it</span><b>Jira, Linear, Google Drive, a REST API</b>: each connector sends requests to the URL you configure for it (the REST connector to any address you enter, including local ones), with credentials you provide (kept in your OS keychain on macOS and Windows, otherwise in an encrypted file in your data folder).</li>
               <li><span class="trust-when t-cfg">only if you add a key</span><b>A cloud model you choose</b>: an OpenAI-compatible endpoint for answers, classification or embeddings. Your question and the retrieved passages go to that provider. With no key set, no answer request is made.</li>
               <li><span class="trust-when t-ask">only when you pull a model</span><b>Ollama's model registry</b>: your local Ollama downloads models itself; AnchorCore only talks to Ollama on your machine.</li>
             </ul>
@@ -210,7 +210,7 @@
             <h3>No telemetry</h3>
             <p>The app contains no analytics, usage tracking or crash-reporting code. Check it yourself: the source is public, and the only outbound calls are the ones in the diagram. <a href="https://github.com/Atsirkunov/anchorcore/tree/main/rust/crates/anchorcore/src" target="_blank" rel="noopener noreferrer">Read the source</a>.</p>
             <h3>Works offline, within limits</h3>
-            <p>With a local Ollama model and folder sources, indexing, search and answers run with Wi-Fi off. Connectors (Jira, Linear, Drive, REST), cloud models and update checks need a network.</p>
+            <p>With a local Ollama model for both indexing and answers, and folder sources, everything runs with Wi-Fi off. If answers use a cloud model, they need a network. Connectors (Jira, Linear, Drive, REST), cloud models and update checks need a network.</p>
             <h3>Sensitive sources are gated</h3>
             <table class="matrix">
               <tr><th scope="col">Source label</th><th scope="col">Local model</th><th scope="col">Approved cloud</th><th scope="col">Unapproved cloud</th></tr>
@@ -229,7 +229,7 @@
             <pre class="code trust-code">macOS / Linux:  shasum -a 256 -c SHA256SUMS --ignore-missing
 Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
                 (compare with the matching line in SHA256SUMS)</pre>
-            <p class="small"><b>Signing status:</b> the macOS app is ad-hoc signed, not Apple-notarized, and nothing is store-signed. That is why the first launch needs the "Open Anyway" / "Run anyway" step above. The checksum shows the file is the one the release published; the source is public so you can build it yourself. <a href="https://github.com/Atsirkunov/anchorcore/tree/main/docs/release-notes" target="_blank" rel="noopener noreferrer">Changelog and release notes</a>.</p>
+            <p class="small"><b>Signing status:</b> the macOS app is ad-hoc signed and not Apple-notarized; the Windows and Linux builds are not code-signed; nothing is store-signed. That is why the first launch needs the "Open Anyway" / "Run anyway" step above. The checksum shows the file is the one the release published; the source is public so you can build it yourself. <a href="https://github.com/Atsirkunov/anchorcore/tree/main/docs/release-notes" target="_blank" rel="noopener noreferrer">Changelog and release notes</a>.</p>
           </div>
           <div class="trust-facts trust-builder">
             <h3>Built by Aleksandr Tsirkunov</h3>
@@ -300,7 +300,7 @@ Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
         <div class="cols">
           <div class="col"><h3>Your Obsidian vault</h3><p>Already have a vault? Keep it. Point AnchorCore at the folder → <code>Sync</code> → <code>Ask</code>. Same notes — answers quote the exact passages instead of dumping whole files into the AI. Nothing to migrate, nothing to leave.</p><small><a href="#guide-obsidian">Open the vault guide</a></small></div>
           <div class="col"><h3>Quick start — the sample company</h3><p>Download the app → open it → <a href="/sample.zip" download>download sample.zip</a> and unzip it → Sources → Local folder → Sync → Ask. Your data lives on your machine. No Docker, no account.</p><small>10 files → about 40 entities · <a href="#guide-quickstart">Open the sample guide</a></small></div>
-          <div class="col"><h3>Any JSON API</h3><p>Tickets, issues, CMS, your own backend — point at the API, map its fields, preview 5 records, sync. Passwords and tokens stay in your OS keychain.</p><small><a href="#guide-rest">Open the REST guide</a></small></div>
+          <div class="col"><h3>Any JSON API</h3><p>Tickets, issues, CMS, your own backend — point at the API, map its fields, preview 5 records, sync. Passwords and tokens are stored locally, in your OS keychain on macOS and Windows.</p><small><a href="#guide-rest">Open the REST guide</a></small></div>
         </div>
         <div class="cols two">
           <div class="col"><h3>Projects — scoped search</h3><p>Group sources into projects — Client X, Research, Team. Pick one to scope every question to just those sources, or search everything.</p><small>Projects in the header · public-only toggle for sharing</small></div>
@@ -347,7 +347,7 @@ Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
       <div class="wrap">
         <h2>FAQ</h2>
         <div class="faq">
-          <div class="qa"><h3>Is my data private?</h3><p>Yes. The app only listens on your own machine, keeps everything in a database on your disk, and stores passwords in your OS keychain. Sources you mark Sensitive are never sent to cloud AI unless you explicitly approve that provider.</p></div>
+          <div class="qa"><h3>Is my data private?</h3><p>Yes. The app only listens on your own machine, keeps everything in a database on your disk, and stores passwords in your OS keychain (macOS, Windows) or an encrypted local file. Sources you mark Sensitive are never sent to cloud AI unless you explicitly approve that provider.</p></div>
           <div class="qa"><h3>Can I move to a new computer?</h3><p>Yes. System → Backup &amp; restore exports your whole index — sources, entities, review state — into one portable <code>.anchorcore-backup</code> file. Import it on the new machine (preview the dry run first); credentials stay behind unless you opt into the passphrase-encrypted bundle. Full guide: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/backup.md">Backup, export &amp; device migration</a>.</p></div>
           <div class="qa"><h3>Can I check the code myself?</h3><p>Yes — AnchorCore is source-available. The repository is public: read exactly what the Rust app does (no telemetry; it only contacts endpoints you configure) or build it yourself. Personal use is free; team and commercial use need a paid license — see <a href="https://github.com/Atsirkunov/anchorcore/blob/main/LICENSE.md">LICENSE.md</a>.</p></div>
           <div class="qa"><h3>How does it read documents?</h3><p>It splits documents at their headings (§4.2, 3.1.1, Article 12…) and packs the text into short passages. Each section gets a summary and topic tags, so answers cite the exact section — not “somewhere in the PDF”.</p></div>
