@@ -37,7 +37,7 @@ needs custom glue; MCP is the glue.
 
 | Tool | Parameters | Returns | Maps to |
 |---|---|---|---|
-| `ask` | `question` (required), `project_id?`, `public_only?`, `include_content?` | composed answer + citations with provenance (item id + file path + title + env class on every citation; full chunk bytes on opt-in, capped at 4000 chars with `content_truncated`) + `mode`/`warning` degradation flags (§3.1) | `POST /qa`, `POST /qa/public` |
+| `ask` | `question` (required), `project_id?`, `public_only?`, `include_content?` | composed answer (local mode) or `agent_compose` evidence (agent mode, §3.2) + citations with provenance (item id + file path + title + env class on every citation; full chunk bytes on opt-in — always in agent mode — capped at 4000 chars with `content_truncated`) + `mode`/`warning` flags (§3.1) | `POST /qa`, `POST /qa/public` |
 | `search` | `query` (required), `k` (default 8, max 50), `project_id?`, `public_only?`, `env?` (`live`/`test`) | cited chunks with provenance (item id/title/path, env class, source ref, score); summaries/snippets window on the match; test fixtures rank below live hits unless the query names them; long chunks capped at 4000 chars with `content_truncated` flagged | `POST /qa/search` |
 | `get_entity` | `entity_id` | entity + parent item/chunk links (`item_id`, `chunk_id`) + legacy item PII flag (deprecated) | Entity graph |
 | `get_source` | `source_id` | source details (no config/secrets) | Sources |
@@ -65,8 +65,9 @@ AnchorCore never picks a model behind the user's back. The contract:
   Answer model, or the onboarding wizard's "Configure model" step). There
   is no silent fallback to a model the user did not choose.
 - **Degraded answers stay visible, never silent.** Every `ask` result
-  carries `mode` (`composed` | `context_only` | `none`) and — whenever
-  `mode != composed` — a plain-language `warning`. Agents must not quote
+  carries `mode` (`composed` | `agent_compose` | `context_only` | `none`)
+  and — whenever `mode` is `context_only` or `none` — a plain-language
+  `warning` (`agent_compose` is by design, §3.2, and never warns). Agents must not quote
   warned text as an answer: use the citations, or fall back to `search` +
   their own model. The Ask tab renders the same warning as an amber
   banner, so humans see it too.
@@ -77,6 +78,30 @@ AnchorCore never picks a model behind the user's back. The contract:
   with the warning shown. The Settings "Run compose probe" button (and
   the wizard's step-3 question) verifies the endpoint end to end: only
   `mode: "composed"` means answers really work.
+
+### 3.2 Agentic vs local LLM — `llm_mode` (R45.2)
+
+One setting (`PUT /settings {"llm_mode":"agent"|"local"}`, Settings → "Who
+writes the answers?"; default `local`, so upgrades keep today's behavior).
+`GET /system/status` reports it as `llm_mode` (and `answer.mode`).
+
+- **`agent`** — the user's AI agent writes answers, over **MCP or the REST
+  `anchorcore-search` skill** (equal channels; no feature is MCP-only).
+  AnchorCore runs no chat model on the answer path: `ask` / `POST /qa` /
+  `POST /qa/public` do scope + `public_only` + the label/PII gate + fusion,
+  skip the follow-up rewrite and generation, and return
+  `mode: "agent_compose"` — `answer` is a one-line "compose from the cited
+  passages" instruction, citations always carry `content`, and there is
+  **no warning**. `answer_ready` is `true` with no answer model configured.
+- **`local`** — the configured answer model writes answers (`composed`;
+  `context_only` + warning when it can't). A BYO OpenAI-compatible endpoint
+  is an advanced setting on this same path, not a third mode.
+
+`search` / `POST /qa/search` is identical in both modes. The label/PII gate
+uses the same provider-trust verdict for `ask` and `search` in both modes;
+whether agent mode should treat the agent itself as an untrusted provider
+is an open owner decision (handover 2026-10-21 §7.2.5). Switching modes
+needs no re-ingest.
 
 ## 4. Transports
 

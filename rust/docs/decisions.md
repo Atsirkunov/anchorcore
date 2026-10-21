@@ -4,6 +4,13 @@ ADR log. Append newest first.
 
 ---
 
+## 2026-10-21 — R45.2: two answer modes (`llm_mode` agent/local), `agent_compose`
+
+* **Decision:** one setting, `llm_mode` = `agent` | `local` (default `local`, so upgrades keep today's behavior). In `agent` mode `ask` / `POST /qa` / `POST /qa/public` keep scope + `public_only` + the label gate + fusion but skip `rewrite_followup` and `generate_answer` — zero chat calls — and return `mode: "agent_compose"`: a one-line compose instruction as `answer`, citations always with content, and no warning (nothing degraded). `answer_ready` is true in agent mode (`answer::answer_ready`); `/system/status` reports `llm_mode`. `/qa/search` is mode-independent. The agent has two equal channels — MCP and the REST `anchorcore-search` skill — and no feature may be MCP-only. A BYO cloud answer endpoint is an advanced variant of `local` on the same code path, not a third mode.
+* **Context:** agents already compose from `search`; routing their `ask` through the server's model warned "not composed" when no model existed, which read as broken. Alternatives were three modes (agent/local/cloud — the cloud path is code-identical to local) and inferring the mode from "no answer model configured" (silently flips on a misconfiguration). The agent-mode gate reuses the existing provider-trust verdict so `ask` and `search` can never disagree; whether the agent itself counts as an untrusted provider is owner decision 7.2.5 (handover 2026-10-21), and would change both together. The UI Ask tab renders agent mode as an evidence view with a neutral hint — the proposed default for open decision 7.2.4.
+
+---
+
 ## 2026-10-21 — R43.29: the LAN gate warns inside containers (revises R43.8)
 
 * **Decision:** `lan_bind_gate` takes `in_container` (`/.dockerenv` or `/run/.containerenv`): personal-edition containers boot with a loud warning naming the host-side `-p` control instead of refusing. Bare-metal personal still refuses; Team still refuses everywhere with no opt-out. The probe itself is deliberately unit-untested (asserting it would fail for anyone running `cargo test` in a container); the pure matrix pins the logic.

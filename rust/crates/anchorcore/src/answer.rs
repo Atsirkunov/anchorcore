@@ -35,13 +35,15 @@ pub struct AskResponse {
     /// was withheld from an untrusted answer provider.
     pub refusal: Option<String>,
     /// B58: how the answer text was produced — "composed" (an answer model
-    /// wrote it), "context_only" (matching context, no model ran), "none".
+    /// wrote it), "agent_compose" (R45.2 agent mode: the caller's agent
+    /// writes it from the citations, by design), "context_only" (local
+    /// mode, matching context, no model ran), "none".
     pub mode: String,
     /// B58: how retrieval ranked — "hybrid" (vector + keyword on a real
     /// query embedding) or "keyword_only" (embedder unavailable).
     pub retrieval: String,
     /// R23.4: plain-language degradation warning — None only when
-    /// `mode == "composed"`. UIs render it as the banner; MCP `ask`
+    /// `mode` is "composed" or (R45.2) "agent_compose". UIs render it as the banner; MCP `ask`
     /// passes it through so agents never quote context as an answer.
     pub warning: Option<String>,
 }
@@ -543,7 +545,10 @@ pub async fn ask(
     req: AskRequest,
     data_dir: &str,
 ) -> AskResponse {
-    let question = rewrite_question(settings, &req).await;
+    // R45.2: agent mode runs no chat model — not even the follow-up
+    // rewrite (the agent already sends standalone questions).
+    let agent_mode = crate::settings::is_agent_mode(settings);
+    let question = if agent_mode { req.question.clone() } else { rewrite_question(settings, &req).await };
     // R8.1: embed query for vector search (hybrid) — B58 strict: None when
     // remote unavailable, so retrieval degrades to honest keyword-only.
     let query_embedding = embedder.embed_query(&question).await;
@@ -602,6 +607,10 @@ pub async fn ask(
         hits = filtered;
     }
 
+    if agent_mode {
+        return agent_compose_response(&hits, &data_dir_string, &question, retrieval);
+    }
+
     // Build context and generate (no DB borrow across await) — R10.6 UTF-8 safe (was byte slice).
     // R36.3: parent hits center the window on the match mark (a head cut
     // could drop the match); unmarked hits keep the byte-identical head.
@@ -613,6 +622,24 @@ pub async fn ask(
     let mode = if composed { "composed" } else { "context_only" };
     let warning = degraded_warning(mode, None);
     AskResponse { answer, citations, refusal: None, mode: mode.to_string(), retrieval: retrieval.to_string(), warning }
+}
+
+/// R45.2: one-line instruction carried as `answer` in `agent_compose` mode.
+pub(crate) const AGENT_COMPOSE_INSTRUCTION: &str = "Compose the answer yourself from the cited passages below; cite them by source_ref.";
+
+/// R45.2: agent mode — the agent writes the answer, by design. Same scope,
+/// fusion and label gate as `composed`; citations always carry content
+/// (as with `include_content`) and there is no warning: nothing degraded.
+fn agent_compose_response(hits: &[crate::retrieval::Hit], data_dir: &str, question: &str, retrieval: &str) -> AskResponse {
+    let citations = build_citations(hits, data_dir, true, citations_limit(), question);
+    AskResponse {
+        answer: AGENT_COMPOSE_INSTRUCTION.to_string(),
+        citations,
+        refusal: None,
+        mode: "agent_compose".to_string(),
+        retrieval: retrieval.to_string(),
+        warning: None,
+    }
 }
 
 /// R23.4: plain-language degradation warning — `None` only when an answer
@@ -755,6 +782,12 @@ fn gate_answer_hits(conn: &Connection, hits: &[retrieval::Hit]) -> (Vec<retrieva
         }
     }
     (allowed, blocked)
+}
+
+/// R45.2: answers are ready in agent mode with no model at all — the agent
+/// composes. Local mode keeps the model probe's verdict.
+pub(crate) fn answer_ready(settings: &SettingsService, model_ready: bool) -> bool {
+    model_ready || crate::settings::is_agent_mode(settings)
 }
 
 pub(crate) fn is_answer_trusted(settings: &SettingsService) -> bool {
@@ -1693,6 +1726,158 @@ mod tests {
         assert!(res.warning.is_none(), "composed must not warn, got {:?}", res.warning);
         assert_eq!(res.answer, "mocked answer");
         assert!(!res.citations.is_empty());
+    }
+
+    /// R45.2: counting OpenAI-compatible mock — every accepted connection is
+    /// one chat call; aborted on drop so the accept loop never wedges teardown.
+    struct ChatCounter {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        base: String,
+        task: tokio::task::JoinHandle<()>,
+    }
+    impl Drop for ChatCounter {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+    impl ChatCounter {
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    async fn spawn_chat_counter() -> ChatCounter {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let task = tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut buf = vec![0u8; 16384];
+                let _ = sock.read(&mut buf).await;
+                let body = r#"{"choices":[{"message":{"content":"mocked answer"}}]}"#;
+                let head = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len());
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body.as_bytes()).await;
+            }
+        });
+        ChatCounter { calls, base, task }
+    }
+
+    fn followup_req(question: &str, public_only: Option<bool>) -> AskRequest {
+        AskRequest {
+            question: question.to_string(),
+            history: Some(vec![
+                AskTurn { role: "user".to_string(), content: "tell me about the quarterly report".to_string() },
+                AskTurn { role: "assistant".to_string(), content: "it covers numbers".to_string() },
+            ]),
+            project_id: None,
+            public_only,
+            include_content: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_mode_ask_makes_zero_chat_calls() {
+        // R45.2: same reachable local model in both modes — local mode calls
+        // it (rewrite + generate), agent mode never does, history or not.
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        let mock = spawn_chat_counter().await;
+        settings.set("answer_base_url", &mock.base, &conn).unwrap();
+
+        // No history here: a local rewrite would turn the question into the
+        // mock's canned text and miss retrieval.
+        let mut plain = followup_req("sunshine", None);
+        plain.history = None;
+        let local = ask(&settings, &embedder, plain, &data_dir).await;
+        assert_eq!(local.mode, "composed");
+        let local_calls = mock.calls();
+        assert!(local_calls >= 1, "local mode must reach the mock, got {local_calls}");
+
+        settings.set("llm_mode", "agent", &conn).unwrap();
+        let res = ask(&settings, &embedder, followup_req("sunshine numbers for it", None), &data_dir).await;
+        assert_eq!(mock.calls(), local_calls, "agent mode must make zero chat calls");
+        assert_eq!(res.mode, "agent_compose");
+        assert!(res.warning.is_none(), "agent_compose must not warn: {:?}", res.warning);
+        assert!(res.refusal.is_none());
+        assert_eq!(res.answer, AGENT_COMPOSE_INSTRUCTION);
+        assert!(!res.citations.is_empty(), "agent_compose must cite");
+        // Content rides along by default (the agent composes from it).
+        assert!(res.citations.iter().all(|c| c.content.contains("report numbers")), "citations must carry content");
+        assert!(res.citations.iter().any(|c| c.content.contains("sunshine")));
+    }
+
+    #[tokio::test]
+    async fn agent_mode_public_only_cites_public_sources_only() {
+        // R45.2: `/qa/public` (public_only) keeps its scope in agent mode.
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        conn.execute("INSERT INTO sources (connector, name, label) VALUES ('folder','pub','public')", []).unwrap();
+        let pubsid: i64 = conn.query_row("SELECT id FROM sources WHERE name='pub'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h2','p','docs/p.md','sunshine public digest')",
+            [pubsid],
+        ).unwrap();
+        let item: i64 = conn.query_row("SELECT id FROM ingested_items WHERE source_id=?1", [pubsid], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO chunks (item_id, source_ref, content) VALUES (?1,'p.md','sunshine public digest')", [item]).unwrap();
+        settings.set("llm_mode", "agent", &conn).unwrap();
+        let req = AskRequest { question: "sunshine".to_string(), history: None, project_id: None, public_only: Some(true), include_content: None };
+        let res = ask(&settings, &embedder, req, &data_dir).await;
+        assert_eq!(res.mode, "agent_compose");
+        assert!(!res.citations.is_empty());
+        assert!(res.citations.iter().all(|c| c.content.contains("public")), "only public sources may be cited");
+    }
+
+    #[tokio::test]
+    async fn agent_mode_keeps_gated_provider_refusal() {
+        // R45.2: the label gate still refuses in agent mode (same trust
+        // verdict as search — owner decision 7.2.5 may change both together).
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
+        settings.set("llm_mode", "agent", &conn).unwrap();
+        let req = AskRequest { question: "moonvault".to_string(), history: None, project_id: None, public_only: None, include_content: None };
+        let res = ask(&settings, &embedder, req, &data_dir).await;
+        assert_eq!(res.mode, "none");
+        assert_eq!(res.refusal.as_deref(), Some("gated_provider"));
+        assert!(res.citations.is_empty());
+        assert!(res.warning.unwrap_or_default().contains("not approved"));
+    }
+
+    #[tokio::test]
+    async fn agent_mode_search_is_unchanged() {
+        // R45.2: `/qa/search` is mode-independent — same hits either way.
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        let mk = || SearchRequest {
+            query: "quarterly report".to_string(), k: Some(8), project_id: None, public_only: None,
+            fields: Some("content".to_string()), cursor: None, limit: None, include_content: None, env: None,
+            kind: None, path_prefix: None, symbol: None, mode: None,
+        };
+        let ids = |r: &SearchResponse| r.hits.iter().map(|h| (h.chunk_id, h.content.clone())).collect::<Vec<_>>();
+        let local = search(&settings, &embedder, mk(), &data_dir).await;
+        settings.set("llm_mode", "agent", &conn).unwrap();
+        let agent = search(&settings, &embedder, mk(), &data_dir).await;
+        assert!(!local.hits.is_empty());
+        assert_eq!(ids(&local), ids(&agent));
+        assert_eq!(local.blocked, agent.blocked);
+        assert_eq!(local.refusal, agent.refusal);
+    }
+
+    #[tokio::test]
+    async fn answer_ready_follows_llm_mode() {
+        let (_dir, conn, settings) = seed_gate_db();
+        assert!(!answer_ready(&settings, false), "local mode keeps the probe verdict");
+        assert!(answer_ready(&settings, true));
+        settings.set("llm_mode", "agent", &conn).unwrap();
+        assert!(answer_ready(&settings, false), "agent mode needs no answer model");
     }
 
     #[tokio::test]
