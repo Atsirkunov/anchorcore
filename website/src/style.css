@@ -404,6 +404,10 @@ code{background:var(--paper2);border:1px solid var(--border);border-radius:6px;p
 .guide-page{padding:clamp(32px,3vw,64px) 0 clamp(48px,4vw,96px)}
 .guide-page .wrap>*{max-width:72ch;margin-left:auto;margin-right:auto}
 .guide-page h1{font-family:Georgia,serif;letter-spacing:-0.02em;line-height:1.15;font-size:var(--fs-display);margin:8px auto 20px;overflow-wrap:anywhere}
+.guide-page .wrap>h1{max-width:calc(var(--fs-body)*40)}
+.guide-page.wide .wrap>*{max-width:calc(var(--fs-body)*58)}
+.nav a,.nav-mobile a{text-decoration:none}
+.nav a:hover,.nav-mobile a:hover{text-decoration:underline}
 .crumbs{font-size:var(--fs-cap);color:var(--dim);margin-top:0;margin-bottom:0}
 .guide-body{font-size:var(--fs-body);line-height:1.7;color:var(--ink);overflow-wrap:break-word}
 .guide-body h2,.guide-body h3,.guide-body h4{position:relative;scroll-margin-top:84px;line-height:1.25}
@@ -434,3 +438,13 @@ code{background:var(--paper2);border:1px solid var(--border);border-radius:6px;p
 .guide-more h2{font-size:var(--fs-lg);margin:0 0 10px}
 .guide-more ul{margin:0 0 16px;padding-left:1.2em}
 .guide-more p{margin:0}
+.guide-list{list-style:none;padding:0;margin:1.5em auto}
+.guide-list li{padding:18px 0;border-top:1px solid var(--border)}
+.guide-list li:last-child{border-bottom:1px solid var(--border)}
+.guide-list h2{font-family:Georgia,serif;font-size:var(--fs-lg);margin:0 0 6px;line-height:1.25}
+.guide-list p{margin:0;color:var(--dim)}
+.guide-list a{text-decoration:none}
+.guide-list a:hover{text-decoration:underline}
+
+/* phones: wide tables scroll inside .table-scroll instead of crushing columns and breaking code mid-word */
+@media(max-width:600px){.guide-page.wide .guide-body table{min-width:34rem}.guide-page.wide .guide-body td code{overflow-wrap:normal}}

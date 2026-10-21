@@ -22,6 +22,7 @@ Key facts, each stated on the pages below:
 
 ## Guides
 
+- [All guides](https://anchorcore.dev/guides)
 - [Use your Obsidian vault with AnchorCore](https://anchorcore.dev/guides/obsidian)
 - [Try the AnchorCore sample company](https://anchorcore.dev/guides/sample)
 - [Connect any JSON API to AnchorCore](https://anchorcore.dev/guides/json-api)
