@@ -13,6 +13,17 @@
   --sageSoft:#E2E8E3;
   --stone:#9A8B7A;
   --on-sage:#ffffff;
+  --term-bg:#1b1c1f;
+  --term-bar:#252629;
+  --term-panel:#222326;
+  --term-fg:#e8e6e1;
+  --term-dim:#a6aab2;
+  --term-accent:#e8956f;
+  --term-ok:#86d1a0;
+  --term-border:#3d3f45;
+  --term-red:#ee6a5e;
+  --term-yel:#f4be4f;
+  --term-grn:#61c554;
   --radius:8px;
   /* Widescreen scale (R18.16) — identical <=1500px, grows on 2K/4K */
   --wrap:clamp(1080px,74vw,1520px);
@@ -317,37 +328,53 @@ code{background:var(--paper2);border:1px solid var(--border);border-radius:6px;p
 .trust-code{margin:10px 0;white-space:pre;overflow-x:auto}
 .trust-builder{border-left:3px solid var(--sage)}
 @media (max-width:860px){.trust-grid{grid-template-columns:minmax(0,1fr)}}
-/* Simulated Claude Code session (R44.11 stand-in) — final frame is the default
-   state; .cs-playing hides not-yet-revealed parts without removing them from
-   layout, so the card never changes size (CLS 0). Tokens only. */
-.cs{display:flex;flex-direction:column}
-.cs-bar{display:flex;align-items:center;justify-content:space-between;gap:10px}
-.cs-bar span{min-width:0}
-.cs-bar em{font-style:normal;color:var(--sage)}
-.cs-bar .btn{padding:4px 10px;font-size:var(--fs-cap);flex-shrink:0}
-.cs-body{padding:14px;overflow:hidden;box-sizing:border-box}
-.cs-body .q{font-family:ui-monospace,Menlo,monospace;font-size:var(--fs-cap);line-height:1.5}
-.cs-gt{color:var(--sage)}
-.cs-tool{margin:10px 0;font-family:ui-monospace,Menlo,monospace;font-size:var(--fs-cap);color:var(--dim)}
-.cs-tname{color:var(--sage);font-weight:700}
-.cs-body .cites{gap:8px}
-.cs-body .cite{padding:9px 11px;transition:box-shadow 0.25s ease,border-color 0.25s ease}
-.cs-body .cite p{margin:3px 0}
-.cs-body .cite.lit{border-color:var(--sage);box-shadow:0 0 0 2px var(--sage)}
-.cs-body .a{margin:10px 0 0;padding:10px 12px;font-size:var(--fs-cap);line-height:1.55}
-.cs-mark{color:var(--sage);font-weight:700;font-size:max(0.85em,12px)}
-.cs-body .bar.sage{background:var(--sage)}
-.cs-body .bar.stone{background:var(--stone)}
-.cs-playing .cs-tool,.cs-playing .cs-card,.cs-playing .cs-answer{opacity:0;transition:opacity 0.3s ease}
-.cs-playing .cs-tool.on,.cs-playing .cs-card.on,.cs-playing .cs-answer.on{opacity:1}
-.cs-playing .cs-tstate{visibility:hidden}
-.cs-playing .cs-tool.done .cs-tstate{visibility:visible}
+/* Claude Code terminal card (R44.11) — final frame is the default state;
+   .cs-playing hides not-yet-revealed parts without removing them from layout,
+   so the card never changes size (CLS 0). Terminal tokens live in :root. */
+.cs{display:flex;flex-direction:column;background:var(--term-bg);color:var(--term-fg);border-color:var(--term-border);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:var(--fs-cap);line-height:1.55;min-width:0}
+.cs-bar{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--term-border);background:var(--term-bar);color:var(--term-dim)}
+.cs-dots{display:inline-flex;gap:6px;flex-shrink:0}
+.cs-dots i{width:10px;height:10px;border-radius:50%;background:var(--term-red)}
+.cs-dots i:nth-child(2){background:var(--term-yel)}
+.cs-dots i:nth-child(3){background:var(--term-grn)}
+.cs-title{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cs-tag{flex-shrink:0;padding:1px 8px;border:1px solid var(--term-border);border-radius:999px;color:var(--term-dim)}
+.cs-replay{flex-shrink:0;padding:3px 10px;border:1px solid var(--term-border);border-radius:6px;background:transparent;color:var(--term-fg);font:inherit;cursor:pointer}
+.cs-replay:hover{border-color:var(--term-accent);color:var(--term-accent)}
+.cs-replay:focus-visible{outline:2px solid var(--term-accent);outline-offset:2px}
+.cs-body{padding:14px;overflow:hidden;box-sizing:border-box;overflow-wrap:anywhere}
+.cs-head{margin-bottom:10px;color:var(--term-dim)}
+.cs-star{color:var(--term-accent)}
+.cs-prompt{padding:7px 10px;border:1px solid var(--term-border);border-radius:8px;background:var(--term-panel)}
+.cs-gt{color:var(--term-accent);font-weight:700}
+.cs-tool,.cs-answer{margin-top:12px}
+.cs-row{display:flex;gap:8px;align-items:flex-start}
+.cs-row>span:last-child{min-width:0}
+.cs-dot{color:var(--term-ok);flex-shrink:0}
+.cs-answer .cs-dot{color:var(--term-fg)}
+.cs-tool b{color:var(--term-fg)}
+.cs-result{margin-top:2px;padding-left:2px;color:var(--term-dim)}
+.cs-elbow{flex-shrink:0}
+.cs-mark{color:var(--term-accent);font-weight:700;font-size:max(0.85em,12px)}
+.cs-sources{margin-top:12px;padding-left:16px}
+.cs-sh{color:var(--term-dim);text-transform:uppercase;letter-spacing:0.06em}
+.cs-sources ul{list-style:none;margin:4px 0 0;padding:0}
+.cs-src{margin-top:6px}
+.cs-sid{color:var(--term-accent);font-weight:700}
+.cs-path{color:var(--term-ok)}
+.cs-src p{margin:1px 0 0 0;padding-left:2ch;color:var(--term-dim)}
+.cs-foot{margin-top:auto;padding:8px 14px;border-top:1px solid var(--term-border);color:var(--term-dim);background:var(--term-bar)}
+.cs-caret{display:inline-block;width:0.6em;height:1.1em;margin-left:1px;background:var(--term-fg);vertical-align:text-bottom;animation:blink 1s steps(1) infinite}
+.cs-playing .cs-tool,.cs-playing .cs-answer,.cs-playing .cs-sources{opacity:0;transition:opacity 0.3s ease}
+.cs-playing .cs-tool.on,.cs-playing .cs-answer.on,.cs-playing .cs-sources.on{opacity:1}
+.cs-playing .cs-result{visibility:hidden}
+.cs-playing .cs-tool.done .cs-result{visibility:visible}
 .cs-playing .cs-seg{visibility:hidden}
 .cs-playing .cs-seg.on{visibility:visible}
 .cs-playing .cs-mark{visibility:hidden}
 .cs-playing .cs-mark.on{visibility:visible}
-@media(max-width:600px){.cs-bar{flex-wrap:wrap}.cs-body{padding:12px}}
-@media (prefers-reduced-motion: reduce){.cs-body .cite{transition:none}.cs-replay{display:none}}
+@media(max-width:600px){.cs-body{padding:12px}.cs-tag{display:none}.cs-replay{min-height:44px;padding:8px 14px}.cs-sources{padding-left:0}}
+@media (prefers-reduced-motion: reduce){.cs-replay{display:none}.cs-caret{animation:none}}
 .sources-strip{font-size:var(--fs-cap);color:var(--dim);margin:12px 0 8px}
 .paths{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:32px}
 .path{padding:12px 14px;border:1px solid var(--border);border-left:3px solid var(--stone,var(--border));border-radius:10px;background:var(--surface);font-size:var(--fs-cap);line-height:1.5}
