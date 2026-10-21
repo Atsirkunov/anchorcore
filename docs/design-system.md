@@ -90,7 +90,7 @@ instead of inlining colors.
 
 **One label per action, everywhere:** *Download — free for personal use* · *Watch it work* · *Join the waitlist* (Hosted) · *Request a quote* (Team).
 
-**Audiences are pages, not a toggle (R44.16):** the hero is Personal only. `/team` is a quote-request page (no price, range or fee structure; the pricing model is undecided — `rust/docs/decisions.md`), `/hosted` is a one-field waitlist. `?track=team|hosted` redirects to them. The hero's right-hand card is a scripted simulation of a coding agent calling AnchorCore over the sample dataset, labelled as a simulation (R44.11).
+**Audiences are pages, not a toggle (R44.16):** the hero is Personal only. `/team` is a quote-request page (no price, range or fee structure; the pricing model is undecided — `rust/docs/decisions.md`), `/hosted` is a one-field waitlist. `?track=team|hosted` redirects to them. The hero's right-hand card is an animated Claude Code session (terminal card) asking AnchorCore a question over the sample dataset (R44.11).
 
 **Claims discipline:** the site only claims what the repo supports — no SSO/roles (R43.18), no address guard on the REST connector, no analytics/telemetry, keychain on macOS/Windows only (encrypted-file fallback elsewhere), Windows/Linux builds not code-signed. Evidence lives on `/security` and the landing `#trust` section.
 
@@ -108,7 +108,7 @@ app URL, not shared storage.
 
 ### 5.2 Website structure (light theme, same accent)
 
-1. **Hero** — headline + sources strip + download buttons + simulated agent session + a two-path strip (use the app ∥ plug into your coding agent).
+1. **Hero** — headline + sources strip + download buttons + Claude Code terminal card (sample dataset) + a two-path strip (use the app ∥ plug into your coding agent).
 2. **Problem → Solution** — 3 columns: *Fragmented knowledge* → *Lost reasoning* → *AnchorCore: every answer shows its source*.
 3. **How it works** — 3 steps with icons + plain pipeline line (`connect → read → file → ask → cited answer`), sections visual, relationship visual, sealed-by-design privacy strip.
 4. **Live demo** — connect `sample/`, 4 questions answered (scripts in `docs/sample-dataset.md`); browser + MCP columns; abbreviated agent-session replay.
