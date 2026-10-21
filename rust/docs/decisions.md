@@ -231,3 +231,18 @@ ADR log. Append newest first.
   - The in-app Ask tab heading still says "Ask your memory" — separate follow-up.
 
 ---
+
+---
+
+## 2026-10-21 — R43.28: a lone ordinary word in the file head must not classify a doc as test
+
+* **Decision:** `env_for_item` head markers are two tiers. Strong (`testdata`, `mock`, `mocks`, `fixture`, `fixtures`): one occurrence in the first 1 KB still flags the doc. Weak (`sandbox`, `staging`): need two distinct weak words. Path-segment markers (`sandbox/`, `test/`, ...) are unchanged, as are the query-names-test-file exemption and `ANCHOR_TEST_ENV_DEMOTE=1.0`.
+* **Context:** On the shipped `sample/` corpus the billing decision ("a proper sandbox") and runbook ("Provision sandbox") classified `env: test`; live-first ordering then put them behind every live doc (rank 6-7 of 7, m2-q3-planning absent at k=8). "Sandbox" is normal vocabulary in payments docs, so real users hit this.
+* **Alternatives considered:**
+  - *Require >=2 distinct markers for all head words* — rejected: breaks the pinned R32.8 behavior that a single `mock`/`fixture` head flags seed data, which is the case head detection exists for.
+  - *Drop `sandbox`/`staging` from the head list entirely* — simpler, but loses `# sandbox + staging tenant seed` style headers; the two-word rule keeps them.
+  - *Stored per-item env / per-node env (R36.8)* — out of scope, larger.
+* **Consequences:**
+  - Env is computed at query time from the item path and `substr(text,1,1024)` (`chunk_item_env`), nothing is persisted, so no migration and no re-sync: existing indexes are fixed on upgrade.
+  - Residual: a live doc whose head says `mock` or `fixture` once still reads as test; accepted (strong tier), revisit only on a real report.
+  - Regression pin: `adr-012-billing` in the golden eval carries a lone "sandbox" in its head; `eval_fixture_is_live_env` fails if the rule regresses.

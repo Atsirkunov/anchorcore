@@ -7,6 +7,7 @@ Date: 2026-08-30. Status: accepted.
 The billing stack needs a provider that handles invoicing, dunning,
 and tax receipts. Three billing providers were evaluated against the
 scorecard: ledger accuracy, invoice flexibility, and support quality.
+Every candidate had to offer a proper sandbox for the parallel run.
 
 ## Decision
 
