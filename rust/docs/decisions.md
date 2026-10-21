@@ -4,6 +4,74 @@ ADR log. Append newest first.
 
 ---
 
+## 2026-10-21 — R36.18a: section-granular line ranges
+
+* **Decision:** every chunk carries the line range of its own section — markdown/verbatim report real 1-based source lines, code/config sections start at their symbol line via `push_symbol(line_no)`, prose blocks are relative to their section. Prose ranges are cleaned-text-relative (cleaning shifts lines; the mapping is documented, not stored). Joined continuation lines still report the starter line.
+* **Context:** file-level ranges misattributed every citation in multi-section files. Windowed prose can't do better than section-relative without a cleaned→raw map, which stays out as over-engineering.
+
+---
+
+## 2026-10-21 — R43.5: Jira ADF flattened by shape, not by node list
+
+* **Decision:** `adf_text`/`adf_node_text` walk ADF generically — block containers join children with newlines, paragraph/heading children join directly; only leaf payloads are named (`text`, `mention`/`emoji`/`media`/`status` attrs, `inlineCard` URL, `hardBreak`). Link URLs and `date` nodes are dropped (text kept). Plain-string descriptions pass through untouched; description + comments were already in `fetch`'s fields, so no new API call.
+* **Context:** enumerating every ADF node type would rot with each Atlassian addition. The alternative (requesting `expand=renderedFields` HTML) trades one parser for a worse one.
+
+---
+
+## 2026-10-21 — R43.4: verbatim splits + para-edge trim
+
+* **Decision:** oversized verbatim/list content splits by line (`split_verbatim_lines`, over-long lines via `split_long_line`), reusing the existing fence-close detector rather than a second one; `trim_para_edges` strips verse numbers and orphan boundary fragments from paragraph edges on the prose path. Code/config text stays byte-identical.
+* **Context:** splitting keeps long code blocks and lists citable per-line instead of one giant chunk; trimming only para edges (never mid-text) avoids eating intentional content.
+
+---
+
+## 2026-10-21 — R43.1: scope enforced at three levels
+
+* **Decision:** project/public scope binds the filename boost (`filename_boost_filtered`), the SQL name boundary (`named_item_ids(scope)`), and a final `scope_hit_ok` assert inside `orchestrate_fusion` — a boosted out-of-scope hit cannot survive even if an earlier leg leaks it.
+* **Context:** the boost ran post-cut and pulled below-cut chunks unconditionally, so a filename match in an excluded project displaced in-scope evidence. Belt-and-braces (scoped legs + final assert) was chosen over assert-only so the legs themselves stop fetching cross-scope rows.
+
+---
+
+## 2026-10-21 — R43.8: default-deny auth (revises the R13 accepted table)
+
+* **Decision:** `is_public_path` is an explicit allowlist (OPTIONS, `/health`, `/csrf`, `/auth/status|signup|login`, `/`, `/index.html`, `/assets/*`, `/favicon.svg`) — everything else requires auth when enabled. The rewrite flattened the table, so the R13 accepted-CCN-22 note is retired (now CCN 13). New rule: any new top-level static file needs an allowlist line, and `route_table_default_deny` must gain the route. Non-loopback bind without auth refuses to boot (`ANCHOR_LAN_NO_AUTH=1` opts out for personal; Team keeps its stricter no-opt-out gate).
+* **Context:** the old deny-list (9 API prefixes) silently treated every unlisted GET path — `/items`, `/sections`, `/nodes`, `/tags` — as a public SPA route. The SPA is state-routed (no path routes), so `/` + assets suffice for the shell.
+* **Alternatives considered:** (A) extend the prefix list — rejected, deny-listing repeats the bug on the next route. (B) serve the shell for unknown paths with auth on — rejected, reopens the hole; typed deep links 401 instead (no legit flow affected).
+
+---
+
+## 2026-10-21 — R43.6: nomic instruction prefixes + count check
+
+* **Decision:** `nomic-embed-text` inputs are prefixed (`search_query:` for queries, `search_document:` for documents/backfill) when the model name contains `nomic`; other models are untouched. Embedding calls now error when the returned vector count mismatches the input count (the old `.zip` silently truncated). Stored vectors stay as-is per the R40.5 rule (note, not migration): old rows lack prefixes until force re-sync; release notes say so.
+* **Context:** unprefixed nomic input is a known recall loss; a middle-dropped vector silently misaligned every later chunk. The golden eval uses hash embeddings, so it cannot see prefix effects — no silent behavior dependency there.
+
+---
+
+## 2026-10-21 — R43.7: answer timeout honors the existing setting
+
+* **Decision:** generation and follow-up rewrite use the existing `answer_timeout` setting (default 120 s, was already in SETTING_KEYS/frontend but never read) instead of a new key; generation context is capped at a 6000-token estimate with byte-identical default assembly. The MCP hop gets its own budget (`ANCHOR_MCP_ASK_TIMEOUT`, default 180 s) so slow answers don't die at the proxy. num_ctx + native `/api/chat` stay with R30.6; streaming is a follow-up.
+
+---
+
+## 2026-10-21 — R43.3: prose-only merge + set-off CAPS rule
+
+* **Decision:** the 150-char minimum-chunk merge applies on the prose path only (`tables` flag) — code symbols and config keys stay citable units at any size. ALL-CAPS lines section only when followed by a blank/short line, and nest (instead of popping to level 1) inside numbered sections unless preceded by a blank line. Numbered openers reading as data (dates, IPv4, bare numbers, lowercase-led remainders) never section.
+* **Context:** alternatives were merging everywhere (corrupts symbol/key citations) and requiring numbered-sequence membership (drops lone legitimate headings); the blank-line escape hatch keeps set-off part headers (`APPENDIX`) top-level.
+
+---
+
+## 2026-10-21 — R43.2: page-boundary cleaning (conformance parity checked)
+
+* **Decision:** repeated-line/footer stripping applies only at page boundaries (`[page N]` markers); mid-page repeats are table content. Checked against the archived suite first: `test_repeated_lines_detected_and_stripped` exercises the Python functions in-process and never touches the server, so it pins nothing about Rust behavior — no archived-mirror change (the backend is frozen anyway).
+
+---
+
+## 2026-10-21 — S1: no new golden-eval pairs (unit pins instead)
+
+* **Decision:** S1 ships no new eval pairs. The harness inserts file bytes directly (no cleaning, no real splitters) and asserts presence-only recall over one scope-less source — so it cannot pin R43.1 (needs scope + a negative assertion), R43.2/R43.3/R43.4 (need cleaning/chunking), or R36.18a (ranges don't rank). Those pin at unit level (incl. a file-shaped cleaning fixture at `tests/eval_data/corpus/support/`). Bisected 2026-10-21: either candidate doc alone displaces `incident-02-midbody` from fused — that pair has zero fused margin, which blocks retrievability pins until fusion-side margin work lands (R43.27). The existing set holds 1.00 (no-delta).
+
+---
+
 ## 2026-10-14 — R38: Markdown chunking (owner proposal)
 
 * **Decision:** Markdown (`.md`/`.markdown`/`.mdx`) chunks by blocks, not by the prose `#`-marker path: a hand-rolled CommonMark-subset pass (`markdown.rs`, no new dependency) → heading section tree → whole-block packing with per-kind oversize rules. Markdown skips B12 cleaning only (extraction/distill still run). Embed input is breadcrumb + link-stripped text on all three embed paths; the IDF gate stays on raw stored text. Line ranges persist on sections + chunks (migration 19) and surface additively on citations/search hits/MCP/nodes; `/sections` + outline gain `depth`.
@@ -133,5 +201,19 @@ ADR log. Append newest first.
 * **Consequences:**
   - Backup archives do not carry `vocabulary` yet (format change out of R40.7 scope) — restore + force re-sync rebuilds it; file the backup-table follow-up if restores go routine.
   - Query-time lookup is project-scoped but label-blind (terms, not content); chunk label/status gates apply downstream as before.
+
+---
+
+## 2026-10-21 — R44.19 / R44.20: no website analytics yet; drop the WebMCP bridge
+
+* **Decision:** (R44.19) No analytics, no download-redirect Worker for now — deferred until there is traffic worth measuring. Per-OS download totals come from GitHub's per-release-asset counts; waitlist/quote intent comes from the Formspree `interest` field. (R44.20) Turn the Cloudflare-injected WebMCP bridge (`/.webmcp/bridge.js`) off; agent discoverability is served by `website/public/llms.txt`.
+* **Context:** The site's strongest trust claim is "no cookies, no analytics, no third-party requests, only our own scripts". Web Analytics would add a beacon and cannot see downloads (they leave for GitHub); a counting Worker adds a failure point in the download path. The bridge is ~73 KB of edge-injected code we do not control (audited once, 2026-10-11), exposes generic image-provenance tools, and is the one script on the site that is not ours.
+* **Alternatives considered:**
+  - *A: Cloudflare Web Analytics* — rejected for now: breaks the no-analytics wording for visit/referrer data that is not decision-relevant at current traffic; revisit if visit→download conversion becomes the question.
+  - *B: `/download/{os}` Worker + counter* — rejected for now: per-day OS trends are not worth a new moving part in the download path; GitHub asset counts already give per-OS totals.
+  * *Keep the bridge* — rejected: unaudited updates, no AnchorCore-specific value, contradicts the only-our-scripts claim.
+* **Consequences:**
+  - Owner action: Cloudflare dashboard → Agent Readiness → WebMCP → off. Until it is flipped, the privacy notice's bridge disclosure stays; after, remove the disclosure from `website/privacy.html` and `website/README.md` in the same change as confirming the served HTML has no bridge script.
+  - If analytics returns, update the privacy notice + README "no analytics" statement in the same change (R44.19 acceptance).
 
 ---
