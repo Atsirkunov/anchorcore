@@ -173,6 +173,12 @@ impl SettingsService {
         self.cache.write().unwrap().clear();
     }
 
+    /// The pinned data dir, if `set_data_dir` ran (R45.5 records query
+    /// fingerprints there; unpinned test services skip it).
+    pub fn data_dir(&self) -> Option<std::path::PathBuf> {
+        self.data_dir.read().unwrap().clone()
+    }
+
     pub fn get(&self, key: &str, conn: Option<&Connection>) -> Option<String> {
         if !SETTING_KEYS.contains(&key) && !SECRET_KEYS.contains(&key) {
             return env_value(key);

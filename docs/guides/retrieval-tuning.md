@@ -155,6 +155,26 @@ Code constants (need a rebuild; change only with a failing test in hand):
   later vectors onto the wrong chunks). The golden eval cannot see
   prefix effects (hash embeddings), so this ships on unit tests, not
   the eval.
+- Vector provenance (R45.5, migration 22, `embed_fp.rs`): every chunk
+  vector is stamped `chunks.embed_fp = provider:model:dim` at write time
+  (`Embedder::sync_vec`, which every embed path already calls), and each
+  query vector records its fingerprint in `embed_state` before retrieval
+  runs. The vector legs (scan and vec0) compare only stored vectors in
+  the query's *family* + dim; everything else (another model, unstamped
+  vectors from old archives or raw writes) is keyword-only until re-embedded.
+  Families: unknown models are their own family; Ollama `nomic-embed-text`
+  and the built-in nomic v1.5 share one (probe parity 1.00000), so a
+  provider switch between them re-embeds nothing. A model switch is
+  noticed by the next query: it records a `system_events` warning and wakes
+  the scheduler backfill, which re-embeds stale vectors (NULL, unstamped,
+  or out-of-family; label-gated like before) in id-cursor batches. Old
+  vectors are overwritten, so switching back re-embeds again. If the
+  fingerprint can't be recorded, that query runs keyword-only rather than
+  against a stale filter. Migration 22 stamps pre-existing vectors
+  `ollama:<DB embed_model or nomic-embed-text>:dim`; an env-only
+  `ANCHOR_EMBED_MODEL` override costs one re-embed after upgrade. Backup
+  archives now carry `embed_fp` on `chunk_embedding` records; older
+  archives restore unstamped (re-embedded by the backfill).
 - Corpus vocabulary (R40.7): FTS query terms expand through the
   `vocabulary` table (migration 20) on top of the R40.6 curated map.
   Tier-1 rules (parenthetical acronyms, glossary lines) are active

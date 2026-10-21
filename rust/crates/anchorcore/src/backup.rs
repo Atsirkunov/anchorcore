@@ -657,21 +657,24 @@ fn export_ops_table(conn: &Connection, zip: &mut ArchiveWriter, table: &str) -> 
 
 /// Embeddings ride in their own opt-in records keyed by uid (`embedding` /
 /// `summary_embedding` columns have no JSON mapping in SQLite).
+/// R45.5: chunk vectors also carry their `embed_fp` provenance so a restore
+/// keeps them comparable (absent on other tables and in older archives).
 fn export_embeddings(conn: &Connection, zip: &mut ArchiveWriter, table: &str, column: &str, kind: &str) -> Result<u64, String> {
-    let sql = format!("SELECT uid, {} FROM {} WHERE {} IS NOT NULL ORDER BY id", column, table, column);
+    let fp = if table == "chunks" { "embed_fp" } else { "NULL" };
+    let sql = format!("SELECT uid, {}, {} FROM {} WHERE {} IS NOT NULL ORDER BY id", column, fp, table, column);
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<Vec<u8>>>(1)?)))
+        .query_map([], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<Vec<u8>>>(1)?, r.get::<_, Option<String>>(2)?)))
         .map_err(|e| e.to_string())?;
     let mut n = 0u64;
     for row in rows {
-        let (uid, blob) = row.map_err(|e| e.to_string())?;
+        let (uid, blob, fp) = row.map_err(|e| e.to_string())?;
         let (Some(uid), Some(blob)) = (uid, blob) else { continue };
-        write_record_line(
-            zip,
-            &serde_json::to_string(&json!({"type": kind, "uid": uid, "embedding_b64": b64_encode(&blob)}))
-                .map_err(|e| e.to_string())?,
-        )?;
+        let mut rec = json!({"type": kind, "uid": uid, "embedding_b64": b64_encode(&blob)});
+        if let Some(fp) = fp {
+            rec["embed_fp"] = json!(fp);
+        }
+        write_record_line(zip, &serde_json::to_string(&rec).map_err(|e| e.to_string())?)?;
         n += 1;
     }
     Ok(n)
@@ -1415,8 +1418,12 @@ fn apply_chunk(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
     if let Some(blob) = embedding {
+        // R45.5: a replaced vector must never keep the old row's provenance.
         ctx.conn
-            .execute("UPDATE chunks SET embedding=?1 WHERE id=?2", rusqlite::params![blob, id])
+            .execute(
+                "UPDATE chunks SET embedding=?1, embed_fp=?3 WHERE id=?2",
+                rusqlite::params![blob, id, opt_str_field(rec, "embed_fp")],
+            )
             .map_err(|e| e.to_string())?;
     }
     ctx.remember("chunks", &uid, id);
@@ -1653,6 +1660,13 @@ fn apply_embedding(ctx: &mut ImportCtx, rec: &Value, table: &'static str, column
     ctx.conn
         .execute(&sql, rusqlite::params![blob, existing])
         .map_err(|e| e.to_string())?;
+    if table == "chunks" {
+        // R45.5: provenance rides along; an older archive has none, so the
+        // vector stays unstamped (keyword-only until the backfill re-embeds).
+        ctx.conn
+            .execute("UPDATE chunks SET embed_fp = ?1 WHERE id = ?2", rusqlite::params![opt_str_field(rec, "embed_fp"), existing])
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -2759,6 +2773,26 @@ mod tests {
         let notzip = dst.path().join("notzip.anchorcore-backup");
         std::fs::write(&notzip, b"definitely not a zip").unwrap();
         assert!(import_archive(dst.path(), &notzip, &ImportOptions::default()).is_err());
+    }
+
+    #[test]
+    fn embedding_provenance_round_trips() {
+        // R45.5: `embed_fp` rides on chunk_embedding records; a restored
+        // vector keeps its provenance instead of reading as unknown.
+        let _env = EnvGuard::file_only();
+        let src = tempdir().unwrap();
+        seed(src.path());
+        db(src.path())
+            .execute(
+                "UPDATE chunks SET embedding = ?1, embed_fp = 'ollama:nomic-embed-text:768' WHERE kind='document'",
+                [vec![0u8; 768 * 4]],
+            )
+            .unwrap();
+        let archive = exported(src.path(), ExportOptions { include_embeddings: true, ..Default::default() });
+        let dst = tempdir().unwrap();
+        import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
+        let fp: String = one(&db(dst.path()), "SELECT embed_fp FROM chunks WHERE embedding IS NOT NULL");
+        assert_eq!(fp, "ollama:nomic-embed-text:768");
     }
 
     #[test]
