@@ -71,7 +71,7 @@
             <a id="cta-primary" class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download — free for personal use</a>
             <a class="btn secondary" href="#demo">Watch it work</a>
           </div>
-          <p class="sources-strip">Folders &amp; Obsidian · PDFs, Word, Excel · Google Drive · Jira · Linear · <a href="#guide-rest">Any JSON API</a></p>
+          <p class="sources-strip">Folders &amp; Obsidian · PDFs, Word, Excel · Google Drive · Jira · Linear · <a href="/guides/json-api">Any JSON API</a></p>
           <div id="cta-note" class="cta-note">macOS, Windows & Linux • one download, no Docker • data stays on your machine</div>
           <p id="first-launch" class="small">First launch: move AnchorCore to /Applications. macOS: open it, then System Settings → Privacy &amp; Security → Open Anyway. Windows: SmartScreen → More info → Run anyway. (Not yet Apple-notarized or store-signed.)</p>
         </div>
@@ -286,52 +286,23 @@ Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
       </div>
     </section>
 
-    <!-- Guides -->
-        <!-- Guides — entry cards + the guide reader (R18.7 merged the old Guidebook section) -->
+    <!-- Guides — entry cards linking to the prerendered /guides/* pages (R44.15) -->
     <section id="guides">
       <div class="wrap">
         <h2>Guides</h2>
-        <p class="sub">Three paths — each card opens its walkthrough below.</p>
+        <p class="sub">Each card opens a full walkthrough on its own page.</p>
         <div class="cols">
-          <div class="col"><h3>Your Obsidian vault</h3><p>Already have a vault? Keep it. Point AnchorCore at the folder → <code>Sync</code> → <code>Ask</code>. Same notes — answers quote the exact passages instead of dumping whole files into the AI. Nothing to migrate, nothing to leave.</p><small><a href="#guide-obsidian">Open the vault guide</a></small></div>
-          <div class="col"><h3>Quick start — the sample company</h3><p>Download the app → open it → <a href="/sample.zip" download>download sample.zip</a> and unzip it → Sources → Local folder → Sync → Ask. Your data lives on your machine. No Docker, no account.</p><small>10 files → about 40 entities · <a href="#guide-quickstart">Open the sample guide</a></small></div>
-          <div class="col"><h3>Any JSON API</h3><p>Tickets, issues, CMS, your own backend — point at the API, map its fields, preview 5 records, sync. Passwords and tokens are stored locally, in your OS keychain on macOS and Windows.</p><small><a href="#guide-rest">Open the REST guide</a></small></div>
+          <div class="col" id="guide-obsidian"><h3>Your Obsidian vault</h3><p>Already have a vault? Keep it. Point AnchorCore at the folder → <code>Sync</code> → <code>Ask</code>. Same notes — answers quote the exact passages instead of dumping whole files into the AI. Nothing to migrate, nothing to leave.</p><small><a href="/guides/obsidian">Open the vault guide</a></small></div>
+          <div class="col" id="guide-quickstart"><h3>Quick start — the sample company</h3><p>Download the app → open it → <a href="/sample.zip" download>download sample.zip</a> and unzip it → Sources → Local folder → Sync → Ask. Your data lives on your machine. No Docker, no account.</p><small>10 files → about 40 entities · <a href="/guides/sample">Open the sample guide</a></small></div>
+          <div class="col" id="guide-rest"><h3>Any JSON API</h3><p>Tickets, issues, CMS, your own backend — point at the API, map its fields, preview 5 records, sync. Passwords and tokens are stored locally, in your OS keychain on macOS and Windows.</p><small><a href="/guides/json-api">Open the JSON API guide</a></small></div>
+        </div>
+        <div class="cols two">
+          <div class="col" id="guide-ai"><h3>Try the AI startup</h3><p>Prefer a software company as the example? A second sample corpus: a fictional AI product company with decisions, evals and specs to ask about.</p><small><a href="/guides/ai-startup">Open the AI startup guide</a></small></div>
+          <div class="col" id="guide-mcp"><h3>Connect your agent</h3><p>Claude Code, Codex, opencode and Cursor can read your memory over MCP: read-only tools, cited results, a public-only gate, every call logged.</p><small><a href="/guides/mcp">Open the MCP guide</a></small></div>
         </div>
         <div class="cols two">
           <div class="col"><h3>Projects — scoped search</h3><p>Group sources into projects — Client X, Research, Team. Pick one to scope every question to just those sources, or search everything.</p><small>Projects in the header · public-only toggle for sharing</small></div>
           <div class="col"><h3>Source labels</h3><p>Label each source Public, Internal, or Sensitive. Sensitive ones are never sent to cloud AI you haven't approved — matched locally only, every refusal logged.</p><small>per-source labels</small></div>
-        </div>
-        <div class="guide-reader" id="guide-reader">
-          <!-- legacy anchors keep old links working; each opens its panel via the hash router (R18.7) -->
-          <span id="guide-obsidian" class="anchor"></span>
-          <span id="guide-quickstart" class="anchor"></span>
-          <span id="guide-rest" class="anchor"></span>
-          <span id="guide-ai" class="anchor"></span>
-          <p class="small">Pick a guide — it opens right here.</p>
-          <div class="guide-tabs">
-            <button class="guide-tab" id="guide-tab-obsidian" data-guide="guide-obsidian-body" aria-expanded="false" aria-controls="panel-obsidian">Obsidian vault</button>
-            <button class="guide-tab" id="guide-tab-quickstart" data-guide="guide-quickstart-body" aria-expanded="false" aria-controls="panel-quickstart">Sample company</button>
-            <button class="guide-tab" id="guide-tab-rest" data-guide="guide-rest-body" aria-expanded="false" aria-controls="panel-rest">JSON API</button>
-            <button class="guide-tab" id="guide-tab-ai" data-guide="guide-ai-body" aria-expanded="false" aria-controls="panel-ai">AI startup</button>
-          </div>
-          <div class="guide-panels">
-            <article class="guide-panel" id="panel-obsidian" aria-labelledby="guide-tab-obsidian" hidden>
-              <h3>Use your Obsidian vault</h3>
-              <div class="guide-body" id="guide-obsidian-body"></div>
-            </article>
-            <article class="guide-panel" id="panel-quickstart" aria-labelledby="guide-tab-quickstart" hidden>
-              <h3>Try the sample company</h3>
-              <div class="guide-body" id="guide-quickstart-body"></div>
-            </article>
-            <article class="guide-panel" id="panel-rest" aria-labelledby="guide-tab-rest" hidden>
-              <h3>Connect any JSON API</h3>
-              <div class="guide-body" id="guide-rest-body"></div>
-            </article>
-            <article class="guide-panel" id="panel-ai" aria-labelledby="guide-tab-ai" hidden>
-              <h3>Try the AI startup</h3>
-              <div class="guide-body" id="guide-ai-body"></div>
-            </article>
-          </div>
         </div>
         <p class="docs-strip">Internals &amp; integrations: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/guides/hierarchical-toc.md">Sections &amp; citations</a> · <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/architecture.md">How search works</a> · <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">Agent access (MCP)</a> · <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/backup.md">Backup &amp; migration</a></p>
       </div>
