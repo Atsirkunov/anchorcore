@@ -1,6 +1,7 @@
 // Build-time guard for the Claude Code terminal card (R44.11): every quoted
 // snippet in src/components/claude-session.data.json must be a verbatim
-// substring of its sample/ file (whitespace runs collapsed, since the markdown
+// substring of its sample/ file AND of the matching hit in demo-capture.json,
+// the raw MCP `search` response the card shows (whitespace runs collapsed, since the markdown
 // is hard-wrapped). With `--dist` it also checks the BUILT dist/index.html
 // (generated from the same data file by scripts/session-html.ts) carries every
 // quote twice (hero + #demo). Exits 1 on any miss so `npm run build` fails.
@@ -17,6 +18,23 @@ const norm = (s) => s.replace(/\s+/g, " ");
 const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 let bad = 0;
+// The card shows a REAL `search` run: tool line, result count, source rank /
+// path / line range and every quote must match the committed raw capture.
+if (!dist) {
+  const cap = JSON.parse(readFileSync(join(here, "demo-capture.json"), "utf8"));
+  if (cap.query !== data.tool.query) { console.error(`check-session-quotes: tool.query differs from capture ("${cap.query}")`); bad++; }
+  if (cap.hits.length !== data.tool.results) { console.error(`check-session-quotes: tool.results ${data.tool.results} != capture hits ${cap.hits.length}`); bad++; }
+  if (data.tool.k < cap.hits.length) { console.error("check-session-quotes: tool.k smaller than capture hit count"); bad++; }
+  for (const src of data.sources) {
+    const hit = cap.hits[src.rank - 1];
+    if (!hit) { console.error(`check-session-quotes: ${src.id} rank ${src.rank} not in capture`); bad++; continue; }
+    if (!hit.source_ref.replace(/ §\d+$/, "").endsWith("/" + src.file)) { console.error(`check-session-quotes: ${src.id} file ${src.file} != capture ${hit.source_ref}`); bad++; }
+    if (hit.line_start !== src.lines[0] || hit.line_end !== src.lines[1]) { console.error(`check-session-quotes: ${src.id} lines ${src.lines} != capture ${hit.line_start}-${hit.line_end}`); bad++; }
+    for (const q of src.quotes) {
+      if (!norm(hit.content).includes(norm(q))) { console.error(`check-session-quotes: quote not verbatim in capture hit #${src.rank}:\n  "${q}"`); bad++; }
+    }
+  }
+}
 for (const src of data.sources) {
   let text = "";
   if (!dist) {

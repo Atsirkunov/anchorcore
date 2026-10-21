@@ -1,17 +1,21 @@
 {
-  "prompt": "Can we start the billing migration Monday? What's the rollback, and who owns it?",
+  "prompt": "Who owns the billing provider migration, and how do we roll it back?",
   "tool": {
     "server": "anchorcore",
-    "name": "ask"
+    "name": "search",
+    "query": "billing provider migration rollback plan owner",
+    "k": 8,
+    "results": 8
   },
-  "footer": "3 citations · answered on your machine",
+  "footer": "search ran on your machine · the answer is written by Claude Code from the results",
   "sources": [
     {
       "id": "S1",
+      "rank": 1,
       "file": "decisions/d2-billing-provider-approval.md",
+      "lines": [1, 18],
       "kind": "decision",
       "title": "Billing provider migration approved",
-      "tone": "sage",
       "quotes": [
         "Rollback plan: feature flag toggles back to the legacy provider per tenant.",
         "Owner: Sarah."
@@ -19,10 +23,11 @@
     },
     {
       "id": "S2",
+      "rank": 2,
       "file": "specs/billing-migration-runbook.md",
+      "lines": [6, 20],
       "kind": "runbook",
       "title": "Runbook: Billing provider migration",
-      "tone": "stone",
       "quotes": [
         "mirror invoices to the new provider (write-only; no customer impact)",
         "the flag can flip any tenant back to legacy within five minutes"
@@ -30,46 +35,36 @@
     },
     {
       "id": "S3",
+      "rank": 8,
       "file": "meetings/m2-q3-planning.md",
+      "lines": [23, 27],
       "kind": "meeting notes",
       "title": "Q3 Planning",
-      "tone": "sage",
       "quotes": [
-        "Billing provider migration parallel-run starts Monday. Sarah owns it."
+        "Sarah will monitor daily and escalate via the rollback flag if needed."
       ]
     }
   ],
   "answer": [
     {
-      "text": "The billing provider migration's parallel run is scheduled to start Monday",
-      "cite": [
-        "S3"
-      ]
-    },
-    {
-      "text": " and it is write-only, with no customer impact",
-      "cite": [
-        "S2"
-      ]
+      "text": "Sarah owns the billing provider migration",
+      "cite": ["S1"]
     },
     {
       "text": ". Rollback is a feature flag that toggles a tenant back to the legacy provider",
-      "cite": [
-        "S1"
-      ]
+      "cite": ["S1"]
     },
     {
       "text": ", and the runbook says it can flip any tenant back within five minutes",
-      "cite": [
-        "S2"
-      ]
+      "cite": ["S2"]
     },
     {
-      "text": ". Sarah owns it",
-      "cite": [
-        "S1",
-        "S3"
-      ]
+      "text": ". The parallel run is write-only, with no customer impact",
+      "cite": ["S2"]
+    },
+    {
+      "text": ", and Sarah monitors it daily and can escalate via the rollback flag",
+      "cite": ["S3"]
     },
     {
       "text": "."
