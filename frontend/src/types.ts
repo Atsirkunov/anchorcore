@@ -14,7 +14,12 @@ export type AppSettings = {
   embed_api_key: string; // masked as "***set***" when stored
   tag_reuse_threshold?: string;
   update_check_enabled?: string; // "1" on, "0"/"" off (startup update check)
+  llm_mode?: LlmMode; // R45.2: who writes answers (default "local")
 };
+
+/** R45.2: `agent` — your AI agent (MCP or the REST skill) writes answers and the
+ * server runs no chat model; `local` — the configured answer model does. */
+export type LlmMode = "agent" | "local";
 
 export type TestConnectionResult = {
   ok: boolean;
@@ -113,7 +118,8 @@ export type SystemStatus = {
   classifier: ClassifierStatus;
   retrieval: RetrievalStatus;
   embedder: EmbedderStatus;
-  answer: { provider: string; model: string; base_url: string };
+  llm_mode?: LlmMode;
+  answer: { provider: string; model: string; base_url: string; mode?: LlmMode };
   answer_ready: boolean;
   tasks: Record<string, string>;
   pending_embeddings: number;
@@ -305,8 +311,10 @@ export type AskResponse = {
   answer: string;
   citations: Citation[];
   refusal?: string | null;
+  /** "composed" | "agent_compose" (R45.2) | "context_only" | "none" */
   mode?: string;
   retrieval?: string;
+  warning?: string | null;
 };
 
 export type PullProgress = {

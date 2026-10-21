@@ -101,7 +101,7 @@ before you write:
 
 | Call | What it tells you |
 |---|---|
-| `GET /system/status` | version, models configured/missing, `answer_ready`, pending embeddings, failing sources |
+| `GET /system/status` | version, `llm_mode` (`agent`/`local`), models configured/missing, `answer_ready`, pending embeddings, failing sources |
 | `GET /system/onboarding` | `needs_wizard`, `sources_count`, sample availability |
 | `GET /system/mcp` | the exact command MCP clients must run |
 | `GET /system/errors?limit=20` | recent failures (empty on a clean box) |
@@ -113,9 +113,12 @@ Summarize the state in plain language before changing anything.
 Three modes — pick with the user, configure, then **verify**:
 
 1. **Agent-native (recommended when the user chats through Claude Code, Codex,
-   opencode, Cursor, …):** the agent calls `search` (MCP) or
-   `POST /qa/search` and answers with *its own* model. AnchorCore needs no
-   answer model at all. This is the bring-your-own-model path.
+   opencode, Cursor, …):** `PUT /settings {"llm_mode":"agent"}`. The agent
+   calls `search` (MCP) or `POST /qa/search` (REST skill) and answers with
+   *its own* model; `ask` / `POST /qa` return `mode: "agent_compose"`
+   (gated citations with content, no server model, no warning). AnchorCore
+   needs no answer model at all and `answer_ready` reads `true`. This is the
+   bring-your-own-model path. (`llm_mode` defaults to `local`.)
 2. **Local model (Ollama):** `POST /system/ollama/start`, then
    `POST /system/ollama/pull {"models":["llama3.2:3b","nomic-embed-text"]}`,
    poll `GET /system/ollama/pulls`. Leaving `classifier_base_url` /
@@ -133,6 +136,9 @@ Three modes — pick with the user, configure, then **verify**:
 the answer was produced:
 
 - `mode: "composed"` — a model wrote it.
+- `mode: "agent_compose"` — agent mode (`llm_mode: agent`): by design no
+  server model ran; compose the answer yourself from the citations. Not a
+  degradation, no warning.
 - `mode: "context_only"` — **no model ran** (missing key, unreachable endpoint,
   missing local model); the text is extractive context, not an answer.
 - `mode: "none"` / `refusal: "gated_provider"` — nothing was returned.
@@ -272,7 +278,8 @@ ship only the binary), so the source is
 
 1. `POST /qa/search {"query":"…","k":8}` → hits with `source_ref` and scores;
    `retrieval` matches expectations.
-2. `POST /qa {"question":"…"}` → `mode` per the honesty contract, ≥1 citation.
+2. `POST /qa {"question":"…"}` → `mode` per the honesty contract (`agent_compose`
+   in agent mode, `composed` in local mode), ≥1 citation.
 3. `GET /system/status` → `version` equals the newest release (step 1),
    `answer_ready: true` (or an agreed degraded state), `pending_embeddings`
    trending to 0, no failing sources.

@@ -37,7 +37,7 @@ pub async fn health(State(state): State<AppState>) -> Json<Value> {
             "ollama": ollama,
             "answer_key": answer_key,
             "missing_models": readiness.missing_models,
-            "answer_ready": readiness.answer_ready,
+            "answer_ready": crate::answer::answer_ready(&state.settings, readiness.answer_ready),
             "pending_embeddings": pending_embeddings,
             "tasks": {},
             "classifier": { "concurrency": 4 },

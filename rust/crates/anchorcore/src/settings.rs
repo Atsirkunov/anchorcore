@@ -19,6 +19,7 @@ pub const SETTING_KEYS: &[&str] = &[
     "update_check_enabled",
     "extract_entities",
     "distill_enabled",
+    "llm_mode",
 ];
 pub const SECRET_KEYS: &[&str] = &["answer_api_key", "classifier_api_key", "embed_api_key"];
 pub const ALL_KEYS: &[&str] = &[
@@ -36,11 +37,43 @@ pub const ALL_KEYS: &[&str] = &[
     "update_check_enabled",
     "extract_entities",
     "distill_enabled",
+    "llm_mode",
     "answer_api_key",
     "classifier_api_key",
     "embed_api_key",
 ];
 pub const SECRET_PREFIX: &str = "app:";
+
+/// R45.2: who writes answers. `agent` — the user's AI agent (MCP or the
+/// REST skill) composes from cited passages and the server runs no chat
+/// model on the answer path; `local` — the configured answer model
+/// composes (today's behavior, and the default so upgrades don't change).
+pub const LLM_MODE_AGENT: &str = "agent";
+pub const LLM_MODE_LOCAL: &str = "local";
+
+/// Effective `llm_mode`: anything but `agent` reads as `local`.
+pub fn llm_mode(settings: &SettingsService) -> &'static str {
+    match settings.get("llm_mode", None) {
+        Some(v) if v.trim().eq_ignore_ascii_case(LLM_MODE_AGENT) => LLM_MODE_AGENT,
+        _ => LLM_MODE_LOCAL,
+    }
+}
+
+pub fn is_agent_mode(settings: &SettingsService) -> bool {
+    llm_mode(settings) == LLM_MODE_AGENT
+}
+
+/// R45.2: reject values the effective-mode read would silently coerce.
+fn invalid_value(key: &str, value: &Value) -> Option<String> {
+    if key != "llm_mode" {
+        return None;
+    }
+    let v = value.as_str().map(|s| s.trim().to_lowercase()).unwrap_or_default();
+    if v.is_empty() || v == LLM_MODE_AGENT || v == LLM_MODE_LOCAL {
+        return None;
+    }
+    Some(format!("llm_mode must be '{}' or '{}'", LLM_MODE_AGENT, LLM_MODE_LOCAL))
+}
 const CACHE_TTL: Duration = Duration::from_secs(3);
 
 // Test-only Ollama URL: the suite and CI conformance point Ollama at a dead
@@ -102,6 +135,7 @@ fn env_value(key: &str) -> Option<String> {
         // R45.1: ingest makes no chat-model calls unless these opt in.
         "extract_entities" => Some("rules".to_string()),
         "distill_enabled" => Some("false".to_string()),
+        "llm_mode" => Some(LLM_MODE_LOCAL.to_string()),
         _ => None,
     }
 }
@@ -327,6 +361,9 @@ pub async fn put_handler(
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(serde_json::json!({"detail": format!("unknown settings: {}", unknown.join(", "))})),
         ));
+    }
+    if let Some(detail) = obj.iter().find_map(|(k, v)| if v.is_null() { None } else { invalid_value(k, v) }) {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"detail": detail}))));
     }
     let data_dir = state.data_dir.clone();
     let settings = state.settings.clone();
@@ -572,6 +609,33 @@ mod tests {
         let svc = SettingsService::new(store);
         // default
         assert_eq!(svc.get("ollama_base_url", None), Some("http://localhost:11434".to_string()));
+    }
+
+    #[test]
+    fn llm_mode_defaults_local_and_validates() {
+        // R45.2: upgrades keep today's behavior; only "agent" switches.
+        let saved = std::env::var("ANCHOR_LLM_MODE").ok();
+        std::env::remove_var("ANCHOR_LLM_MODE");
+        let dir = tempdir().unwrap();
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let svc = SettingsService::new(store);
+        svc.set_data_dir(dir.path());
+        let conn = Connection::open(dir.path().join("anchorcore.db")).unwrap();
+        conn.execute("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)", []).unwrap();
+        assert_eq!(llm_mode(&svc), LLM_MODE_LOCAL);
+        svc.set("llm_mode", "Agent", &conn).unwrap();
+        assert_eq!(llm_mode(&svc), LLM_MODE_AGENT);
+        assert!(is_agent_mode(&svc));
+        svc.set("llm_mode", "", &conn).unwrap();
+        assert_eq!(llm_mode(&svc), LLM_MODE_LOCAL);
+        assert!(invalid_value("llm_mode", &serde_json::json!("agent")).is_none());
+        assert!(invalid_value("llm_mode", &serde_json::json!("local")).is_none());
+        assert!(invalid_value("llm_mode", &serde_json::json!("")).is_none());
+        assert!(invalid_value("llm_mode", &serde_json::json!("cloud")).is_some());
+        assert!(invalid_value("answer_model", &serde_json::json!("anything")).is_none());
+        if let Some(v) = saved {
+            std::env::set_var("ANCHOR_LLM_MODE", v);
+        }
     }
 
     #[test]

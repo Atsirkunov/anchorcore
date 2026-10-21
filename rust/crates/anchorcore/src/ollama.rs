@@ -92,7 +92,8 @@ pub(crate) fn configured_local_models(settings: &SettingsService) -> Vec<(String
             .unwrap_or_else(|| "nomic-embed-text".to_string());
         out.push(("embeddings".to_string(), m));
     }
-    if local_base_for(settings, "answer_base_url").is_some() {
+    // R45.2: in agent mode the agent writes answers — no answer model needed.
+    if !crate::settings::is_agent_mode(settings) && local_base_for(settings, "answer_base_url").is_some() {
         let m = settings
             .get("answer_model", None)
             .unwrap_or_else(|| "llama3.2:3b".to_string());
