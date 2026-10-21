@@ -9,8 +9,9 @@ backend. Map its fields once, preview the result, sync. No per-integration code.
    `/v1/tickets`; a full `http…` URL in `list_path` is used as-is). Reads with
    `GET` by default, `POST` if the API wants a body.
 2. **Auth:** none, Bearer token, Basic (email + password), or a custom header
-   (default `X-Api-Key`). Tokens and passwords are stored in your OS keychain
-   as secrets, never in the database.
+   (default `X-Api-Key`). Tokens and passwords are kept as secrets, never in the
+   database: in your OS keychain on macOS and Windows, elsewhere in an encrypted
+   file in your data folder.
 3. **Find the items:** `items_path` points at the array (`/data`, `/issues`).
    Leave it empty and the connector tries the body itself, then `/data`,
    `/items`, `/results`.

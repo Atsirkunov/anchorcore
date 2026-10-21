@@ -80,7 +80,6 @@ const GUIDE_PAGES: Record<string, string> = {
   "guide-quickstart": "/guides/sample",
   "guide-rest": "/guides/json-api",
   "guide-ai": "/guides/ai-startup",
-  "guide-mcp": "/guides/mcp",
 };
 
 function redirectLegacyGuide(): boolean {
