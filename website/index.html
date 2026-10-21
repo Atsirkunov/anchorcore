@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AnchorCore — Private AI Knowledge Base with Cited Answers</title>
-  <meta name="description" content="Turn folders, Drive, Jira & Linear into a private AI knowledge base. Ask what was decided — get cited answers. Local-first, runs on your machine." />
+  <title>AnchorCore — Private AI Search with Cited Answers</title>
+  <meta name="description" content="A private AI search app. Ask your folders, Drive, Jira and Linear in plain language — get the answer and the exact source. Runs on your computer." />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <meta property="og:title" content="AnchorCore — Private AI Knowledge Base with Cited Answers" />
-  <meta property="og:description" content="Turn folders, Drive, Jira & Linear into a private AI knowledge base. Ask what was decided — get cited answers. Local-first, runs on your machine." />
+  <meta property="og:title" content="AnchorCore — Private AI Search with Cited Answers" />
+  <meta property="og:description" content="A private AI search app. Ask your folders, Drive, Jira and Linear in plain language — get the answer and the exact source. Runs on your computer." />
   <script type="application/ld+json">
-  {"@context":"https://schema.org","@type":"SoftwareApplication","name":"AnchorCore","applicationCategory":"BusinessApplication","operatingSystem":["macOS","Windows","Linux"],"description":"Private AI knowledge base: search folders, Drive, Jira and Linear, ask what was decided, get cited answers. Local-first, self-hosted.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"featureList":"private AI knowledge base, cited answers, local-first document search, Jira integration, Linear integration, Google Drive integration, source labels, model allowlist, MCP server"}
+  {"@context":"https://schema.org","@type":"SoftwareApplication","name":"AnchorCore","applicationCategory":"BusinessApplication","operatingSystem":["macOS","Windows","Linux"],"description":"Private AI search app: ask your folders, Drive, Jira, Linear or any JSON API in plain language and get a cited answer. Local-first, runs on your computer.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"featureList":"private AI search, cited answers, local-first document search, Jira integration, Linear integration, Google Drive integration, source labels, model allowlist, MCP server"}
   </script>
   <script type="application/ld+json">
   {"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
@@ -17,7 +17,7 @@
     {"@type":"Question","name":"How is this different from NotebookLM or ChatGPT file search?","acceptedAnswer":{"@type":"Answer","text":"Those are cloud-only uploads. AnchorCore is local-first and self-hostable, connects to folders, Drive, Jira and Linear directly, and gates sensitive sources per your model policy."}},
     {"@type":"Question","name":"Do I need Ollama?","acceptedAnswer":{"@type":"Answer","text":"No. Full-text search works without it. Add Ollama for AI answers with citations."}},
     {"@type":"Question","name":"Is it free?","acceptedAnswer":{"@type":"Answer","text":"Yes, the personal local app is free. Team self-hosted is a one-time platform license, perpetual including a year of support and updates. Hosted is coming soon."}},
-    {"@type":"Question","name":"Can I check the code myself?","acceptedAnswer":{"@type":"Answer","text":"Yes. AnchorCore is source-available: the repository is public, so you can read what the app does (no telemetry; it only contacts the endpoints you configure) and build it yourself. Personal use is free; team and commercial use require a paid license."}},{"@type":"Question","name":"Can I move to a new computer?","acceptedAnswer":{"@type":"Answer","text":"Yes. System → Backup & restore exports your whole memory into one portable .anchorcore-backup file; import it on the new machine with a dry-run preview first. Credentials stay behind unless you opt into the passphrase-encrypted bundle."}}
+    {"@type":"Question","name":"Can I check the code myself?","acceptedAnswer":{"@type":"Answer","text":"Yes. AnchorCore is source-available: the repository is public, so you can read what the app does (no telemetry; it only contacts the endpoints you configure) and build it yourself. Personal use is free; team and commercial use require a paid license."}},{"@type":"Question","name":"Can I move to a new computer?","acceptedAnswer":{"@type":"Answer","text":"Yes. System → Backup & restore exports your whole index into one portable .anchorcore-backup file; import it on the new machine with a dry-run preview first. Credentials stay behind unless you opt into the passphrase-encrypted bundle."}}
   ]}
   </script>
   <meta property="og:type" content="website" />
@@ -41,7 +41,7 @@
         <a href="#pricing">Pricing</a>
         <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">GitHub ↗</a>
       </nav>
-      <a class="nav-cta" href="#download">Download</a>
+      <a class="nav-cta" href="#download">Download<span class="nav-cta-sfx"> — free for personal use</span></a>
       <!-- header nav (≤1080px): same section links, collapsed behind the burger — keep in sync with .nav (R18.1/R18.3) -->
       <details class="navmenu" id="navmenu">
         <summary class="navmenu-btn"><span class="sr-only">Sections</span><span class="burger" aria-hidden="true"></span></summary>
@@ -61,38 +61,45 @@
     <section class="hero">
       <div class="wrap hero-grid">
         <div>
-          <div class="eyebrow">LOCAL • PRIVATE • CITED</div>
-          <h1 id="hero-title">Your memory — finally searchable.</h1>
-          <p id="hero-sub" class="sub">Your notes, PDFs, Jira, Linear and Drive in one searchable private memory. Ask like you remember it — get the source.</p>
+          <div class="eyebrow">PRIVATE AI SEARCH · RUNS ON YOUR COMPUTER</div>
+          <h1 id="hero-title">Ask your files. Get the answer and the exact source.</h1>
+          <p id="hero-sub" class="sub">A private AI search app. Connect your folders, Drive, Jira, Linear — or any JSON API — and ask in plain language. It finds the decision, who made it and why, and shows the page it came from. Your index stays on your machine. Answers are generated locally unless you connect a cloud model.</p>
 
           <div class="track-toggle" role="group" aria-label="Personal, Team or Hosted">
             <button data-track="personal" class="toggle active" aria-pressed="true">Personal</button>
             <button data-track="team" class="toggle" aria-pressed="false">Team · Self-hosted</button>
             <button data-track="hosted" class="toggle" aria-pressed="false">Hosted <span class="soon">soon</span></button>
           </div>
-          <p id="track-proof" class="proof">300-page PDF? Page 250 still cited. Your second brain, not another chatbot.</p>
+          <p id="track-proof" class="proof">300-page PDF? The answer cites page 250.</p>
 
           <div class="cta" id="download">
-            <a id="cta-primary" class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download — Free for personal use</a>
-            <a class="btn secondary" href="#demo">See 60-second demo</a>
+            <a id="cta-primary" class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download — free for personal use</a>
+            <a class="btn secondary" href="#demo">Watch it work</a>
           </div>
+          <p class="sources-strip">Folders &amp; Obsidian · PDFs, Word, Excel · Google Drive · Jira · Linear · <a href="#guide-rest">Any JSON API</a></p>
           <div id="cta-note" class="cta-note">macOS, Windows & Linux • one download, no Docker • data stays on your machine</div>
           <p id="first-launch" class="small">First launch: move AnchorCore to /Applications. macOS: open it, then System Settings → Privacy &amp; Security → Open Anyway. Windows: SmartScreen → More info → Run anyway. (Not yet Apple-notarized or store-signed.)</p>
-
-          <div class="agent-cta">
-            <div class="agent-cta-head">Or let your coding agent do the setup
-              <button class="btn small secondary" id="skill-copy" type="button">Copy</button>
-            </div>
-            <code class="agent-cta-cmd" id="skill-cmd">npx skills add Atsirkunov/anchorcore --skill anchorcore-setup</code>
-            <div class="agent-cta-note">Claude Code, Codex, opencode, Cursor — it installs and launches the app if needed, picks your model, connects folders, and proves a cited answer. <a href="#agent-skill">Agent skill</a> · <a href="#demo">MCP</a></div>
-          </div>
         </div>
 
         <div class="shot cs" id="cs-hero"><div class="shot-bar cs-bar"><span>Claude Code · <em>Simulated from the sample dataset</em> (simulation, not a recording)</span><button class="btn small secondary cs-replay" type="button" id="cs-hero-replay">Replay</button></div><div class="cs-body" aria-hidden="true"><div class="cs-prompt q"><span class="cs-gt">&gt;</span> <span class="cs-ptext">Can we start the billing migration Monday? What's the rollback, and who owns it?</span></div><div class="cs-tool"><span class="cs-tname">anchorcore.ask</span> <span class="cs-tstate">done · 3 sources · local</span></div><div class="cites cs-cards"><div class="cite cs-card" data-src="S1"><span class="bar sage"></span><div><b>S1 · Billing provider migration approved</b> <small>decision</small><p>“Rollback plan: feature flag toggles back to the legacy provider per tenant.”</p><p>“Owner: Sarah.”</p><small>decisions/d2-billing-provider-approval.md</small></div></div><div class="cite cs-card" data-src="S2"><span class="bar stone"></span><div><b>S2 · Runbook: Billing provider migration</b> <small>runbook</small><p>“mirror invoices to the new provider (write-only; no customer impact)”</p><p>“the flag can flip any tenant back to legacy within five minutes”</p><small>specs/billing-migration-runbook.md</small></div></div><div class="cite cs-card" data-src="S3"><span class="bar sage"></span><div><b>S3 · Q3 Planning</b> <small>meeting notes</small><p>“Billing provider migration parallel-run starts Monday. Sarah owns it.”</p><small>meetings/m2-q3-planning.md</small></div></div></div><div class="a cs-answer"><span class="cs-seg">The billing provider migration's parallel run is scheduled to start Monday <sup class="cs-mark" data-src="S3">[S3]</sup></span><span class="cs-seg"> and it is write-only, with no customer impact <sup class="cs-mark" data-src="S2">[S2]</sup></span><span class="cs-seg">. Rollback is a feature flag that toggles a tenant back to the legacy provider <sup class="cs-mark" data-src="S1">[S1]</sup></span><span class="cs-seg">, and the runbook says it can flip any tenant back within five minutes <sup class="cs-mark" data-src="S2">[S2]</sup></span><span class="cs-seg">. Sarah owns it <sup class="cs-mark" data-src="S1">[S1]</sup> <sup class="cs-mark" data-src="S3">[S3]</sup></span><span class="cs-seg">.</span></div></div><div class="sr-only">Simulation, not a recording: Simulated from the sample dataset.<br>User: Can we start the billing migration Monday? What's the rollback, and who owns it?<br>Tool call: anchorcore.ask<br>[S1] decisions/d2-billing-provider-approval.md: "Rollback plan: feature flag toggles back to the legacy provider per tenant." "Owner: Sarah."<br>[S2] specs/billing-migration-runbook.md: "mirror invoices to the new provider (write-only; no customer impact)" "the flag can flip any tenant back to legacy within five minutes"<br>[S3] meetings/m2-q3-planning.md: "Billing provider migration parallel-run starts Monday. Sarah owns it."<br>Answer: The billing provider migration's parallel run is scheduled to start Monday [S3] and it is write-only, with no customer impact [S2]. Rollback is a feature flag that toggles a tenant back to the legacy provider [S1], and the runbook says it can flip any tenant back within five minutes [S2]. Sarah owns it [S1] [S3].<br>3 citations · answered on your machine</div><div class="shot-foot cs-foot">3 citations · answered on your machine</div></div>
       </div>
+      <div class="wrap paths">
+        <div class="path">
+          <div class="path-head">Use the app</div>
+          <p>Download it, connect a folder, and ask in your browser. macOS, Windows &amp; Linux, no Docker, no account.</p>
+          <a href="#download">Download — free for personal use</a>
+        </div>
+        <div class="path agent-cta">
+          <div class="agent-cta-head">Plug into your coding agent
+            <button class="btn small secondary" id="skill-copy" type="button">Copy</button>
+          </div>
+          <code class="agent-cta-cmd" id="skill-cmd">npx skills add Atsirkunov/anchorcore --skill anchorcore-setup</code>
+          <div class="agent-cta-note">Claude Code, Codex, opencode, Cursor — it installs and launches the app if needed, picks your model, connects folders, and proves a cited answer. <a href="#agent-skill">Agent skill</a> · <a href="#demo">MCP</a></div>
+        </div>
+      </div>
       <div class="flow">
-        <img src="/flow.svg" width="1080" height="260" alt="Fragments from local folders, Drive documents, tickets and docs file into local memory; answers come back cited" />
-        <p class="cap">Fragments in, cited answer out — local folders, Drive documents, tickets and docs file into memory on your machine; every answer carries its source.</p>
+        <img src="/flow.svg" width="1080" height="260" alt="Fragments from local folders, Drive documents, tickets and docs file into indexed on your computer; answers come back cited" />
+        <p class="cap">Fragments in, cited answer out — local folders, Drive documents, tickets and docs are indexed on your machine; every answer carries its source.</p>
       </div>
     </section>
 
@@ -101,7 +108,7 @@
       <div class="wrap">
         <h2>Fragmented knowledge → lost reasoning → AnchorCore</h2>
         <div class="cols">
-          <div class="col"><h3>Fragmented</h3><p>Slack, Jira, Confluence, Drive, PDFs — decisions live everywhere, no single memory.</p></div>
+          <div class="col"><h3>Fragmented</h3><p>Slack, Jira, Confluence, Drive, PDFs — decisions live everywhere, no single place to search.</p></div>
           <div class="col"><h3>Lost reasoning</h3><p>Not what was decided, but <em>why</em>. Chat scrolls past it, people leave with it.</p></div>
           <div class="col"><h3>AnchorCore</h3><p>Each decision filed with its source and section. Every answer shows where it came from — not a guess.</p></div>
         </div>
@@ -113,9 +120,9 @@
       <div class="wrap">
         <h2>How it works</h2>
         <div class="steps">
-          <div class="step"><span>1</span><h3>Everything in one memory</h3><p>Point it at a folder, Google Drive, Jira, Linear, or any JSON API — decisions file into a single private memory. Nothing to migrate; automatic sync keeps it fresh.</p><code>connect → read → file</code></div>
-          <div class="step"><span>2</span><h3>Decisions, not just documents</h3><p>Each document is read for what matters — who decided what and why, who owns it, what it replaces — instead of dumping whole files into the AI's memory.</p><code>who · what · why</code></div>
-          <div class="step"><span>3</span><h3>Answers that show their work</h3><p>Ask like you remember it — in the browser, or from your coding agent. Every answer cites its source and section, never a guess.</p><code>Ask → cited answer</code></div>
+          <div class="step"><span>1</span><h3>Everything in one index</h3><p>Point it at a folder, Google Drive, Jira, Linear, or any JSON API — decisions are indexed into one private search. Nothing to migrate; automatic sync keeps it fresh.</p><code>connect → read → file</code></div>
+          <div class="step"><span>2</span><h3>Decisions, not just documents</h3><p>Each document is read for what matters — who decided what and why, who owns it, what it replaces — instead of dumping whole files into the AI's prompt.</p><code>who · what · why</code></div>
+          <div class="step"><span>3</span><h3>Answers that show their work</h3><p>Ask in plain language — in the browser, or from your coding agent. Every answer cites its source and section, never a guess.</p><code>Ask → cited answer</code></div>
         </div>
         <div class="code">connect → read → file → ask → cited answer</div>
         <div class="duo">
@@ -248,7 +255,7 @@ Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
           <p class="cap">Scripted simulation of a Claude Code session using the sample dataset — not a screen recording.</p></div>
         <div class="cols two">
           <div class="col"><h3>In the browser — for humans</h3><p>Download, unzip, run — the app opens at <code>http://127.0.0.1:8000</code> → Sources → Local folder → <code>sample/</code> → Sync → Ask. Cited answers with clickable section links.</p><code>download → unzip → run</code></div>
-          <div class="col"><h3>From your agent — via MCP</h3><p>Claude Code, Codex, opencode, Cursor. Same memory over MCP — <code>ask</code> and <code>search</code> return the same cited answers, no browser needed. Same privacy gates; every agent answer is logged.</p><code>anchorcore mcp</code></div>
+          <div class="col"><h3>From your agent — via MCP</h3><p>Claude Code, Codex, opencode, Cursor. Same private search over MCP — <code>ask</code> and <code>search</code> return the same cited answers, no browser needed. Same privacy gates; every agent answer is logged.</p><code>anchorcore mcp</code></div>
         </div>
         <div class="fig termwrap">
           <div class="term-bar"><span>agent → anchorcore mcp</span><button id="term-replay" class="btn small secondary" type="button">Replay</button></div>
@@ -341,7 +348,7 @@ Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
         <h2>FAQ</h2>
         <div class="faq">
           <div class="qa"><h3>Is my data private?</h3><p>Yes. The app only listens on your own machine, keeps everything in a database on your disk, and stores passwords in your OS keychain. Sources you mark Sensitive are never sent to cloud AI unless you explicitly approve that provider.</p></div>
-          <div class="qa"><h3>Can I move to a new computer?</h3><p>Yes. System → Backup &amp; restore exports your whole memory — sources, entities, review state — into one portable <code>.anchorcore-backup</code> file. Import it on the new machine (preview the dry run first); credentials stay behind unless you opt into the passphrase-encrypted bundle. Full guide: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/backup.md">Backup, export &amp; device migration</a>.</p></div>
+          <div class="qa"><h3>Can I move to a new computer?</h3><p>Yes. System → Backup &amp; restore exports your whole index — sources, entities, review state — into one portable <code>.anchorcore-backup</code> file. Import it on the new machine (preview the dry run first); credentials stay behind unless you opt into the passphrase-encrypted bundle. Full guide: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/backup.md">Backup, export &amp; device migration</a>.</p></div>
           <div class="qa"><h3>Can I check the code myself?</h3><p>Yes — AnchorCore is source-available. The repository is public: read exactly what the Rust app does (no telemetry; it only contacts endpoints you configure) or build it yourself. Personal use is free; team and commercial use need a paid license — see <a href="https://github.com/Atsirkunov/anchorcore/blob/main/LICENSE.md">LICENSE.md</a>.</p></div>
           <div class="qa"><h3>How does it read documents?</h3><p>It splits documents at their headings (§4.2, 3.1.1, Article 12…) and packs the text into short passages. Each section gets a summary and topic tags, so answers cite the exact section — not “somewhere in the PDF”.</p></div>
           <div class="qa"><h3>Does it stay fast as my library grows?</h3><p>Yes. It narrows thousands of documents to the few relevant sections via tags and summaries, then searches only those. Measured at ~7ms per search on a 30k-chunk benchmark (<a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/guides/hierarchical-toc.md">results</a>, <a href="https://github.com/Atsirkunov/anchorcore/blob/main/rust/scripts/bench_retrieval.py">script</a>); larger libraries are projected, not yet measured.</p></div>
@@ -372,13 +379,13 @@ Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
         <h2>Get started</h2>
         <p>Free for personal use — download the app and ask your first cited question in a minute. Team self-hosted is a one-time platform license. Join the waitlist for hosted early access, one-click Drive sign-in and Slack.</p>
         <div class="cta">
-          <a id="cta-roadmap" class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download — Free for personal use</a>
+          <a id="cta-roadmap" class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download — free for personal use</a>
         </div>
         <p class="small">First launch: move AnchorCore to /Applications. macOS: open it, then System Settings → Privacy &amp; Security → Open Anyway. Windows: SmartScreen → More info → Run anyway. (Not yet Apple-notarized or store-signed.)</p>
         <form class="capture" id="capture-form-2">
           <label for="email2">Email</label>
           <input id="email2" type="email" placeholder="you@example.com" autocomplete="email" aria-describedby="capture2-msg" />
-          <button class="btn primary small" type="submit">Join waitlist</button>
+          <button class="btn primary small" type="submit">Join the waitlist</button>
         </form>
         <div id="capture2-msg" class="capture-msg" role="status"></div>
         <p class="small">By joining, you agree to receive AnchorCore updates by email — unsubscribe anytime. See <a href="/privacy">Privacy notice</a>.</p>

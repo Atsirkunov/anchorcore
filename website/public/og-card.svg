@@ -11,10 +11,10 @@
     <rect x="60" y="55" width="24" height="11" rx="5.5" fill="#9A8B7A"/>
     <rect x="60" y="78" width="32" height="11" rx="5.5" fill="#9A8B7A"/>
   </g>
-  <text x="96" y="330" font-size="30" letter-spacing="3" fill="#6b7280" font-family="ui-monospace, Menlo, monospace">LOCAL &#8226; PRIVATE &#8226; CITED</text>
-  <text x="92" y="410" font-size="72" fill="#1a1d1a" letter-spacing="-1">Your memory &#8212;</text>
-  <text x="92" y="492" font-size="72" fill="#1a1d1a" letter-spacing="-1">finally searchable.</text>
-  <text x="96" y="560" font-size="26" fill="#6b7280" font-family="ui-monospace, Menlo, monospace">AnchorCore &#8212; answers with sources, on your machine</text>
+  <text x="96" y="330" font-size="24" letter-spacing="2" fill="#6b7280" font-family="ui-monospace, Menlo, monospace">PRIVATE AI SEARCH &#183; RUNS ON YOUR COMPUTER</text>
+  <text x="92" y="410" font-size="72" fill="#1a1d1a" letter-spacing="-1">Ask your files.</text>
+  <text x="92" y="492" font-size="72" fill="#1a1d1a" letter-spacing="-1">Get the exact source.</text>
+  <text x="96" y="560" font-size="26" fill="#6b7280" font-family="ui-monospace, Menlo, monospace">AnchorCore &#8212; cited answers, on your computer</text>
   <!-- cited-answer card -->
   <g transform="translate(740,115)">
     <rect x="0" y="0" width="364" height="400" rx="16" fill="#ffffff" stroke="#e2ddd6" stroke-width="2"/>
