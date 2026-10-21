@@ -37,6 +37,53 @@ fn parse_issue(node: &Value, docs: &mut Vec<IngestionDoc>, next_cursor: &mut Str
     super::push_doc(docs, next_cursor, &external_id, &title, parts, author, updated, "Linear");
 }
 
+/// Escape a value interpolated into a GraphQL string literal.
+fn gql_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Build the one-team issues query for a page. Pure (no I/O) so tests can
+/// assert the exact GraphQL text without network.
+fn build_issues_query(team_key: &str, after: &str, since_cursor: &str) -> String {
+    // GraphQL: filter by team key and updatedAt > since.
+    // Single query that works for both single and multiple teams — filter by team key.
+    // Use `issues` root query with filter; fallback to `team.issues` if needed.
+    let filter_since = if since_cursor.is_empty() {
+        String::new()
+    } else {
+        format!(", updatedAt: {{ gt: \"{}\" }}", gql_escape(since_cursor))
+    };
+    let after_clause = if after.is_empty() {
+        String::new()
+    } else {
+        format!(", after: \"{}\"", gql_escape(after))
+    };
+    // NOTE: raw string — backslashes are literal here, so the GraphQL string
+    // quotes are plain `"`; a `\"` would reach Linear and fail parsing.
+    format!(
+        r#"query {{
+          issues(first: 50{} filter: {{ team: {{ key: {{ eq: "{}" }} }}{} }}) {{
+            nodes {{
+              id
+              identifier
+              title
+              description
+              updatedAt
+              creator {{ name }}
+              assignee {{ name }}
+              state {{ name }}
+              team {{ key name }}
+              comments {{ nodes {{ body }} }}
+            }}
+            pageInfo {{ hasNextPage endCursor }}
+          }}
+        }}"#,
+        after_clause,
+        gql_escape(team_key),
+        filter_since
+    )
+}
+
 impl LinearConnector {
     pub fn new(config: &Value) -> Result<Self, ConnectorError> {
         let api_key = config
@@ -106,36 +153,8 @@ impl LinearConnector {
         let mut cursor: Option<String> = None;
 
         loop {
-            // GraphQL: filter by team key and updatedAt > since
-            // Use `issues` root query with filter; fallback to `team.issues` if needed.
-            let filter_since = if since_cursor.is_empty() {
-                "".to_string()
-            } else {
-                format!(", updatedAt: {{ gt: \"{}\" }}", since_cursor)
-            };
             let after = cursor.as_deref().unwrap_or("");
-            let after_clause = if after.is_empty() { "".to_string() } else { format!(", after: \"{}\"", after) };
-            // Single query that works for both single and multiple teams — filter by team key
-            let query = format!(
-                r#"query {{
-                  issues(first: 50{} filter: {{ team: {{ key: {{ eq: \"{}\" }} }}{} }}) {{
-                    nodes {{
-                      id
-                      identifier
-                      title
-                      description
-                      updatedAt
-                      creator {{ name }}
-                      assignee {{ name }}
-                      state {{ name }}
-                      team {{ key name }}
-                      comments {{ nodes {{ body }} }}
-                    }}
-                    pageInfo {{ hasNextPage endCursor }}
-                  }}
-                }}"#,
-                after_clause, team_key, filter_since
-            );
+            let query = build_issues_query(team_key, after, since_cursor);
 
             let resp = client
                 .post(&self.base_url)
@@ -227,5 +246,30 @@ mod tests {
         let cfg = serde_json::json!({"api_key": "k", "team": "ENG, PM , DESIGN"});
         let c = LinearConnector::new(&cfg).unwrap();
         assert_eq!(c.teams(), vec!["ENG", "PM", "DESIGN"]);
+    }
+
+    #[test]
+    fn issues_query_has_no_stray_backslashes() {
+        // The query template is a raw string: a `\"` there reaches Linear
+        // literally and fails parsing (GRAPHQL_PARSE_FAILED at 2:65).
+        let q = build_issues_query("ENG", "", "");
+        assert!(!q.contains('\\'), "backslash leaked into GraphQL: {q}");
+        assert!(q.contains(r#"eq: "ENG""#), "team filter missing: {q}");
+        assert!(q.contains("issues(first: 50 filter:"), "shape changed: {q}");
+    }
+
+    #[test]
+    fn issues_query_paging_and_since() {
+        let q = build_issues_query("ENG", "cursor1", "2026-01-02T03:04:05Z");
+        assert!(q.contains(r#"after: "cursor1""#), "after clause missing: {q}");
+        assert!(q.contains(r#"gt: "2026-01-02T03:04:05Z""#), "since filter missing: {q}");
+        assert!(!q.contains('\\'), "backslash leaked into GraphQL: {q}");
+    }
+
+    #[test]
+    fn issues_query_escapes_team_key() {
+        let q = build_issues_query("E\"N\\G", "", "");
+        assert!(q.contains(r#"eq: "E\"N\\G""#), "team key not escaped: {q}");
+        assert_eq!(q.chars().filter(|&c| c == '\\').count(), 3, "unexpected backslashes: {q}");
     }
 }
