@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
+import { AGENT_COMPOSE_HINT, isAgentCompose } from "./answerMode";
 import { api } from "./api";
 import { FolderPicker } from "./FolderPicker";
 import { McpConnectCard } from "./McpConnect";
 import { summarizePulls, useModelPull } from "./useModelPull";
 import { theme } from "./theme";
-import type { Citation, OnboardingState } from "./types";
+import type { Citation, LlmMode, OnboardingState } from "./types";
 
 const STEPS = ["Setup checks", "Configure model", "Connect a source", "Ask a question", "Connect an agent"];
 
@@ -44,11 +45,14 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
   const [startingOllama, setStartingOllama] = useState(false);
   const [startMsg, setStartMsg] = useState<string | null>(null);
   const [usingOllama, setUsingOllama] = useState(false);
+  const [llmMode, setLlmMode] = useState<LlmMode>("local");
   const missing = state?.ollama.missing_models ?? [];
   const pullSummary = summarizePulls(pull.pulls, missing);
+  const stepLabels = STEPS.map((label, i) => (i === 1 && llmMode === "agent" ? "Configure search" : label));
 
   useEffect(() => {
     api.onboarding().then(setState).catch((e) => setError(String(e)));
+    api.getSettings().then((s) => setLlmMode(s.llm_mode === "agent" ? "agent" : "local")).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -76,9 +80,11 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
     try {
       const payload: Record<string, string> = {};
       if (ollamaBaseUrl.trim()) payload.ollama_base_url = ollamaBaseUrl.trim();
-      if (answerBaseUrl.trim()) payload.answer_base_url = answerBaseUrl.trim();
-      if (answerApiKey.trim()) payload.answer_api_key = answerApiKey.trim();
-      if (answerModel.trim()) payload.answer_model = answerModel.trim();
+      if (llmMode !== "agent") {
+        if (answerBaseUrl.trim()) payload.answer_base_url = answerBaseUrl.trim();
+        if (answerApiKey.trim()) payload.answer_api_key = answerApiKey.trim();
+        if (answerModel.trim()) payload.answer_model = answerModel.trim();
+      }
       await api.updateSettings(payload as unknown as Parameters<typeof api.updateSettings>[0]);
       setConfigMsg("Saved — re-checking…");
       await recheck();
@@ -157,6 +163,19 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
     setState(await api.onboarding());
   }
 
+  // Mode-first (R45.6 interim): the readiness flags are mode-aware
+  // server-side (agent mode needs no answer model), so switching just
+  // persists llm_mode and re-reads the checks.
+  async function setMode(m: LlmMode) {
+    setLlmMode(m);
+    try {
+      await api.updateSettings({ llm_mode: m });
+      await recheck();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function runSync(path: string, name: string) {
     setBusy(true);
     setError(null);
@@ -226,7 +245,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
         </div>
 
         <div style={styles.steps}>
-          {STEPS.map((label, i) => (
+          {stepLabels.map((label, i) => (
             <span key={label} style={{ ...styles.step, ...(i === step ? styles.stepActive : {}), ...(i < step ? styles.stepDone : {}) }}>
               {i + 1}. {label}
             </span>
@@ -237,6 +256,20 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
 
         {step === 0 && (
           <div style={styles.body}>
+            <div style={styles.note}>
+              <label style={{ fontSize: 13, color: theme.textMuted }}>Who writes the answers?</label>
+              <div style={{ marginTop: 6 }}>
+                <select value={llmMode} onChange={(e) => setMode(e.target.value as LlmMode)} style={styles.input} title="Who writes the answers?">
+                  <option value="agent">My AI agent (MCP or the anchorcore-search skill)</option>
+                  <option value="local">A local model on this computer</option>
+                </select>
+              </div>
+              <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
+                {llmMode === "agent"
+                  ? "Agent mode: your agent answers from cited passages — no answer model needed. Ollama below only feeds search embeddings."
+                  : "Local mode: AnchorCore composes answers with the model you configure."}
+              </div>
+            </div>
             <div style={styles.checkRow}>
               <span style={{ ...styles.dot, background: state?.ollama.reachable ? theme.green : theme.red }} />
               <span>
@@ -291,7 +324,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
             {state?.ollama.reachable && missing.length === 0 && (
               <div style={{ ...styles.checkRow, marginTop: 8 }}>
                 <span style={{ ...styles.dot, background: theme.green }} />
-                <span>Classifier + embeddings models ready</span>
+                <span>Ollama models ready</span>
               </div>
             )}
             {state && !state.answer_ready && (
@@ -325,11 +358,14 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
         {step === 1 && (
           <div style={styles.body}>
             <div style={styles.note}>
-              Configure where AnchorCore gets its models. Ollama is local and free; or point answers at any OpenAI-compatible API. You can change this anytime in Settings.
+              {llmMode === "agent"
+                ? "Agent mode: your agent writes answers from cited passages, so no answer model is needed here. Ollama below only feeds search embeddings."
+                : "Configure where AnchorCore gets its models. Ollama is local and free; or point answers at any OpenAI-compatible API. You can change this anytime in Settings."}
             </div>
             <div style={{ display: "grid", gap: 8 }}>
               <label style={{ fontSize: 13, color: theme.textMuted }}>Ollama base URL (local LLM)</label>
               <input style={styles.input} value={ollamaBaseUrl} onChange={(e) => setOllamaBaseUrl(e.target.value)} placeholder="http://localhost:11434" />
+              {llmMode !== "agent" && (<>
               <label style={{ fontSize: 13, color: theme.textMuted }}>Answer API base URL — http://localhost:11434/v1 for Ollama, or a cloud URL</label>
               <input style={styles.input} value={answerBaseUrl} onChange={(e) => setAnswerBaseUrl(e.target.value)} placeholder="http://localhost:11434/v1 (Ollama) or https://api.openai.com/v1 (cloud)" />
               <div style={{ fontSize: 12, color: theme.textDim }}>
@@ -365,6 +401,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
                   {testingAnswer ? "Testing…" : "Test answer connection"}
                 </button>
               </div>
+              </>)}
             </div>
             {answerTestMsg && <div style={{ fontSize: 12, color: theme.accentAlt }}>{answerTestMsg}</div>}
             {configMsg && <div style={{ fontSize: 12, color: theme.accentAlt }}>{configMsg}</div>}
@@ -373,9 +410,11 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
               <button style={{ ...styles.button, background: "transparent", border: `1px solid ${theme.border}`, color: theme.textMuted }} onClick={() => setStep(2)}>Skip</button>
               <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} disabled={savingConfig} onClick={saveConfig}>{savingConfig ? "Saving…" : "Save & continue →"}</button>
             </div>
-            <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
-              Local path: install the models from step 0, then use the Ollama button above. Cloud path: paste a base URL + key.
-            </div>
+            {llmMode !== "agent" && (
+              <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
+                Local path: install the models from step 0, then use the Ollama button above. Cloud path: paste a base URL + key.
+              </div>
+            )}
           </div>
         )}
 
@@ -450,6 +489,8 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
               <div style={styles.answerBox}>
                 {answer.warning ? (
                   <div style={styles.degradedNote}>{answer.warning}</div>
+                ) : isAgentCompose(answer.mode) ? (
+                  <div style={styles.note}>{AGENT_COMPOSE_HINT}</div>
                 ) : answer.mode && answer.mode !== "composed" ? (
                   <div style={styles.degradedNote}>
                     Not a composed answer (mode: {answer.mode}) — go back to step 1 and configure an answer model.
