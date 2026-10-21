@@ -8,21 +8,21 @@ import aiMd from "../../docs/sample-ai.md?raw";
 // tweakable copy — single source, no CMS
 const copy = {
   personal: {
-    title: "Your memory — finally searchable.",
-    sub: "Your notes, PDFs, Jira, Linear and Drive in one searchable private memory. Ask like you remember it — get the source.",
-    proof: "300-page PDF? Page 250 still cited. Your second brain, not another chatbot.",
+    title: "Ask your files. Get the answer and the exact source.",
+    sub: "A private AI search app. Connect your folders, Drive, Jira, Linear — or any JSON API — and ask in plain language. It finds the decision, who made it and why, and shows the page it came from. Your index stays on your machine. Answers are generated locally unless you connect a cloud model.",
+    proof: "300-page PDF? The answer cites page 250.",
     roadmap: "personal"
   },
   team: {
     title: "Run on your infrastructure — one container.",
-    sub: "Self-hosted private AI knowledge base in one command. Your data stays with you, same cited answers for the whole team. One-time platform license, yours to run — no cloud required.",
-    proof: "One Docker container — your team's memory, on your infra. Who owns billing? Cited, not guessed.",
+    sub: "Self-hosted private AI search in one command. Your data stays with you, same cited answers for the whole team. One-time platform license, yours to run — no cloud required.",
+    proof: "One Docker container — your team's company memory, on your infra. Who owns billing? A cited answer, not a guess.",
     roadmap: "team"
   },
   hosted: {
     title: "Hosted — coming soon.",
-    sub: "We host it for you, same private memory, no setup. Join waitlist for early access.",
-    proof: "No Docker, no infra — just connect and ask. Your memory, hosted.",
+    sub: "We host it for you: the same private AI search and cited answers, no setup. Join the waitlist for early access.",
+    proof: "No Docker, no infra — just connect and ask. Private AI search, hosted.",
     roadmap: "hosted"
   }
 } as const;
@@ -67,7 +67,7 @@ function personalDownload(): { url: string; label: string; altHtml: string; mobi
   const os = currentOs();
   const links = (skip?: string) => Object.entries(DESKTOP).filter(([k]) => k !== skip).map(([, d]) => `<a href="${d.url}">${d.name}</a>`).join(" · ");
   if (os === "mobile") return { url: "#roadmap", label: "Email me the download link", altHtml: `Desktop app: ${links()}`, mobile: true };
-  return { url: DESKTOP[os].url, label: `Download for ${DESKTOP[os].name} — Free`, altHtml: `Also: ${links(os)}`, mobile: false };
+  return { url: DESKTOP[os].url, label: "Download — free for personal use", altHtml: `Also: ${links(os)}`, mobile: false };
 }
 
 // Phones get the email form (interest=download) instead of a zip they cannot run.
@@ -111,7 +111,7 @@ function setTrack(t: Track) {
       cta.textContent = card?.textContent?.trim() ?? "Talk to us — Team license";
       cta.href = card?.getAttribute("href") ?? "#pricing";
     } else if (t === "hosted") {
-      cta.textContent = "Join waitlist — Hosted (soon)";
+      cta.textContent = "Join the waitlist";
       cta.href = "#roadmap";
       cta.dataset.interest = "hosted";
       cta.removeAttribute("target");
@@ -286,7 +286,7 @@ const TERM_LINES: TermLine[] = [
   { cls: "t-dim", text: "$ anchorcore mcp", type: true },
   { cls: "t-dim", text: "# stdio MCP mode — spawned by your harness, no browser", pause: 350 },
   { cls: "t-out", text: '→ tools/call {"name": "ask", "arguments": {"question": "Who owns the billing provider migration?"}}', type: true },
-  { cls: "t-dim", text: "··· searching memory: meaning + keywords + links", pause: 650 },
+  { cls: "t-dim", text: "··· searching your files: meaning + keywords + links", pause: 650 },
   { cls: "t-in", text: "← Sarah owns the billing provider migration — parallel run starts Monday.", pause: 300 },
   { cls: "t-in", text: "← [decision] d2-billing-provider-approval · owner: Sarah · 87%" },
   { cls: "t-in", text: "← [note] m2-q3-planning · 74%" },

@@ -17,11 +17,17 @@ npm run build && npx wrangler deploy  # https://anchorcore.dev
 
 * `src/main.ts` `copy.personal` / `copy.team` — hero title/sub/proof + `?track=personal|team` + `localStorage["anchorcore.track"]` (track-aware app copy is designed but not wired — `design-system.md` §5.1b)
 * `index.html` sections (`Hero`, `Problem→Solution`, `How it works`, `Demo`, `Agent skill`, `Guides`, `FAQ`, `Pricing`, `Get started`, `Privacy`, `Footer`) — all in one file, no component abstraction. `Guides` holds both the entry cards and the guide reader (R18.7 merged the former `Guidebook` section into it). Two demo corpora back the examples: `sample/` (payments, the static default) and `sample-ai/` (an AI startup, selectable with `?corpus=ai` — the task text said `?track=`, but that parameter has been the Personal/Team/Hosted switch since R18.1).
-* Hero agent card + `#agent-skill` both carry `npx skills add Atsirkunov/anchorcore --skill anchorcore-setup` — keep the two in sync if the CLI syntax changes (verified against `npx skills add Atsirkunov/anchorcore --list`: the repo exposes `anchorcore-setup` and `aida-landing-page`)
+* Two-path strip under the hero (agent card) + `#agent-skill` both carry `npx skills add Atsirkunov/anchorcore --skill anchorcore-setup` — keep the two in sync if the CLI syntax changes (verified against `npx skills add Atsirkunov/anchorcore --list`: the repo exposes `anchorcore-setup` and `aida-landing-page`)
 * `src/style.css` `:root` tokens — change `--sage` or `--paper` once
 * Header nav exists twice on purpose — `.nav` (desktop, ≥1081px) and the `.navmenu` `<details>` disclosure (≤1080px, works without JS); edit both when adding a section link (R18.1/R18.3)
 * The widescreen scale lives in `:root` clamps — `--wrap`, `--wrap-narrow`, `--fs-h1`, `--fs-h2`, `--fs-body`, `--fs-h3`, `--pad-sec` are the identity value up to ~1500px and grow on 2K/4K (R18.16); change the clamp, not the rule
 * Examples (hero mock, terminal, graph, `public/*.svg`) come from the repo's `sample/` payments corpus — keep quotes matching those files; never reuse `business-scale` corpus terms (e.g. `ACME`) in user-facing copy
+
+## Wording glossary (R44.9)
+
+* Category noun: **private AI search** (the product is "a private AI search app"); the output is a **cited answer**. Those are the only category terms on the landing. Retired from landing copy: "memory", "second brain", "knowledge base" ("company memory" may stay on Team-track copy only).
+* One CTA label per action, identical everywhere (hero, header, pricing, get-started, JS-swapped copy): **Download — free for personal use** / **Watch it work** (links `#demo`) / **Join the waitlist**. The OS-specific text lives in the note under the button, not in the label. Other actions keep their own labels (Team: "Talk to us — Team license"; phones: "Email me the download link").
+* "Any JSON API" is a capability statement only: JSON list endpoints with field mapping (no GraphQL/XML/browser-OAuth flows), linking to the REST guide. Never add safety wording ("safe", "sandboxed", "protected") about it: the REST connector has no SSRF/private-address guard.
 
 ## Deploy
 
