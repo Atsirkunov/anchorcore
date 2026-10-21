@@ -13,7 +13,7 @@ function sitemap(): Plugin {
   return {
     name: "anchorcore-sitemap",
     generateBundle() {
-      const urls = [...STATIC_PAGES, ...guides.map((g) => `/guides/${g.slug}`)];
+      const urls = [...STATIC_PAGES, "/guides", ...guides.map((g) => `/guides/${g.slug}`)];
       const body = urls.map((u) => `  <url><loc>${ORIGIN}${u}</loc></url>`).join("\n");
       this.emitFile({
         type: "asset",
@@ -40,6 +40,7 @@ export default defineConfig({
         hosted: "hosted.html",
         security: "security.html",
         "vs/notebooklm": "vs/notebooklm.html",
+        "guides/index": "guides/index.html",
         ...Object.fromEntries(guides.map((g) => [`guides/${g.slug}`, `guides/${g.slug}.html`])),
       },
     },
