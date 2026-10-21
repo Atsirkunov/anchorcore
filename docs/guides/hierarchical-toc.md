@@ -93,8 +93,9 @@ curl -X POST http://127.0.0.1:8123/qa/search -H "Content-Type: application/json"
 
 ## 8. Caveats
 
-- `is_public_path` in `src/auth.rs` is an accepted high-complexity decision
-  table — do not refactor (Phase 13).
+- `is_public_path` in `src/auth.rs` used to be an accepted high-complexity
+  decision table — the R43.8 allowlist rewrite flattened it (CCN 22→13),
+  so the do-not-touch note is retired.
 - A few complexity warnings remain in `retrieval.rs` — follow-up, not blocking.
 - Entity chunks have `NULL` section and bypass the section filter (keeps the
   disputed-entity tests green).

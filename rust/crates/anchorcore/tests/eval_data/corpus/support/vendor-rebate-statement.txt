@@ -1,0 +1,71 @@
+[page 1]
+Acme Confidential
+Vendor Rebate Statement
+Quarterly rebate payouts by vendor appear below.
+Vendor
+Alpha Supply
+Earned
+1200
+Paid
+Yes
+Year
+2024
+Vendor
+Beta Parts
+Earned
+800
+Paid
+N/A
+Year
+2024
+Summary totals appear at the end of the statement.
+All vendors verified by the finance team today.
+Contact finance with questions about payouts.
+Folio 1
+[page 2]
+Acme Confidential
+Continued from the previous sheet here.
+Gamma region rows appear first below.
+Vendor
+Gamma Goods
+Earned
+950
+Paid
+Yes
+Year
+2023
+Vendor
+Delta Tools
+Earned
+400
+Paid
+N/A
+Year
+2024
+Regional totals were reconciled twice this period.
+Quarterly vendors earned payouts, all verified.
+Folio 2
+[page 3]
+Acme Confidential
+Final sheet of the rebate statement.
+Remaining vendor rows appear below.
+Vendor
+Eta Parts
+Earned
+600
+Paid
+Yes
+Year
+2023
+Vendor
+Zeta Supply
+Earned
+750
+Paid
+N/A
+Year
+2023
+Rebate summary for quarterly vendor payouts.
+Vendors earned rebates across every region.
+Statement prepared by the finance team today.
+Folio 3 of 3
