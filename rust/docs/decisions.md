@@ -253,3 +253,19 @@ ADR log. Append newest first.
   - Env is computed at query time from the item path and `substr(text,1,1024)` (`chunk_item_env`), nothing is persisted, so no migration and no re-sync: existing indexes are fixed on upgrade.
   - Residual: a live doc whose head says `mock` or `fixture` once still reads as test; accepted (strong tier), revisit only on a real report.
   - Regression pin: `adr-012-billing` in the golden eval carries a lone "sandbox" in its head; `eval_fixture_is_live_env` fails if the rule regresses.
+
+---
+
+## 2026-10-21 — R45.5: per-vector provenance + query-recorded active fingerprint
+
+* **Decision:** Every chunk vector carries `chunks.embed_fp` (`provider:model:dim`), stamped in `Embedder::sync_vec` (the one hook all embed write paths already call). The query side records its vector's fingerprint in a single-row `embed_state` table before retrieval; the vector legs compare only stored vectors in the same *family* + dim (`embed_fp.rs`). Stale vectors (other family, unstamped) are keyword-only and the scheduler backfill re-embeds them, woken immediately by a `Notify` when a query sees a family change.
+* **Context:** R45.4 makes the embedder switchable (built-in candle vs Ollama vs cloud). Today a model change silently compares new query vectors against old chunk vectors (same dim = plausible-looking garbage).
+* **Alternatives considered:**
+  - *Per-corpus fingerprint only, wipe all vectors on change* — simpler, but destructive (switch back = full re-embed again even for untouched rows) and an in-flight job could write old-model vectors under the new stamp.
+  - *Thread the fingerprint through `orchestrate_fusion` / `vector_search` signatures* — exact per call, but touches every caller (`answer.rs`, eval, tests) while R45.2 rewrites the same code; the DB channel keeps the change inside `embedder.rs`/`retrieval.rs`. Residual race: two concurrent queries straddling a settings change inside the 3 s settings cache — accepted.
+  - *Provider by URL locality (local vs cloud)* — rejected: a Team image or LAN Ollama (`http://ollama:11434`) would read as "cloud" and force a re-embed of identical weights. The model name identifies the weights; the provider tag is the engine (`ollama` for any HTTP endpoint today, `builtin` from R45.4).
+* **Consequences:**
+  - Families are an explicit allowlist (`SHARED_FAMILIES`): only Ollama `nomic-embed-text` ↔ built-in nomic v1.5 (probe parity 1.00000). Remote "nomic" endpoints are unproven and re-embed.
+  - Migration 22 stamps existing vectors from the DB `embed_model` (or the default); env-only `ANCHOR_EMBED_MODEL` overrides cost one re-embed after upgrade.
+  - Backup archives carry `embed_fp`; older archives restore unstamped and are re-embedded.
+  - No active fingerprint (fresh DB, hash-vector tests, the golden eval) = no filter, i.e. pre-R45.5 behavior.
