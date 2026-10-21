@@ -43,6 +43,8 @@ If MCP starts working later, drop this skill again.
 | GET /items/:id/outline | section tree with sizes; read it before fetching a large file |
 | GET /nodes/:id?include=parent,children,siblings | section metadata + neighbours; fetch the item for the text |
 | GET /items?path_prefix=<relative prefix> | list items under a folder |
+| GET /decisions?status=current&q=<text> | decision log: record_id, status (`superseded` when a newer record supersedes it), current, owner, supersedes/superseded_by, provenance (item_id, path, chunk_id). status: accepted, superseded, rejected, deferred, proposed or `current` |
+| GET /actions?owner=<name>&state=open | action tracker: task, owner, due, done, provenance. state: open (default), done or all; `overdue=true` keeps open items with an ISO due date before today; owner is case-insensitive |
 | POST /qa {"question"} | gated alternative to search: in agent mode (`llm_mode: agent`) it returns `mode: "agent_compose"` — ranked citations with content, label/PII gate applied, no server model; compose the answer yourself. In local mode the server's model answers (`composed`); `context_only`/`none` carry a `warning` — never quote that text as an answer |
 
 A hit carries chunk_id, item_id, section_id, kind, summary (a match-centered
@@ -54,6 +56,17 @@ line numbers are not returned, so count lines in the fetched text if you cite
 them. By default hits omit chunk bytes — set `include_content:true` (alias
 for `fields:"content"`) to get them verbatim, and follow `next_cursor` for
 further pages.
+
+For "what did we decide about X, is it still current?", "who owns X?" or
+"what's open/overdue for Alex?", call /decisions or /actions before search:
+they read the records' own structure (Decision:, Status:, Owner:, Action
+items), so owners, due dates and supersession come back exact. Both take
+`source_ids` (comma list), `project_id`, `public_only`, `limit`, `offset`, and
+apply the same scope and provider gate as /qa/search (`blocked`, `refusal:
+"gated_provider"`). Rows are parsed, not reviewed: `review_status` stays
+`unverified` until a person confirms one. Cite the provenance path, then fetch
+the item if you need the surrounding text. MCP clients get the same calls as
+the `decisions` and `actions` tools.
 
 ## Method
 

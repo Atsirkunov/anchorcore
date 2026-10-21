@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import type { Entity, MergeProposal, VocabProposal } from "../types";
-import { EntitiesTab } from "./EntitiesTab";
+import { AllEntitiesView as EntitiesTab, EntitiesTab as EntitiesTabShell } from "./EntitiesTab";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -253,5 +253,58 @@ describe("EntitiesTab R31.2 (A + Review fold)", () => {
     await act(async () => {});
     expect(host.textContent).toContain("contradicts #9");
     expect(host.textContent).toContain("Launch is in March");
+  });
+});
+
+describe("EntitiesTab R45.9 (Decisions + Actions views)", () => {
+  async function renderShell() {
+    vi.spyOn(api, "listDecisions").mockResolvedValue({
+      decisions: [
+        {
+          entity_id: 1, record_id: "D0005", summary: "Stripe provider", status: "superseded", current: false, owner: "Maya",
+          supersedes: [], superseded_by: "D0012", review_status: "unverified", created_at: "",
+          provenance: { item_id: 3, source_id: 1, path: "decisions/d5.md", title: "d5", chunk_id: null },
+        },
+      ],
+      total: 1, blocked: 0, refusal: null,
+    });
+    vi.spyOn(api, "listActions").mockResolvedValue({
+      actions: [
+        {
+          entity_id: 2, task: "draft spec", owner: "Alex", due: "2000-01-02", done: false, review_status: "unverified", created_at: "",
+          provenance: { item_id: 4, source_id: 1, path: "meetings/retro.md", title: "retro", chunk_id: 9 },
+        },
+      ],
+      total: 1, blocked: 1, refusal: null,
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(<EntitiesTabShell />);
+    });
+    await act(async () => {});
+    return container;
+  }
+
+  it("defaults to Decisions and shows supersession with provenance", async () => {
+    const c = await renderShell();
+    expect(api.listDecisions).toHaveBeenCalledWith({ status: "current", q: undefined });
+    expect(c.textContent).toContain("D0005");
+    expect(c.textContent).toContain("Superseded by D0012");
+    expect(c.textContent).toContain("decisions/d5.md");
+  });
+
+  it("Actions view lists open actions, flags overdue and the gate", async () => {
+    const c = await renderShell();
+    const btn = Array.from(c.querySelectorAll("button")).find((b) => b.textContent === "Actions")!;
+    await act(async () => {
+      click(btn);
+    });
+    await act(async () => {});
+    expect(api.listActions).toHaveBeenCalledWith({ owner: undefined, state: "open", overdue: false });
+    expect(c.textContent).toContain("draft spec");
+    expect(c.textContent).toContain("(overdue)");
+    expect(c.textContent).toContain("hidden because the answer provider");
   });
 });

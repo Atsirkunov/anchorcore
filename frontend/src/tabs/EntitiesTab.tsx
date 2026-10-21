@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { theme } from "../theme";
 import { basename, docTypeLabel, kindLabel, needsLook, shortRef, statusLabel } from "../entityLabels";
+import { ActionsView, DecisionsView } from "./RecordsViews";
 import type { ConflictLink, Dispute, Entity, MergeProposal, Section, VocabProposal } from "../types";
 
 type RowContext = {
@@ -537,7 +538,8 @@ const KIND_ORDER = ["decision", "action", "note", "document"];
 
 type DisputeTarget = { scope: "single"; id: number } | { scope: "bulk"; itemId: number; ids: number[] } | null;
 
-export function EntitiesTab() {
+/** The full entity list (review, conflicts, duplicates) — the "All entities" view. */
+export function AllEntitiesView() {
   const [entities, setEntities] = useState<Entity[]>([]);
   const [kind, setKind] = useState<string>("");
   const [statusFilter, setStatusFilter] = useState<string>("");
@@ -1049,7 +1051,53 @@ export function EntitiesTab() {
   );
 }
 
+type EntitiesView = "decisions" | "actions" | "all";
+const VIEW_KEY = "entities-view";
+const VIEWS: { id: EntitiesView; label: string }[] = [
+  { id: "decisions", label: "Decisions" },
+  { id: "actions", label: "Actions" },
+  { id: "all", label: "All entities" },
+];
+
+function readView(): EntitiesView {
+  try {
+    const v = localStorage.getItem(VIEW_KEY);
+    return v === "actions" || v === "all" ? v : "decisions";
+  } catch {
+    return "decisions";
+  }
+}
+
+/** R45.9: Decisions + Actions first (the jobs chunks can't do); the
+ *  review-oriented entity list stays one click away. */
+export function EntitiesTab() {
+  const [view, setViewState] = useState<EntitiesView>(readView);
+  function setView(v: EntitiesView) {
+    setViewState(v);
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {
+      // per-viewer convenience only
+    }
+  }
+  return (
+    <div>
+      <div style={styles.viewSwitch}>
+        {VIEWS.map((v) => (
+          <button key={v.id} onClick={() => setView(v.id)} style={{ ...styles.toggle, ...(view === v.id ? styles.toggleActive : {}) }}>
+            {v.label}
+          </button>
+        ))}
+      </div>
+      {view === "decisions" && <DecisionsView />}
+      {view === "actions" && <ActionsView />}
+      {view === "all" && <AllEntitiesView />}
+    </div>
+  );
+}
+
 const styles: Record<string, React.CSSProperties> = {
+  viewSwitch: { display: "flex", gap: 4, marginBottom: 12, border: `1px solid ${theme.border}`, borderRadius: 999, padding: 2, background: theme.bgCard, width: "fit-content" },
   card: { background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: 7, padding: "0.6rem 0.8rem" },
   cardSmall: { background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: 7, padding: "0.6rem 0.8rem" },
   docCard: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: 8, padding: "0.7rem 0.9rem" },

@@ -79,8 +79,25 @@ async function errorMessage(res: Response): Promise<string> {
   return text.slice(0, 500);
 }
 
+/** R45.9: filters → query string, dropping empty values. */
+function recordQuery(f: Record<string, string | number | boolean | undefined>): string {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(f)) {
+    if (v === undefined || v === "" || v === false) continue;
+    q.set(k, String(v));
+  }
+  const qs = q.toString();
+  return qs ? `?${qs}` : "";
+}
+
 export const api = {
   health: () => request<Health>("/health"),
+
+  // R45.9: decision log + action tracker (same contract as the MCP tools).
+  listDecisions: (f: import("./types").DecisionFilters = {}) =>
+    request<import("./types").RecordListing<"decisions", import("./types").DecisionRecord>>(`/decisions${recordQuery(f)}`),
+  listActions: (f: import("./types").ActionFilters = {}) =>
+    request<import("./types").RecordListing<"actions", import("./types").ActionRecord>>(`/actions${recordQuery(f)}`),
 
   listSources: () => request<Source[]>("/sources"),
   createSource: (payload: { connector: string; name: string; config: Record<string, string>; label?: string }) =>
