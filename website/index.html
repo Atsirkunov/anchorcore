@@ -203,7 +203,7 @@
             <ul class="trust-out">
               <li><span class="trust-when t-never">default</span><b>Nothing else.</b> No background connections. Indexing, search and local answers need no network.</li>
               <li><span class="trust-when t-ask">only when you click</span><b>api.github.com</b>: "Check for updates" fetches the newest release tag. Nothing about you or your knowledge is sent. An optional once-at-startup check is off by default.</li>
-              <li><span class="trust-when t-cfg">only if you connect it</span><b>Jira, Linear, Google Drive, a REST API</b>: the connector reads from the service you point it at, with credentials you provide (kept in your OS keychain).</li>
+              <li><span class="trust-when t-cfg">only if you connect it</span><b>Jira, Linear, Google Drive, a REST API</b>: each connector sends requests to the URL you configure for it (the REST connector to any address you enter, including local ones), with credentials you provide (kept in your OS keychain).</li>
               <li><span class="trust-when t-cfg">only if you add a key</span><b>A cloud model you choose</b>: an OpenAI-compatible endpoint for answers, classification or embeddings. Your question and the retrieved passages go to that provider. With no key set, no answer request is made.</li>
               <li><span class="trust-when t-ask">only when you pull a model</span><b>Ollama's model registry</b>: your local Ollama downloads models itself; AnchorCore only talks to Ollama on your machine.</li>
             </ul>
