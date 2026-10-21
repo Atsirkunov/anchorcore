@@ -76,20 +76,79 @@ impl JiraConnector {
     }
 }
 
+/// R43.5: Jira API v3 returns rich text as ADF (Atlassian Document Format)
+/// JSON objects, not strings — `.as_str()` on them yields nothing, so only
+/// summary/status/assignee were indexed. Flatten generically by JSON shape:
+/// walk `content` arrays, collect `text` nodes; block siblings join with
+/// newlines, inline siblings (paragraph/heading children) join directly.
+/// Plain strings (older payloads) pass through untouched.
+fn adf_text(value: &Value) -> String {
+    if let Some(s) = value.as_str() {
+        return s.to_string();
+    }
+    adf_node_text(value)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn adf_node_text(node: &Value) -> String {
+    if let Some(s) = node.as_str() {
+        return s.to_string();
+    }
+    let typ = node.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    // Inline leaf nodes carry their payload outside `content`.
+    if typ == "text" {
+        return node.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    }
+    if typ == "hardBreak" {
+        return "\n".to_string();
+    }
+    if typ == "mention" {
+        return node.get("attrs").and_then(|a| a.get("text")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    }
+    if typ == "emoji" {
+        return node.get("attrs").and_then(|a| a.get("shortName")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    }
+    if typ == "media" {
+        return node.get("attrs").and_then(|a| a.get("alt")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    }
+    if typ == "status" {
+        return node.get("attrs").and_then(|a| a.get("text")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    }
+    if typ == "inlineCard" {
+        return node.get("attrs").and_then(|a| a.get("url")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    }
+    let empty = vec![];
+    let kids = node.get("content").and_then(|v| v.as_array()).unwrap_or(&empty);
+    // `is_empty` (not trim): a lone `hardBreak` "\n" part must survive.
+    let parts: Vec<String> = kids.iter().map(adf_node_text).filter(|s| !s.is_empty()).collect();
+    // Inline containers join directly; every other level (doc, lists,
+    // tables, panels…) separates block children with newlines.
+    let sep = if typ == "paragraph" || typ == "heading" { "" } else { "\n" };
+    parts.join(sep)
+}
+
 fn parse_issue(issue: &Value, docs: &mut Vec<IngestionDoc>, next_cursor: &mut String) {
     let fields = issue.get("fields").unwrap_or(&Value::Null);
     let key = issue.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let summary = fields.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let status = fields.get("status").and_then(|v| v.get("name")).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let assignee = fields.get("assignee").and_then(|v| v.get("displayName")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let desc = fields.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    // R43.5: description is ADF JSON on API v3 (already in the fetched
+    // payload — `fields=...description,comment...` in `fetch`).
+    let desc = fields.get("description").map(adf_text).unwrap_or_default();
     let updated_raw = fields.get("updated").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let updated = super::parse_dt(&updated_raw);
     let mut parts = vec![summary.clone(), format!("Status: {}", status), format!("Assignee: {}", assignee), desc];
     if let Some(comments) = fields.get("comment").and_then(|v| v.get("comments")).and_then(|v| v.as_array()) {
         for c in comments {
-            if let Some(b) = c.get("body").and_then(|v| v.as_str()) {
-                parts.push(b.to_string());
+            // R43.5: comment bodies are ADF too; no new API call needed.
+            let body = c.get("body").map(adf_text).unwrap_or_default();
+            if !body.is_empty() {
+                parts.push(body);
             }
         }
     }
@@ -132,4 +191,115 @@ impl JiraConnector {
     }
     Ok(projects)
 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn adf_issue() -> Value {
+        json!({
+            "key": "PROJ-1",
+            "fields": {
+                "summary": "Login fails on Safari",
+                "status": {"name": "In Progress"},
+                "assignee": {"displayName": "Ada"},
+                "updated": "2026-10-20T10:00:00Z",
+                "description": {
+                    "type": "doc", "version": 1,
+                    "content": [
+                        {"type": "paragraph", "content": [
+                            {"type": "text", "text": "Steps to reproduce:"}
+                        ]},
+                        {"type": "bulletList", "content": [
+                            {"type": "listItem", "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "Open Safari"}]}
+                            ]},
+                            {"type": "listItem", "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "Click login"}]}
+                            ]}
+                        ]}
+                    ]
+                },
+                "comment": {"comments": [
+                    {"body": {"type": "doc", "version": 1, "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "Confirmed on 17.4"}]}
+                    ]}}
+                ]}
+            }
+        })
+    }
+
+    #[test]
+    fn adf_description_and_comment_flattened() {
+        let mut docs = Vec::new();
+        let mut cursor = String::new();
+        parse_issue(&adf_issue(), &mut docs, &mut cursor);
+        assert_eq!(docs.len(), 1);
+        let text = &docs[0].text;
+        assert!(text.contains("Login fails on Safari"), "summary: {text}");
+        assert!(text.contains("Status: In Progress"), "status: {text}");
+        assert!(text.contains("Assignee: Ada"), "assignee: {text}");
+        assert!(text.contains("Steps to reproduce:"), "desc para: {text}");
+        assert!(text.contains("Open Safari"), "desc bullet 1: {text}");
+        assert!(text.contains("Click login"), "desc bullet 2: {text}");
+        assert!(text.contains("Confirmed on 17.4"), "comment: {text}");
+        assert_eq!(docs[0].title, "Login fails on Safari");
+        assert_eq!(docs[0].source_ref, "Jira:PROJ-1");
+        assert!(!cursor.is_empty(), "cursor must advance on updated");
+    }
+
+    #[test]
+    fn plain_string_description_passthrough() {
+        // Older payloads (or already-rendered text) stay byte-identical.
+        let issue = json!({
+            "key": "PROJ-2",
+            "fields": {
+                "summary": "S", "status": {"name": "Done"},
+                "assignee": {"displayName": "Bo"},
+                "description": "plain body",
+                "comment": {"comments": [{"body": "plain comment"}]}
+            }
+        });
+        let mut docs = Vec::new();
+        let mut cursor = String::new();
+        parse_issue(&issue, &mut docs, &mut cursor);
+        assert!(docs[0].text.contains("plain body"), "{}", docs[0].text);
+        assert!(docs[0].text.contains("plain comment"), "{}", docs[0].text);
+    }
+
+    #[test]
+    fn adf_inline_nodes_and_nulls() {
+        assert_eq!(adf_text(&Value::Null), "");
+        assert_eq!(adf_text(&json!("x")), "x");
+        // hardBreak splits lines, mention resolves via attrs.text
+        let doc = json!({"type": "doc", "content": [
+            {"type": "paragraph", "content": [
+                {"type": "text", "text": "hi "},
+                {"type": "mention", "attrs": {"text": "@Ada"}},
+                {"type": "hardBreak"},
+                {"type": "text", "text": "bye"}
+            ]}
+        ]});
+        assert_eq!(adf_text(&doc), "hi @Ada\nbye");
+        // status macros keep their label; smart-link cards keep their URL
+        let doc = json!({"type": "doc", "content": [
+            {"type": "paragraph", "content": [
+                {"type": "status", "attrs": {"text": "IN REVIEW"}},
+                {"type": "text", "text": " see "},
+                {"type": "inlineCard", "attrs": {"url": "https://jira.example/browse/PROJ-9"}}
+            ]}
+        ]});
+        assert_eq!(adf_text(&doc), "IN REVIEW see https://jira.example/browse/PROJ-9");
+        // null description + absent comments → header parts only
+        let issue = json!({
+            "key": "PROJ-3",
+            "fields": {"summary": "S", "status": {"name": "Todo"}, "description": Value::Null}
+        });
+        let mut docs = Vec::new();
+        let mut cursor = String::new();
+        parse_issue(&issue, &mut docs, &mut cursor);
+        assert!(docs[0].text.contains("Status: Todo"), "{}", docs[0].text);
+    }
 }
