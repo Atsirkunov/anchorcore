@@ -195,7 +195,7 @@ Code constants (need a rebuild; change only with a failing test in hand):
   with acronym expansions from the answer model (`query_expand.rs`): only
   acronyms with no vocabulary row, one call per new acronym set (≤ 10 s,
   cached in memory), the answer prompt keeps the original question,
-  nothing is stored; `acronym_expansion=false` turns it off. Migration 24
+  nothing is stored; opt-in via `acronym_expansion=true`. Migration 24
   dropped every LLM row and every rule row failing the initialism check.
   Backup archives carry `vocab` records + the item's `is_glossary` mark.
 - Still open: suspect detector duplicated pending reunification (R39.13,

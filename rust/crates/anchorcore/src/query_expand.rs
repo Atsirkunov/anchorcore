@@ -2,7 +2,7 @@
 //! replacement for index-time Tier-2 guessing. Local mode only (agent mode
 //! broadens its own queries), one budgeted call per new query, cached in
 //! memory, nothing stored. Acronyms the vocabulary already knows skip the
-//! call; `acronym_expansion=false` turns it off.
+//! call; opt-in via `acronym_expansion=true` (owner decision 2026-10-21).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
@@ -43,12 +43,12 @@ pub fn query_acronyms(question: &str) -> Vec<String> {
     out
 }
 
-/// On unless `acronym_expansion` is explicitly false; never in agent mode.
+/// Opt-in: on only when `acronym_expansion` is explicitly true; never in agent mode.
 pub fn enabled(settings: &SettingsService) -> bool {
-    let off = settings
+    let on = settings
         .get("acronym_expansion", None)
-        .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "off" | "no"));
-    !off && !crate::settings::is_agent_mode(settings)
+        .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1" | "on" | "yes"));
+    on && !crate::settings::is_agent_mode(settings)
 }
 
 /// Expansions for `acronyms` (already filtered to unknown ones). Cached per

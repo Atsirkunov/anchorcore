@@ -291,3 +291,18 @@ ADR log. Append newest first.
   - Glossary-file and rule rows are source-scoped; manual rows are global.
   - Backup now round-trips vocabulary (`vocab` records) and the item mark.
 
+---
+
+## 2026-10-21 — Phase 45 owner decisions (§7.2.1–7.2.3 + acronym default)
+
+* **Decision:** (a) R45.4 ships **nomic v1.5 stored f16 (~274 MB)** from the pinned HF revision (SHA-256s in `docs/probes/2026-10-21-embedding-engine.md`) — no re-embed needed. (b) The built-in embedder is the default on every OS; when there is no Metal, the first index is large and Ollama is reachable, the wizard suggests Ollama (identical vectors). (c) R45.10 demotes the 1,798 pre-R45.8 rule-made `verified` rows to `unverified` and deletes rule rows from non-record items, after a backup, with counts recorded. (d) Local-mode acronym expansion is **opt-in** (`acronym_expansion=true`); the unset default makes zero calls. (e) No glossary re-entry needed now — the owner DB had no approved LLM rows; correct pairs get added by hand via `/glossary` as they come up.
+* **Context:** The R45.3 probe holds parity ≥ 0.99995 on every backend, so the size question is download weight vs re-embed cost, not quality; a smaller model would force a full re-embed for weaker search. The 1,798 legacy rows surface as junk in `/decisions` + `/actions` (whole meeting headers stored as "actions"). Expansion-on-by-default spent an answer-model call per new acronym set before search ran.
+* **Alternatives considered:**
+  - *A smaller embedding model* — rejected: full re-embed + weaker search for a smaller download.
+  - *Built-in only, never suggest Ollama* — rejected: a 10k-chunk first index takes ~55 min on Linux CPU vs ~4.5 min with Ollama on Metal.
+  - *Demote-only for legacy rows* — rejected: the junk rows stay visible as unverified instead of going away.
+  - *Expansion on by default* — rejected: a latency + model-call cost on every acronym-bearing query that the owner did not ask for.
+* **Consequences:**
+  - R45.4 → R45.6 → R45.7 and R45.10 are unblocked; the R45.3 CI-only legs (MinGW, x86 mkl, Ollama CPU baseline) still need a CI run before the engine decision entry is final.
+  - `query_expand::enabled` is true only on an explicit on-value; agent mode still never expands.
+
