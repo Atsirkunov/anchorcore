@@ -89,6 +89,7 @@ export function initClaudeSession(rootId: string): void {
   };
 
   async function play(): Promise<void> {
+    if (!body || !ptext || !tool || !answer) return; // narrowing does not survive into function declarations
     const my = ++run;
     const live = (): boolean => my === run;
     // Pin the final-frame height so streaming text can never resize the card (CLS 0)
