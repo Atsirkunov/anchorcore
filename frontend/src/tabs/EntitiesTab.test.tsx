@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
-import type { Entity, MergeProposal, VocabProposal } from "../types";
+import type { Entity, MergeProposal } from "../types";
 import { AllEntitiesView as EntitiesTab, EntitiesTab as EntitiesTabShell } from "./EntitiesTab";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -31,11 +31,11 @@ function mkEntity(over: Partial<Entity> & { id: number }): Entity {
 
 const ENT = mkEntity({ id: 7, kind: "decision", summary: "Adopt SQLite for local storage", reasoning: "Single file, zero ops.", item_is_pii: true });
 
-async function renderTab(entities: Entity[], dupes: MergeProposal[] = [], grouped = true, vocab: VocabProposal[] = []) {
+async function renderTab(entities: Entity[], dupes: MergeProposal[] = [], grouped = true) {
   localStorage.setItem("entities-grouped", grouped ? "1" : "0");
   vi.spyOn(api, "listEntities").mockResolvedValue(entities);
   vi.spyOn(api, "duplicates").mockResolvedValue(dupes);
-  vi.spyOn(api, "vocabulary").mockResolvedValue(vocab);
+  vi.spyOn(api, "glossary").mockResolvedValue([]);
   vi.spyOn(api, "sections").mockResolvedValue([]);
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -172,21 +172,10 @@ describe("EntitiesTab R31.2 (A + Review fold)", () => {
     expect(decide).toHaveBeenCalledWith(5, "merge");
   });
 
-  it("folds vocabulary proposals inline with working approve/reject", async () => {
-    const decide = vi.spyOn(api, "decideVocab").mockResolvedValue({ approved: true, term: "dunning", expansion: "payment reminder" });
-    const host = await renderTab([ENT], [], true, [
-      { id: 9, term: "dunning", expansion: "payment reminder", origin: "llm", confirmations: 1, item_id: 3, item_title: "Alpha doc", external_id: "a.md" },
-    ]);
-    expect(host.textContent).toContain("Words to confirm (1)");
-    expect(host.textContent).toContain("“dunning” means “payment reminder”");
-    expect(host.textContent).toContain("Alpha doc");
-    const confirm = [...host.querySelectorAll("button")].find((btn) => btn.textContent === "Confirm");
-    expect(confirm).toBeDefined();
-    await act(async () => {
-      click(confirm!);
-    });
-    await act(async () => {});
-    expect(decide).toHaveBeenCalledWith(9, "approve");
+  it("shows the glossary instead of a words-to-confirm queue", async () => {
+    const host = await renderTab([ENT]);
+    expect(host.textContent).toContain("Glossary (0)");
+    expect(host.textContent).not.toContain("Words to confirm");
   });
 
   it("Dispute records through the audit endpoint instead of a silent PATCH", async () => {

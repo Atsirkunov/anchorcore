@@ -20,6 +20,7 @@ pub const SETTING_KEYS: &[&str] = &[
     "extract_entities",
     "distill_enabled",
     "llm_mode",
+    "acronym_expansion",
 ];
 pub const SECRET_KEYS: &[&str] = &["answer_api_key", "classifier_api_key", "embed_api_key"];
 pub const ALL_KEYS: &[&str] = &[
@@ -38,6 +39,7 @@ pub const ALL_KEYS: &[&str] = &[
     "extract_entities",
     "distill_enabled",
     "llm_mode",
+    "acronym_expansion",
     "answer_api_key",
     "classifier_api_key",
     "embed_api_key",

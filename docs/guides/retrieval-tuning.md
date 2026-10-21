@@ -175,25 +175,29 @@ Code constants (need a rebuild; change only with a failing test in hand):
   `ANCHOR_EMBED_MODEL` override costs one re-embed after upgrade. Backup
   archives now carry `embed_fp` on `chunk_embedding` records; older
   archives restore unstamped (re-embedded by the backfill).
-- Corpus vocabulary (R40.7): FTS query terms expand through the
-  `vocabulary` table (migration 20) on top of the R40.6 curated map.
-  Tier-1 rules (parenthetical acronyms, glossary lines) are active
-  immediately, no model needed; Tier-2 LLM pairs (`defined_terms` on the
-  classify call, zero extra calls) stay `proposed` until a second
-  independent item corroborates, a rule row confirms, or R40.8 review
-  approves — single witnesses never expand. Lookup is project-scoped
-  (`source_ids`); expansion adds terms only, chunk label/status gates
-  still apply downstream. Known gap: `vocabulary` is not in backup
-  archives yet — restore + force re-sync rebuilds it (rules fully, LLM
-  pairs re-proposed).
-- Vocabulary approval (R40.8): the third activation path. `GET
-  /review/vocabulary` lists proposed pairs (term ↔ expansion, witness
-  doc, origin, witness count; rule-touched pairs never list);
-  `POST /review/vocabulary/{id} {decision: approve|reject}` decides the
-  whole pair family. Approve activates, reject hides the pair for good
-  (survives re-sync via the R40.7 store skip). The Entities tab folds the
-  queue inline ("Words to confirm") next to the doubles strip — no
-  separate Review surface (R31.2 folded it).
+- Vocabulary (R40.7 → R45.13): FTS query terms expand through the
+  `vocabulary` table on top of the R40.6 curated map. R45.13 removed the
+  index-time guessing (LLM `defined_terms`, corroboration quarantine, the
+  R40.8 "Words to confirm" queue) after owner feedback: proposals were
+  mostly noise and the queue handed cleanup to people. Three origins, all
+  active, no proposals:
+  - `manual` — typed in on the Entities tab Glossary panel (`/glossary`
+    CRUD); global, applies in every project scope.
+  - `glossary` — rows of a file a person marked as a glossary (`PATCH
+    /items/:id {"is_glossary": true}`): CSV/TSV/semicolon rows, Markdown
+    table rows (first two columns), `CODE - meaning` and `Term: meaning`
+    lines; header rows skipped. Parsed immediately and again on re-sync.
+  - `rule` — `Full Phrase (FP)` parentheticals whose letters are the
+    phrase's word initials (inner capitals and glue words allowed; digits
+    ignored). Code tables are never auto-extracted — mark the file.
+  Agent mode skips `rule` rows (the agent broadens its own queries; the
+  glossary still applies). Local mode may also widen the retrieval query
+  with acronym expansions from the answer model (`query_expand.rs`): only
+  acronyms with no vocabulary row, one call per new acronym set (≤ 10 s,
+  cached in memory), the answer prompt keeps the original question,
+  nothing is stored; `acronym_expansion=false` turns it off. Migration 24
+  dropped every LLM row and every rule row failing the initialism check.
+  Backup archives carry `vocab` records + the item's `is_glossary` mark.
 - Still open: suspect detector duplicated pending reunification (R39.13,
   P3); cross-encoder reranker deferred (R39.11, owner call).
 

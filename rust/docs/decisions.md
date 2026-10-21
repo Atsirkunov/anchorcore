@@ -276,3 +276,18 @@ ADR log. Append newest first.
   - Migration 22 stamps existing vectors from the DB `embed_model` (or the default); env-only `ANCHOR_EMBED_MODEL` overrides cost one re-embed after upgrade.
   - Backup archives carry `embed_fp`; older archives restore unstamped and are re-embedded.
   - No active fingerprint (fresh DB, hash-vector tests, the golden eval) = no filter, i.e. pre-R45.5 behavior.
+
+## 2026-10-21 — R45.13: vocabulary without proposals (reverses R40.7/R40.8)
+
+* **Decision:** Delete index-time LLM vocabulary (`defined_terms`), the corroboration quarantine and the "Words to confirm" review queue. Vocabulary is a people-owned glossary (typed entries + files a person marks as a glossary) plus one automatic rule: `Full Phrase (FP)` parentheticals that pass an initialism check. All rows are active; there is no proposal status. Local mode may expand unknown acronyms at query time with the answer model (cached, nothing stored); agent mode skips automatic rule rows.
+* **Context:** Owner feedback 2026-10-21 ("these proposals are a nightmare"). The owner's DB had 12 LLM proposals (mostly right, still queued for people) and 50 rule rows live with no review, several junk (`psa → card account issuer payment agent`, `cncl → update`, `p2p → payments`) from payment-scheme code tables parsed as definitions. Guessing better would keep the queue; the fix is to stop guessing.
+* **Alternatives considered:**
+  - *R43.30 as filed: initialism check + queue triage (grouping, bulk reject)* — fixes the worst rule junk but keeps people doing cleanup for model output.
+  - *Keep Tier-2 but require two witnesses to even appear* — fewer rows, same model of the feature.
+  - *Marking mechanism: a glossary heading convention or a per-source flag* — a heading is guessing again (it is what produced the code-table junk); a source flag is too coarse. A per-item flag on `PATCH /items/:id` mirrors the R35.1 `is_pii` mark people already know.
+* **Consequences:**
+  - Migration 24 (Rust hook) drops every `llm` row — an R40.8 approval left no trace that tells it from corroboration, and the owner DB had none active — and every `rule` row failing the initialism check. Passing rule rows stay; re-sync re-derives the rest.
+  - Correct-but-not-initialism pairs (`rfnd → refund`, `dunning → payment reminder`) now need the glossary. The golden eval seeds `dunning-01` as a fixture glossary row.
+  - Glossary-file and rule rows are source-scoped; manual rows are global.
+  - Backup now round-trips vocabulary (`vocab` records) and the item mark.
+
