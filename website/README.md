@@ -49,7 +49,16 @@ Guides are static pages rendered at build time from the repo docs, so crawlers w
 ## Social / brand assets (R16.5)
 
 * `public/favicon.svg` is the source of truth for the citation-bar mark (tab icon, header, footer, `frontend/public/` copy). SVG favicons work natively — no PNG needed.
-* `public/og-card.svg` backs the `og:image` / `twitter:image` tags. Strict crawlers (X, iMessage) want PNG: export once per deploy with `rsvg-convert -w 1200 public/og-card.svg -o public/og-card.png` and point the tags at the absolute deploy URL (`og:image` must be absolute — live at `https://anchorcore.dev/og-card.png`).
+* `public/og-card.svg` is the source for `public/og-card.png` (1200x630, what `og:image`/`twitter:image` point at, absolute URL `https://anchorcore.dev/og-card.png`). Regenerate the PNG whenever the SVG copy changes, e.g. with headless Chrome (no extra deps): `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --hide-scrollbars --window-size=1200,630 --screenshot=public/og-card.png file://$PWD/public/og-card.svg`, or `rsvg-convert -w 1200 public/og-card.svg -o public/og-card.png`. Check the text is not clipped by the card.
+
+## Structured data + social tags (R44.18)
+
+`scripts/seo.ts` (the `anchorcore-seo` Vite plugin, `transformIndexHtml`, runs on every page) generates these at build so they cannot drift:
+
+* **JSON-LD (landing only):** `FAQPage` is built from the visible `#faq` markup (`h3` = question, `p` = answer, tags stripped, entities decoded). Do not hand-write it; edit the visible FAQ. The build fails if the FAQ parses to zero entries, if parsed count differs from the number of `.qa` blocks, or if the emitted JSON-LD text differs from the visible text. `SoftwareApplication` takes `description` from the page meta description, `softwareVersion` from `rust/Cargo.toml` `workspace.package.version` (unreadable: build warns and omits it), `downloadUrl` = the releases URL of the hero CTA, `screenshot` = the og image, publisher Person (owner-provided LinkedIn `sameAs`). Offer price `0` is the free personal app only; no Team/Hosted offers, no claims beyond the page. If the hero CTA URL changes, update `RELEASES` in `seo.ts`.
+* **Social tags (all pages):** the plugin adds any missing `og:site_name`, `og:title/description/url/type`, `og:image` (+ `width`/`height`/`alt`), `twitter:card=summary_large_image`, `twitter:title/description/image(+alt)` from each page's `<title>`, meta description and canonical (a page lacking one of those fails the build). Tags already written by hand or by `build-guides.mjs` win, so per-page titles live in one place (the page itself).
+* `?track=` is no longer written to the URL anywhere (only read by `redirectLegacyTrack`).
+* No Rich Results test is run in CI; validate manually after deploy at search.google.com/test/rich-results and validator.schema.org.
 
 ## Capture
 
