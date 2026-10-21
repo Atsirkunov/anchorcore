@@ -201,7 +201,7 @@
         </div>
         <div class="fig termwrap">
           <div class="term-bar"><span>agent → anchorcore mcp · stdio JSON-RPC</span><button id="term-replay" class="btn small secondary" type="button">Replay</button></div>
-          <div class="term-body" id="term-body" aria-live="polite"></div>
+          <div class="term-body" id="term-body"></div>
           <p class="cap">Abbreviated session — the wire carries full JSON-RPC <code>tools/call</code> returning the same cited answers as the browser UI.</p>
         </div>
         <p class="small">Personal use needs no Docker and no account — your data stays in a folder on your machine. Full protocol reference: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">agent docs (MCP)</a>.</p>
@@ -226,7 +226,7 @@
         <div class="code">mkdir -p .agents/skills/anchorcore-setup && curl -sL https://raw.githubusercontent.com/Atsirkunov/anchorcore/main/.agents/skills/anchorcore-setup/SKILL.md -o .agents/skills/anchorcore-setup/SKILL.md</div>
         <div class="fig termwrap">
           <div class="term-bar"><span>agent + anchorcore-setup skill · local REST</span><button id="skill-term-replay" class="btn small secondary" type="button">Replay</button></div>
-          <div class="term-body" id="skill-term-body" aria-live="polite"></div>
+          <div class="term-body" id="skill-term-body"></div>
           <p class="cap">Abbreviated session — the skill drives the local REST API (health → models → sources → sync → ask) and checks the honesty flags before reporting back.</p>
         </div>
         <p class="small">Skill file: <a href="https://raw.githubusercontent.com/Atsirkunov/anchorcore/main/.agents/skills/anchorcore-setup/SKILL.md">anchorcore-setup (copy/download)</a> — the CLI installs it into whatever skills dir your agent reads. Agent access protocol: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">Connect your agent (MCP)</a>.</p>

@@ -269,6 +269,12 @@ function initTerminal(bodyId: string, replayId: string, lines: TermLine[]): void
   const body = document.getElementById(bodyId);
   const replay = document.getElementById(replayId);
   if (!body) return;
+  // Typed output is decorative; screen readers get the full transcript once (R44.8)
+  body.setAttribute("aria-hidden", "true");
+  const transcript = document.createElement("div");
+  transcript.className = "sr-only";
+  transcript.textContent = lines.map((l) => l.text).join("\n");
+  body.after(transcript);
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   let started = false;
   let run = 0;
