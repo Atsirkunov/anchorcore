@@ -2,11 +2,6 @@ import { renderGraphMini } from "./components/GraphMini";
 import { initClaudeSession } from "./components/ClaudeSession";
 import { initEmailCapture } from "./capture";
 import { initNavMenu } from "./nav";
-import { marked } from "marked";
-import obsidianMd from "../../docs/guides/obsidian-vault.md?raw";
-import quickstartMd from "../../docs/sample-dataset.md?raw";
-import restMd from "../../docs/guides/rest-api.md?raw";
-import aiMd from "../../docs/sample-ai.md?raw";
 
 // Direct download assets (release.yml — keep these file names in sync).
 const WIN_ZIP = "https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-windows.zip";
@@ -78,27 +73,21 @@ function redirectLegacyTrack(): boolean {
   return true;
 }
 
-// On-site guides — repo markdown is the source of truth (../docs), rendered
-// here at build time so conversion pages live on-domain, not on GitHub.
-function stripH1(md: string): string {
-  return md.replace(/^# .*\n/, "");
-}
+// Guides are prerendered pages (/guides/*, R44.15). Old #guide-* deep links jump
+// to the matching page; without JS they still land on the card with that id.
+const GUIDE_PAGES: Record<string, string> = {
+  "guide-obsidian": "/guides/obsidian",
+  "guide-quickstart": "/guides/sample",
+  "guide-rest": "/guides/json-api",
+  "guide-ai": "/guides/ai-startup",
+  "guide-mcp": "/guides/mcp",
+};
 
-async function initGuides(): Promise<void> {
-  const pairs: [string, string][] = [
-    ["guide-obsidian-body", obsidianMd],
-    ["guide-quickstart-body", quickstartMd],
-    ["guide-rest-body", restMd],
-    ["guide-ai-body", aiMd],
-  ];
-  for (const [id, md] of pairs) {
-    const el = document.getElementById(id);
-    if (!el) continue;
-    // headings are demoted two levels so they nest under the panel <h3>
-    // instead of jumping back to h2 inside the section (R18.8)
-    el.innerHTML = (await marked.parse(stripH1(md)))
-      .replace(/<(\/?)h([2-4])\b/g, (_m, close: string, lvl: string) => `<${close}h${Number(lvl) + 2}`);
-  }
+function redirectLegacyGuide(): boolean {
+  const target = GUIDE_PAGES[location.hash.slice(1)];
+  if (!target) return false;
+  location.replace(target);
+  return true;
 }
 
 // Guides / FAQ hash routing — keep paper mono/serif, no new hex (C3)
@@ -246,40 +235,6 @@ function initTerminal(bodyId: string, replayId: string, lines: TermLine[]): void
 }
 
 
-function initGuideTabs(): void {
-  const tabs = [...document.querySelectorAll<HTMLButtonElement>(".guide-tab")];
-  if (tabs.length === 0) return;
-  // derive the pairings from the markup so a new tab needs no change here (R18.15)
-  const bodies = tabs.map(t => t.dataset.guide ?? "");
-  const panels = tabs.map(t => document.getElementById(t.getAttribute("aria-controls") ?? ""));
-  function show(index: number): void {
-    tabs.forEach((t, i) => {
-      const on = i === index;
-      t.classList.toggle("active", on);
-t.setAttribute("aria-expanded", String(on));
-    });
-    panels.forEach((p, i) => {
-      if (!p) return;
-      const on = i === index;
-      p.classList.toggle("active", on);
-      if (on) p.removeAttribute("hidden");
-      else p.setAttribute("hidden", "");
-    });
-  }
-  tabs.forEach((t, i) => t.addEventListener("click", () => show(i)));
-  // deep links (#guide-obsidian etc.) open the right panel first (R18.7: one section)
-  const hash = location.hash;
-  const legacy = bodies.indexOf(hash.slice(1) + "-body");
-  if (legacy >= 0) show(legacy);
-  window.addEventListener("hashchange", () => {
-    const i = bodies.indexOf(location.hash.slice(1) + "-body");
-    if (i >= 0) {
-      show(i);
-      document.getElementById("guide-reader")?.scrollIntoView({ behavior: "smooth" });
-    }
-  });
-}
-
 // Hero agent-skill card: copy the install command (R18.19). No JS: the code stays
 // visible and selectable, only the one-click copy is lost.
 function selectText(el: HTMLElement): void {
@@ -337,12 +292,10 @@ function initReveal(): void {
 }
 
 initEmailCapture();
-if (!redirectLegacyTrack()) initDownloadLinks();
+if (!redirectLegacyTrack() && !redirectLegacyGuide()) initDownloadLinks();
 initHashNav();
 initNavMenu();
 initSkillCopy();
-void initGuides();
-initGuideTabs();
 initReveal();
 initClaudeSession("cs-hero");
 initClaudeSession("cs-demo");
