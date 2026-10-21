@@ -229,6 +229,8 @@ pub struct Counts {
     pub tags: u64,
     pub chunk_tags: u64,
     pub projects: u64,
+    /// R45.13: glossary + rule vocabulary rows.
+    pub vocabulary: u64,
     pub disputes: u64,
     pub merge_actions: u64,
     pub settings: u64,
@@ -435,6 +437,7 @@ fn export_core_counts(conn: &Connection, zip: &mut ArchiveWriter, opts: &ExportO
         tags: export_tags(conn, zip)?,
         chunk_tags: export_chunk_tags(conn, zip)?,
         projects: export_projects(conn, zip, opts)?,
+        vocabulary: export_vocabulary(conn, zip, opts)?,
         ..Default::default()
     })
 }
@@ -445,11 +448,13 @@ fn export_items(conn: &Connection, zip: &mut ArchiveWriter, opts: &ExportOptions
         "SELECT json_object('type','item','uid',i.uid,'source_uid',s.uid,'external_id',i.external_id, \
             'title',i.title,'doc_type',i.doc_type,'text',i.text,'content_hash',i.content_hash, \
             'processed_hash',i.processed_hash, \
-            'author',i.author,'updated_at',i.updated_at,'stale',{stale},'is_pii',{is_pii},'created_at',i.created_at) \
+            'author',i.author,'updated_at',i.updated_at,'stale',{stale},'is_pii',{is_pii}, \
+            'is_glossary',{is_glossary},'created_at',i.created_at) \
          FROM ingested_items i JOIN sources s ON s.id = i.source_id WHERE 1=1{} ORDER BY i.id",
         scope,
         stale = json_bool("i.stale"),
-        is_pii = json_bool("i.is_pii")
+        is_pii = json_bool("i.is_pii"),
+        is_glossary = json_bool("i.is_glossary")
     );
     write_jsonl_query(conn, zip, &sql)
 }
@@ -533,6 +538,20 @@ fn export_tags(conn: &Connection, zip: &mut ArchiveWriter) -> Result<u64, String
     let sql = "SELECT json_object('type','tag','uid',uid,'name',name,'description',description, \
                'count',count,'created_at',created_at) FROM tags ORDER BY id";
     write_jsonl_query(conn, zip, sql)
+}
+
+/// R45.13: vocabulary rows (manual entries are global and always ride
+/// along; item/source-bound rows follow the project scope).
+fn export_vocabulary(conn: &Connection, zip: &mut ArchiveWriter, opts: &ExportOptions) -> Result<u64, String> {
+    let scope = source_scope(opts.project_id, "v.source_id");
+    let sql = format!(
+        "SELECT json_object('type','vocab','term',v.term,'expansion',v.expansion,'origin',v.origin, \
+            'item_uid',i.uid,'source_uid',s.uid) \
+         FROM vocabulary v LEFT JOIN ingested_items i ON i.id = v.item_id LEFT JOIN sources s ON s.id = v.source_id \
+         WHERE v.status = 'active' AND (v.source_id IS NULL OR (1=1{})) ORDER BY v.id",
+        scope
+    );
+    write_jsonl_query(conn, zip, &sql)
 }
 
 fn export_chunk_tags(conn: &Connection, zip: &mut ArchiveWriter) -> Result<u64, String> {
@@ -1231,7 +1250,7 @@ fn apply_item(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         let id = ctx.conn.last_insert_rowid();
         ctx.remember("ingested_items", &uid, id);
-        return Ok(());
+        return apply_item_glossary(ctx, rec, id);
     }
     let id = existing.unwrap();
     ctx.conn
@@ -1241,6 +1260,51 @@ fn apply_item(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
     ctx.remember("ingested_items", &uid, id);
+    apply_item_glossary(ctx, rec, id)
+}
+
+/// R45.13: the glossary mark round-trips with the item (old archives read
+/// as unmarked); the file's rows arrive as `vocab` records.
+fn apply_item_glossary(ctx: &mut ImportCtx, rec: &Value, id: i64) -> Result<(), String> {
+    ctx.conn
+        .execute("UPDATE ingested_items SET is_glossary = ?1 WHERE id = ?2", rusqlite::params![bool_int(rec, "is_glossary"), id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// R45.13: one vocabulary row. Rows have no uid — the natural key (term,
+/// expansion, origin, item) dedupes, so re-importing is idempotent.
+fn apply_vocab(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
+    let term = str_field(rec, "term");
+    let expansion = str_field(rec, "expansion");
+    let origin = str_field(rec, "origin");
+    if term.is_empty() || expansion.is_empty() || !matches!(origin.as_str(), "manual" | "glossary" | "rule") {
+        return Err("vocab record needs term, expansion and a manual/glossary/rule origin".to_string());
+    }
+    let item_id = ctx.lookup("ingested_items", &str_field(rec, "item_uid"))?;
+    let source_id = ctx.lookup("sources", &str_field(rec, "source_uid"))?;
+    if origin != "manual" && item_id.is_none() {
+        return Err(format!("vocab record ({term}) references an unknown item"));
+    }
+    let exists: i64 = ctx
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM vocabulary WHERE term = ?1 AND expansion = ?2 AND origin = ?3 AND item_id IS ?4",
+            rusqlite::params![term, expansion, origin, item_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let action = if exists > 0 { Action::Skip } else { Action::Insert };
+    ctx.record("vocab", &term, action);
+    if !ctx.write || action == Action::Skip {
+        return Ok(());
+    }
+    ctx.conn
+        .execute(
+            "INSERT INTO vocabulary (term, expansion, item_id, source_id, origin, status) VALUES (?1, ?2, ?3, ?4, ?5, 'active')",
+            rusqlite::params![term, expansion, item_id, source_id, origin],
+        )
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1690,6 +1754,7 @@ fn apply_core_record(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
         "tag" => apply_tag(ctx, rec),
         "chunk_tag" => apply_chunk_tag(ctx, rec),
         "project" => apply_project(ctx, rec),
+        "vocab" => apply_vocab(ctx, rec),
         other => Err(format!("unknown record type: {other}")),
     }
 }
@@ -2793,6 +2858,44 @@ mod tests {
         import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
         let fp: String = one(&db(dst.path()), "SELECT embed_fp FROM chunks WHERE embedding IS NOT NULL");
         assert_eq!(fp, "ollama:nomic-embed-text:768");
+    }
+
+    #[test]
+    fn glossary_and_vocabulary_round_trip() {
+        // R45.13: manual entries, marked-file rows (+ the item's mark) and
+        // rule rows survive a move; a second import adds nothing.
+        let _env = EnvGuard::file_only();
+        let src = tempdir().unwrap();
+        seed(src.path());
+        {
+            let conn = db(src.path());
+            let (iid, sid): (i64, i64) = conn.query_row("SELECT id, source_id FROM ingested_items", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            conn.execute("UPDATE ingested_items SET is_glossary = 1 WHERE id = ?1", [iid]).unwrap();
+            crate::vocab::add_manual(&conn, "kyc", "know your customer").unwrap();
+            let ca = crate::vocab::normalize_pair("ca", "direct debit").unwrap();
+            let sla = crate::vocab::normalize_pair("sla", "service level agreement").unwrap();
+            crate::vocab::store_vocab(&conn, iid, sid, &[sla], &[ca]).unwrap();
+        }
+        let archive = exported(src.path(), ExportOptions::default());
+        let dst = tempdir().unwrap();
+        let report = import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
+        assert_eq!(report.imported.get("vocab"), Some(&3u64), "{:?}", report.imported);
+        let conn = db(dst.path());
+        let rows: Vec<(String, String, bool)> = conn
+            .prepare("SELECT term, origin, item_id IS NOT NULL FROM vocabulary ORDER BY term")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            [("ca".into(), "glossary".into(), true), ("kyc".into(), "manual".into(), false), ("sla".into(), "rule".into(), true)]
+        );
+        assert_eq!(one::<i64>(&conn, "SELECT is_glossary FROM ingested_items"), 1, "the mark round-trips");
+        let again = import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
+        assert_eq!(again.skipped.get("vocab"), Some(&3u64));
+        assert_eq!(one::<i64>(&db(dst.path()), "SELECT COUNT(*) FROM vocabulary"), 3);
     }
 
     #[test]

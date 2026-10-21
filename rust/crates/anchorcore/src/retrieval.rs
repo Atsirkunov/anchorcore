@@ -66,8 +66,8 @@ pub(crate) fn query_terms(question: &str) -> Vec<String> {
 /// that is a member of a cluster pulls the cluster's other members into the
 /// FTS `OR` query. Every cluster cites the eval pair that justifies it; the
 /// golden set (`tests/eval_data/eval.json`) is the immune system — all
-/// existing pairs must stay green. R40.7 merges corpus-extracted vocabulary
-/// into this same expansion path.
+/// existing pairs must stay green. R40.7/R45.13 merge glossary + initialism
+/// vocabulary into this same expansion path.
 pub const SYNONYM_CLUSTERS: &[&[&str]] = &[
     // Pair `rfp-reversal-01` (1.0.29 field case): the RFP says "reversal",
     // users ask about "cancellation". Both directions expand.
@@ -111,8 +111,8 @@ pub fn fts_match_query(question: &str) -> Option<String> {
     Some(expanded.iter().map(|t| format!("\"{}\"", t)).collect::<Vec<_>>().join(" OR "))
 }
 
-/// R40.7: FTS query with corpus-vocabulary expansion — curated synonyms
-/// (R40.6) plus active project-scoped vocab pairs, deduped. Multiword
+/// R40.7/R45.13: FTS query with vocabulary expansion — curated synonyms
+/// (R40.6) plus project-scoped glossary/initialism pairs, deduped. Multiword
 /// expansions quote as FTS phrases.
 pub fn fts_match_query_scoped(
     conn: &Connection,
@@ -2882,14 +2882,14 @@ mod tests {
 
     #[test]
     fn scoped_fts_query_merges_active_vocab() {
-        // R40.7: active vocab pairs join the FTS OR behind curated synonyms
-        // (proposed rows never do); project scope filters.
+        // R40.7/R45.13: glossary pairs join the FTS OR behind curated
+        // synonyms (marked-file rows apply in every llm_mode); project scope
+        // filters.
         let (_dir, conn) = harness_db();
         let sid = insert_source(&conn, "sv", "internal");
         let iid = insert_item(&conn, sid, "doc");
         let dunning = crate::vocab::normalize_pair("dunning", "payment reminder").unwrap();
-        let solo = crate::vocab::normalize_pair("solo", "only here").unwrap();
-        crate::vocab::store_vocab(&conn, iid, sid, &[dunning], &[solo]).unwrap();
+        crate::vocab::store_vocab(&conn, iid, sid, &[], &[dunning]).unwrap();
         assert_eq!(
             fts_match_query_scoped(&conn, "what is dunning", None),
             Some("\"dunning\" OR \"payment reminder\"".to_string())
@@ -2897,7 +2897,7 @@ mod tests {
         assert_eq!(
             fts_match_query_scoped(&conn, "solo mission", None),
             Some("\"solo\" OR \"mission\"".to_string()),
-            "proposed pair contributes nothing"
+            "no pair, no expansion"
         );
         let other: HashSet<i64> = [sid + 100].into_iter().collect();
         assert_eq!(

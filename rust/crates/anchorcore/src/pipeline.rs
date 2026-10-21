@@ -888,7 +888,6 @@ impl ClassifyCtx {
         }
         let classified = classify_all(&self.classifier, &jobs, &self.doc_type, self.classify_trusted, &self.data_dir, self.job_id).await?;
         let mut total = 0usize;
-        let mut llm_terms: Vec<crate::vocab::DefinedTerm> = Vec::new();
         for ((index, source_ref, window), output) in jobs.iter().zip(classified) {
             if job_cancelled(&self.data_dir, self.job_id).await? {
                 return Err("job cancelled".to_string());
@@ -898,21 +897,16 @@ impl ClassifyCtx {
                 delete_stale_entities(self, Some(*index)).await?;
             }
             total += store_batch(self, prepare_items(output.items, window, source_ref, *index)).await?;
-            for term in output.defined_terms {
-                if !llm_terms.contains(&term) {
-                    llm_terms.push(term);
-                }
-            }
         }
-        self.store_vocab(llm_terms).await?;
+        self.store_vocab().await?;
         Ok(total)
     }
 
-    /// R40.7: Tier-1 rules over the full text + Tier-2 union across windows,
-    /// stored (proposed until corroborated). Skipped for structured files
-    /// (code/config carry no vocabulary) and for hash-skipped items (the
-    /// early return above leaves existing rows valid).
-    async fn store_vocab(&self, llm_terms: Vec<crate::vocab::DefinedTerm>) -> Result<(), String> {
+    /// R45.13: initialism-checked parentheticals over the full text, plus
+    /// the item's own glossary rows when a person marked it as a glossary.
+    /// Skipped for structured files (code/config carry no vocabulary) and
+    /// for hash-skipped items (the early return above leaves rows valid).
+    async fn store_vocab(&self) -> Result<(), String> {
         if self.skips_extraction() {
             return Ok(());
         }
@@ -920,13 +914,15 @@ impl ClassifyCtx {
             return Err("job cancelled".to_string());
         }
         let rules = crate::vocab::extract_vocab_rules(&self.full_text);
-        if rules.is_empty() && llm_terms.is_empty() {
-            return Ok(());
-        }
+        let text = self.full_text.clone();
         let item_id = self.item_id;
         let source_id = self.source_id;
         run_db(&self.data_dir, move |conn| {
-            crate::vocab::store_vocab(conn, item_id, source_id, &rules, &llm_terms)
+            let marked: bool = conn
+                .query_row("SELECT is_glossary FROM ingested_items WHERE id = ?1", [item_id], |r| r.get(0))
+                .unwrap_or(false);
+            let glossary = if marked { crate::vocab::parse_glossary_file(&text) } else { Vec::new() };
+            crate::vocab::store_vocab(conn, item_id, source_id, &rules, &glossary)
         })
         .await
     }
@@ -1253,7 +1249,7 @@ async fn classify_all(
     data_dir: &str,
     job_id: i64,
 ) -> Result<Vec<crate::classifier::ClassifyOutput>, String> {
-    let empty = || crate::classifier::ClassifyOutput { items: Vec::new(), defined_terms: Vec::new() };
+    let empty = || crate::classifier::ClassifyOutput { items: Vec::new() };
     let mut out: Vec<crate::classifier::ClassifyOutput> = (0..jobs.len()).map(|_| empty()).collect();
     let mut start = 0usize;
     for batch in jobs.chunks(classify_concurrency()) {
@@ -2058,9 +2054,10 @@ mod tests {
 
     #[tokio::test]
     async fn classify_windows_stores_rule_vocab_without_llm() {
-        // R40.7 Tier-1 end of the hook: glossary-shaped doc text yields
-        // active rule rows through classify_windows with no model running
-        // (rules fallback per window); structured files store nothing.
+        // R45.13 end of the hook: initialism parentheticals yield rule rows
+        // through classify_windows with no model running; glossary-shaped
+        // lines only count once a person marks the file; structured files
+        // store nothing.
         // Dead-port base + short timeout: the per-window LLM attempt must
         // fail fast (sandboxed connects hang to the timeout).
         let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
@@ -2084,7 +2081,7 @@ mod tests {
         settings.set_data_dir(dir.path());
         let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
         let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
-        let text = "Each Long Form (CODE) row carries a reason.\n\n## Glossary\nCA - Direct Debit record\n".to_string();
+        let text = "Each Service Level Agreement (SLA) row carries a reason. Long Form (CODE) is not one.\n\n## Glossary\nCA - Direct Debit record\n".to_string();
         let doc = IngestionDoc {
             external_id: "terms.md".to_string(),
             title: "terms.md".to_string(),
@@ -2097,6 +2094,25 @@ mod tests {
         ctx.item_id = iid;
         ctx.doc_type = "reference".to_string();
         ctx.classify_windows().await.unwrap();
+        let vocab_rows = |item: i64| -> Vec<(String, String, String)> {
+            let conn = crate::db::init_db(&db_path).unwrap();
+            let mut stmt = conn.prepare("SELECT term, expansion, origin FROM vocabulary WHERE item_id=?1 ORDER BY term").unwrap();
+            let rows = stmt.query_map([item], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().filter_map(|r| r.ok()).collect();
+            rows
+        };
+        let row = |t: &str, e: &str, o: &str| (t.to_string(), e.to_string(), o.to_string());
+        assert_eq!(vocab_rows(iid), [row("sla", "service level agreement", "rule")], "unmarked: initialisms only");
+        // A person marks the file as a glossary: its lines become entries.
+        crate::db::init_db(&db_path).unwrap().execute("UPDATE ingested_items SET is_glossary=1 WHERE id=?1", [iid]).unwrap();
+        let mut ctx = ClassifyCtx::new(&data_dir, sid, jid, &doc, true, settings.clone(), classifier.clone(), embedder.clone());
+        ctx.item_id = iid;
+        ctx.doc_type = "reference".to_string();
+        ctx.classify_windows().await.unwrap();
+        assert_eq!(
+            vocab_rows(iid),
+            [row("ca", "direct debit record", "glossary"), row("sla", "service level agreement", "rule")],
+            "marked: glossary lines join"
+        );
         let ydoc = IngestionDoc {
             external_id: "values.yaml".to_string(),
             title: "values.yaml".to_string(),
@@ -2110,21 +2126,6 @@ mod tests {
         yctx.doc_type = "reference".to_string();
         yctx.classify_windows().await.unwrap();
         let conn = crate::db::init_db(&db_path).unwrap();
-        let rows: Vec<(String, String, String, String)> = conn
-            .prepare("SELECT term, expansion, origin, status FROM vocabulary WHERE item_id=?1 ORDER BY term")
-            .unwrap()
-            .query_map([iid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
-            .unwrap()
-            .filter_map(|r| r.ok())
-            .collect();
-        assert!(
-            rows.contains(&("ca".to_string(), "direct debit record".to_string(), "rule".to_string(), "active".to_string())),
-            "glossary row: {rows:?}"
-        );
-        assert!(
-            rows.contains(&("code".to_string(), "long form".to_string(), "rule".to_string(), "active".to_string())),
-            "parenthetical row: {rows:?}"
-        );
         let yn: i64 = conn.query_row("SELECT COUNT(*) FROM vocabulary WHERE item_id=?1", [yid], |r| r.get(0)).unwrap();
         assert_eq!(yn, 0, "structured files carry no vocabulary");
         std::env::remove_var("ANCHOR_CLASSIFIER_BASE_URL");

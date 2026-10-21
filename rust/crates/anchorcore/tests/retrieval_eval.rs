@@ -165,7 +165,7 @@ struct EvalDoc {
     /// snippets still see the raw content. Pairs that put query terms in the
     /// heading but not the body measure the vector-leg gain of the prefix.
     heading: Option<String>,
-    /// R40.7: optional per-doc vocabulary, seeded as ACTIVE rule rows for
+    /// R40.7/R45.13: optional per-doc vocabulary, seeded as glossary rows for
     /// the doc's item (`[[term, expansion], ...]`). Pairs whose query term
     /// matches a seeded term (but appears in no body) measure the
     /// query-time vocab expansion end to end.
@@ -294,10 +294,11 @@ fn insert_doc(conn: &Connection, source_id: i64, doc: &EvalDoc) {
     )
     .expect("insert item");
     let item_id = conn.last_insert_rowid();
-    // R40.7: per-doc vocabulary, seeded active (rule-origin) for the doc's item.
+    // R40.7/R45.13: per-doc vocabulary, seeded as a fixture glossary (origin
+    // 'glossary' — a marked file's rows), so it expands in every llm_mode.
     for (term, expansion) in &doc.vocab {
         conn.execute(
-            "INSERT INTO vocabulary (term, expansion, item_id, source_id, origin, status) VALUES (?1,?2,?3,?4,'rule','active')",
+            "INSERT INTO vocabulary (term, expansion, item_id, source_id, origin, status) VALUES (?1,?2,?3,?4,'glossary','active')",
             params![term, expansion, item_id, source_id],
         )
         .expect("insert vocab");

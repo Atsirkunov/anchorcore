@@ -7,6 +7,10 @@
 //! R35.1: items carry the manual PII mark (whole document, people-driven).
 //! `PATCH /items/:id {"is_pii": bool}` sets/clears it. The old
 //! `?gate=provider` honor system is gone with the auto-detect machinery.
+//!
+//! R45.13: `PATCH /items/:id {"is_glossary": bool}` marks a file as a
+//! glossary — its rows (CSV/TSV, Markdown tables, `CODE - x`, `Term: x`)
+//! become active vocabulary right away; unmarking removes them.
 
 use axum::{
     extract::{Path, Query, State},
@@ -21,6 +25,8 @@ use crate::health::AppState;
 #[derive(Deserialize)]
 pub struct UpdateItemPayload {
     pub is_pii: Option<bool>,
+    #[serde(default)]
+    pub is_glossary: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -322,7 +328,7 @@ fn run_list_query(
         )
         .unwrap_or(0);
     let sql = format!(
-        "SELECT id, source_id, title, external_id, is_pii FROM ingested_items {} ORDER BY external_id, id LIMIT ? OFFSET ?",
+        "SELECT id, source_id, title, external_id, is_pii, is_glossary FROM ingested_items {} ORDER BY external_id, id LIMIT ? OFFSET ?",
         filter
     );
     params.push(rusqlite::types::Value::Integer(limit));
@@ -331,7 +337,7 @@ fn run_list_query(
         Ok(s) => s,
         Err(_) => return (vec![], total),
     };
-    let tuples: Vec<(i64, i64, String, String, bool)> = stmt
+    let tuples: Vec<ListRow> = stmt
         .query_map(rusqlite::params_from_iter(params.iter()), |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -339,6 +345,7 @@ fn run_list_query(
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, i64>(4)? != 0,
+                r.get::<_, i64>(5)? != 0,
             ))
         })
         .map(|m| m.filter_map(|r| r.ok()).collect())
@@ -349,13 +356,14 @@ fn run_list_query(
     let flags = pdf_flags_for_page(conn, &tuples);
     let rows = tuples
         .into_iter()
-        .map(|(id, sid, title, path, is_pii)| {
+        .map(|(id, sid, title, path, is_pii, is_glossary)| {
             json!({
                 "id": id,
                 "source_id": sid,
                 "title": title,
                 "path": path,
                 "is_pii": is_pii,
+                "is_glossary": is_glossary,
                 "pdf_quality": flags.get(&id).cloned(),
             })
         })
@@ -366,15 +374,18 @@ fn run_list_query(
 /// Listing-page flags in three batched queries (texts, roots, repair
 /// events) over the page's PDF rows only. Same precedence as the detail
 /// view: current-state `suspect` wins over a historical `repaired`.
+/// Listing row: id, source_id, title, path, is_pii, is_glossary.
+type ListRow = (i64, i64, String, String, bool, bool);
+
 fn pdf_flags_for_page(
     conn: &rusqlite::Connection,
-    rows: &[(i64, i64, String, String, bool)],
+    rows: &[ListRow],
 ) -> std::collections::HashMap<i64, String> {
     let mut out: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
     let pdfs: Vec<(i64, i64, String)> = rows
         .iter()
-        .filter(|(_, _, title, path, _)| item_is_pdf(title, path))
-        .map(|(id, sid, _, path, _)| (*id, *sid, path.clone()))
+        .filter(|(_, _, title, path, _, _)| item_is_pdf(title, path))
+        .map(|(id, sid, _, path, _, _)| (*id, *sid, path.clone()))
         .collect();
     if pdfs.is_empty() {
         return out;
@@ -450,10 +461,32 @@ fn fetch_item(conn: &rusqlite::Connection, item_id: i64) -> Option<Value> {
             },
         )
         .ok();
+    let is_glossary: bool = conn
+        .query_row("SELECT is_glossary FROM ingested_items WHERE id = ?1", [item_id], |r| r.get(0))
+        .unwrap_or(false);
     row.map(|(id, sid, title, path, text, is_pii)| {
         let pdf_quality = pdf_quality_for(conn, sid, &title, &path, &text);
-        item_json(id, sid, title, path, text, is_pii, pdf_quality)
+        let mut v = item_json(id, sid, title, path, text, is_pii, pdf_quality);
+        v["is_glossary"] = json!(is_glossary);
+        v
     })
+}
+
+/// R45.13: mark/unmark a file as a glossary and (re)parse it now — no
+/// re-sync needed. Unmarking drops the file's glossary rows.
+fn apply_glossary_mark(conn: &rusqlite::Connection, item_id: i64, mark: bool) -> Result<(), String> {
+    let (source_id, text): (i64, String) = conn
+        .query_row("SELECT source_id, COALESCE(text, '') FROM ingested_items WHERE id = ?1", [item_id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE ingested_items SET is_glossary = ?1, updated_at = datetime('now') WHERE id = ?2",
+        rusqlite::params![i64::from(mark), item_id],
+    )
+    .map_err(|e| e.to_string())?;
+    let pairs = if mark { crate::vocab::parse_glossary_file(&text) } else { Vec::new() };
+    crate::vocab::store_glossary_file(conn, item_id, source_id, &pairs).map(|_| ())
 }
 
 pub async fn get_handler(
@@ -490,6 +523,10 @@ pub async fn patch_handler(
                 "UPDATE ingested_items SET is_pii = ?1, updated_at = datetime('now') WHERE id = ?2",
                 rusqlite::params![i64::from(mark), item_id],
             );
+        }
+        if let Some(mark) = payload.is_glossary {
+            apply_glossary_mark(&conn, item_id, mark)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": e}))))?;
         }
         match fetch_item(&conn, item_id) {
             Some(v) => Ok(v),
@@ -537,6 +574,33 @@ mod tests {
             csrf_token: String::new(),
             embedder,
         }
+    }
+
+    #[tokio::test]
+    async fn glossary_mark_parses_now_and_unmark_clears() {
+        // R45.13: marking a file makes its rows active vocabulary at once;
+        // unmarking removes them. No proposals, no re-sync.
+        let (dir, conn, _) = seed_db();
+        conn.execute(
+            "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (1,'terms.csv','terms.csv','term,expansion\nKYC,know your customer\nCA,direct debit\n','h2')",
+            [],
+        )
+        .unwrap();
+        let gid = conn.last_insert_rowid();
+        let st = app_state(&dir);
+        let mark = UpdateItemPayload { is_pii: None, is_glossary: Some(true) };
+        let Json(v) = patch_handler(State(st.clone()), Path(gid), Json(mark)).await.unwrap();
+        assert_eq!(v["is_glossary"], true);
+        let n = |c: &rusqlite::Connection| -> i64 {
+            c.query_row("SELECT COUNT(*) FROM vocabulary WHERE item_id=?1 AND origin='glossary'", [gid], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(n(&conn), 2, "rows active right away");
+        let terms = vec!["kyc".to_string()];
+        assert_eq!(crate::vocab::vocab_expansion_terms(&conn, &terms, None), ["know your customer"]);
+        let clear = UpdateItemPayload { is_pii: None, is_glossary: Some(false) };
+        let Json(v) = patch_handler(State(st), Path(gid), Json(clear)).await.unwrap();
+        assert_eq!(v["is_glossary"], false);
+        assert_eq!(n(&conn), 0, "unmark clears the rows");
     }
 
     #[test]
@@ -781,20 +845,20 @@ mod tests {
         let iid = conn.last_insert_rowid();
         drop(conn);
         let state = app_state(&dir);
-        let mark = UpdateItemPayload { is_pii: Some(true) };
+        let mark = UpdateItemPayload { is_pii: Some(true), is_glossary: None };
         let Json(v) = patch_handler(State(state.clone()), Path(iid), Json(mark))
             .await
             .expect("mark must succeed");
         assert_eq!(v.get("is_pii").and_then(|x| x.as_bool()), Some(true));
         let Json(got) = get_handler(State(state.clone()), Path(iid)).await.expect("get must succeed");
         assert_eq!(got.get("is_pii").and_then(|x| x.as_bool()), Some(true), "mark persists");
-        let clear = UpdateItemPayload { is_pii: Some(false) };
+        let clear = UpdateItemPayload { is_pii: Some(false), is_glossary: None };
         let Json(v2) = patch_handler(State(state.clone()), Path(iid), Json(clear))
             .await
             .expect("clear must succeed");
         assert_eq!(v2.get("is_pii").and_then(|x| x.as_bool()), Some(false));
         // Missing item → 404, not a silent no-op.
-        let miss = UpdateItemPayload { is_pii: Some(true) };
+        let miss = UpdateItemPayload { is_pii: Some(true), is_glossary: None };
         match patch_handler(State(state), Path(iid + 99), Json(miss)).await {
             Err((s, _)) => assert_eq!(s, StatusCode::NOT_FOUND),
             Ok(_) => panic!("patch on missing item must 404"),

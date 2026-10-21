@@ -413,7 +413,7 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/18_processed_hash.sql")),
         // R38.1: markdown line ranges + section kind/meta
         M::up(include_str!("../migrations/19_markdown_ranges.sql")),
-        // R40.7: corpus vocabulary table (rules + quarantined LLM pairs)
+        // R40.7: corpus vocabulary table (R45.13: glossary + initialism rules)
         M::up(include_str!("../migrations/20_vocabulary.sql")),
         // R45.0: drop a Python-era vec0 index this binary cannot load
         M::up_with_hook(include_str!("../migrations/21_drop_orphan_vec0.sql"), drop_orphan_vec0),
@@ -421,7 +421,18 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/22_vector_provenance.sql")),
         // R45.8: record fields on entities (decision id/status, action due/done)
         M::up(include_str!("../migrations/23_entity_records.sql")),
+        // R45.13: glossary marks + drop vocabulary no person or initialism backs
+        M::up_with_hook(include_str!("../migrations/24_glossary.sql"), prune_vocabulary),
     ])
+}
+
+/// R45.13 hook for migration 24 (the initialism check is Rust, not SQL).
+fn prune_vocabulary(tx: &rusqlite::Transaction) -> rusqlite_migration::HookResult {
+    let n = crate::vocab::prune_to_trusted(tx)?;
+    if n > 0 {
+        tracing::warn!("R45.13: dropped {} vocabulary rows (LLM proposals + non-initialism rules)", n);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -473,6 +484,12 @@ mod tests {
             conn.execute(&format!("ALTER TABLE entities DROP COLUMN {col}"), [])
                 .unwrap_or_else(|e| panic!("drop entities.{col}: {e}"));
         }
+    }
+
+    /// Undo migration 24 (R45.13) so a re-run has real work to do.
+    fn drop_glossary_artifacts(conn: &Connection) {
+        conn.execute("DROP INDEX IF EXISTS ix_vocabulary_origin", []).unwrap();
+        conn.execute("ALTER TABLE ingested_items DROP COLUMN is_glossary", []).unwrap();
     }
 
     fn vec_trigger_sql(conn: &Connection) -> Vec<String> {
@@ -548,6 +565,7 @@ mod tests {
             conn.execute("INSERT INTO chunks (item_id, content, embedding) VALUES (?1, 'legacy', zeroblob(8))", [item])
                 .unwrap();
             drop_entity_record_columns(&conn);
+            drop_glossary_artifacts(&conn);
             conn.execute("DROP TABLE vec_chunks", []).unwrap();
             conn.pragma_update(None, "writable_schema", "ON").unwrap();
             conn.execute(
@@ -569,7 +587,11 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         run_migrations(&mut conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 23);
+        assert_eq!(v, 24);
+        let glossary_col: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_table_info('ingested_items') WHERE name = 'is_glossary'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(glossary_col, 1, "migration 24 (R45.13) must add is_glossary");
         // R45.5 (migration 22): legacy vectors are stamped with the default
         // HTTP-embedder fingerprint; the state table exists, empty.
         let fp: String = conn
@@ -626,6 +648,7 @@ mod tests {
         conn.execute("DROP TABLE embed_state", []).unwrap();
         conn.pragma_update(None, "user_version", 20).unwrap();
         drop_entity_record_columns(&conn);
+        drop_glossary_artifacts(&conn);
         run_migrations(&mut conn).unwrap();
         assert!(table_exists(&conn, "vec_chunks"));
         assert_eq!(vec_trigger_sql(&conn), before);

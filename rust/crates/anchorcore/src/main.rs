@@ -25,6 +25,7 @@ mod extract;
 mod fernet;
 mod frontend;
 mod fsbrowse;
+mod glossary;
 mod hashing;
 mod health;
 mod items;
@@ -541,8 +542,9 @@ fn build_router(state: health::AppState) -> Router {
         .route("/review/low-confidence", get(review::low_confidence_handler))
         .route("/review/duplicates", get(review::duplicates_handler))
         .route("/review/merge", post(review::merge_handler))
-        .route("/review/vocabulary", get(review::vocabulary_handler))
-        .route("/review/vocabulary/:id", post(review::vocabulary_decide_handler))
+        // R45.13: people-owned glossary (replaces /review/vocabulary)
+        .route("/glossary", get(glossary::list_handler).post(glossary::create_handler))
+        .route("/glossary/:id", delete(glossary::delete_handler))
         // projects (R4.4)
         .route("/projects", get(projects::list_handler).post(projects::create_handler))
         .route("/projects/default", get(projects::default_handler))
