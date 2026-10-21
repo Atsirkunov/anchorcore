@@ -257,7 +257,9 @@ impl Scheduler {
         }
         let has_more = batch.len() == BACKFILL_BATCH;
         // Same breadcrumb-prefixed input as the gated paths — one vector space.
-        let texts: Vec<String> = batch.iter().map(|(_, c, p)| crate::markdown::embed_input(p, c)).collect();
+        // R43.6: plus the nomic-gated document prefix, matching `embed_gated`,
+        // so backfilled rows land in the same space as ingest-time rows.
+        let texts: Vec<String> = batch.iter().map(|(_, c, p)| self.embedder.prefix_document(&crate::markdown::embed_input(p, c))).collect();
         let vectors = self.embedder.embed(texts).await?;
         if vectors.len() != batch.len() {
             return Err(format!("embedder returned {} vectors for {} chunks", vectors.len(), batch.len()));

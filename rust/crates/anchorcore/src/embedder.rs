@@ -42,9 +42,62 @@ pub struct Embedder {
     pub settings: Arc<SettingsService>,
 }
 
+/// R43.6: nomic-embed models expect task prefixes (`search_query: ` on
+/// queries, `search_document: ` on stored chunks — per nomic's usage docs).
+/// A prefixed query against unprefixed documents (or vice versa) degrades
+/// recall, so both sides prefix together, gated on the configured model
+/// name. Non-nomic providers see byte-identical inputs.
+pub fn uses_nomic_prefixes(model: &str) -> bool {
+    model.to_lowercase().contains("nomic")
+}
+
+/// R43.6: query-side input for the embedding call — nomic-gated prefix.
+pub fn prefix_query_text(text: &str, model: &str) -> String {
+    if uses_nomic_prefixes(model) {
+        format!("search_query: {text}")
+    } else {
+        text.to_string()
+    }
+}
+
+/// R43.6: document-side input for the embedding call — nomic-gated prefix.
+pub fn prefix_document_text(text: &str, model: &str) -> String {
+    if uses_nomic_prefixes(model) {
+        format!("search_document: {text}")
+    } else {
+        text.to_string()
+    }
+}
+
+/// R43.6: place returned vectors onto their gated positions. The provider
+/// must return exactly one vector per input — a short response today would
+/// misalign later vectors onto wrong chunks (middle drop) or silently
+/// leave tails unembedded (`.zip` truncation); both now error instead of
+/// corrupting the store. Message mirrors the scheduler backfill's check.
+fn place_vectors(len: usize, embeddable_idx: &[usize], vectors: Vec<Vec<f32>>) -> Result<Vec<Option<Vec<u8>>>, String> {
+    if vectors.len() != embeddable_idx.len() {
+        return Err(format!("embedder returned {} vectors for {} chunks", vectors.len(), embeddable_idx.len()));
+    }
+    let mut out: Vec<Option<Vec<u8>>> = vec![None; len];
+    for (&pos, v) in embeddable_idx.iter().zip(vectors) {
+        out[pos] = Some(pack_single(&v));
+    }
+    Ok(out)
+}
+
 impl Embedder {
     pub fn new(settings: Arc<SettingsService>) -> Self {
         Self { settings }
+    }
+
+    fn embed_model_name(&self) -> String {
+        self.settings.get("embed_model", None).unwrap_or_else(|| "nomic-embed-text".to_string())
+    }
+
+    /// R43.6: document-side prefix for direct `embed` callers (the scheduler
+    /// backfill embeds documents without going through `embed_gated`).
+    pub(crate) fn prefix_document(&self, text: &str) -> String {
+        prefix_document_text(text, &self.embed_model_name())
     }
 
     fn base_url(&self) -> String {
@@ -67,7 +120,7 @@ impl Embedder {
         if texts.is_empty() {
             return Ok(vec![]);
         }
-        let model = self.settings.get("embed_model", None).unwrap_or_else(|| "nomic-embed-text".to_string());
+        let model = self.embed_model_name();
         let base = self.base_url();
         let api_key = self.settings.get("embed_api_key", None).unwrap_or_default();
         let timeout = self.settings.get_float("classifier_timeout", 60.0) as u64;
@@ -126,7 +179,9 @@ impl Embedder {
     /// real model chunk vectors.) `deterministic_embed` remains for tags,
     /// which compare deterministic vectors against each other.
     pub async fn embed_query(&self, text: &str) -> Option<Vec<f32>> {
-        match self.embed(vec![text.to_string()]).await {
+        // R43.6: nomic-gated `search_query: ` prefix (no-op for non-nomic).
+        let input = prefix_query_text(text, &self.embed_model_name());
+        match self.embed(vec![input]).await {
             Ok(v) if !v.is_empty() => v.into_iter().next(),
             _ => None,
         }
@@ -171,13 +226,14 @@ impl Embedder {
         if embeddable_idx.is_empty() {
             return Ok(vec![None; contents.len()]);
         }
-        let to_embed: Vec<String> = embeddable_idx.iter().map(|&i| embed_texts[i].clone()).collect();
+        // R43.6: nomic-gated `search_document: ` prefix (no-op for non-nomic).
+        let model = self.embed_model_name();
+        let to_embed: Vec<String> = embeddable_idx.iter().map(|&i| prefix_document_text(&embed_texts[i], &model)).collect();
         let vectors = self.embed(to_embed).await?;
-        let mut out: Vec<Option<Vec<u8>>> = vec![None; contents.len()];
-        for (pos, vec) in embeddable_idx.into_iter().zip(vectors) {
-            out[pos] = Some(pack_single(&vec));
-        }
-        Ok(out)
+        // R43.6: count-checked placement — a short provider response errors
+        // instead of misaligning vectors onto wrong chunks (middle drop) or
+        // silently leaving tails unembedded (tail drop via `.zip` truncation).
+        place_vectors(contents.len(), &embeddable_idx, vectors)
     }
 
     /// Sync vec0 table after embedding (mirrors trigger-less fallback for `rust`).
@@ -301,5 +357,90 @@ mod tests {
         let svc = std::sync::Arc::new(crate::settings::SettingsService::new(store));
         let e = Embedder::new(svc);
         assert!(e.provider_is_local());
+    }
+
+    #[test]
+    fn place_vectors_tail_drop_errors() {
+        // R43.6: N-1 vectors for N inputs used to truncate silently via
+        // `.zip`, leaving the tail chunk unembedded (None) with Ok.
+        let err = place_vectors(3, &[0, 1, 2], vec![vec![1.0], vec![2.0]]).unwrap_err();
+        assert!(err.contains("2 vectors for 3 chunks"), "unexpected message: {err}");
+    }
+
+    #[test]
+    fn place_vectors_middle_drop_errors() {
+        // R43.6: a middle drop (fewer vectors than gated positions, with an
+        // IDF-skipped gap) used to misalign later vectors onto wrong chunks
+        // via `.zip`. Tail and middle drops are indistinguishable by count —
+        // both now error instead of corrupting the store.
+        let err = place_vectors(4, &[0, 2, 3], vec![vec![1.0], vec![3.0]]).unwrap_err();
+        assert!(err.contains("2 vectors for 3 chunks"), "unexpected message: {err}");
+    }
+
+    #[test]
+    fn place_vectors_extra_vectors_error() {
+        // R43.6: more vectors than requested is also a provider bug — `.zip`
+        // would have dropped the extras silently.
+        let err = place_vectors(2, &[0], vec![vec![1.0], vec![2.0]]).unwrap_err();
+        assert!(err.contains("2 vectors for 1 chunks"), "unexpected message: {err}");
+    }
+
+    #[test]
+    fn place_vectors_aligns_to_gated_positions() {
+        // R43.6 control: distinct vectors land on exactly their gated
+        // positions; IDF-skipped slots stay None.
+        let out = place_vectors(3, &[0, 2], vec![vec![1.0, 0.0], vec![0.0, 3.0]]).unwrap();
+        assert_eq!(out.len(), 3);
+        assert_eq!(unpack_f32(&out[0].clone().unwrap(), 2).unwrap(), vec![1.0, 0.0]);
+        assert!(out[1].is_none(), "IDF-skipped slot must stay None");
+        assert_eq!(unpack_f32(&out[2].clone().unwrap(), 2).unwrap(), vec![0.0, 3.0]);
+    }
+
+    #[test]
+    fn nomic_prefix_detection() {
+        // R43.6: substring gate, case-insensitive — the default model
+        // (`nomic-embed-text`) prefixes; other providers don't.
+        assert!(uses_nomic_prefixes("nomic-embed-text"));
+        assert!(uses_nomic_prefixes("Nomic-Embed-Text-v2"));
+        assert!(uses_nomic_prefixes("registry.local/nomic-embed-text:latest"));
+        assert!(!uses_nomic_prefixes("mxbai-embed-large"));
+        assert!(!uses_nomic_prefixes("bge-m3"));
+        assert!(!uses_nomic_prefixes("qwen3-embedding"));
+        assert!(!uses_nomic_prefixes(""));
+    }
+
+    #[test]
+    fn prefix_texts_nomic_vs_other() {
+        // R43.6: nomic pairs `search_query: ` with `search_document: `;
+        // non-nomic inputs pass through byte-identical.
+        assert_eq!(prefix_query_text("hello", "nomic-embed-text"), "search_query: hello");
+        assert_eq!(prefix_document_text("hello", "nomic-embed-text"), "search_document: hello");
+        assert_eq!(prefix_query_text("hello", "mxbai-embed-large"), "hello");
+        assert_eq!(prefix_document_text("hello", "mxbai-embed-large"), "hello");
+        assert_eq!(prefix_query_text("", "nomic-embed-text"), "search_query: ");
+    }
+
+    #[test]
+    fn embedder_prefix_follows_configured_model() {
+        // R43.6 wiring: the document/query prefix decision reads the
+        // configured `embed_model` (env here; temp data dir so no DB row
+        // can override), defaulting to the nomic default model.
+        let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
+        let mk = || {
+            let dir = tempfile::tempdir().unwrap();
+            let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+            let svc = std::sync::Arc::new(crate::settings::SettingsService::new(store));
+            svc.set_data_dir(dir.path());
+            (dir, Embedder::new(svc))
+        };
+        std::env::set_var("ANCHOR_EMBED_MODEL", "mxbai-embed-large");
+        let (_d1, other) = mk();
+        assert_eq!(other.prefix_document("chunk text"), "chunk text");
+        std::env::set_var("ANCHOR_EMBED_MODEL", "NOMIC-embed-text-custom");
+        let (_d2, nomic) = mk();
+        assert_eq!(nomic.prefix_document("chunk text"), "search_document: chunk text");
+        std::env::remove_var("ANCHOR_EMBED_MODEL");
+        let (_d3, default) = mk();
+        assert_eq!(default.prefix_document("chunk text"), "search_document: chunk text", "default model is nomic");
     }
 }

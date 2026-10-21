@@ -326,6 +326,16 @@ pub fn status_ok(status: Option<&str>, qa_exclude_disputed: bool) -> bool {
     }
 }
 
+/// R43.1: final scope assert for `orchestrate_fusion` — a hit survives only
+/// when its source is in scope. Mirrors `make_hit`'s leniency (a hit with
+/// no `source_id` passes; every loader sets it).
+fn scope_hit_ok(h: &Hit, scope: Option<&HashSet<i64>>) -> bool {
+    match (scope, h.source_id) {
+        (Some(s), Some(sid)) => s.contains(&sid),
+        _ => true,
+    }
+}
+
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.is_empty() || b.is_empty() || a.len() != b.len() {
         return 0.0;
@@ -2280,8 +2290,11 @@ fn strip_filename_tokens(query: &str, names: &[String]) -> String {
 }
 
 /// Item ids for up to 3 named files — one ranked winner per token.
-fn named_item_ids(conn: &Connection, names: &[String]) -> Vec<i64> {
-    names.iter().take(3).filter_map(|name| best_item_for_name(conn, name)).collect()
+/// R43.1: `scope` filters candidates before ranking, so an in-scope
+/// substring match beats an out-of-scope exact match — the latter must
+/// never surface into a project-scoped or public-only answer.
+fn named_item_ids(conn: &Connection, names: &[String], scope: Option<&HashSet<i64>>) -> Vec<i64> {
+    names.iter().take(3).filter_map(|name| best_item_for_name(conn, name, scope)).collect()
 }
 
 /// R39.4: last path segment — the unit whole-token filename matching compares.
@@ -2306,20 +2319,21 @@ fn name_match_tier(name: &str, basename: &str, title: Option<&str>) -> u8 {
 /// substring LIKE (unchanged recall), but the winner is ranked, not
 /// lowest-id: exact basename beats substring (`service.go` over
 /// `myservice.go`), and among substring matches the shortest path wins.
-fn best_item_for_name(conn: &Connection, name: &str) -> Option<i64> {
+fn best_item_for_name(conn: &Connection, name: &str, scope: Option<&HashSet<i64>>) -> Option<i64> {
     let pat = format!("%{}%", escape_like(name));
     let mut stmt = conn
         .prepare(
-            "SELECT id, external_id, title FROM ingested_items WHERE external_id LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' ORDER BY id LIMIT 25",
+            "SELECT id, external_id, title, source_id FROM ingested_items WHERE external_id LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' ORDER BY id LIMIT 25",
         )
         .ok()?;
-    let rows: Vec<(i64, String, Option<String>)> = stmt
-        .query_map(rusqlite::params![pat, pat], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+    let rows: Vec<(i64, String, Option<String>, i64)> = stmt
+        .query_map(rusqlite::params![pat, pat], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .ok()?
         .flatten()
         .collect();
     rows.into_iter()
-        .map(|(id, ext, title)| {
+        .filter(|(_, _, _, sid)| scope.map_or(true, |s| s.contains(sid)))
+        .map(|(id, ext, title, _)| {
             let tier = name_match_tier(name, item_basename(&ext), title.as_deref());
             (tier, ext.len(), id)
         })
@@ -2368,15 +2382,24 @@ fn first_chunk_for_item(conn: &Connection, item_id: i64) -> Option<i64> {
 /// `orchestrate` — no hardcoded filter value on this path). Scoring is
 /// exactly `top + 1.0` — `mark_boosted_hits` detects boosted hits via
 /// `score > pre-boost max`, so this formula must not change.
-pub fn filename_boost_filtered(conn: &Connection, hits: &mut Vec<Hit>, query: &str, qa_exclude_disputed: bool) {
+/// R43.1: `scope` threads the project/public source filter through name
+/// resolution, vocab expansion, and hydration — boosted hits used to
+/// ignore scope and leak non-public chunks into `/qa/public`.
+pub fn filename_boost_filtered(
+    conn: &Connection,
+    hits: &mut Vec<Hit>,
+    query: &str,
+    qa_exclude_disputed: bool,
+    scope: Option<&HashSet<i64>>,
+) {
     let names = filename_tokens(query);
     if names.is_empty() {
         return;
     }
     let content_q = strip_filename_tokens(query, &names);
-    let match_q = fts_match_query_scoped(conn, &content_q, None);
+    let match_q = fts_match_query_scoped(conn, &content_q, scope);
     let mut cids: Vec<i64> = Vec::new();
-    for iid in named_item_ids(conn, &names).into_iter().take(3) {
+    for iid in named_item_ids(conn, &names, scope).into_iter().take(3) {
         let cid = match_q
             .as_deref()
             .and_then(|q| best_chunk_for_item(conn, iid, q))
@@ -2395,7 +2418,7 @@ pub fn filename_boost_filtered(conn: &Connection, hits: &mut Vec<Hit>, query: &s
         return;
     }
     let top = hits.iter().map(|h| h.score).fold(0.0f64, f64::max);
-    let mut boosted = load_hits_filtered(conn, &fresh, None, None, qa_exclude_disputed);
+    let mut boosted = load_hits_filtered(conn, &fresh, scope, None, qa_exclude_disputed);
     for h in boosted.iter_mut() {
         h.score = top + 1.0;
     }
@@ -2417,7 +2440,7 @@ fn boost_exclude_disputed_default() -> bool {
 /// exclusion default from env. Production (`orchestrate_fusion`, R39.12)
 /// passes the flag to `filename_boost_filtered` explicitly.
 pub fn filename_boost(conn: &Connection, hits: &mut Vec<Hit>, query: &str) {
-    filename_boost_filtered(conn, hits, query, boost_exclude_disputed_default())
+    filename_boost_filtered(conn, hits, query, boost_exclude_disputed_default(), None)
 }
 
 /// R39.1: pre-boost max score — the snapshot `mark_boosted_hits` compares to.
@@ -2645,10 +2668,17 @@ fn toc_fusion_lists(
 /// a pre-boost snapshot (R39.1 detection still exact), then return-shape
 /// assembly (R36.3) over the final ranked list, so same-scope merging sees
 /// boosted hits too.
-fn boost_and_assemble(conn: &Connection, mut hits: Vec<Hit>, query: &str, qa_exclude_disputed: bool) -> Vec<Hit> {
+fn boost_and_assemble(
+    conn: &Connection,
+    mut hits: Vec<Hit>,
+    query: &str,
+    qa_exclude_disputed: bool,
+    scope: Option<&HashSet<i64>>,
+) -> Vec<Hit> {
     let prev_top = top_score(&hits);
     // R39.5: the cfg exclusion flag threads in — the boost hardcodes nothing.
-    filename_boost_filtered(conn, &mut hits, query, qa_exclude_disputed);
+    // R43.1: scope threads in too — boosted hits obey project/public scope.
+    filename_boost_filtered(conn, &mut hits, query, qa_exclude_disputed, scope);
     mark_boosted_hits(&mut hits, prev_top);
     parent_return(conn, hits)
 }
@@ -2715,7 +2745,7 @@ pub fn orchestrate_fusion(
         // cut list before boost/return-shape (boost detection still exact —
         // the snapshot runs after the slots).
         apply_keyword_slots(conn, &mut cut, &slot_pool, top_k, halflife_days, query);
-        boost_and_assemble(conn, cut, query, qa_exclude_disputed)
+        boost_and_assemble(conn, cut, query, qa_exclude_disputed, scope)
     } else {
         // R8.1: hybrid search — vector + keyword
         let vector_hits = query_embedding.and_then(|emb| {
@@ -2738,12 +2768,18 @@ pub fn orchestrate_fusion(
             qa_exclude_disputed,
             query,
         );
-        boost_and_assemble(conn, fused, query, qa_exclude_disputed)
+        boost_and_assemble(conn, fused, query, qa_exclude_disputed, scope)
     };
     // R39.5: status re-filtered after `parent_return` — return-shape
     // assembly must never reintroduce excluded evidence — before the
     // relevance gate sees the final list.
-    let hits: Vec<Hit> = hits.into_iter().filter(|h| status_ok(h.status.as_deref(), qa_exclude_disputed)).collect();
+    // R43.1: scope asserted here too — defense in depth so no path
+    // (boost, slots, return-shape) can leak an out-of-scope hit.
+    let hits: Vec<Hit> = hits
+        .into_iter()
+        .filter(|h| status_ok(h.status.as_deref(), qa_exclude_disputed))
+        .filter(|h| scope_hit_ok(h, scope))
+        .collect();
     // R39.3: minimum-relevance gate — empty evidence unless some hit
     // carries a real BM25 match, a boost, or cosine at the floor (ask
     // answers mode "none", search returns no hits).
@@ -4936,7 +4972,7 @@ mod tests {
         other_hit.item_id = Some(other);
         other_hit.score = 15.0;
         let mut hits = vec![other_hit];
-        filename_boost_filtered(&conn, &mut hits, "ship v1.2", true);
+        filename_boost_filtered(&conn, &mut hits, "ship v1.2", true, None);
         assert_eq!(hits.len(), 1, "a version token must leave the list untouched");
         assert_eq!(hits[0].chunk_id, c_other);
         assert_eq!(hits[0].score, 15.0);
@@ -4961,7 +4997,7 @@ mod tests {
         other_hit.item_id = Some(other);
         other_hit.score = 15.0;
         let mut hits = vec![other_hit];
-        filename_boost_filtered(&conn, &mut hits, "how does service.go work", true);
+        filename_boost_filtered(&conn, &mut hits, "how does service.go work", true, None);
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].chunk_id, c_svc, "exact basename must beat the substring match");
         assert_eq!(hits[0].item_id, Some(svc));
@@ -4978,7 +5014,7 @@ mod tests {
         let shallow = insert_item(&conn, sid, "shallow");
         conn.execute("UPDATE ingested_items SET external_id='svc.go.bak' WHERE id=?1", [shallow]).unwrap();
         assert!(deep < shallow, "regression shape needs the long path at the lower id");
-        let ids = named_item_ids(&conn, &["svc.go".to_string()]);
+        let ids = named_item_ids(&conn, &["svc.go".to_string()], None);
         assert_eq!(ids, vec![shallow], "shortest path must win among substring matches");
     }
 
@@ -5000,7 +5036,7 @@ mod tests {
         other_hit.score = 15.0;
         let mut hits = vec![other_hit];
         let prev_top = top_score(&hits);
-        filename_boost_filtered(&conn, &mut hits, "routing-config.yml ACME_FEE", true);
+        filename_boost_filtered(&conn, &mut hits, "routing-config.yml ACME_FEE", true, None);
         mark_boosted_hits(&mut hits, prev_top);
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].chunk_id, cid);
@@ -5068,10 +5104,10 @@ mod tests {
             vec![h]
         };
         let mut on = mk_hits();
-        filename_boost_filtered(&conn, &mut on, "config.yml", true);
+        filename_boost_filtered(&conn, &mut on, "config.yml", true, None);
         assert_eq!(on.len(), 1, "disputed chunk must not boost when excluded");
         let mut off = mk_hits();
-        filename_boost_filtered(&conn, &mut off, "config.yml", false);
+        filename_boost_filtered(&conn, &mut off, "config.yml", false, None);
         assert_eq!(off.len(), 2, "disputed chunk boosts when exclusion is off");
         assert_eq!(off[0].score, 16.0);
     }
@@ -5091,8 +5127,81 @@ mod tests {
         h.item_id = Some(other);
         h.score = 15.0;
         let mut hits = vec![h];
-        filename_boost_filtered(&conn, &mut hits, "legacy.yml", false);
+        filename_boost_filtered(&conn, &mut hits, "legacy.yml", false, None);
         assert_eq!(hits.len(), 1, "stale chunk must never boost");
+    }
+
+    #[test]
+    fn filename_boost_filtered_respects_source_scope() {
+        // R43.1: naming an internal file under a public-only scope must not
+        // boost it (the pre-fix call leaked non-public chunks into
+        // `/qa/public`); in-scope names still boost, unscoped is unchanged.
+        let (_dir, conn) = harness_db();
+        let pub_sid = insert_source(&conn, "s_pub", "public");
+        let pub_iid = insert_item(&conn, pub_sid, "faq");
+        conn.execute("UPDATE ingested_items SET external_id='docs/public-faq.md', title='public-faq.md' WHERE id=?1", [pub_iid]).unwrap();
+        let pub_seed = insert_chunk(&conn, Some(pub_iid), None, "public launch faq details here");
+        let pub_match = insert_chunk(&conn, Some(pub_iid), None, "refund policy details for customers");
+        let int_sid = insert_source(&conn, "s_int", "internal");
+        let int_iid = insert_item(&conn, int_sid, "plan");
+        conn.execute("UPDATE ingested_items SET external_id='docs/internal-launch-plan.md', title='internal-launch-plan.md' WHERE id=?1", [int_iid]).unwrap();
+        let int_cid = insert_chunk(&conn, Some(int_iid), None, "secret launch timeline details here");
+        let scope_pub: HashSet<i64> = [pub_sid].into_iter().collect();
+        let mk_hits = || {
+            let mut h = blank_hit(pub_seed);
+            h.item_id = Some(pub_iid);
+            h.source_id = Some(pub_sid);
+            h.score = 15.0;
+            vec![h]
+        };
+        // Out-of-scope name under a public-only scope: no boost.
+        let mut scoped_out = mk_hits();
+        filename_boost_filtered(&conn, &mut scoped_out, "what is in internal-launch-plan.md", true, Some(&scope_pub));
+        assert_eq!(scoped_out.len(), 1, "out-of-scope named file must not boost");
+        assert_eq!(scoped_out[0].chunk_id, pub_seed);
+        // In-scope name under the same scope: boosts its content match.
+        let mut scoped_in = mk_hits();
+        filename_boost_filtered(&conn, &mut scoped_in, "public-faq.md refund policy", true, Some(&scope_pub));
+        assert_eq!(scoped_in.len(), 2, "in-scope named file must still boost");
+        assert_eq!(scoped_in[0].chunk_id, pub_match, "boost must surface the matching chunk");
+        assert_eq!(scoped_in[0].score, 16.0, "boost scores exactly top + 1.0");
+        // Unscoped control: the internal file boosts as before.
+        let mut unscoped = mk_hits();
+        filename_boost_filtered(&conn, &mut unscoped, "what is in internal-launch-plan.md", true, None);
+        assert_eq!(unscoped.len(), 2, "unscoped boost must be unchanged");
+        assert_eq!(unscoped[0].chunk_id, int_cid);
+        assert_eq!(unscoped[0].item_id, Some(int_iid));
+    }
+
+    #[test]
+    fn orchestrate_fusion_scope_blocks_boost_leak_end_to_end() {
+        // R43.1: through the full fusion path — a public-only scope naming
+        // an internal file yields zero out-of-scope hits, while a project
+        // scope containing the internal source surfaces it via the boost.
+        let (_dir, conn) = harness_db();
+        let pub_sid = insert_source(&conn, "s_pub2", "public");
+        let pub_iid = insert_item(&conn, pub_sid, "notes");
+        insert_chunk(&conn, Some(pub_iid), None, "quarterly planning notes for the team");
+        let int_sid = insert_source(&conn, "s_int2", "internal");
+        let int_iid = insert_item(&conn, int_sid, "plan");
+        conn.execute("UPDATE ingested_items SET external_id='docs/internal-launch-plan.md', title='internal-launch-plan.md' WHERE id=?1", [int_iid]).unwrap();
+        insert_chunk(&conn, Some(int_iid), None, "secret launch timeline details here");
+        let scope_pub: HashSet<i64> = [pub_sid].into_iter().collect();
+        let scope_int: HashSet<i64> = [int_sid].into_iter().collect();
+        let out = orchestrate_fusion(&conn, "what is in internal-launch-plan.md", None, Some(&scope_pub), 5, 1.0, 365.0, 3, true);
+        assert!(
+            out.iter().all(|h| h.source_id.map_or(true, |sid| scope_pub.contains(&sid))),
+            "public-only scope must yield zero out-of-scope hits"
+        );
+        assert!(out.is_empty(), "nothing in scope matches, so the answer is empty — not a leak");
+        let proj = orchestrate_fusion(&conn, "what is in internal-launch-plan.md", None, Some(&scope_int), 5, 1.0, 365.0, 3, true);
+        assert_eq!(proj.len(), 1, "in-scope project search must surface the named file");
+        assert_eq!(proj[0].item_id, Some(int_iid));
+        assert!(proj[0].boosted, "the surfaced hit arrives via the filename boost");
+        assert!(
+            proj.iter().all(|h| h.source_id.map_or(true, |sid| scope_int.contains(&sid))),
+            "project scope must yield zero out-of-scope hits"
+        );
     }
 
     #[test]
