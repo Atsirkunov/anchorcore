@@ -1,34 +1,12 @@
 import { renderGraphMini } from "./components/GraphMini";
 import { initClaudeSession } from "./components/ClaudeSession";
+import { initEmailCapture } from "./capture";
+import { initNavMenu } from "./nav";
 import { marked } from "marked";
 import obsidianMd from "../../docs/guides/obsidian-vault.md?raw";
 import quickstartMd from "../../docs/sample-dataset.md?raw";
 import restMd from "../../docs/guides/rest-api.md?raw";
 import aiMd from "../../docs/sample-ai.md?raw";
-
-// tweakable copy — single source, no CMS
-const copy = {
-  personal: {
-    title: "Ask your files. Get the answer and the exact source.",
-    sub: "A private AI search app. Connect your folders, Drive, Jira, Linear — or any JSON API — and ask in plain language. It finds the decision, who made it and why, and shows the page it came from. Your index stays on your machine. Answers are generated locally unless you connect a cloud model.",
-    proof: "300-page PDF? The answer cites page 250.",
-    roadmap: "personal"
-  },
-  team: {
-    title: "Run on your infrastructure — one container.",
-    sub: "Self-hosted private AI search in one command. Your data stays with you, same cited answers for the whole team. One-time platform license, yours to run — no cloud required.",
-    proof: "One Docker container — your team's company memory, on your infra. Who owns billing? A cited answer, not a guess.",
-    roadmap: "team"
-  },
-  hosted: {
-    title: "Hosted — coming soon.",
-    sub: "We host it for you: the same private AI search and cited answers, no setup. Join the waitlist for early access.",
-    proof: "No Docker, no infra — just connect and ask. Private AI search, hosted.",
-    roadmap: "hosted"
-  }
-} as const;
-
-type Track = keyof typeof copy;
 
 // Direct download assets (release.yml — keep these file names in sync).
 const WIN_ZIP = "https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-windows.zip";
@@ -80,134 +58,24 @@ function applyDownload(a: HTMLAnchorElement, dl: ReturnType<typeof personalDownl
 }
 
 function initDownloadLinks(): void {
-  const roadmap = document.getElementById("cta-roadmap") as HTMLAnchorElement | null;
-  if (roadmap) applyDownload(roadmap, personalDownload());
-}
-
-// Single source for the default hero copy (R18.9): the personal text is
-// authored in index.html, so the first paint is never swapped and crawlers
-// index the same sentence users read. Captured before any track switch - a
-// later switch would leave the DOM holding that track's text instead.
-let personalCopy: { title: string; sub: string; proof: string } | null = null;
-
-function setTrack(t: Track) {
-  const base = copy[t];
-  const c = t === "personal" && personalCopy ? { ...base, ...personalCopy } : base;
-  const title = document.getElementById("hero-title");
-  const sub = document.getElementById("hero-sub");
-  const proof = document.getElementById("track-proof");
-  const roadmap = document.getElementById("roadmap-track");
-  const cta = document.getElementById("cta-primary") as HTMLAnchorElement | null;
+  const dl = personalDownload();
+  for (const id of ["cta-primary", "cta-roadmap"]) {
+    const a = document.getElementById(id) as HTMLAnchorElement | null;
+    if (a) applyDownload(a, dl);
+  }
   const note = document.getElementById("cta-note");
-  if (title) title.textContent = c.title;
-  if (sub) sub.textContent = c.sub;
-  if (proof) proof.textContent = c.proof;
-  if (roadmap) roadmap.textContent = base.roadmap;
-  if (cta) {
-    delete cta.dataset.interest;
-    if (t === "team") {
-      // Mirror the Team pricing card action (R18.5) - one target for the hero
-      // CTA and the card, single source is the card link in index.html.
-      const card = document.getElementById("cta-team") as HTMLAnchorElement | null;
-      cta.textContent = card?.textContent?.trim() ?? "Talk to us — Team license";
-      cta.href = card?.getAttribute("href") ?? "#pricing";
-    } else if (t === "hosted") {
-      cta.textContent = "Join the waitlist";
-      cta.href = "#roadmap";
-      cta.dataset.interest = "hosted";
-      cta.removeAttribute("target");
-    } else {
-      applyDownload(cta, personalDownload());
-    }
-  }
-  const firstLaunch = document.getElementById("first-launch");
-  if (firstLaunch) firstLaunch.hidden = t !== "personal";
-  if (note) {
-    if (t === "team") note.innerHTML = "Docker • one container • your VPC • one-time license, incl. a year of support";
-    else if (t === "hosted") note.innerHTML = "Coming soon — we host it, no setup · <code>hosted</code> tab";
-    else { const dl = personalDownload(); note.innerHTML = `macOS, Windows & Linux • one download, no Docker • data stays on your machine · ${dl.altHtml}`; }
-  }
-
-  document.querySelectorAll<HTMLButtonElement>(".track-toggle .toggle").forEach(b => {
-    const isActive = b.dataset.track === t;
-    b.classList.toggle("active", isActive);
-b.setAttribute("aria-pressed", String(isActive));
-  });
-
-  // persist for app hint (?track=) + reload
-try { localStorage.setItem("anchorcore.track", t); } catch { /* private mode; ?track= still carries it */ }
-  const url = new URL(location.href);
-  url.searchParams.set("track", t);
-  history.replaceState(null, "", url.toString());
+  if (note) note.innerHTML = `macOS, Windows & Linux • one download, no Docker • data stays on your machine · ${dl.altHtml}`;
 }
 
-function initTrack() {
-  const params = new URL(location.href).searchParams.get("track") as Track | null;
-  const stored = (() => { try { return localStorage.getItem("anchorcore.track") as Track | null; } catch { return null; } })();
-  const valid: Track[] = ["personal", "team", "hosted"];
-  const initial: Track = (params && valid.includes(params) ? params : null) ?? (stored && valid.includes(stored) ? stored : null) ?? "personal";
-  // default to personal for faster validation (design-system.md:128)
-  // capture the authored copy once, before any switch can rewrite it (R18.9)
-  const text = (id: string, fallback: string) => document.getElementById(id)?.textContent?.trim() || fallback;
-  personalCopy = {
-    title: text("hero-title", copy.personal.title),
-    sub: text("hero-sub", copy.personal.sub),
-    proof: text("track-proof", copy.personal.proof),
-  };
-  setTrack(initial);
-  document.querySelectorAll<HTMLButtonElement>(".track-toggle .toggle").forEach(b => {
-    b.addEventListener("click", () => setTrack(b.dataset.track as Track));
-  });
-}
+// Audience pages replaced the hero toggle (R44.16): old ?track= links still land
+// on the right page. ?track=personal (and anything else) is a no-op.
+const TRACK_PAGES: Record<string, string> = { team: "/team", hosted: "/hosted" };
 
-// email capture via Formspree (Vanilla JS Ajax — plain fetch, no SDK needed:
-// this page has no runtime deps and the form carries interest metadata).
-const FORMSPREE_ID = "mdeozqge";
-
-type Interest = "hosted" | "team" | "updates" | "download";
-let interest: Interest = "updates"; // set by the entry point that led to the form
-
-document.addEventListener("click", (e) => {
-  const a = (e.target as Element | null)?.closest<HTMLElement>("[data-interest]");
-  if (a?.dataset.interest) interest = a.dataset.interest as Interest;
-});
-
-const THANKS: Record<Interest, string> = {
-  hosted: "Thanks — you're on the hosted waitlist.",
-  team: "Thanks — we'll be in touch about Team.",
-  updates: "Thanks — we'll email you product updates.",
-  download: "Thanks — we'll email you the download link.",
-};
-
-async function captureEmail(inputId: string, msgId: string, source: string) {
-  const el = document.getElementById(inputId) as HTMLInputElement | null;
-  const msg = document.getElementById(msgId);
-  const email = el?.value.trim() ?? "";
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    if (msg) msg.textContent = "Enter a valid email address.";
-    el?.setAttribute("aria-invalid", "true");
-    return;
-  }
-  el?.removeAttribute("aria-invalid");
-  if (msg) msg.textContent = "Sending…";
-  try {
-    const res = await fetch(`https://formspree.io/f/${FORMSPREE_ID}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Accept": "application/json" },
-      body: JSON.stringify({ email, interest, source }),
-    });
-    const data = (await res.json().catch(() => ({}))) as { errors?: { message: string }[] };
-    if (res.ok) {
-      if (msg) msg.textContent = THANKS[interest];
-      if (el) el.value = "";
-    } else {
-      const detail = data.errors?.map((e) => e.message).join(" ");
-      if (msg) msg.textContent = detail || "Something went wrong — try again.";
-      el?.setAttribute("aria-invalid", "true");
-    }
-  } catch {
-    if (msg) msg.textContent = "Couldn't reach the signup service — check your connection and retry.";
-  }
+function redirectLegacyTrack(): boolean {
+  const target = TRACK_PAGES[new URL(location.href).searchParams.get("track") ?? ""];
+  if (!target) return false;
+  location.replace(target);
+  return true;
 }
 
 // On-site guides — repo markdown is the source of truth (../docs), rendered
@@ -270,12 +138,6 @@ function initHashNav() {
 }
 
 // GraphMini — 3 nodes, Stone & Sage, no new hex (uses CSS vars)
-
-// submit handler (real submit — Enter key works, no inline onclick)
-document.getElementById("capture-form-2")?.addEventListener("submit", (e) => {
-  e.preventDefault();
-  void captureEmail("email2", "capture2-msg", "roadmap");
-});
 
 // Terminal animations — abbreviated sessions (demo + agent-skill sections).
 // MCP shapes mirror rust/crates/anchorcore/src/mcp.rs (tools/call with
@@ -418,17 +280,6 @@ t.setAttribute("aria-expanded", String(on));
   });
 }
 
-// Mobile nav (R18.1): <details> works without JS; close it on link click, outside click, Escape, desktop resize.
-function initNavMenu(): void {
-  const menu = document.getElementById("navmenu") as HTMLDetailsElement | null;
-  if (!menu) return;
-  const close = (): void => { menu.open = false; };
-  menu.addEventListener("click", (e) => { if ((e.target as HTMLElement).closest("a")) close(); });
-  document.addEventListener("click", (e) => { if (menu.open && !menu.contains(e.target as Node)) close(); });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
-  window.matchMedia("(min-width: 761px)").addEventListener("change", close);
-}
-
 // Hero agent-skill card: copy the install command (R18.19). No JS: the code stays
 // visible and selectable, only the one-click copy is lost.
 function selectText(el: HTMLElement): void {
@@ -485,8 +336,8 @@ function initReveal(): void {
   targets.forEach((el) => obs.observe(el));
 }
 
-initTrack();
-initDownloadLinks();
+initEmailCapture();
+if (!redirectLegacyTrack()) initDownloadLinks();
 initHashNav();
 initNavMenu();
 initSkillCopy();
