@@ -19,6 +19,6 @@ export function renderGraphMini(containerId: string): void {
       <div class="gnode warn"><b>retention gap</b><small>risk · closed</small></div>
     </div>
     <div class="graph-prune"><span class="gnode pruned"><b>pruned · cap</b></span></div>
-    <p class="graph-foot">RRF k=60 + age decay + diversity cap → cited answer · every hop audited</p>
+    <p class="graph-foot">ranked, de-duplicated → cited answer · every hop audited</p>
   </div>`;
 }
