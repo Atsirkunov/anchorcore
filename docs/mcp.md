@@ -43,6 +43,16 @@ needs custom glue; MCP is the glue.
 | `get_source` | `source_id` | source details (no config/secrets) | Sources |
 | `list_sources` | — | names, connectors, last sync | Sources |
 | `memory_status` | — | version, model availability, pending embeddings | `/system/status` |
+| `decisions` | `q?`, `status?` (`accepted`/`superseded`/`rejected`/`deferred`/`proposed`/`current`), `source_ids?`, `project_id?`, `public_only?`, `limit?`, `offset?` | decision log parsed from record structure: `record_id`, effective `status`, `current`, `owner`, `supersedes`/`superseded_by` (inverse links resolved), `provenance` (item id, source id, path, title, chunk id) + `total`/`blocked`/`refusal` | `GET /decisions` (R45.9) |
+| `actions` | `owner?`, `state?` (`open` default/`done`/`all`), `overdue?`, `q?`, `source_ids?`, `project_id?`, `public_only?`, `limit?`, `offset?` | action items: `task`, `owner`, `due`, `done`, `provenance` + `total`/`blocked`/`refusal`; ISO-dated first | `GET /actions` (R45.9) |
+
+**`decisions`/`actions` are REST first** (R45.9): the MCP tools forward only
+the REST query keys (a test pins it), so an agent on the `anchorcore-search`
+skill gets the same answers without MCP. Scope and gating mirror `search` for
+the same caller: `project_id` + `public_only` resolve the same way, stale (and
+disputed, per `ANCHOR_QA_EXCLUDE_DISPUTED`) rows drop, and an untrusted answer
+provider withholds sensitive/pii-source rows (`blocked`, plus `refusal:
+"gated_provider"` when nothing survives).
 
 **`search` is the workhorse for harnesses.** Harnesses don't want a final
 answer they can't inspect; they want raw context (entities, chunks, refs) to

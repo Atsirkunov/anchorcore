@@ -23,7 +23,7 @@ age decay → diversity/dedupe → live-first → top_k cut → filename boost.
 | One long doc crowds out everything else | Diversity cap too loose | Lower `ANCHOR_RETRIEVAL_MAX_PER_SOURCE` (default 3 per item) |
 | Test/fixture/sample files outrank real docs | Live-first partition disabled or query matches markers | Ensure `ANCHOR_TEST_ENV_DEMOTE` is unset/`0.5`; `1.0` disables the partition. Queries naming test files are exempt by design |
 | Query names a file but another file wins | Filename boost missed or grabbed the wrong file | Boost fires only on dotted tokens (`service.go`, not bare `service`); the file match is substring LIKE + first-id-wins, so it can grab the wrong file (R39.4). It runs after the cut and pulls below-cut chunks at `max + 1.0`, so when it fires it always wins; R43.1 threads project/public scope through the boost plus a final scope assert in `orchestrate_fusion`, so boosted hits can no longer leak across scopes |
-| "Who owns X?" returns generic docs | who_knows leg didn't trigger | Trigger words: who/whom/owns/owner/responsible/expert/knows. Rephrase to include one |
+| "Who owns X?" returns generic docs | Search has no ownership leg (the never-called `who_knows` leg was deleted in R45.9) | Ask the record listings instead: `GET /decisions?q=X` (owner per decision) or `GET /actions?owner=…` — MCP `decisions`/`actions`. Owners come from record structure (`Owner:`, `Name: task` action items) |
 | Same content repeated across hits | Dedupe signature missed | Dedupe keys on `(item_id, first-160-chars normalized)` — cross-item copies are kept by design |
 | Correct chunk missing even at large `k` | Binary gate, not a weight | Check: `stale`/`disputed` status, project scope, `public_only`, or `sensitive`/`pii` label vs untrusted provider |
 
@@ -201,6 +201,8 @@ Code constants (need a rebuild; change only with a failing test in hand):
 
 - `rust/crates/anchorcore/src/retrieval.rs` — `rrf_fuse_multi`,
   `toc_search`, `fuse_and_rank`, `prefer_live_envs`, `filename_boost`,
-  `age_decay`, `who_knows_search`
+  `age_decay`
+- `rust/crates/anchorcore/src/records_api.rs` — decision/action listings
+  (R45.9; same scope + gate as search, not a retrieval leg)
 - `rust/crates/anchorcore/src/answer.rs` — `orchestrate` (TOC ∪ flat
   floor), `RetrievalConfig::from_env*`, `generate_answer`

@@ -344,6 +344,51 @@ async fn tool_memory_status() -> Result<Value, String> {
     http_call("GET", "/system/status", None).await
 }
 
+/// R45.9: percent-encode one query value (RFC 3986 unreserved pass through).
+fn encode_query_value(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    for b in v.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// R45.9: MCP args → query string for `GET /decisions` / `GET /actions`.
+/// Only the keys the REST endpoint understands are forwarded, so the MCP
+/// tools can never diverge from the REST contract.
+fn record_query_path(base: &str, args: &Value, keys: &[&str]) -> String {
+    let mut parts = Vec::new();
+    for key in keys {
+        let Some(v) = args.get(*key) else { continue };
+        let text = match v {
+            Value::String(s) if !s.trim().is_empty() => s.trim().to_string(),
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Array(a) => a.iter().filter_map(|x| x.as_i64()).map(|x| x.to_string()).collect::<Vec<_>>().join(","),
+            _ => continue,
+        };
+        if !text.is_empty() {
+            parts.push(format!("{key}={}", encode_query_value(&text)));
+        }
+    }
+    if parts.is_empty() { base.to_string() } else { format!("{base}?{}", parts.join("&")) }
+}
+
+const DECISION_KEYS: &[&str] = &["q", "status", "source_ids", "project_id", "public_only", "limit", "offset"];
+const ACTION_KEYS: &[&str] = &["q", "owner", "state", "overdue", "source_ids", "project_id", "public_only", "limit", "offset"];
+
+async fn tool_decisions(args: &Value) -> Result<Value, String> {
+    http_call("GET", &record_query_path("/decisions", args, DECISION_KEYS), None).await
+}
+
+async fn tool_actions(args: &Value) -> Result<Value, String> {
+    http_call("GET", &record_query_path("/actions", args, ACTION_KEYS), None).await
+}
+
 // --- MCP JSON-RPC handling ---
 
 #[derive(Deserialize)]
@@ -436,6 +481,40 @@ fn tool_defs() -> Value {
                 "type": "object",
                 "properties": {}
             }
+        },
+        {
+            "name": "decisions",
+            "description": "Decision log parsed from record structure (Decision: headings/fields, Status:, Owner:, ADR front matter). Each row has record_id, status (superseded when a newer record supersedes it), current, owner, supersedes/superseded_by and provenance (item_id, path, chunk_id). Same scope and provider gate as search: refusal=gated_provider + blocked when sensitive rows were withheld. Same contract as REST GET /decisions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "q": {"type": "string", "description": "Substring filter over the decision summary"},
+                    "status": {"type": "string", "description": "accepted | superseded | rejected | deferred | proposed, or 'current' (neither superseded nor rejected)"},
+                    "source_ids": {"type": "string", "description": "Comma list of source ids"},
+                    "project_id": {"type": "integer"},
+                    "public_only": {"type": "boolean"},
+                    "limit": {"type": "integer", "default": 100, "minimum": 1, "maximum": 500},
+                    "offset": {"type": "integer", "default": 0}
+                }
+            }
+        },
+        {
+            "name": "actions",
+            "description": "Action tracker parsed from 'Action items' sections and checkbox bullets: task, owner, due, done, provenance (item_id, path, chunk_id). Defaults to open items; owner match is case-insensitive; overdue=true keeps open items with an ISO due date before today. Same scope and provider gate as search. Same contract as REST GET /actions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "owner": {"type": "string", "description": "Owner name, case-insensitive"},
+                    "state": {"type": "string", "description": "open (default) | done | all"},
+                    "overdue": {"type": "boolean"},
+                    "q": {"type": "string", "description": "Substring filter over the task"},
+                    "source_ids": {"type": "string", "description": "Comma list of source ids"},
+                    "project_id": {"type": "integer"},
+                    "public_only": {"type": "boolean"},
+                    "limit": {"type": "integer", "default": 100, "minimum": 1, "maximum": 500},
+                    "offset": {"type": "integer", "default": 0}
+                }
+            }
         }
     ])
 }
@@ -494,6 +573,8 @@ async fn handle_request(req: Request) -> Option<Response> {
                 }
                 "list_sources" => tool_list_sources().await,
                 "memory_status" => tool_memory_status().await,
+                "decisions" => tool_decisions(&args).await,
+                "actions" => tool_actions(&args).await,
                 _ => Err(format!("unknown tool {name}")),
             };
             match res {
@@ -802,5 +883,67 @@ mod tests {
         for key in ["query", "k", "project_id", "public_only", "env", "kind", "path_prefix", "symbol", "mode"] {
             assert!(props.contains_key(key), "schema must advertise {key}");
         }
+    }
+
+    #[test]
+    fn record_query_path_forwards_known_keys_encoded() {
+        let args = serde_json::json!({"owner": "Mary Ann", "state": "open", "overdue": true, "project_id": 3, "bogus": "x", "q": ""});
+        assert_eq!(
+            record_query_path("/actions", &args, ACTION_KEYS),
+            "/actions?owner=Mary%20Ann&state=open&overdue=true&project_id=3"
+        );
+        assert_eq!(record_query_path("/decisions", &serde_json::json!({}), DECISION_KEYS), "/decisions");
+        assert_eq!(encode_query_value("a&b=c/é"), "a%26b%3Dc%2F%C3%A9");
+    }
+
+    #[test]
+    fn record_tools_schema_matches_rest_keys() {
+        // No feature MCP-only: every advertised arg is a REST query key.
+        let defs = tool_defs();
+        for (name, keys) in [("decisions", DECISION_KEYS), ("actions", ACTION_KEYS)] {
+            let tool = defs.as_array().unwrap().iter().find(|t| t.get("name").and_then(|n| n.as_str()) == Some(name)).expect("tool");
+            let props = tool.pointer("/inputSchema/properties").and_then(|p| p.as_object()).expect("properties");
+            for key in props.keys() {
+                assert!(keys.contains(&key.as_str()), "{name}.{key} is not a REST key");
+            }
+        }
+    }
+
+    /// Mock backend that answers every GET with the request target it saw.
+    async fn spawn_path_echo_mock() -> MockGuard {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind mock");
+        let addr = listener.local_addr().expect("mock addr");
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = listener.accept().await else { break };
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let target = head.split_whitespace().nth(1).unwrap_or("").to_string();
+                let body = serde_json::json!({"path": target, "actions": [{"task": "draft spec", "owner": "Alex"}]}).to_string();
+                let _ = s
+                    .write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes())
+                    .await;
+            }
+        });
+        MockGuard { base: format!("http://{}", addr), task }
+    }
+
+    #[tokio::test]
+    async fn mcp_actions_tool_lists_open_actions_by_owner_over_rest() {
+        let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
+        let mock = spawn_path_echo_mock().await;
+        let saved_url = std::env::var("ANCHOR_BACKEND_URL").ok();
+        std::env::set_var("ANCHOR_BACKEND_URL", &mock.base);
+        let v = tool_actions(&serde_json::json!({"owner": "Alex", "state": "open"})).await;
+        if let Some(u) = saved_url {
+            std::env::set_var("ANCHOR_BACKEND_URL", u);
+        } else {
+            std::env::remove_var("ANCHOR_BACKEND_URL");
+        }
+        let v = v.expect("actions ok");
+        assert_eq!(v["path"], "/actions?owner=Alex&state=open", "MCP must call the REST endpoint");
+        assert_eq!(v["actions"][0]["task"], "draft spec");
     }
 }

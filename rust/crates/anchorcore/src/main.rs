@@ -38,6 +38,7 @@ mod ollama;
 mod pipeline;
 mod projects;
 mod records;
+mod records_api;
 mod retrieval;
 mod review;
 mod scheduler;
@@ -535,6 +536,9 @@ fn build_router(state: health::AppState) -> Router {
         .route("/entities/:id/disputes", get(entities::disputes_handler))
         .route("/entities/:id/conflicts", get(entities::conflicts_list_handler).post(entities::conflict_create_handler))
         .route("/entities/:id/conflicts/:other_id", delete(entities::conflict_delete_handler))
+        // R45.9: decision log + action tracker (MCP `decisions`/`actions` wrap these)
+        .route("/decisions", get(records_api::decisions_handler))
+        .route("/actions", get(records_api::actions_handler))
         .route("/items", get(items::list_handler))
         .route("/items/:id", get(items::get_handler).patch(items::patch_handler))
         .route("/items/:id/outline", get(sections::outline_handler))
