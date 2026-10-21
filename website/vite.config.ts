@@ -5,7 +5,7 @@ import { seo } from "./scripts/seo";
 // Guides are prerendered by scripts/build-guides.mjs into guides/<slug>.html (R44.15);
 // the same list drives the Vite entries and the sitemap, so they cannot drift.
 const guides: { slug: string }[] = JSON.parse(readFileSync(new URL("./scripts/guides.json", import.meta.url), "utf8"));
-const STATIC_PAGES = ["/", "/privacy", "/team", "/hosted"];
+const STATIC_PAGES = ["/", "/privacy", "/team", "/hosted", "/security", "/vs/notebooklm"];
 const ORIGIN = "https://anchorcore.dev";
 
 function sitemap(): Plugin {
@@ -30,13 +30,15 @@ export default defineConfig({
     outDir: "dist",
     rollupOptions: {
       // static entries: the landing page, the GDPR Art. 13 notice (R18.11), the
-      // audience pages /team + /hosted (R44.16) and the prerendered guides (R44.15);
+      // audience pages /team + /hosted (R44.16), the intent pages /security + /vs/notebooklm (R44.17) and the prerendered guides (R44.15);
       // each gets its clean route from its HTML path (html_handling: auto-trailing-slash)
       input: {
         main: "index.html",
         privacy: "privacy.html",
         team: "team.html",
         hosted: "hosted.html",
+        security: "security.html",
+        "vs/notebooklm": "vs/notebooklm.html",
         ...Object.fromEntries(guides.map((g) => [`guides/${g.slug}`, `guides/${g.slug}.html`])),
       },
     },
