@@ -35,6 +35,7 @@ mod mcp_setup;
 mod ollama;
 mod pipeline;
 mod projects;
+mod records;
 mod retrieval;
 mod review;
 mod scheduler;

@@ -166,7 +166,7 @@ Status: `todo` | `doing` | `done` (✅). Update this file when you pick/complete
 
 > Order: **W1 (parallel, file-local)** = R44.1 → R44.4 (shared form shape) ∥ R44.2 ∥ R44.3 ∥ R44.5 ∥ R44.6 + R44.7 + R44.8 (one agent: shared `style.css`). **W2** = R44.9 first (copy everything else hangs on) → R44.12 → R44.13; R44.10 → R44.11; R44.14 alone or last (whole stylesheet). **W3** = R44.15 → R44.17 + R44.18; R44.16 after R44.9 + owner price; R44.19/R44.20 owner calls, anytime. Deploy only from a committed tree (website/README).
 
-### Phase 45 — Agentic vs local LLM, built-in embeddings, entities + vocabulary rework (handover 2026-10-21) — 1 shipped / 4 doing / 8 open
+### Phase 45 — Agentic vs local LLM, built-in embeddings, entities + vocabulary rework (handover 2026-10-21) — 1 shipped / 5 doing / 7 open
 
 > Source: `docs/handover-2026-10-21-llm-modes.md` (findings §2, design §4, owner decisions still needed §7.2). Supersedes R43.30 (→ R45.13) and Phase 31 R31.1/R31.2 (→ R45.9). Waves: R45.0 first; then R45.1 ∥ R45.2 ∥ R45.3 ∥ R45.5; then R45.4 → R45.6 → R45.7; R45.13 after R45.1 + R45.2; R45.8 → R45.10 → R45.9 → R45.11 alongside, serialized with R45.1/R45.13 in `pipeline.rs`/`classifier.rs`. Migration numbers: 21 = R45.0, 22 = R45.5.
 
@@ -181,7 +181,7 @@ Status: `todo` | `doing` | `done` (✅). Update this file when you pick/complete
 | R45.4 | Ship built-in embedder (`embed_provider`, download manager, per-OS features, Team image prefetch) | P1 | 2–3d | R45.3, R45.5 | No-Ollama machine gets hybrid retrieval after first-run download; checksum + resume; offline drop; Ollama provider still works | `embedder.rs`, `embed_local.rs`, `Cargo.toml`, `hosting/Dockerfile`, CI |
 | R45.6 | Wizard rework (mode-first, MCP-or-skill, RAM-sized local picker) | P1 | 2d | R45.2, R45.4 | Both modes + both agent channels walk end-to-end on a clean profile | `OnboardingWizard.tsx`, `McpConnect.tsx`, `api.ts`, `types.ts` |
 | R45.7 | "How AnchorCore works" card + `docs/how-it-works.md` + website copy | P2 | 1d | R45.6 | Every stage lists what/why/where/what-leaves; owner-reviewed copy | System tab, `docs/`, `website/` |
-| R45.8 | Deterministic record parser; no auto-verify | P1 | 2d | R45.1 | `sample/` fixtures with exact expected rows; zero rows from reference docs; new rows `proposed` | `classifier.rs` / `records.rs`, `pipeline.rs` |
+| R45.8 | doing — parser landed (`records.rs`: decisions w/ ID/status/owner/supersession, action items w/ owner/due/done, attendees; tables + fenced code ignored; 9 tests over `sample/` + `sample-ai/`); pipeline wiring + no-auto-verify open (after R45.1) — Deterministic record parser; no auto-verify | P1 | 2d | R45.1 | `sample/` fixtures with exact expected rows; zero rows from reference docs; new rows `proposed` | `classifier.rs` / `records.rs`, `pipeline.rs` |
 | R45.10 | Legacy entity cleanup migration | P2 | 0.5d | R45.8, owner §7.2.3 | Backup first; counts before/after recorded | migration |
 | R45.9 | `decisions`/`actions` for agents (MCP + REST + skill); wire or delete `who_knows`/`graph_expand`; absorbs R31.1/R31.2 | P2 | 2d | R45.8 | Open actions by owner over MCP **and** REST; no dead code; Decisions + Actions views | `mcp.rs`, `entities.rs`, `retrieval.rs`, skills, Entities tab |
 | R45.11 | Opt-in LLM enrichment for unstructured records | P3 | 1d | R45.8 | Only `extract_entities=llm`; always `proposed`; fills `owner` | `classifier.rs` |
