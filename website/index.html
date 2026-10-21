@@ -16,8 +16,8 @@
     {"@type":"Question","name":"Is my data private?","acceptedAnswer":{"@type":"Answer","text":"Yes. AnchorCore runs on your own machine, stores data locally, and keeps secrets in your OS keychain (macOS, Windows) or, where none is available, an encrypted file in your data folder. Sensitive sources are never sent to cloud AI you have not approved."}},
     {"@type":"Question","name":"How is this different from NotebookLM or ChatGPT file search?","acceptedAnswer":{"@type":"Answer","text":"Those are cloud-only uploads. AnchorCore is local-first and self-hostable, connects to folders, Drive, Jira and Linear directly, and gates sensitive sources per your model policy."}},
     {"@type":"Question","name":"Do I need Ollama?","acceptedAnswer":{"@type":"Answer","text":"No. Full-text search works without it. Add Ollama for AI answers with citations."}},
-    {"@type":"Question","name":"Is it free?","acceptedAnswer":{"@type":"Answer","text":"Yes, the personal local app is free. Team self-hosted is a one-time platform license, perpetual including a year of support and updates. Hosted is coming soon."}},
-    {"@type":"Question","name":"Can I check the code myself?","acceptedAnswer":{"@type":"Answer","text":"Yes. AnchorCore is source-available: the repository is public, so you can read what the app does (no telemetry; it only contacts the endpoints you configure) and build it yourself. Personal use is free; team and commercial use require a paid license."}},{"@type":"Question","name":"Can I move to a new computer?","acceptedAnswer":{"@type":"Answer","text":"Yes. System → Backup & restore exports your whole index into one portable .anchorcore-backup file; import it on the new machine with a dry-run preview first. Credentials stay behind unless you opt into the passphrase-encrypted bundle."}}
+    {"@type":"Question","name":"Is it free?","acceptedAnswer":{"@type":"Answer","text":"Yes, the personal local app is free. Team self-hosted is quote-based: see anchorcore.dev/team. Hosted is coming soon."}},
+    {"@type":"Question","name":"Can I check the code myself?","acceptedAnswer":{"@type":"Answer","text":"Yes. AnchorCore is source-available: the repository is public, so you can read what the app does (no telemetry; it only contacts the endpoints you configure) and build it yourself. Personal use is free; team and commercial use require a separate license."}},{"@type":"Question","name":"Can I move to a new computer?","acceptedAnswer":{"@type":"Answer","text":"Yes. System → Backup & restore exports your whole index into one portable .anchorcore-backup file; import it on the new machine with a dry-run preview first. Credentials stay behind unless you opt into the passphrase-encrypted bundle."}}
   ]}
   </script>
   <meta property="og:type" content="website" />
@@ -36,9 +36,9 @@
       <!-- Nav IA (R18.3): every nav label matches its section heading verbatim; section ids stay stable (#roadmap is the legacy anchor for "Get started") -->
       <nav class="nav">
         <a href="#how">How it works</a>
-        <a href="#demo">60-second demo</a>
         <a href="#guides">Guides</a>
         <a href="#pricing">Pricing</a>
+        <a href="/team">For teams</a>
         <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">GitHub ↗</a>
       </nav>
       <a class="nav-cta" href="#download">Download<span class="nav-cta-sfx"> — free for personal use</span></a>
@@ -47,9 +47,9 @@
         <summary class="navmenu-btn"><span class="sr-only">Sections</span><span class="burger" aria-hidden="true"></span></summary>
         <nav class="nav-mobile">
           <a href="#how">How it works</a>
-          <a href="#demo">60-second demo</a>
           <a href="#guides">Guides</a>
           <a href="#pricing">Pricing</a>
+          <a href="/team">For teams</a>
           <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">GitHub ↗</a>
         </nav>
       </details>
@@ -57,7 +57,7 @@
   </header>
 
   <main>
-    <!-- Hero — tweak headline/sub/track in src/main.ts -->
+    <!-- Hero — personal copy only; Team and Hosted have their own pages (R44.16) -->
     <section class="hero">
       <div class="wrap hero-grid">
         <div>
@@ -65,12 +65,7 @@
           <h1 id="hero-title">Ask your files. Get the answer and the exact source.</h1>
           <p id="hero-sub" class="sub">A private AI search app. Connect your folders, Drive, Jira, Linear — or any JSON API — and ask in plain language. It finds the decision, who made it and why, and shows the page it came from. Your index stays on your machine. Answers are generated locally unless you connect a cloud model.</p>
 
-          <div class="track-toggle" role="group" aria-label="Personal, Team or Hosted">
-            <button data-track="personal" class="toggle active" aria-pressed="true">Personal</button>
-            <button data-track="team" class="toggle" aria-pressed="false">Team · Self-hosted</button>
-            <button data-track="hosted" class="toggle" aria-pressed="false">Hosted <span class="soon">soon</span></button>
-          </div>
-          <p id="track-proof" class="proof">300-page PDF? The answer cites page 250.</p>
+          <p class="proof">300-page PDF? The answer cites page 250.</p>
 
           <div class="cta" id="download">
             <a id="cta-primary" class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download — free for personal use</a>
@@ -349,10 +344,10 @@ Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
         <div class="faq">
           <div class="qa"><h3>Is my data private?</h3><p>Yes. The app only listens on your own machine, keeps everything in a database on your disk, and stores passwords in your OS keychain (macOS, Windows) or an encrypted local file. Sources you mark Sensitive are never sent to cloud AI unless you explicitly approve that provider.</p></div>
           <div class="qa"><h3>Can I move to a new computer?</h3><p>Yes. System → Backup &amp; restore exports your whole index — sources, entities, review state — into one portable <code>.anchorcore-backup</code> file. Import it on the new machine (preview the dry run first); credentials stay behind unless you opt into the passphrase-encrypted bundle. Full guide: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/backup.md">Backup, export &amp; device migration</a>.</p></div>
-          <div class="qa"><h3>Can I check the code myself?</h3><p>Yes — AnchorCore is source-available. The repository is public: read exactly what the Rust app does (no telemetry; it only contacts endpoints you configure) or build it yourself. Personal use is free; team and commercial use need a paid license — see <a href="https://github.com/Atsirkunov/anchorcore/blob/main/LICENSE.md">LICENSE.md</a>.</p></div>
+          <div class="qa"><h3>Can I check the code myself?</h3><p>Yes — AnchorCore is source-available. The repository is public: read exactly what the Rust app does (no telemetry; it only contacts endpoints you configure) or build it yourself. Personal use is free; team and commercial use need a separate license — see <a href="https://github.com/Atsirkunov/anchorcore/blob/main/LICENSE.md">LICENSE.md</a>.</p></div>
           <div class="qa"><h3>How does it read documents?</h3><p>It splits documents at their headings (§4.2, 3.1.1, Article 12…) and packs the text into short passages. Each section gets a summary and topic tags, so answers cite the exact section — not “somewhere in the PDF”.</p></div>
           <div class="qa"><h3>Does it stay fast as my library grows?</h3><p>Yes. It narrows thousands of documents to the few relevant sections via tags and summaries, then searches only those. Measured at ~7ms per search on a 30k-chunk benchmark (<a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/guides/hierarchical-toc.md">results</a>, <a href="https://github.com/Atsirkunov/anchorcore/blob/main/rust/scripts/bench_retrieval.py">script</a>); larger libraries are projected, not yet measured.</p></div>
-          <div class="qa"><h3>Is it free?</h3><p>Personal local app — free. Team self-hosted (one Docker container, your VPC) is a one-time platform license, perpetual including a year of support and updates. Hosted is coming soon — join the waitlist.</p></div>
+          <div class="qa"><h3>Is it free?</h3><p>Personal local app — free. Team self-hosted (one Docker container, your VPC) is quote-based — <a href="/team">request a quote</a>. Hosted is coming soon — <a href="/hosted">join the waitlist</a>.</p></div>
           <div class="qa"><h3>Do I need Ollama?</h3><p>No. Without it you still get full-text search over everything. Add Ollama (one install, two free models) for AI answers with citations.</p></div>
           <div class="qa"><h3>Citations you can click?</h3><p>Every answer lists its sources with section links like <code>Art 12 › 12.3</code> — click to jump to the passage. Coding agents get the same cited format.</p></div>
           <div class="qa"><h3>How is this different from NotebookLM or ChatGPT file search?</h3><p>Those are cloud uploads. AnchorCore runs on your machine, connects to folders, Drive, Jira, Linear and APIs — not just uploads — and never sends sources you marked sensitive to AI you haven't approved.</p></div>
@@ -366,8 +361,8 @@ Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
         <h2>Pricing</h2>
         <div class="cols">
           <div class="col"><h3>Personal</h3><div class="price">Free</div><p>Local app on your machine. Folders, Drive, Jira, Linear, cited answers. macOS, Windows &amp; Linux, one download, no Docker.</p><small><a href="#download">Download — free for personal use</a></small></div>
-          <div class="col"><h3>Team · Self-hosted</h3><div class="price">One-time license</div><p>One Docker container in your VPC. Same cited answers for the whole team — perpetual, including a year of support and updates.</p><div class="cta"><a class="btn secondary" id="cta-team" href="mailto:alex@anchorcore.dev?subject=AnchorCore%20Team%20self-hosted%20license">Talk to us — Team license</a></div><small><a href="https://github.com/Atsirkunov/anchorcore/blob/main/hosting/README.md">Deploy via Docker — self-hosted</a></small></div>
-          <div class="col"><h3>Hosted</h3><div class="price">Soon</div><p>We host it, no setup. Join the waitlist for hosted early access, one-click Drive sign-in and Slack.</p><small><a href="#roadmap" data-interest="hosted">Join the waitlist</a></small></div>
+          <div class="col"><h3>Team · Self-hosted</h3><div class="price">Reach out for a quote</div><p>One Docker container in your VPC. Same cited answers for the whole team.</p><div class="cta"><a class="btn secondary" id="cta-team" href="/team">Request a quote</a></div><small><a href="/team">What Team adds</a></small></div>
+          <div class="col"><h3>Hosted</h3><div class="price">Soon</div><p>We host it, no setup. Join the waitlist for hosted early access, one-click Drive sign-in and Slack.</p><small><a href="/hosted">Join the waitlist</a></small></div>
         </div>
         <!-- Wall of love (R18.13): the empty "opening soon" placeholder was removed. It returns when there is a real quote to show — an empty shelf is not social proof. -->
       </div>
@@ -377,7 +372,7 @@ Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
     <section id="roadmap">
       <div class="wrap">
         <h2>Get started</h2>
-        <p>Free for personal use — download the app and ask your first cited question in a minute. Team self-hosted is a one-time platform license. Join the waitlist for hosted early access, one-click Drive sign-in and Slack.</p>
+        <p>Free for personal use — download the app and ask your first cited question in a minute. Running it for a team? <a href="/team">Request a quote</a>. Hosted is coming — join the waitlist for early access, one-click Drive sign-in and Slack.</p>
         <div class="cta">
           <a id="cta-roadmap" class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download — free for personal use</a>
         </div>
@@ -397,15 +392,15 @@ Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
 <section id="privacy" class="alt">
       <div class="wrap">
         <h2>Privacy notice</h2>
-        <p class="sub">Short version: this site doesn't track you. The only personal data we receive is your email if you join the waitlist.</p>
-        <p class="small">No cookies, no analytics, no trackers. Your waitlist email is stored by Formspree under a data-processing agreement, and you can unsubscribe anytime. <a href="/privacy">Read the full privacy notice</a>.</p>
+        <p class="sub">Short version: this site doesn't track you. The only personal data we receive is your email if you join a waitlist, plus the company details you choose to send in a Team quote request.</p>
+        <p class="small">No cookies, no analytics, no trackers. Waitlist and quote-request submissions are stored by Formspree under a data-processing agreement, and you can unsubscribe anytime. <a href="/privacy">Read the full privacy notice</a>.</p>
       </div>
     </section>
   </main>
 
   <footer>
     <div class="wrap foot">
-      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg><b>AnchorCore</b> v1 local · free for personal use · Team self-hosted licensed · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="/privacy">Privacy notice</a> · <a href="#trust">Trust &amp; verification</a></div>
+      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg><b>AnchorCore</b> v1 local · free for personal use · Team self-hosted on request · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="/team">For teams</a> · <a href="/hosted">Hosted waitlist</a> · <a href="/privacy">Privacy notice</a> · <a href="#trust">Trust &amp; verification</a></div>
       <div class="mono">Private by default · cited by design</div>
     </div>
   </footer>

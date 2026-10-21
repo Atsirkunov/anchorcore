@@ -15,7 +15,9 @@ npm run build && npx wrangler deploy  # https://anchorcore.dev
 
 ## Tweakable copy
 
-* `src/main.ts` `copy.personal` / `copy.team` — hero title/sub/proof + `?track=personal|team` + `localStorage["anchorcore.track"]` (track-aware app copy is designed but not wired — `design-system.md` §5.1b)
+* Hero copy is authored once in `index.html` (personal only). The Personal/Team/Hosted hero toggle and its `copy` swap were retired in R44.16: Team and Hosted have their own pages (below). Old `?track=team|hosted` links redirect client-side to `/team` / `/hosted` (`redirectLegacyTrack` in `src/main.ts`); `?track=personal` is a no-op.
+* Pages (each a Vite entry in `vite.config.ts`, clean URL via `html_handling`): `index.html` `/`, `privacy.html` `/privacy`, `team.html` `/team` (Personal-vs-Team table, differentiators, quote form), `hosted.html` `/hosted` (one-field waitlist). Team/Hosted share `src/pages.ts`; header/footer are copied from `index.html`, so edit all three when nav changes. New pages go in `public/sitemap.xml` too.
+* Team page claims must stay checkable in the repo: label gate (`answer.rs`, `docs/gated-access-spec.md`), `system_events` gate records, MCP `public_only` + audit (`docs/mcp.md`), uid backup (`docs/backup.md`), one-container image (`hosting/README.md`). No price, range or fee structure anywhere; no SSO/roles claims before R43.18; no "Built by" angle.
 * `index.html` sections (`Hero`, `Problem→Solution`, `How it works`, `Demo`, `Agent skill`, `Guides`, `FAQ`, `Pricing`, `Get started`, `Privacy`, `Footer`) — all in one file, no component abstraction. `Guides` holds both the entry cards and the guide reader (R18.7 merged the former `Guidebook` section into it). The landing examples use the `sample/` payments corpus only; the `?corpus=ai` swap was dropped when the hero became a simulation (R44.11), and `sample-ai/` survives as the "AI startup" guide tab.
 * Two-path strip under the hero (agent card) + `#agent-skill` both carry `npx skills add Atsirkunov/anchorcore --skill anchorcore-setup` — keep the two in sync if the CLI syntax changes (verified against `npx skills add Atsirkunov/anchorcore --list`: the repo exposes `anchorcore-setup` and `aida-landing-page`)
 * `src/style.css` `:root` tokens — change `--sage` or `--paper` once
@@ -26,7 +28,7 @@ npm run build && npx wrangler deploy  # https://anchorcore.dev
 ## Wording glossary (R44.9)
 
 * Category noun: **private AI search** (the product is "a private AI search app"); the output is a **cited answer**. Those are the only category terms on the landing. Retired from landing copy: "memory", "second brain", "knowledge base" ("company memory" may stay on Team-track copy only).
-* One CTA label per action, identical everywhere (hero, header, pricing, get-started, JS-swapped copy): **Download — free for personal use** / **Watch it work** (links `#demo`) / **Join the waitlist**. The OS-specific text lives in the note under the button, not in the label. Other actions keep their own labels (Team: "Talk to us — Team license"; phones: "Email me the download link").
+* One CTA label per action, identical everywhere (hero, header, pricing, get-started): **Download — free for personal use** / **Watch it work** (links `#demo`) / **Join the waitlist** (also the `/hosted` form button). The OS-specific text lives in the note under the button, not in the label. Team's action is **Request a quote** (pricing card and `/team` form; links `/team`). Phones keep "Email me the download link".
 * "Any JSON API" is a capability statement only: JSON list endpoints with field mapping (no GraphQL/XML/browser-OAuth flows), linking to the REST guide. Never add safety wording ("safe", "sandboxed", "protected") about it: the REST connector has no SSRF/private-address guard.
 
 ## Deploy
@@ -40,7 +42,7 @@ Live at anchorcore.dev via Workers Static Assets (`wrangler.jsonc`: `anchorcore-
 
 ## Capture
 
-Forms POST to Formspree (`FORMSPREE_ID` in `src/main.ts`) with the email + current track + source.
+Forms POST to Formspree (`FORMSPREE_ID` in `src/capture.ts`) as JSON `{email, interest, source}`. `/team` adds `company`, `seats`, `deployment`, `note` (`interest=team`, `source=team-page`); `/hosted` sends `interest=hosted`, `source=hosted-page`; the landing form's interest comes from the `data-interest` link that led to it.
 
 ## Privacy & GDPR
 
@@ -48,11 +50,10 @@ No cookies, no analytics, no third-party requests on page load — so no cookie
 banner needed. The Art. 13 notice is its own page: `privacy.html` is a second
 Vite entry and builds to `/privacy` (R18.11), while `index.html` keeps a
 two-line summary in `#privacy` — the nav still links there, so its label keeps
-matching the on-page heading (R18.3). Keep both in sync with `src/main.ts`.
-Only data flow: waitlist form → Formspree
-(owner must conclude the Art. 28 DPA in their Formspree account). Only storage:
-`localStorage["anchorcore.track"]` hero-tab preference (exempt, disclosed in the
-notice). Do not add analytics/trackers without revisiting the notice + consent.
+matching the on-page heading (R18.3). Keep both in sync with `src/capture.ts`.
+Only data flow: waitlist and quote forms → Formspree
+(owner must conclude the Art. 28 DPA in their Formspree account). No browser
+storage since the hero toggle was retired. Do not add analytics/trackers without revisiting the notice + consent.
 ****Edge-injected agent bridge (R18.10).** Cloudflare's WebMCP preview adds
 `/.webmcp/bridge.js` to every HTML response for this domain. It is **not a repo
 asset** — `git grep webmcp` finds only the disclosures — and it is served from
