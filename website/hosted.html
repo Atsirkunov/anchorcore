@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AnchorCore Hosted — Join the Waitlist</title>
+  <meta name="description" content="Hosted AnchorCore: the same private AI search with cited answers, run for you. Join the waitlist for early access." />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="canonical" href="https://anchorcore.dev/hosted" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="AnchorCore Hosted — Join the Waitlist" />
+  <meta property="og:description" content="Hosted AnchorCore: the same private AI search with cited answers, run for you. Join the waitlist for early access." />
+  <meta property="og:url" content="https://anchorcore.dev/hosted" />
+  <meta property="og:image" content="https://anchorcore.dev/og-card.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://anchorcore.dev/og-card.png" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg>AnchorCore</a>
+      <!-- Nav IA (R18.3): every nav label matches its section heading verbatim; section ids stay stable (#roadmap is the legacy anchor for "Get started") -->
+      <nav class="nav">
+        <a href="/#how">How it works</a>
+        <a href="/#guides">Guides</a>
+        <a href="/#pricing">Pricing</a>
+        <a href="/team">For teams</a>
+        <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">GitHub ↗</a>
+      </nav>
+      <a class="nav-cta" href="/#download">Download<span class="nav-cta-sfx"> — free for personal use</span></a>
+      <!-- header nav (≤1080px): same section links, collapsed behind the burger — keep in sync with .nav (R18.1/R18.3) -->
+      <details class="navmenu" id="navmenu">
+        <summary class="navmenu-btn"><span class="sr-only">Sections</span><span class="burger" aria-hidden="true"></span></summary>
+        <nav class="nav-mobile">
+          <a href="/#how">How it works</a>
+          <a href="/#guides">Guides</a>
+          <a href="/#pricing">Pricing</a>
+          <a href="/team">For teams</a>
+          <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">GitHub ↗</a>
+        </nav>
+      </details>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <div class="wrap">
+        <div class="eyebrow">HOSTED · COMING SOON</div>
+        <h1>AnchorCore, hosted for you.</h1>
+        <p class="sub page-lede">The same private AI search and cited answers with nothing to install or run. Join the waitlist for early access.</p>
+        <form class="capture" id="hosted-form" novalidate>
+          <label for="h-email">Email</label>
+          <input id="h-email" name="email" type="email" placeholder="you@example.com" autocomplete="email" required aria-describedby="hosted-msg" />
+          <button class="btn primary small" type="submit">Join the waitlist</button>
+        </form>
+        <div id="hosted-msg" class="capture-msg" role="status"></div>
+        <p class="small">By joining, you agree to receive AnchorCore updates by email &mdash; unsubscribe anytime. See <a href="/privacy">Privacy notice</a>.</p>
+        <p class="small">Want it today? <a href="/#download">Download the free personal app</a> or <a href="/team">run it yourself as a team</a>.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    <div class="wrap foot">
+      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg><b>AnchorCore</b> v1 local · free for personal use · Team self-hosted on request · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="/team">For teams</a> · <a href="/hosted">Hosted waitlist</a> · <a href="/privacy">Privacy notice</a> · <a href="/#trust">Trust &amp; verification</a></div>
+      <div class="mono">Private by default · cited by design</div>
+    </div>
+  </footer>
+
+  <script type="module" src="/src/pages.ts"></script>
+</body>
+</html>
