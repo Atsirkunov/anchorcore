@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NotebookLM Alternative: Local, Private AI Search — AnchorCore</title>
+<meta name="description" content="Comparing AnchorCore with NotebookLM (now Gemini Notebook): a local-first alternative that indexes folders, Jira, Linear and Drive on your machine and cites the exact section. Where each fits." />
+<link rel="canonical" href="https://anchorcore.dev/vs/notebooklm" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg>AnchorCore</a>
+      <!-- Nav IA (R18.3): every nav label matches its section heading verbatim; section ids stay stable (#roadmap is the legacy anchor for "Get started") -->
+      <nav class="nav">
+        <a href="/#how">How it works</a>
+        <a href="/#guides">Guides</a>
+        <a href="/#pricing">Pricing</a>
+        <a href="/team">For teams</a>
+        <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">GitHub ↗</a>
+      </nav>
+      <a class="nav-cta" href="/#download">Download<span class="nav-cta-sfx"> — free for personal use</span></a>
+      <!-- header nav (≤1080px): same section links, collapsed behind the burger — keep in sync with .nav (R18.1/R18.3) -->
+      <details class="navmenu" id="navmenu">
+        <summary class="navmenu-btn"><span class="sr-only">Sections</span><span class="burger" aria-hidden="true"></span></summary>
+        <nav class="nav-mobile">
+          <a href="/#how">How it works</a>
+          <a href="/#guides">Guides</a>
+          <a href="/#pricing">Pricing</a>
+          <a href="/team">For teams</a>
+          <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">GitHub ↗</a>
+        </nav>
+      </details>
+    </div>
+  </header>
+
+  <main>
+    <article class="guide-page">
+      <div class="wrap">
+<p class="crumbs"><a href="/">AnchorCore</a> <span aria-hidden="true">/</span> vs NotebookLM</p>
+<h1>AnchorCore vs NotebookLM: a local, private alternative</h1>
+<div class="guide-body">
+<p>People search for a "NotebookLM alternative" for two different reasons: they want something that runs on their own machine, or they want it to read live sources such as a folder, Jira or Linear instead of uploaded files. AnchorCore is built for those two cases. NotebookLM is better at others, and this page says which.</p>
+<p><strong>A naming note.</strong> Google announced on July 16, 2026 that it is renaming NotebookLM to Gemini Notebook, calling it "the same standalone product" (<a href="https://blog.google/innovation-and-ai/products/gemini-notebook/notebooklm-gemini-notebook/" rel="noopener noreferrer">Google's announcement</a>). We say NotebookLM here because that is what people still search for.</p>
+
+<h2 id="short">The short version</h2>
+<div class="table-scroll"><table>
+<thead><tr><th scope="col"></th><th scope="col">AnchorCore</th><th scope="col">NotebookLM (Gemini Notebook)</th></tr></thead>
+<tbody>
+<tr><th scope="row">Where it runs</th><td>On your computer. The index is a database in a folder on your disk. Team edition: one container you host.</td><td>A Google-hosted service: sources are uploaded or linked into a notebook (<a href="https://support.google.com/notebooklm/answer/16215270" rel="noopener noreferrer">Google's help</a>).</td></tr>
+<tr><th scope="row">Setup</th><td>Download the app, point it at a folder. For AI answers, install Ollama or add your own model key.</td><td>No install. Open it in a browser and add sources.</td></tr>
+<tr><th scope="row">Which model answers</th><td>Your choice: local Ollama, or any OpenAI-compatible API you bring. Without a model, keyword search still works.</td><td>Google's models.</td></tr>
+<tr><th scope="row">What it reads</th><td>A local folder (including an Obsidian vault) kept in sync, Jira, Linear, Google Drive, and any JSON list API with a field mapping. Documents are read as Word, PowerPoint, Excel, PDF, Markdown, HTML and plain text.</td><td>Per Google's help: Google Docs, Slides and Sheets, PDFs, Word, text and Markdown files, web URLs, public YouTube URLs, audio files, images and more. See their page for the current list.</td></tr>
+<tr><th scope="row">Answers cite</th><td>The document and the section, for example <code>Art 12 › 12.3</code>, in the browser and for coding agents.</td><td>Answers grounded in your sources, with citations. Check Google's documentation for their citation format.</td></tr>
+<tr><th scope="row">Sensitive data</th><td>Label a source <code>sensitive</code> or <code>pii</code> and it is withheld from any cloud model you have not approved. See the <a href="/security">security notes</a>.</td><td>Governed by Google's data-protection terms. Read the current policy for your account type.</td></tr>
+<tr><th scope="row">Use from coding agents</th><td>Yes: an MCP server (<code>ask</code>, <code>search</code>) for Claude Code, Codex, Cursor and others, with a public-only mode and a log of agent calls.</td><td>We did not find this in Google's documentation; check their docs.</td></tr>
+<tr><th scope="row">Teams, sign-in</th><td>Team edition adds optional password sign-in. No SSO and no roles.</td><td>Workspace and enterprise options are described by Google.</td></tr>
+<tr><th scope="row">Audio overviews</th><td>No.</td><td>Yes: "deep-dive discussions between AI hosts" generated from your sources (<a href="https://support.google.com/notebooklm/answer/16212820" rel="noopener noreferrer">Google's help</a>).</td></tr>
+<tr><th scope="row">Cost</th><td>Personal app: free for personal use. Team: quote-based. The model you plug in may cost money if it is a cloud API.</td><td>See Google's current plans and limits; we do not quote them here.</td></tr>
+</tbody></table></div>
+<p>Everything in the NotebookLM column is taken from Google's own help pages and may have changed; each link was checked on October 21, 2026. Anything we could not confirm there is left to their docs rather than guessed.</p>
+
+<h2 id="anchorcore-fits">When AnchorCore is the better fit</h2>
+<ul>
+<li><strong>The documents must not go to a hosted service.</strong> With a local Ollama model, indexing, search and answers run on your machine. Nothing is uploaded, and with Wi-Fi off folder sources still work. With a cloud model you choose, your question and the retrieved passages go to that provider; the labels let you keep chosen sources out of that path.</li>
+<li><strong>Your knowledge lives in a folder or a tracker, and changes.</strong> A folder source re-syncs when files change, and Jira, Linear and Drive are connectors rather than copies you re-upload.</li>
+<li><strong>You want your own model.</strong> Run a small local model, or point it at the OpenAI-compatible endpoint your company already approves.</li>
+<li><strong>You use coding agents.</strong> The same cited search is available to them over MCP.</li>
+<li><strong>You want to check the claims.</strong> The code is public and source-available; personal use is free and team or commercial use needs a license. See <a href="/security">what it sends and where</a>.</li>
+</ul>
+
+<h2 id="notebooklm-fits">When NotebookLM is the better fit</h2>
+<ul>
+<li><strong>You want zero setup.</strong> It is a hosted service: no download, no local model.</li>
+<li><strong>You want audio overviews.</strong> AnchorCore does not generate audio.</li>
+<li><strong>Your sources are web pages, YouTube videos, audio or images.</strong> AnchorCore has no web-page, video or audio source type. It reads files in a folder and the connectors listed above.</li>
+<li><strong>Your material already lives in Google Docs and Slides</strong> and the content is fine to keep in Google's cloud.</li>
+<li><strong>You need heavy collaboration or SSO today.</strong> AnchorCore Team has optional password sign-in only, with no roles and no SSO.</li>
+</ul>
+
+<h2 id="try">Try it</h2>
+<p>The quickest test is the sample company: <a href="/guides/sample">download <code>sample.zip</code></a>, sync it, and ask a cited question. How it handles your data is on the <a href="/security">security notes</a>; running it for a team is on <a href="/team">For teams</a>.</p>
+<p><a class="btn primary" href="/#download">Download — free for personal use</a> <a class="btn secondary" href="/#demo">Watch it work</a></p>
+</div>
+      </div>
+    </article>
+  </main>
+
+  <footer>
+    <div class="wrap foot">
+      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg><b>AnchorCore</b> v1 local · free for personal use · Team self-hosted on request · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="/team">For teams</a> · <a href="/hosted">Hosted waitlist</a> · <a href="/privacy">Privacy notice</a> · <a href="/#trust">Trust &amp; verification</a> · <a href="/security">Security notes</a> · <a href="/vs/notebooklm">vs NotebookLM</a></div>
+      <div class="mono">Private by default · cited by design</div>
+    </div>
+  </footer>
+
+  <script type="module" src="/src/guide.ts"></script>
+</body>
+</html>
