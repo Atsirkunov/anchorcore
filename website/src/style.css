@@ -316,3 +316,35 @@ code{background:var(--paper2);border:1px solid var(--border);border-radius:6px;p
 @media(min-width:1600px){.hero>.flow{width:100%}}
 @media(min-width:2800px){:root{--wrap:1680px}.faq{max-width:1320px}}
 @media (prefers-reduced-motion: reduce){.term-body .caret{animation:none}.reveal{opacity:1;transform:none;transition:none}.shot-body .q,.shot-body .a,.shot-body .cites .cite{animation:none}.guide-panel{animation:none}.seal-drawer,.seal-dot{opacity:1;animation:none}.seal-anim{animation:none}}
+
+/* Simulated Claude Code session (R44.11 stand-in) — final frame is the default
+   state; .cs-playing hides not-yet-revealed parts without removing them from
+   layout, so the card never changes size (CLS 0). Tokens only. */
+.cs{display:flex;flex-direction:column}
+.cs-bar{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.cs-bar span{min-width:0}
+.cs-bar em{font-style:normal;color:var(--sage)}
+.cs-bar .btn{padding:4px 10px;font-size:12px;flex-shrink:0}
+.cs-body{padding:14px;overflow:hidden;box-sizing:border-box}
+.cs-body .q{font-family:ui-monospace,Menlo,monospace;font-size:clamp(12.5px,0.9vw,14px);line-height:1.5}
+.cs-gt{color:var(--sage)}
+.cs-tool{margin:10px 0;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--dim)}
+.cs-tname{color:var(--sage);font-weight:700}
+.cs-body .cites{gap:8px}
+.cs-body .cite{padding:9px 11px;transition:box-shadow 0.25s ease,border-color 0.25s ease}
+.cs-body .cite p{margin:3px 0}
+.cs-body .cite.lit{border-color:var(--sage);box-shadow:0 0 0 2px var(--sage)}
+.cs-body .a{margin:10px 0 0;padding:10px 12px;font-size:clamp(13px,0.9vw,15px);line-height:1.55}
+.cs-mark{color:var(--sage);font-weight:700;font-size:0.75em}
+.cs-body .bar.sage{background:var(--sage)}
+.cs-body .bar.stone{background:var(--stone)}
+.cs-playing .cs-tool,.cs-playing .cs-card,.cs-playing .cs-answer{opacity:0;transition:opacity 0.3s ease}
+.cs-playing .cs-tool.on,.cs-playing .cs-card.on,.cs-playing .cs-answer.on{opacity:1}
+.cs-playing .cs-tstate{visibility:hidden}
+.cs-playing .cs-tool.done .cs-tstate{visibility:visible}
+.cs-playing .cs-seg{visibility:hidden}
+.cs-playing .cs-seg.on{visibility:visible}
+.cs-playing .cs-mark{visibility:hidden}
+.cs-playing .cs-mark.on{visibility:visible}
+@media(max-width:600px){.cs-bar{flex-wrap:wrap}.cs-body{padding:12px}}
+@media (prefers-reduced-motion: reduce){.cs-body .cite{transition:none}.cs-replay{display:none}}
