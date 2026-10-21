@@ -4,8 +4,9 @@
   "version": "1.0.11",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "sample-zip": "node scripts/make-sample-zip.mjs",
+    "dev": "npm run sample-zip && vite",
+    "build": "npm run sample-zip && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src"
