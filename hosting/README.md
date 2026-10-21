@@ -1,9 +1,10 @@
 # Team self-hosted — one container (Rust)
 
 > **Same backend as the Personal app.** This image runs the shipped Rust
-> binary: Axum + SQLite (sqlite-vec/FTS5), the React UI embedded, state on a
+> binary: Axum + SQLite (FTS5 + embedding scan), the React UI embedded, state on a
 > `/data` volume. One container, one process — no Postgres sidecar, no Python.
-> The Team edition requires a one-time platform license, verified offline at
+> The Team edition requires a paid platform license (request a quote at
+> https://anchorcore.dev/team), verified offline at
 > startup (missing/forged refuses to boot; lapsed maintenance warns and runs).
 
 ## Quickstart
@@ -40,7 +41,7 @@ every boot — ed25519, format-compatible with `scripts/make_license.py`
   (Compose: uncomment the volume + env lines in `docker-compose.yml`), or paste
   the JSON into `ANCHOR_LICENSE`.
 - Missing/forged → refuses to boot (exit 2). Expired maintenance → boots with a
-  warning (perpetual license: support/updates lapse, the app keeps running).
+  warning (maintenance lapsing only stops support/updates; the app keeps running).
 - Issue licenses with `python scripts/make_license.py issue --org "Acme"` on
   the seller machine. The signing private key never ships or gets committed.
 

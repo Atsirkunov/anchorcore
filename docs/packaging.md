@@ -12,7 +12,7 @@
 | API backend | **Rust Axum** — app + `anchorcore mcp` mode in one binary (R20.8) | `cargo build --release` → `rust/target/release/anchorcore` (`frontend/dist` embedded; one file per OS zip) |
 | UI | Vite static build (`frontend/dist`) | Embedded via `rust/crates/anchorcore/src/frontend.rs:1` `include_dir!`; served at `127.0.0.1:8000` |
 | Classifier/embed model | External Ollama | Auto-started; models pulled via Settings/sync |
-| Data | SQLite + sqlite-vec `vec0` | Per-user: `~/.anchorcore` |
+| Data | SQLite (FTS5 + embedding scan) | Per-user: `~/.anchorcore` |
 | Legacy Python | FastAPI PyInstaller (on the archive tag) | **Archived** — hosting image fetches it frozen |
 
 ## 2. Building (Rust — shipped)
@@ -44,8 +44,8 @@ the native lib (`*.dll` on Windows, `*.dylib` on macOS). On macOS the spec wraps
 the executable in a `BUNDLE` (`AnchorCore.app`) so Finder launches it **without
 opening Terminal** — double-clicking a bare binary would open one. Recipients
 unzip once and drag `AnchorCore.app` to Applications. On first launch, Gatekeeper
-shows "cannot be verified" — right-click → Open (or System Settings → Privacy &
-Security → Open Anyway) approves it once.
+shows "cannot be verified" — System Settings → Privacy & Security → Open Anyway approves it once
+(right-click → Open no longer bypasses Gatekeeper on recent macOS).
 
 ## 4. Tester experience (first run)
 
@@ -71,7 +71,7 @@ and logs land in `~/.anchorcore/anchorcore.log`.)
 ## 6. Platform strategy
 
 - Windows first (implemented). macOS next (implemented — windowed `.app` bundle,
-  ad-hoc signed; notarization deferred). Linux zips ship in CI (not advertised on the site yet).
+  ad-hoc signed; notarization deferred). Linux zips ship in CI and are offered on the site (OS-aware download, 2026-10-21); Windows and Linux builds are not code-signed.
 - One artifact per platform; data always per-user outside the binary.
 
 ---
