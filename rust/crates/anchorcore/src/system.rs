@@ -104,6 +104,7 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let pending: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL", [], |r| r.get(0)).unwrap_or(0);
+        let (active_fp, stale_vectors) = crate::embed_fp::stale_vector_status(&conn);
         let mut stmt = conn.prepare("SELECT id, name, last_error, error_count FROM sources WHERE error_count > 0 AND enabled = 1").unwrap();
         let failing: Vec<Value> = stmt.query_map([], |r| Ok(serde_json::json!({
             "id": r.get::<_, i64>(0)?,
@@ -142,6 +143,10 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
                 "provider": if embed_is_local { "local" } else { "cloud" },
                 "base_url": snap.embed_base,
                 "model": snap.embed_model,
+                // R45.5: fingerprint of the latest query vector + stored
+                // vectors the vector legs skip until the backfill re-embeds.
+                "active_fingerprint": active_fp,
+                "stale_vectors": stale_vectors,
             },
             // R45.2: who writes answers — "agent" (the user's AI agent via
             // MCP or the REST skill; no server chat model) or "local".

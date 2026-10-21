@@ -208,7 +208,7 @@ async fn record_degraded(data_dir: &str) {
     .await;
 }
 
-async fn record_gate_event(data_dir: &str, blocked: &[String]) {
+pub(crate) async fn record_gate_event(data_dir: &str, blocked: &[String]) {
     let data_dir = data_dir.to_string();
     let blocked_len = blocked.len();
     let labels = blocked.to_vec();
@@ -695,7 +695,7 @@ impl RetrievalConfig {
     }
 }
 
-fn project_scope(conn: &Connection, project_id: Option<i64>, public_only: bool) -> Option<HashSet<i64>> {
+pub(crate) fn project_scope(conn: &Connection, project_id: Option<i64>, public_only: bool) -> Option<HashSet<i64>> {
     let mut scope = project_source_ids(conn, project_id);
     if public_only {
         let public_ids = public_source_ids(conn);

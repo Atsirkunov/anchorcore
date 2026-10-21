@@ -400,3 +400,50 @@ export type BackupImportReport = {
   reembed_job_ids?: number[];
   warnings: string[];
 };
+
+/** R45.9: provenance carried by every decision/action row. */
+export type RecordProvenance = {
+  item_id: number;
+  source_id: number;
+  path: string;
+  title: string;
+  chunk_id: number | null;
+};
+
+/** R45.9: one row of `GET /decisions`. `status` is the effective state —
+ *  "superseded" whenever a newer record supersedes this one. */
+export type DecisionRecord = {
+  entity_id: number;
+  record_id: string;
+  summary: string;
+  status: string;
+  current: boolean;
+  owner: string;
+  supersedes: string[];
+  superseded_by: string;
+  review_status: string;
+  created_at: string;
+  provenance: RecordProvenance;
+};
+
+/** R45.9: one row of `GET /actions`. */
+export type ActionRecord = {
+  entity_id: number;
+  task: string;
+  owner: string;
+  due: string;
+  done: boolean;
+  review_status: string;
+  created_at: string;
+  provenance: RecordProvenance;
+};
+
+/** R45.9: listing envelope; `refusal` is "gated_provider" when every row was withheld. */
+export type RecordListing<K extends string, T> = { [key in K]: T[] } & {
+  total: number;
+  blocked: number;
+  refusal: string | null;
+};
+
+export type DecisionFilters = { q?: string; status?: string; project_id?: number };
+export type ActionFilters = { q?: string; owner?: string; state?: "open" | "done" | "all"; overdue?: boolean; project_id?: number };

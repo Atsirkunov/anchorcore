@@ -568,6 +568,7 @@ mod tests {
             ("GET", "/entities/1/disputes"),
             ("GET", "/entities/1/conflicts"), ("POST", "/entities/1/conflicts"),
             ("DELETE", "/entities/1/conflicts/2"),
+            ("GET", "/decisions"), ("GET", "/actions"),
             ("GET", "/items"), ("GET", "/items/1"), ("PATCH", "/items/1"),
             ("GET", "/items/1/outline"),
             ("GET", "/entities/1/context"),

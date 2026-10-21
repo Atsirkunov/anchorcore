@@ -123,6 +123,27 @@ pub fn comparable_fingerprints(conn: &Connection) -> Option<Vec<String>> {
     Some(stored_fingerprints(conn).into_iter().filter(|fp| same_vector_family(fp, &active)).collect())
 }
 
+/// Status view: the active query fingerprint + how many stored vectors the
+/// vector legs currently ignore (unstamped or another family). Zero before
+/// the first query, when there is nothing to compare against yet.
+pub fn stale_vector_status(conn: &Connection) -> (Option<String>, i64) {
+    let active = active_fingerprint(conn);
+    let Some(comparable) = comparable_fingerprints(conn) else {
+        return (active, 0);
+    };
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL", [], |r| r.get(0))
+        .unwrap_or(0);
+    let fresh: i64 = comparable
+        .iter()
+        .map(|fp| {
+            conn.query_row("SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL AND embed_fp = ?1", [fp], |r| r.get::<_, i64>(0))
+                .unwrap_or(0)
+        })
+        .sum();
+    (active, total - fresh)
+}
+
 /// Distinct stamped fingerprints (index-backed, a handful of rows).
 fn stored_fingerprints(conn: &Connection) -> Vec<String> {
     conn.prepare("SELECT DISTINCT embed_fp FROM chunks WHERE embed_fp IS NOT NULL")
@@ -151,5 +172,25 @@ mod tests {
             assert_eq!(vector_family(bad), None, "{bad}");
             assert!(!same_vector_family(bad, bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn stale_vector_status_counts_incomparable_vectors() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::db::init_db(&dir.path().join("fp.db")).unwrap();
+        conn.execute("INSERT INTO sources (name, connector) VALUES ('s','folder')", []).unwrap();
+        conn.execute("INSERT INTO ingested_items (source_id, content_hash) VALUES (1,'h')", []).unwrap();
+        for fp in [Some("ollama:nomic-embed-text:768"), Some("ollama:mxbai-embed-large:768"), None] {
+            conn.execute(
+                "INSERT INTO chunks (item_id, content, embedding, embed_fp) VALUES (1, 'c', zeroblob(8), ?1)",
+                [fp],
+            )
+            .unwrap();
+        }
+        assert_eq!(stale_vector_status(&conn), (None, 0), "no query yet: nothing to compare against");
+        record_active_fingerprint(&conn, "builtin:nomic-embed-text-v1.5:768").unwrap();
+        let (active, stale) = stale_vector_status(&conn);
+        assert_eq!(active.as_deref(), Some("builtin:nomic-embed-text-v1.5:768"));
+        assert_eq!(stale, 2, "other family + unstamped are stale; ollama nomic shares the family");
     }
 }
