@@ -236,7 +236,7 @@ Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
           <li>Ask: <code>Who owns the billing provider migration?</code> → <code>Sarah</code>, traced through the planning notes.</li>
         </ol>
         <div class="fig"><div class="shot cs" id="cs-demo"><!--session:cs-demo--></div>
-          <p class="cap">Claude Code asking AnchorCore a question over MCP, using the sample dataset.</p></div>
+          <p class="cap">Claude Code calling AnchorCore's MCP <code>search</code> tool on the sample dataset. The results are real; the answer is written by the agent from them.</p></div>
         <div class="cols two">
           <div class="col"><h3>In the browser — for humans</h3><p>Download, unzip, run — the app opens at <code>http://127.0.0.1:8000</code> → Sources → Local folder → <code>sample/</code> → Sync → Ask. Cited answers with clickable section links.</p><code>download → unzip → run</code></div>
           <div class="col"><h3>From your agent — via MCP</h3><p>Claude Code, Codex, opencode, Cursor. Same private search over MCP — <code>ask</code> and <code>search</code> return the same cited answers, no browser needed. Same privacy gates; every agent answer is logged.</p><code>anchorcore mcp</code></div>
