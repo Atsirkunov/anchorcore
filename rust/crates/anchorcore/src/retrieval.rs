@@ -1927,10 +1927,17 @@ pub fn parent_return(conn: &Connection, hits: Vec<Hit>) -> Vec<Hit> {
 /// would demote "latest" or "contest" for containing "test".
 const TEST_ENV_MARKERS: &[&str] = &["test", "tests", "testdata", "sandbox", "staging", "mock", "mocks", "fixture", "fixtures", "example", "examples", "sample", "samples", "dev"];
 
-/// Header markers: the deliberate subset. Whole words like "test", "sample"
-/// or "dev" appear constantly in live prose ("test the connection"), so the
-/// file head only counts fixture-grade vocabulary.
-const HEADER_ENV_MARKERS: &[&str] = &["testdata", "sandbox", "staging", "mock", "mocks", "fixture", "fixtures"];
+/// Header markers, strong tier: fixture-grade vocabulary that one occurrence
+/// in the file head is enough to flag. Whole words like "test", "sample" or
+/// "dev" appear constantly in live prose ("test the connection"), so the head
+/// only counts this deliberate subset.
+const HEADER_ENV_MARKERS: &[&str] = &["testdata", "mock", "mocks", "fixture", "fixtures"];
+
+/// Header markers, weak tier: ordinary domain words ("a proper sandbox",
+/// "Provision sandbox" in payments docs, "staging" in release notes). One
+/// alone is prose; two distinct ones read as an environment fixture. (R43.27:
+/// a lone "sandbox" sank the live billing decision behind every unrelated doc.)
+const HEADER_WEAK_ENV_MARKERS: &[&str] = &["sandbox", "staging"];
 
 fn test_env_factor() -> f64 {
     std::env::var("ANCHOR_TEST_ENV_DEMOTE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.5)
@@ -1948,7 +1955,10 @@ fn has_env_marker(text: &str) -> bool {
 }
 
 fn has_header_marker(head: &str) -> bool {
-    has_marker_in(head, HEADER_ENV_MARKERS)
+    if has_marker_in(head, HEADER_ENV_MARKERS) {
+        return true;
+    }
+    HEADER_WEAK_ENV_MARKERS.iter().filter(|m| has_marker_in(head, &[**m])).count() >= 2
 }
 
 /// Chunk → (item file path, item text head), batched (entity chunks resolve
@@ -4540,6 +4550,13 @@ mod tests {
         assert_eq!(env_for_item("cfg/seed.yml", "package treasury // mock clients"), "test");
         assert_eq!(env_for_item("cfg/app.yml", "runbook: test the connection today"), "live");
         assert_eq!(env_for_item("cfg/app.yml", "see the sample output below"), "live");
+        // R43.27: lone domain words are prose; two distinct weak markers are not.
+        assert_eq!(env_for_item("decisions/d2.md", "We need a proper sandbox before cutover."), "live");
+        assert_eq!(env_for_item("specs/runbook.md", "Step 1: Provision sandbox. Sandbox again."), "live");
+        assert_eq!(env_for_item("notes/rel.md", "rolled to staging first"), "live");
+        assert_eq!(env_for_item("cfg/seed.yml", "# sandbox + staging tenant seed"), "test");
+        assert_eq!(env_for_item("cfg/seed.yml", "# fixture data"), "test");
+        assert_eq!(env_for_item("sandbox/vars.yml", "plain head"), "test");
         assert_eq!(env_for_item("cfg/payment-routes.test.yml", "live-looking head"), "test");
         // End to end through the batched classifier (item text head, 1 KB).
         let (_dir, conn) = harness_db();

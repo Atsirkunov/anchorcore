@@ -75,7 +75,11 @@ The corpus is small on purpose, so every shared word matters:
   like `test/`, `sample/`, `example/`, `dev/` and head words like
   `mock`, `staging`, `fixture`, `sandbox`, `testdata` flip the doc to
   test env and `prefer_live_envs` will reorder it (`eval_fixture_is_live_env`
-  fails loud if this happens).
+  fails loud if this happens). Exception (R43.27): `sandbox` and `staging`
+  are weak head markers — one alone is ordinary prose and stays live;
+  `adr-012-billing` deliberately carries a lone "sandbox" in its head as
+  the regression pin (two distinct weak markers, or any strong one such
+  as `mock`/`fixture`, still flip a doc).
 - Queries must stay filename-free (no dotted tokens): a filename in the
   query triggers `filename_boost`, which bypasses the legs.
 
