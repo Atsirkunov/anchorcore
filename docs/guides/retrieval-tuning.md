@@ -22,7 +22,7 @@ age decay → diversity/dedupe → live-first → top_k cut → filename boost.
 | Old doc should win but fresh trivia outranks it (or vice versa) | Age decay too strong/weak | `ANCHOR_RETRIEVAL_AGE_HALFLIFE_DAYS` (default 365). Larger = age matters less; `0` disables decay |
 | One long doc crowds out everything else | Diversity cap too loose | Lower `ANCHOR_RETRIEVAL_MAX_PER_SOURCE` (default 3 per item) |
 | Test/fixture/sample files outrank real docs | Live-first partition disabled or query matches markers | Ensure `ANCHOR_TEST_ENV_DEMOTE` is unset/`0.5`; `1.0` disables the partition. Queries naming test files are exempt by design |
-| Query names a file but another file wins | Filename boost missed or grabbed the wrong file | Boost fires only on dotted tokens (`service.go`, not bare `service`); the file match is substring LIKE + first-id-wins, so it can grab the wrong file (R39.4). It runs after the cut and pulls below-cut chunks at `max + 1.0`, so when it fires it always wins |
+| Query names a file but another file wins | Filename boost missed or grabbed the wrong file | Boost fires only on dotted tokens (`service.go`, not bare `service`); the file match is substring LIKE + first-id-wins, so it can grab the wrong file (R39.4). It runs after the cut and pulls below-cut chunks at `max + 1.0`, so when it fires it always wins; R43.1 threads project/public scope through the boost plus a final scope assert in `orchestrate_fusion`, so boosted hits can no longer leak across scopes |
 | "Who owns X?" returns generic docs | who_knows leg didn't trigger | Trigger words: who/whom/owns/owner/responsible/expert/knows. Rephrase to include one |
 | Same content repeated across hits | Dedupe signature missed | Dedupe keys on `(item_id, first-160-chars normalized)` — cross-item copies are kept by design |
 | Correct chunk missing even at large `k` | Binary gate, not a weight | Check: `stale`/`disputed` status, project scope, `public_only`, or `sensitive`/`pii` label vs untrusted provider |
@@ -145,6 +145,16 @@ Code constants (need a rebuild; change only with a failing test in hand):
   only on force re-sync (re-chunk NULLs embeddings, re-embed prefixes
   them); the scheduler backfill fills NULLs with prefixed input. No
   silent mass re-embed (recorded 2026-10-19, `rust/docs/decisions.md`).
+- Nomic prefixes (R43.6): `nomic-embed-text` inputs carry
+  `search_query:` (queries) / `search_document:` (documents + scheduler
+  backfill) when the model name contains `nomic`; other models are
+  untouched. Same no-mass-re-embed rule as heading prefixes — old rows
+  stay unprefixed until force re-sync (recorded 2026-10-21,
+  `rust/docs/decisions.md`). Embedding calls now error on vector-count
+  mismatch instead of silently truncating (middle drops used to shift
+  later vectors onto the wrong chunks). The golden eval cannot see
+  prefix effects (hash embeddings), so this ships on unit tests, not
+  the eval.
 - Corpus vocabulary (R40.7): FTS query terms expand through the
   `vocabulary` table (migration 20) on top of the R40.6 curated map.
   Tier-1 rules (parenthetical acronyms, glossary lines) are active

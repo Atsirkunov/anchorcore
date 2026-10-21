@@ -9,6 +9,12 @@ fusion.
 - Runner: `rust/crates/anchorcore/tests/retrieval_eval.rs`
 - Manifest: `eval.json` (docs + summaries + pairs)
 - Corpus: `corpus/` (prose, code, and config docs)
+- `corpus/support/`: file-shaped unit-test fixtures, NOT in the manifest and
+  never indexed. Chunking/cleaning fixes pin there: the harness inserts file
+  bytes directly (no cleaning, no real splitters), and `incident-02-midbody`
+  currently has zero fused margin (any single-token corpus addition
+  displaces it), which blocks new retrievability pins until fusion-side
+  margin work lands.
 
 ## How to run
 
