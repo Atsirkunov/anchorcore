@@ -166,6 +166,28 @@ Status: `todo` | `doing` | `done` (✅). Update this file when you pick/complete
 
 > Order: **W1 (parallel, file-local)** = R44.1 → R44.4 (shared form shape) ∥ R44.2 ∥ R44.3 ∥ R44.5 ∥ R44.6 + R44.7 + R44.8 (one agent: shared `style.css`). **W2** = R44.9 first (copy everything else hangs on) → R44.12 → R44.13; R44.10 → R44.11; R44.14 alone or last (whole stylesheet). **W3** = R44.15 → R44.17 + R44.18; R44.16 after R44.9 + owner price; R44.19/R44.20 owner calls, anytime. Deploy only from a committed tree (website/README).
 
+### Phase 45 — Agentic vs local LLM, built-in embeddings, entities + vocabulary rework (handover 2026-10-21) — 1 shipped / 4 doing / 8 open
+
+> Source: `docs/handover-2026-10-21-llm-modes.md` (findings §2, design §4, owner decisions still needed §7.2). Supersedes R43.30 (→ R45.13) and Phase 31 R31.1/R31.2 (→ R45.9). Waves: R45.0 first; then R45.1 ∥ R45.2 ∥ R45.3 ∥ R45.5; then R45.4 → R45.6 → R45.7; R45.13 after R45.1 + R45.2; R45.8 → R45.10 → R45.9 → R45.11 alongside, serialized with R45.1/R45.13 in `pipeline.rs`/`classifier.rs`. Migration numbers: 21 = R45.0, 22 = R45.5.
+
+| ID | Title | Priority | Est | Dependencies | DoD | Files |
+|---|---|---|---|---|---|---|
+| R45.0 | DONE 2026-10-21 Drop Python-era `vec0` index when the module isn't linked | P0 | 0.5d | — | Migration 21 hook (`drop_orphan_vec0`) removes the vec0 `vec_chunks` schema row via writable_schema + drops its shadow tables + triggers; `run_migrations` no longer restores triggers once the table is gone; `ensure_vec` rebuilds the plain table + fallback triggers. v10-sim test extended (shadow tables, v21, chunk insert/update/delete after boot) + `migration_21_keeps_plain_vec_chunks`. Verified on a copy of the owner's live DB (4 shadow tables dropped, chunk writes succeed). | `db.rs`, `migrations/21_drop_orphan_vec0.sql` |
+| R45.1 | doing — Ingest without a chat model: `extract_entities` (off/rules/llm), `distill_enabled` default false, readiness stops requiring the classifier model | P1 | 1d | — | Golden eval unchanged; default ingest makes zero chat calls (counting mock) | `pipeline.rs`, `classifier.rs`, `ollama.rs`, `settings.rs` |
+| R45.2 | doing — `llm_mode` (agent/local) + `agent_compose` on every surface | P1 | 1.5d | — | Per-surface tests both modes; zero chat calls in agent mode; `gated_provider` refusal intact; `/system/status` reports mode | `answer.rs`, `mcp.rs`, `settings.rs`, `system.rs`, Ask tab |
+| R45.2b | MCP sampling when the client advertises it | P3 | 1.5d | R45.2 | `agent_compose` stays the fallback | `mcp.rs` |
+| R45.3 | doing — Finish the embedding-engine proof (candle `nomic_bert`) | P1 | 1d | — | MinGW + Linux builds; Win/Linux CPU throughput; f16 speed + parity; golden eval with real vectors; decision entry | probe → `docs/probes/`, `rust/docs/decisions.md` |
+| R45.5 | doing — Vector provenance + re-embed on model change | P1 | 1d | — | Fingerprint stored (migration 22); mismatch queues re-embed; no mixed-vector comparison (test) | `embedder.rs`, `scheduler.rs`, `retrieval.rs`, migration |
+| R45.4 | Ship built-in embedder (`embed_provider`, download manager, per-OS features, Team image prefetch) | P1 | 2–3d | R45.3, R45.5 | No-Ollama machine gets hybrid retrieval after first-run download; checksum + resume; offline drop; Ollama provider still works | `embedder.rs`, `embed_local.rs`, `Cargo.toml`, `hosting/Dockerfile`, CI |
+| R45.6 | Wizard rework (mode-first, MCP-or-skill, RAM-sized local picker) | P1 | 2d | R45.2, R45.4 | Both modes + both agent channels walk end-to-end on a clean profile | `OnboardingWizard.tsx`, `McpConnect.tsx`, `api.ts`, `types.ts` |
+| R45.7 | "How AnchorCore works" card + `docs/how-it-works.md` + website copy | P2 | 1d | R45.6 | Every stage lists what/why/where/what-leaves; owner-reviewed copy | System tab, `docs/`, `website/` |
+| R45.8 | Deterministic record parser; no auto-verify | P1 | 2d | R45.1 | `sample/` fixtures with exact expected rows; zero rows from reference docs; new rows `proposed` | `classifier.rs` / `records.rs`, `pipeline.rs` |
+| R45.10 | Legacy entity cleanup migration | P2 | 0.5d | R45.8, owner §7.2.3 | Backup first; counts before/after recorded | migration |
+| R45.9 | `decisions`/`actions` for agents (MCP + REST + skill); wire or delete `who_knows`/`graph_expand`; absorbs R31.1/R31.2 | P2 | 2d | R45.8 | Open actions by owner over MCP **and** REST; no dead code; Decisions + Actions views | `mcp.rs`, `entities.rs`, `retrieval.rs`, skills, Entities tab |
+| R45.11 | Opt-in LLM enrichment for unstructured records | P3 | 1d | R45.8 | Only `extract_entities=llm`; always `proposed`; fills `owner` | `classifier.rs` |
+| R45.12 | Doc drift + skills update (lands with each row) | P2 | 0.5d | — | Handover §8 table | docs, skills |
+| R45.13 | Vocabulary redesign: glossary + query-time expansion; delete proposals, review queue, Tier-2 (supersedes R43.30) | P1 | 2d | R45.1, R45.2 | No vocab rows without human or initialism-checked rule origin; `dunning-01` green; glossary CRUD + file parse + backup round-trip | `vocab.rs`, `classifier.rs`, `review.rs`, `retrieval.rs`, `answer.rs`, `backup.rs`, tabs, migration |
+
 ---
 
 ## Shipped log (2026-10-10 — 2026-10-14)

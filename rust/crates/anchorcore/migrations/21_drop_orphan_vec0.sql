@@ -1,0 +1,5 @@
+-- R45.0: Python-era DBs carry a real vec0 virtual table (`vec_chunks` + its
+-- shadow tables) and vec_chunks_* triggers on chunks. This binary links no
+-- sqlite-vec, so every chunk write fired "no such module: vec0". The work is
+-- in the Rust hook (`drop_orphan_vec0`, db.rs): a vec0 table without the
+-- module can only be removed through writable_schema. Fresh DBs: no-op.
