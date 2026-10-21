@@ -2,9 +2,9 @@
      answer. Matte Stone & Sage only. Static asset, no JS. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 260" font-family="ui-monospace, Menlo, monospace">
   <!-- stage labels -->
-  <text x="8" y="22" font-size="13" letter-spacing="2" fill="#6b7280">CONNECT</text>
-  <text x="460" y="22" font-size="13" letter-spacing="2" fill="#6b7280">FILE · ON YOUR MACHINE</text>
-  <text x="760" y="22" font-size="13" letter-spacing="2" fill="#6b7280">ASK · CITED</text>
+  <text x="8" y="22" font-size="13" letter-spacing="2" fill="#5C6470">CONNECT</text>
+  <text x="460" y="22" font-size="13" letter-spacing="2" fill="#5C6470">FILE · ON YOUR MACHINE</text>
+  <text x="760" y="22" font-size="13" letter-spacing="2" fill="#5C6470">ASK · CITED</text>
   <!-- source cards -->
   <g>
     <rect x="8" y="38" width="210" height="52" rx="10" fill="#ffffff" stroke="#e2ddd6" stroke-width="2"/>
