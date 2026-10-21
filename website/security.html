@@ -88,7 +88,7 @@
 <li>Connector credentials (token, API key, password, client secret) are stripped out of a source's config before it is saved, so the database row holds none, and reading the config back returns them masked. The cloud answer, classifier and embedder API keys are stored the same way. (<code>secrets.rs</code>, <code>settings.rs</code>.)</li>
 <li>The store tries the operating system keychain first, which is the credential store of macOS and Windows. If that is unavailable it writes one encrypted file per key in your data folder (<code>secrets.enc.*</code>), with the encryption key in a file beside them (permissions 0600 on Unix). That guards against casual reading of a copied file, not against someone who can read your whole data folder.</li>
 <li>We have not verified keychain behavior on Linux, so we make no claim about it; expect the encrypted-file fallback there unless you have tested otherwise.</li>
-<li>Logs redact tokens. The log is <code>anchorcore.log</code> in your data folder.</li>
+<li>The API masks stored secrets as <code>***set***</code> when a source's configuration is read back. The log is <code>anchorcore.log</code> in your data folder.</li>
 </ul>
 
 <h2 id="access">Who can reach the app</h2>
