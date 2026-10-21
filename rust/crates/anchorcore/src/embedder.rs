@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use crate::embed_fp::{fingerprint, model_family, record_active_fingerprint, PROVIDER_HTTP};
 use crate::settings::SettingsService;
 
 pub const BATCH_SIZE: usize = 32;
@@ -40,6 +41,10 @@ pub fn unpack_f32(data: &[u8], dims: usize) -> Option<Vec<f32>> {
 #[derive(Clone)]
 pub struct Embedder {
     pub settings: Arc<SettingsService>,
+    /// R45.5: fired when a query vector's family differs from the recorded
+    /// one (model switch) — the scheduler re-embeds stale vectors right away
+    /// instead of waiting for the 15-minute backfill tick.
+    pub family_changed: Arc<tokio::sync::Notify>,
 }
 
 /// R43.6: nomic-embed models expect task prefixes (`search_query: ` on
@@ -87,11 +92,56 @@ fn place_vectors(len: usize, embeddable_idx: &[usize], vectors: Vec<Vec<f32>>) -
 
 impl Embedder {
     pub fn new(settings: Arc<SettingsService>) -> Self {
-        Self { settings }
+        Self { settings, family_changed: Arc::new(tokio::sync::Notify::new()) }
     }
 
     fn embed_model_name(&self) -> String {
         self.settings.get("embed_model", None).unwrap_or_else(|| "nomic-embed-text".to_string())
+    }
+
+    /// R45.5: provider tag stamped on this embedder's vectors.
+    fn provider(&self) -> &'static str {
+        PROVIDER_HTTP
+    }
+
+    /// R45.5: dim-free family of the configured embedder — stored vectors
+    /// outside it are stale and the backfill re-embeds them.
+    pub fn configured_family(&self) -> String {
+        model_family(self.provider(), &self.embed_model_name())
+    }
+
+    /// R45.5: fingerprint for a `dim`-wide vector from the configured embedder.
+    pub fn fingerprint(&self, dim: usize) -> String {
+        fingerprint(self.provider(), &self.embed_model_name(), dim)
+    }
+
+    /// R45.5: record the query vector's fingerprint before retrieval reads
+    /// it, and wake the re-embed when the family changed. Returns false when
+    /// it could not be recorded: retrieval would then filter against a stale
+    /// fingerprint, so the caller drops the vector (keyword-only) instead.
+    /// Skipped (true) when the data dir is unpinned (unit tests), so nothing
+    /// writes a stray `./data`.
+    async fn record_query_fingerprint(&self, fp: String) -> bool {
+        let Some(dir) = self.settings.data_dir() else { return true };
+        let db_path = crate::db::resolve_db_path(&dir.to_string_lossy());
+        let recorded = tokio::task::spawn_blocking(move || {
+            let conn = crate::db::open_db(&db_path).map_err(|e| e.to_string())?;
+            record_active_fingerprint(&conn, &fp)
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+        match recorded {
+            Ok(changed) => {
+                if changed {
+                    self.family_changed.notify_one();
+                }
+                true
+            }
+            Err(e) => {
+                tracing::warn!("recording query embedding fingerprint failed ({}); keyword-only", e);
+                false
+            }
+        }
     }
 
     /// R43.6: document-side prefix for direct `embed` callers (the scheduler
@@ -181,10 +231,16 @@ impl Embedder {
     pub async fn embed_query(&self, text: &str) -> Option<Vec<f32>> {
         // R43.6: nomic-gated `search_query: ` prefix (no-op for non-nomic).
         let input = prefix_query_text(text, &self.embed_model_name());
-        match self.embed(vec![input]).await {
-            Ok(v) if !v.is_empty() => v.into_iter().next(),
-            _ => None,
+        let vector = match self.embed(vec![input]).await {
+            Ok(v) if !v.is_empty() => v.into_iter().next()?,
+            _ => return None,
+        };
+        // R45.5: the vector legs compare only against its family.
+        let fp = self.fingerprint(vector.len());
+        if !self.record_query_fingerprint(fp).await {
+            return None;
         }
+        Some(vector)
     }
 
     /// Embed with IDF+trust gating (mirrors `backend/app/pipeline.py:316` `_embed_item`).
@@ -238,12 +294,21 @@ impl Embedder {
 
     /// Sync vec0 table after embedding (mirrors trigger-less fallback for `rust`).
     /// In Python, `vec_chunks` is kept via triggers; in Rust we upsert explicitly when needed.
+    ///
+    /// R45.5: every chunk-vector write path (ingest, re-embed job, backfill)
+    /// calls this right after `UPDATE chunks SET embedding`, so it is also
+    /// where the vector's provenance fingerprint is stamped.
     pub fn sync_vec(&self, conn: &rusqlite::Connection, chunk_id: i64, embedding: &[u8]) -> Result<(), String> {
         // embedding stored as blob in chunks.embedding; vec0 is virtual via `vec_chunks` - we insert rowid=chunk_id
         // If vec0 unavailable, ignore.
         if embedding.is_empty() {
             return Ok(());
         }
+        conn.execute(
+            "UPDATE chunks SET embed_fp = ?1 WHERE id = ?2",
+            rusqlite::params![self.fingerprint(embedding.len() / 4), chunk_id],
+        )
+        .map_err(|e| e.to_string())?;
         let dim: usize = std::env::var("ANCHOR_EMBED_DIM").ok().and_then(|v| v.parse().ok()).unwrap_or(768);
         if embedding.len() != dim * 4 {
             return Ok(());
@@ -394,6 +459,26 @@ mod tests {
         assert_eq!(unpack_f32(&out[0].clone().unwrap(), 2).unwrap(), vec![1.0, 0.0]);
         assert!(out[1].is_none(), "IDF-skipped slot must stay None");
         assert_eq!(unpack_f32(&out[2].clone().unwrap(), 2).unwrap(), vec![0.0, 3.0]);
+    }
+
+    #[test]
+    fn record_active_fingerprint_reports_family_changes() {
+        // R45.5 (needs the real schema, so it lives here, not in embed_fp).
+        use crate::embed_fp::active_fingerprint;
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::db::init_db(&dir.path().join("t.db")).unwrap();
+        assert_eq!(active_fingerprint(&conn), None);
+        assert!(record_active_fingerprint(&conn, "ollama:nomic-embed-text:768").unwrap(), "first record = re-embed check");
+        assert!(!record_active_fingerprint(&conn, "ollama:nomic-embed-text:768").unwrap());
+        // provider switch inside the nomic family: no re-embed, no event
+        assert!(!record_active_fingerprint(&conn, "builtin:nomic-embed-text-v1.5:768").unwrap());
+        assert_eq!(active_fingerprint(&conn).as_deref(), Some("builtin:nomic-embed-text-v1.5:768"));
+        let events = |c: &rusqlite::Connection| -> i64 {
+            c.query_row("SELECT COUNT(*) FROM system_events WHERE component='embedder'", [], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(events(&conn), 0);
+        assert!(record_active_fingerprint(&conn, "ollama:mxbai-embed-large:1024").unwrap());
+        assert_eq!(events(&conn), 1);
     }
 
     #[test]

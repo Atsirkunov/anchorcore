@@ -66,6 +66,13 @@ mod retrieval;
 #[path = "../src/vocab.rs"]
 mod vocab;
 
+// R45.5: the vector legs filter by provenance family. The eval never records
+// a query fingerprint, so the filter is a no-op here (hash vectors compare
+// with hash vectors), but the production code path is the one compiled.
+#[allow(dead_code)]
+#[path = "../src/embed_fp.rs"]
+mod embed_fp;
+
 /// Minimal `embedder` shim: `retrieval.rs`'s inner unit-test module is
 /// compiled into this target (`cfg(test)` is set for test builds) and calls
 /// `crate::embedder::pack_single`. This is byte-identical to

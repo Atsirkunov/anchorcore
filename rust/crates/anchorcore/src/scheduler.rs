@@ -154,15 +154,21 @@ impl Scheduler {
 
     /// Spawn the backfill task: one run at startup, then every 15 minutes.
     /// A failed pass retries at 60 s (Ollama often starts after us) instead
-    /// of leaving chunks pending for the full interval.
+    /// of leaving chunks pending for the full interval. R45.5: a query
+    /// vector from a new embedding family wakes it immediately — that pass
+    /// is the re-embed job for the now-stale vectors.
     pub fn spawn_backfill(self: &Arc<Self>) {
         let sched = self.clone();
         tokio::spawn(async move {
             sched.backfill_with_retry().await;
             let mut tick = tokio::time::interval(Duration::from_secs(BACKFILL_INTERVAL_SECS));
             tick.tick().await; // consume the immediate tick
+            let changed = sched.embedder.family_changed.clone();
             loop {
-                tick.tick().await;
+                tokio::select! {
+                    _ = tick.tick() => {}
+                    _ = changed.notified() => tracing::info!("embedding family changed: re-embedding stale vectors"),
+                }
                 sched.backfill_with_retry().await;
             }
         });
@@ -196,17 +202,17 @@ impl Scheduler {
         if !self.embedder.cloud_trusted() {
             tracing::info!("embedding backfill: provider untrusted — label-gated chunks stay pending");
         }
+        let mut cursor = 0i64;
         loop {
-            match self.backfill_batch().await {
-                Ok((n, more)) => {
+            match self.backfill_batch(cursor).await {
+                Ok((n, next)) => {
                     embedded += n;
-                    if !more {
-                        break;
-                    }
+                    let Some(next) = next else { break };
+                    cursor = next;
                 }
                 Err(e) => {
                     failed = true;
-                    let pending = pending_embedding_count(&self.data_dir);
+                    let pending = pending_embedding_count(&self.data_dir, &self.embedder.configured_family());
                     tracing::warn!("embedding backfill failed ({}); {} chunks still pending", e, pending);
                     record_backfill_event(&self.data_dir, pending, &e);
                     break;
@@ -219,24 +225,53 @@ impl Scheduler {
         (embedded, failed)
     }
 
-    /// Batch-selection SQL (F-02): a trusted provider drains every NULL
-    /// chunk; an untrusted one excludes sensitive/pii-labeled chunks via the
-    /// item→source join (unlabeled/orphan chunks still drain, matching
-    /// ingest, where only a sensitive label gates).
-    fn backfill_select_sql(trusted: bool) -> &'static str {
-        if trusted {
-            "SELECT id, content, path FROM chunks WHERE embedding IS NULL ORDER BY id LIMIT ?1"
-        } else {
-            "SELECT c.id, c.content, c.path FROM chunks c \
-             LEFT JOIN entities e ON e.id = c.entity_id \
-             LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
-             LEFT JOIN sources s ON s.id = i.source_id \
-             WHERE c.embedding IS NULL AND COALESCE(s.label,'') NOT IN ('sensitive','pii') \
-             ORDER BY c.id LIMIT ?1"
+    /// Batch-selection SQL (F-02): a trusted provider drains every chunk
+    /// that needs a vector; an untrusted one excludes sensitive/pii-labeled
+    /// chunks via the item→source join (unlabeled/orphan chunks still drain,
+    /// matching ingest, where only a sensitive label gates).
+    ///
+    /// R45.5: "needs a vector" = NULL vector, an unstamped vector (unknown
+    /// provenance), or one of `stale` fingerprints outside the configured
+    /// family (bound after `?1` = id cursor, `?2` = limit). The id cursor
+    /// guarantees progress even if a re-embedded row fails to re-stamp.
+    fn backfill_select_sql(trusted: bool, stale: usize) -> String {
+        let mut need = String::from("(c.embedding IS NULL OR c.embed_fp IS NULL");
+        if stale > 0 {
+            // Numbered from ?3: a bare `?` here would reuse index 2 (SQLite
+            // numbers anonymous params by the largest index seen so far).
+            let list: Vec<String> = (3..3 + stale).map(|i| format!("?{i}")).collect();
+            need.push_str(&format!(" OR c.embed_fp IN ({})", list.join(",")));
         }
+        need.push(')');
+        let gate = if trusted {
+            ""
+        } else {
+            "LEFT JOIN entities e ON e.id = c.entity_id \
+             LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
+             LEFT JOIN sources s ON s.id = i.source_id "
+        };
+        let label = if trusted { "" } else { " AND COALESCE(s.label,'') NOT IN ('sensitive','pii')" };
+        format!(
+            "SELECT c.id, c.content, c.path FROM chunks c {gate}\
+             WHERE c.id > ?1 AND {need}{label} ORDER BY c.id LIMIT ?2"
+        )
     }
 
-    async fn backfill_batch(&self) -> Result<(usize, bool), String> {
+    /// One batch of chunks needing a vector, after `last_id` (see
+    /// `backfill_select_sql`). Stale fingerprints are re-derived per batch
+    /// from the configured family, so a model switch mid-pass is honored.
+    fn select_backfill_batch(conn: &rusqlite::Connection, trusted: bool, family: &str, last_id: i64) -> Result<Vec<(i64, String, String)>, String> {
+        let (_, stale) = crate::embed_fp::partition_stored_fingerprints(conn, family);
+        let mut params: Vec<rusqlite::types::Value> = vec![last_id.into(), (BACKFILL_BATCH as i64).into()];
+        params.extend(stale.iter().cloned().map(rusqlite::types::Value::Text));
+        let mut stmt = conn.prepare(&Self::backfill_select_sql(trusted, stale.len())).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+            .map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    async fn backfill_batch(&self, last_id: i64) -> Result<(usize, Option<i64>), String> {
         let data_dir = self.data_dir.clone();
         // F-02: gated chunks are NULL *because* ingest refused them — NULL
         // alone can't tell them from merely-failed chunks. When the embed
@@ -244,18 +279,14 @@ impl Scheduler {
         // backfill doesn't defeat the source label. Ordinary sources still
         // drain ungated (no IDF gate here — that stays the safety net).
         let trusted = self.embedder.cloud_trusted();
-        let batch: Vec<(i64, String, String)> = run_db(&data_dir, move |conn| {
-            let mut stmt = conn.prepare(Self::backfill_select_sql(trusted)).map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map([BACKFILL_BATCH as i64], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
-                .map_err(|e| e.to_string())?;
-            Ok(rows.filter_map(|r| r.ok()).collect())
-        })
-        .await?;
+        let family = self.embedder.configured_family();
+        let batch: Vec<(i64, String, String)> =
+            run_db(&data_dir, move |conn| Self::select_backfill_batch(conn, trusted, &family, last_id)).await?;
         if batch.is_empty() {
-            return Ok((0, false));
+            return Ok((0, None));
         }
-        let has_more = batch.len() == BACKFILL_BATCH;
+        let next_cursor = batch.last().map(|(id, _, _)| *id);
+        let next_cursor = if batch.len() == BACKFILL_BATCH { next_cursor } else { None };
         // Same breadcrumb-prefixed input as the gated paths — one vector space.
         // R43.6: plus the nomic-gated document prefix, matching `embed_gated`,
         // so backfilled rows land in the same space as ingest-time rows.
@@ -270,19 +301,29 @@ impl Scheduler {
         run_db(&data_dir, move |conn| {
             for (cid, blob) in &updates {
                 conn.execute("UPDATE chunks SET embedding=?1 WHERE id=?2", rusqlite::params![blob, cid]).map_err(|e| e.to_string())?;
+                // R45.5: also stamps `embed_fp` (overwriting a stale one).
                 let _ = embedder.sync_vec(conn, *cid, blob);
             }
             Ok(())
         })
         .await?;
-        Ok((embedded, has_more))
+        Ok((embedded, next_cursor))
     }
 }
 
-fn pending_embedding_count(data_dir: &str) -> i64 {
+/// Chunks still needing a vector: NULL, unstamped, or (R45.5) stamped
+/// outside the configured family.
+fn pending_embedding_count(data_dir: &str, family: &str) -> i64 {
     let conn = crate::common::open_data_db(data_dir);
-    conn.query_row("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL", [], |r| r.get(0))
-        .unwrap_or(0)
+    let missing: i64 = conn
+        .query_row("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL OR embed_fp IS NULL", [], |r| r.get(0))
+        .unwrap_or(0);
+    let (_, stale) = crate::embed_fp::partition_stored_fingerprints(&conn, family);
+    if stale.is_empty() {
+        return missing;
+    }
+    let sql = format!("SELECT COUNT(*) FROM chunks WHERE embed_fp IN ({})", crate::common::placeholders(stale.len()));
+    missing + conn.query_row(&sql, rusqlite::params_from_iter(stale.iter()), |r| r.get::<_, i64>(0)).unwrap_or(0)
 }
 
 fn record_backfill_event(data_dir: &str, pending: i64, err: &str) {
@@ -434,11 +475,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let (conn, ord, sen) = seed_mixed_labels(&dir);
         let run = |trusted: bool| {
-            conn.prepare(Scheduler::backfill_select_sql(trusted))
+            Scheduler::select_backfill_batch(&conn, trusted, "nomic-embed-text-v1.5", 0)
                 .unwrap()
-                .query_map([64i64], |r| r.get::<_, i64>(0))
-                .unwrap()
-                .filter_map(|r| r.ok())
+                .into_iter()
+                .map(|(id, _, _)| id)
                 .collect::<Vec<_>>()
         };
         let ord_chunk: i64 = conn.query_row("SELECT c.id FROM chunks c JOIN ingested_items i ON i.id=c.item_id WHERE i.source_id=?1", [ord], |r| r.get(0)).unwrap();
@@ -537,6 +577,66 @@ mod tests {
         sched.backfill_with_retry().await;
         let pending: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL", [], |r| r.get(0)).unwrap();
         assert_eq!(pending, 0);
+    }
+
+    #[tokio::test]
+    async fn backfill_reembeds_stale_family_and_restamps() {
+        // R45.5: a vector from another model is stale under the configured
+        // (default nomic) embedder — the backfill re-embeds and re-stamps it,
+        // and leaves an in-family vector alone.
+        let dir = tempdir().unwrap();
+        let (conn, _sid) = seed_one_item_with_chunks(&dir, &["old model chunk", "current model chunk"]);
+        let ids: Vec<i64> = conn.prepare("SELECT id FROM chunks ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+        let blob = pack_single(&[1.0, 0.0]);
+        conn.execute("UPDATE chunks SET embedding=?1, embed_fp='ollama:mxbai-embed-large:2' WHERE id=?2", rusqlite::params![blob, ids[0]]).unwrap();
+        // builtin nomic shares the Ollama nomic family: not stale.
+        conn.execute("UPDATE chunks SET embedding=?1, embed_fp='builtin:nomic-embed-text-v1.5:2' WHERE id=?2", rusqlite::params![blob, ids[1]]).unwrap();
+        let (port, _hits) = mock_embed_server().await;
+        let (sched, _embedder) = backfill_sched(&dir, &conn, &format!("http://127.0.0.1:{}", port));
+        assert_eq!(pending_embedding_count(&dir.path().to_string_lossy(), "nomic-embed-text-v1.5"), 1);
+        let (embedded, failed) = sched.backfill_once().await;
+        let detail: String = conn.query_row("SELECT COALESCE(MAX(detail),'') FROM system_events", [], |r| r.get(0)).unwrap();
+        assert_eq!((embedded, failed), (1, false), "{detail}");
+        let fps: Vec<String> = conn.prepare("SELECT embed_fp FROM chunks ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+        assert_eq!(fps, vec!["ollama:nomic-embed-text:2".to_string(), "builtin:nomic-embed-text-v1.5:2".to_string()]);
+        let vec0: Vec<u8> = conn.query_row("SELECT embedding FROM chunks WHERE id=?1", [ids[0]], |r| r.get(0)).unwrap();
+        assert_eq!(vec0, pack_single(&[0.5, 0.25]), "stale vector must be replaced by the mock's");
+        assert_eq!(pending_embedding_count(&dir.path().to_string_lossy(), "nomic-embed-text-v1.5"), 0);
+    }
+
+    #[tokio::test]
+    async fn backfill_unstamped_vector_is_reembedded() {
+        // R45.5: a vector with no provenance (old archive, raw write) is
+        // unknown — re-embedded and stamped rather than trusted.
+        let dir = tempdir().unwrap();
+        let (conn, _sid) = seed_one_item_with_chunks(&dir, &["unknown origin chunk"]);
+        conn.execute("UPDATE chunks SET embedding=?1", [pack_single(&[1.0, 0.0])]).unwrap();
+        let (port, _hits) = mock_embed_server().await;
+        let (sched, _embedder) = backfill_sched(&dir, &conn, &format!("http://127.0.0.1:{}", port));
+        assert_eq!(sched.backfill_once().await, (1, false));
+        let fp: String = conn.query_row("SELECT embed_fp FROM chunks", [], |r| r.get(0)).unwrap();
+        assert_eq!(fp, "ollama:nomic-embed-text:2");
+    }
+
+    #[tokio::test]
+    async fn query_fingerprint_change_records_event_and_wakes_reembed() {
+        // R45.5: embed_query records its fingerprint; a family switch
+        // records a system event and fires `family_changed`.
+        let dir = tempdir().unwrap();
+        let (conn, _sid) = seed_one_item_with_chunks(&dir, &["x"]);
+        conn.execute("INSERT INTO embed_state (id, active_fp) VALUES (1, 'ollama:mxbai-embed-large:1024')", []).unwrap();
+        let (port, _hits) = mock_embed_server().await;
+        let (_sched, embedder) = backfill_sched(&dir, &conn, &format!("http://127.0.0.1:{}", port));
+        let q = embedder.embed_query("billing").await;
+        assert_eq!(q, Some(vec![0.5, 0.25]));
+        assert_eq!(crate::embed_fp::active_fingerprint(&conn).as_deref(), Some("ollama:nomic-embed-text:2"));
+        let msg: String = conn
+            .query_row("SELECT message FROM system_events WHERE component='embedder' ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert!(msg.contains("embedding model changed"), "event: {}", msg);
+        tokio::time::timeout(Duration::from_secs(1), embedder.family_changed.notified())
+            .await
+            .expect("family change must wake the re-embed");
     }
 
     #[test]

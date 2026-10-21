@@ -18,6 +18,7 @@ mod common;
 mod connectors;
 mod db;
 mod distill;
+mod embed_fp;
 mod embedder;
 mod entities;
 mod extract;
