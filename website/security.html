@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Security and Data Flow — AnchorCore</title>
+<meta name="description" content="Every network call AnchorCore can make, what each carries, how source labels gate cloud AI, where secrets live, and the known limits. Checked against the public source." />
+<link rel="canonical" href="https://anchorcore.dev/security" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg>AnchorCore</a>
+      <!-- Nav IA (R18.3): every nav label matches its section heading verbatim; section ids stay stable (#roadmap is the legacy anchor for "Get started") -->
+      <nav class="nav">
+        <a href="/#how">How it works</a>
+        <a href="/#guides">Guides</a>
+        <a href="/#pricing">Pricing</a>
+        <a href="/team">For teams</a>
+        <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">GitHub ↗</a>
+      </nav>
+      <a class="nav-cta" href="/#download">Download<span class="nav-cta-sfx"> — free for personal use</span></a>
+      <!-- header nav (≤1080px): same section links, collapsed behind the burger — keep in sync with .nav (R18.1/R18.3) -->
+      <details class="navmenu" id="navmenu">
+        <summary class="navmenu-btn"><span class="sr-only">Sections</span><span class="burger" aria-hidden="true"></span></summary>
+        <nav class="nav-mobile">
+          <a href="/#how">How it works</a>
+          <a href="/#guides">Guides</a>
+          <a href="/#pricing">Pricing</a>
+          <a href="/team">For teams</a>
+          <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">GitHub ↗</a>
+        </nav>
+      </details>
+    </div>
+  </header>
+
+  <main>
+    <article class="guide-page">
+      <div class="wrap">
+<p class="crumbs"><a href="/#trust">Trust</a> <span aria-hidden="true">/</span> Security notes</p>
+<h1>Security notes: what AnchorCore sends, stores and gates</h1>
+<div class="guide-body">
+<p>This is the long version of the <a href="/#trust">trust section on the landing page</a>. Each statement points at the file in the <a href="https://github.com/Atsirkunov/anchorcore" rel="noopener noreferrer">public repository</a> that backs it, so you can check it rather than take our word. Paths are under <code>rust/crates/anchorcore/src/</code> unless noted. Where something is a limit rather than a protection, it is listed under <a href="#limits">Known limits</a>.</p>
+<p>AnchorCore is a private AI search app: it indexes your files and connected sources on your machine and returns cited answers. It has not been through a SOC 2 or ISO 27001 audit or a third-party penetration test, and it has no SSO or role system. Nothing here is a certification.</p>
+
+<h2 id="network">Every outbound network call</h2>
+<p>With no connector and no cloud key configured, the app makes no outbound connections: indexing, keyword search and local answers need no network. The calls it can make are the ones below; every HTTP client in the source is one of these.</p>
+<div class="table-scroll"><table>
+<thead><tr><th scope="col">Call</th><th scope="col">Goes to</th><th scope="col">When</th><th scope="col">What it carries</th><th scope="col">Evidence</th></tr></thead>
+<tbody>
+<tr><td>Update check</td><td><code>api.github.com</code> (fixed release URL)</td><td>When you click "Check for updates". A check at startup is off unless you enable it (<code>ANCHOR_UPDATE_CHECK_ENABLED</code>).</td><td>A plain GET with the user agent <code>anchorcore/&lt;version&gt;</code>. No index content; GitHub sees your IP address and the version.</td><td><code>system.rs</code>, <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/updates.md" rel="noopener noreferrer">docs/updates.md</a></td></tr>
+<tr><td>Local Ollama</td><td><code>localhost:11434</code> (setting <code>ollama_base_url</code>)</td><td>Classification and embedding during sync, answers, health probes, and when you ask the app to pull a model.</td><td>Document text windows (classify), chunk text and queries (embed), question and passages (answer). Stays on your machine unless you point the setting at another host.</td><td><code>ollama.rs</code>, <code>classifier.rs</code>, <code>embedder.rs</code></td></tr>
+<tr><td>Cloud answer model</td><td>Your OpenAI-compatible <code>answer_base_url</code></td><td>Only if you set a key (or point it at a local endpoint). With a non-local endpoint and no key, no request is made.</td><td>Your question, the retrieved passages, and up to the last six turns of the conversation. A follow-up rewrite sends the recent turns and the question.</td><td><code>answer.rs</code></td></tr>
+<tr><td>Cloud classifier</td><td>Your <code>classifier_base_url</code> (falls back to the Ollama URL)</td><td>During sync, only if you configured a cloud classifier.</td><td>Document text, in windows, to extract entities and summaries.</td><td><code>classifier.rs</code>, <code>pipeline.rs</code></td></tr>
+<tr><td>Cloud embedder</td><td>Your <code>embed_base_url</code> (falls back to the Ollama URL)</td><td>During sync, in the background backfill (at startup and every 15 minutes), and for each question when searching by meaning.</td><td>Chunk text with its heading path, and your query text.</td><td><code>embedder.rs</code>, <code>scheduler.rs</code></td></tr>
+<tr><td>Settings "Test connection"</td><td>The endpoint you are testing</td><td>When you click it.</td><td>A one-word test message ("ping"), with your key as the Authorization header.</td><td><code>settings.rs</code></td></tr>
+<tr><td>Jira</td><td>The <code>base_url</code> you enter</td><td>On sync. Enabled Jira sources also poll on a timer (default every 15 minutes).</td><td>Your email and API token as credentials; issues come back.</td><td><code>connectors/jira.rs</code>, <code>scheduler.rs</code></td></tr>
+<tr><td>Linear</td><td><code>api.linear.app/graphql</code>, or a <code>base_url</code> you set</td><td>On sync.</td><td>Your API key; a GraphQL query for issues.</td><td><code>connectors/linear.rs</code></td></tr>
+<tr><td>Google Drive</td><td><code>www.googleapis.com/drive/v3</code></td><td>On sync.</td><td>The access token you provide; file listing and download for the configured folder.</td><td><code>connectors/gdrive.rs</code></td></tr>
+<tr><td>JSON API (REST)</td><td>The <code>base_url</code> and <code>list_path</code> you enter</td><td>On sync.</td><td>The auth you configure (none, bearer, basic or a custom header) and paging parameters. See <a href="#limits">Known limits</a>.</td><td><code>connectors/rest.rs</code></td></tr>
+<tr><td>Agent bridge (MCP, CLI)</td><td>The local app, <code>127.0.0.1:8000</code> by default (<code>ANCHOR_BACKEND_URL</code>)</td><td>When a coding agent calls <code>anchorcore mcp</code>, or you use the CLI.</td><td>The agent's query and the cited result, between two processes you run. Not a new destination unless you change the URL.</td><td><code>mcp.rs</code>, <code>cli.rs</code></td></tr>
+</tbody></table></div>
+<p>Two further notes. The web interface loads no third-party scripts, fonts or analytics; its only external addresses are links you click, such as the releases page and Ollama's download page. And Ollama's own model downloads happen inside Ollama: AnchorCore only asks your local Ollama to pull a model. The source contains no analytics, usage-tracking or crash-reporting code.</p>
+
+<h2 id="labels">Source labels and the cloud gate</h2>
+<p>Every source carries one label: <code>internal</code> (the default), <code>public</code>, <code>sensitive</code> or <code>pii</code>. A provider counts as approved when it is a local endpoint (<code>http://</code> to <code>localhost</code>, <code>127.0.0.1</code> or <code>::1</code>), when its URL is listed in <code>ANCHOR_TRUSTED_PROVIDERS</code>, or when <code>ANCHOR_CLOUD_TRUST=1</code> is set. Localhost is always approved; any cloud endpoint needs one of the other two. Evidence: <code>common.rs</code> (<code>provider_is_local</code>, <code>provider_trusted</code>).</p>
+<div class="table-scroll"><table>
+<thead><tr><th scope="col">Label</th><th scope="col">Local model</th><th scope="col">Approved cloud</th><th scope="col">Unapproved cloud</th></tr></thead>
+<tbody>
+<tr><td><code>internal</code>, <code>public</code></td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+<tr><td><code>sensitive</code>, <code>pii</code></td><td>Yes</td><td>Yes</td><td>Held back</td></tr>
+</tbody></table></div>
+<ul>
+<li><strong>Answers.</strong> Hits from sensitive or pii sources are removed before passages go to an unapproved cloud answer model, and a <code>system_events</code> warning records how many were excluded. If nothing survives, the app says relevant knowledge exists but cannot be used, instead of guessing. (<code>answer.rs</code>: <code>gate_answer_hits</code>, <code>record_gate_event</code>.)</li>
+<li><strong>Indexing.</strong> Sensitive and pii sources skip an unapproved cloud classifier and embedder, and the background backfill leaves their chunks unembedded. They stay keyword-searchable. (<code>pipeline.rs</code>, <code>scheduler.rs</code>.)</li>
+<li><strong>Follow-up rewrite.</strong> Skipped when the answer provider is not approved. (<code>answer.rs</code>.)</li>
+<li><strong>Public answers.</strong> <code>POST /qa/public</code> answers only from sources labelled <code>public</code>, and the MCP <code>public_only</code> option calls that path. (<code>answer.rs</code>, <code>main.rs</code>, <code>mcp.rs</code>.)</li>
+</ul>
+<p>The gate keys on the source label. It is a decision you make when connecting a source, so it is only as good as the label you picked.</p>
+
+<h2 id="pii">PII marks are manual</h2>
+<p>There is no automatic PII detection. A person can mark a whole document as PII (<code>PATCH /items/:id</code> with <code>is_pii</code>, or the toggle in the Entities view). The mark is visible and survives backup, but it does <em>not</em> gate cloud flows on its own yet: gating is by source label, as above. If a document must never reach an unapproved cloud model, keep it in a source labelled <code>sensitive</code> or <code>pii</code>. (<code>items.rs</code>; the decision is recorded in <a href="https://github.com/Atsirkunov/anchorcore/blob/main/rust/docs/decisions.md" rel="noopener noreferrer">rust/docs/decisions.md</a>.)</p>
+
+<h2 id="secrets">Where credentials are stored</h2>
+<ul>
+<li>Connector credentials (token, API key, password, client secret) are stripped out of a source's config before it is saved, so the database row holds none, and reading the config back returns them masked. The cloud answer, classifier and embedder API keys are stored the same way. (<code>secrets.rs</code>, <code>settings.rs</code>.)</li>
+<li>The store tries the operating system keychain first, which is the credential store of macOS and Windows. If that is unavailable it writes one encrypted file per key in your data folder (<code>secrets.enc.*</code>), with the encryption key in a file beside them (permissions 0600 on Unix). That guards against casual reading of a copied file, not against someone who can read your whole data folder.</li>
+<li>We have not verified keychain behavior on Linux, so we make no claim about it; expect the encrypted-file fallback there unless you have tested otherwise.</li>
+<li>Logs redact tokens. The log is <code>anchorcore.log</code> in your data folder.</li>
+</ul>
+
+<h2 id="access">Who can reach the app</h2>
+<ul>
+<li><strong>Personal.</strong> The app binds <code>127.0.0.1</code> by default and has no sign-in, so anyone using your computer account can open it. Requests are checked against a Host/Origin allowlist (localhost plus <code>ANCHOR_CORS_ORIGINS</code>) and carry a CSRF token. If you start the Personal app with <code>--host 0.0.0.0</code> yourself, it does not stop you, and there is no password unless you set <code>ANCHOR_AUTH_SECRET</code>. (<code>main.rs</code>, <code>security.rs</code>, <code>auth.rs</code>.)</li>
+<li><strong>Team (self-hosted).</strong> The container listens on <code>0.0.0.0:8000</code> behind your own proxy; the app speaks plain HTTP, so terminate TLS in front. With <code>ANCHOR_AUTH_SECRET</code> set, password sign-in is on (PBKDF2 password hashes, HS256 session tokens, five failed attempts lock that key out for 60 seconds). Without it the Team edition refuses to start on a non-loopback address. There are no roles: every signed-in user sees the same index. See <a href="/team">For teams</a> and <a href="https://github.com/Atsirkunov/anchorcore/blob/main/hosting/README.md" rel="noopener noreferrer">hosting/README.md</a>.</li>
+<li>The Team license is verified offline at startup; no license server is contacted. (<code>license.rs</code>.)</li>
+</ul>
+
+<h2 id="audit">What is recorded</h2>
+<p>The app keeps a <code>system_events</code> table in its database. It receives gate refusals, sync errors, retrieval degradations and one entry for every agent <code>ask</code> and <code>search</code> call over MCP (component <code>mcp</code>, with the first 80 characters of the query and the hit count). The table is local and is not sent anywhere. (<code>answer.rs</code>, <code>pipeline.rs</code>, <code>mcp.rs</code>.) It is a log, not a tamper-evident audit trail: anyone with write access to the database can alter it.</p>
+
+<h2 id="backup">Backups</h2>
+<p>An export is one <code>.anchorcore-backup</code> file. Source credentials are left out unless you opt in with a passphrase, which puts them in a separate encrypted bundle; provider API keys are never exported. Imports can be previewed with a dry run first. The archive itself is not encrypted, so store it as you would the data it contains. Details: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/backup.md" rel="noopener noreferrer">docs/backup.md</a>.</p>
+
+<h2 id="verify">Verify your download</h2>
+<p>Each release carries a <code>SHA256SUMS</code> file next to the three zips (generated in <code>.github/workflows/release.yml</code>). Put it in the same folder as your zip, then:</p>
+<pre><code>macOS / Linux:  shasum -a 256 -c SHA256SUMS --ignore-missing
+Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
+                (compare with the matching line in SHA256SUMS)</code></pre>
+<p>The checksum shows the file is the one the release published; it does not prove who built it. If that matters to you, build from source.</p>
+<p><strong>Signing status.</strong> The macOS app is ad-hoc signed and not notarized by Apple. The Windows and Linux builds are not code-signed. Nothing is signed through an app store. That is why first launch needs "Open Anyway" on macOS or "Run anyway" in Windows SmartScreen. Release notes: <a href="https://github.com/Atsirkunov/anchorcore/tree/main/docs/release-notes" rel="noopener noreferrer">docs/release-notes</a>.</p>
+
+<h2 id="limits">Known limits</h2>
+<ul>
+<li><strong>The JSON API connector has no address guard.</strong> It sends requests to whatever address you enter, including <code>localhost</code> and private network addresses, and a full URL in <code>list_path</code> is used as-is. There is no SSRF or private-address protection. Enter only addresses you trust, and treat anyone who can edit sources as able to make the app send requests from your machine or server. The Team edition has no roles to restrict who that is.</li>
+<li>Personal has no sign-in; it relies on being bound to your own machine.</li>
+<li>The gate works on source labels. Per-document PII marks are advisory today.</li>
+<li>Once passages go to a cloud model you approved, that provider's own handling applies; AnchorCore cannot see or control it.</li>
+<li>The index is a SQLite file that AnchorCore does not encrypt at rest. Use full-disk encryption if the device can be lost.</li>
+<li>No SOC 2, ISO 27001, SSO, role-based access control or third-party penetration test.</li>
+</ul>
+
+<h2 id="report">Reporting an issue</h2>
+<p>Open an issue on <a href="https://github.com/Atsirkunov/anchorcore/issues" rel="noopener noreferrer">GitHub</a>. If a statement on this page no longer matches the source, that is a bug in this page; tell us. For data this website itself collects (the waitlist and quote forms), see the <a href="/privacy">privacy notice</a>.</p>
+<p><a class="btn primary" href="/#download">Download — free for personal use</a> <a class="btn secondary" href="/team">For teams</a></p>
+</div>
+      </div>
+    </article>
+  </main>
+
+  <footer>
+    <div class="wrap foot">
+      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg><b>AnchorCore</b> v1 local · free for personal use · Team self-hosted on request · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="/team">For teams</a> · <a href="/hosted">Hosted waitlist</a> · <a href="/privacy">Privacy notice</a> · <a href="/#trust">Trust &amp; verification</a> · <a href="/security">Security notes</a> · <a href="/vs/notebooklm">vs NotebookLM</a></div>
+      <div class="mono">Private by default · cited by design</div>
+    </div>
+  </footer>
+
+  <script type="module" src="/src/guide.ts"></script>
+</body>
+</html>

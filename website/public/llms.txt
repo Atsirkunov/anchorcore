@@ -1,0 +1,33 @@
+# AnchorCore
+
+> AnchorCore is a private AI search app. It indexes your folders, Jira, Linear, Google Drive and JSON APIs on your own machine and answers questions with cited answers that name the document and section. Models are your choice: local Ollama or your own OpenAI-compatible API; without a model, keyword search still works. Source-available; the Personal app is free for personal use.
+
+Key facts, each stated on the pages below:
+
+- Runs locally by default. The index is a database on your disk; there is no telemetry code in the source.
+- Source labels (internal, public, sensitive, pii) keep chosen sources out of cloud models you have not approved.
+- Coding agents can use the same cited search through an MCP server.
+- Team edition is one self-hosted container, quote-based, with optional password sign-in. No SSO, no roles.
+- Hosted edition is a waitlist only.
+- No SOC 2, ISO 27001 or third-party penetration test. Downloads are not code-signed on Windows and Linux; the macOS build is ad-hoc signed and not notarized.
+
+## Pages
+
+- [Home](https://anchorcore.dev/): what it is, how it works, demo, FAQ, pricing, trust summary
+- [For teams](https://anchorcore.dev/team): Personal vs Team (self-hosted) and request a quote
+- [Hosted waitlist](https://anchorcore.dev/hosted): early-access waitlist, not yet available
+- [Security notes](https://anchorcore.dev/security): every network call, label gate, credential storage, known limits
+- [AnchorCore vs NotebookLM](https://anchorcore.dev/vs/notebooklm): comparison with NotebookLM (now Gemini Notebook)
+- [Privacy notice](https://anchorcore.dev/privacy): what this website collects
+
+## Guides
+
+- [Use your Obsidian vault with AnchorCore](https://anchorcore.dev/guides/obsidian)
+- [Try the AnchorCore sample company](https://anchorcore.dev/guides/sample)
+- [Connect any JSON API to AnchorCore](https://anchorcore.dev/guides/json-api)
+- [Try the AnchorCore AI startup sample](https://anchorcore.dev/guides/ai-startup)
+
+## Source
+
+- [GitHub repository](https://github.com/Atsirkunov/anchorcore)
+- [Releases and SHA256SUMS](https://github.com/Atsirkunov/anchorcore/releases)
