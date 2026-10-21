@@ -84,6 +84,7 @@ function setTrack(t: Track) {
     } else if (t === "hosted") {
       cta.textContent = "Join waitlist — Hosted (soon)";
       cta.href = "#roadmap";
+      cta.dataset.interest = "hosted";
     } else {
       const dl = personalDownload();
       cta.textContent = dl.label;
@@ -129,32 +130,49 @@ function initTrack() {
 }
 
 // email capture via Formspree (Vanilla JS Ajax — plain fetch, no SDK needed:
-// this page has no runtime deps and the two forms carry track metadata).
+// this page has no runtime deps and the form carries interest metadata).
 const FORMSPREE_ID = "mdeozqge";
+
+type Interest = "hosted" | "team" | "updates" | "download";
+let interest: Interest = "updates"; // set by the entry point that led to the form
+
+document.addEventListener("click", (e) => {
+  const a = (e.target as Element | null)?.closest<HTMLElement>("[data-interest]");
+  if (a?.dataset.interest) interest = a.dataset.interest as Interest;
+});
+
+const THANKS: Record<Interest, string> = {
+  hosted: "Thanks — you're on the hosted waitlist.",
+  team: "Thanks — we'll be in touch about Team.",
+  updates: "Thanks — we'll email you product updates.",
+  download: "Thanks — we'll email you the download link.",
+};
 
 async function captureEmail(inputId: string, msgId: string, source: string) {
   const el = document.getElementById(inputId) as HTMLInputElement | null;
   const msg = document.getElementById(msgId);
   const email = el?.value.trim() ?? "";
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    if (msg) msg.textContent = "Enter a valid work email.";
+    if (msg) msg.textContent = "Enter a valid email address.";
+    el?.setAttribute("aria-invalid", "true");
     return;
   }
-  const track = (() => { try { return localStorage.getItem("anchorcore.track") ?? "personal"; } catch { return "personal"; } })();
+  el?.removeAttribute("aria-invalid");
   if (msg) msg.textContent = "Sending…";
   try {
     const res = await fetch(`https://formspree.io/f/${FORMSPREE_ID}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
-      body: JSON.stringify({ email, track, source }),
+      body: JSON.stringify({ email, interest, source }),
     });
-const data = (await res.json().catch(() => ({}))) as { errors?: { message: string }[] };
+    const data = (await res.json().catch(() => ({}))) as { errors?: { message: string }[] };
     if (res.ok) {
-      if (msg) msg.textContent = `Thanks — you're on the ${track} list.`;
+      if (msg) msg.textContent = THANKS[interest];
       if (el) el.value = "";
     } else {
       const detail = data.errors?.map((e) => e.message).join(" ");
       if (msg) msg.textContent = detail || "Something went wrong — try again.";
+      el?.setAttribute("aria-invalid", "true");
     }
   } catch {
     if (msg) msg.textContent = "Couldn't reach the signup service — check your connection and retry.";
