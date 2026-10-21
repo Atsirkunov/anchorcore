@@ -4,6 +4,7 @@
   --surface:#ffffff;
   --border:#e2ddd6;
   --border2:#d4cfc6;
+  --control-border:#8a8378;
   --ink:#1a1d1a;
   --dim:#5C6470;
   --faint:#9aa0a8;
@@ -37,11 +38,11 @@ a.btn,a.nav-cta,a.brand,.guide-tab,.toggle{text-decoration:none}
 .site-header{position:sticky;top:0;background:rgba(242,240,235,0.92);backdrop-filter:saturate(1.2) blur(8px);border-bottom:1px solid var(--border);z-index:10}
 .site-header .wrap{display:flex;align-items:center;gap:16px;padding:14px 24px;max-width:var(--wrap)}
 .site-header::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:linear-gradient(90deg,var(--sage) 0%,var(--stone) 50%,transparent 100%);opacity:0.35}
-.brand{font-weight:800;letter-spacing:-0.02em;font-size:18px;display:flex;align-items:center;gap:8px}
+.brand{color:var(--ink);font-weight:800;letter-spacing:-0.02em;font-size:18px;display:flex;align-items:center;gap:8px}
 .nav{margin-left:auto;display:flex;gap:16px;align-items:center;font-size:clamp(14px,0.85vw,15px)}
 .nav a{color:var(--ink)}
-.nav-cta{border:1px solid var(--border);padding:6px 12px;border-radius:999px;background:var(--surface);font-size:clamp(14px,0.85vw,15px)}
-.hero{padding:clamp(56px,4.4vw,148px) 0 clamp(48px,3.4vw,104px);background:linear-gradient(180deg,var(--paper) 0%,var(--paper2) 100%);border-bottom:1px solid var(--border)}
+.nav-cta{display:inline-flex;align-items:center;border:1px solid var(--border);padding:6px 12px;border-radius:999px;background:var(--surface);font-size:clamp(14px,0.85vw,15px)}
+.hero{padding:clamp(40px,6.9vw,148px) 0 clamp(48px,3.4vw,104px);background:linear-gradient(180deg,var(--paper) 0%,var(--paper2) 100%);border-bottom:1px solid var(--border)}
 .hero-grid{display:grid;grid-template-columns:1.08fr 0.92fr;gap:64px;align-items:start}
 @media(max-width:960px){.hero-grid{grid-template-columns:1fr;gap:32px}}
 .eyebrow{font-family:ui-monospace,Menlo,monospace;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--dim);font-weight:700}
@@ -55,7 +56,7 @@ h1{font-family:Georgia,serif;letter-spacing:-0.03em;line-height:1.04;font-size:v
 .btn{display:inline-block;padding:10px 16px;border-radius:8px;font-weight:700;font-size:14px;text-decoration:none;cursor:pointer;border:1px solid transparent}
 .btn.primary{background:var(--sage);color:#fff}
 .btn.primary:hover{background:var(--sageH);text-decoration:none}
-.btn.secondary{background:var(--surface);color:var(--ink);border-color:var(--border)}
+.btn.secondary{background:var(--surface);color:var(--ink);border-color:var(--control-border)}
 .btn.small{padding:8px 12px;font-size:13px}
 .cta-note{font-size:clamp(12px,0.85vw,13.5px);color:var(--dim)}
 /* Hero agent-skill entry point (R18.19) — the other main way in, next to Download */
@@ -66,7 +67,7 @@ h1{font-family:Georgia,serif;letter-spacing:-0.03em;line-height:1.04;font-size:v
 .agent-cta-note{font-size:12px;color:var(--dim);line-height:1.5}
 @media(max-width:420px){.agent-cta-cmd{white-space:normal;word-break:break-word}}
 .capture{display:flex;gap:8px;margin:10px 0}
-.capture input{flex:1;min-width:180px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);font-size:14px}
+.capture input{flex:1;min-width:180px;padding:10px 12px;border-radius:8px;border:1px solid var(--control-border);background:var(--surface);font-size:14px}
 .capture-msg{font-size:12px;color:var(--sage);min-height:16px}
 .shot{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface);box-shadow:0 14px 36px rgba(26,29,26,0.09);max-width:none;margin:0}
 .shot-bar{padding:12px 14px;border-bottom:1px solid var(--border);font-size:12px;font-weight:700;color:var(--dim);background:var(--paper2)}
@@ -83,8 +84,7 @@ h1{font-family:Georgia,serif;letter-spacing:-0.03em;line-height:1.04;font-size:v
 .alt{background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:var(--pad-sec) 0}
 .cols{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:24px;max-width:none}
 @media(max-width:960px){.cols{grid-template-columns:1fr}}
-.col{padding:28px;border:1px solid var(--border);border-radius:14px;background:var(--paper);border-left:3px solid var(--sage);transition:transform 0.2s ease,border-color 0.15s,box-shadow 0.2s ease}
-.col:hover{border-color:var(--border2);transform:translateY(-3px);box-shadow:0 10px 24px rgba(26,29,26,0.07)}
+.col{padding:28px;border:1px solid var(--border);border-radius:14px;background:var(--paper);border-left:3px solid var(--sage)}
 .col h3{margin:0 0 6px;font-size:var(--fs-h3)}
 .price{font-size:clamp(22px,1.5vw,28px);font-weight:800;letter-spacing:-0.02em;margin:2px 0 8px}
 .cols.two{grid-template-columns:repeat(2,1fr)}
@@ -129,8 +129,6 @@ h1{font-family:Georgia,serif;letter-spacing:-0.03em;line-height:1.04;font-size:v
 .demo{line-height:1.7}
 .demo li{margin:4px 0}
 section{padding:var(--pad-sec) 0}
-.hero{padding:clamp(104px,6.9vw,148px) 0 clamp(72px,4.6vw,104px)}
-.alt{padding:104px 0}
 #how{padding:var(--pad-sec) 0}
 #demo{padding:var(--pad-sec) 0}
 #roadmap{padding:var(--pad-sec) 0}
@@ -138,7 +136,7 @@ section{padding:var(--pad-sec) 0}
 .qa{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px 22px}
 footer{border-top:1px solid var(--border);padding:32px 0;background:var(--paper2)}
 .foot{display:flex;gap:12px;justify-content:space-between;flex-wrap:wrap;font-size:12px;color:var(--dim)}
-.soon{font-size:10px}
+.soon{font-size:12px}
 .cite .bar.sage{background:#4A5A52}
 .cite .bar.stone{background:#9A8B7A}
 .fig{margin-top:16px;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface)}
@@ -271,8 +269,6 @@ code{background:var(--paper2);border:1px solid var(--border);border-radius:6px;p
 @keyframes pop{from{opacity:0;transform:translateY(12px) scale(0.98)}to{opacity:1;transform:none}}
 .btn{transition:transform 0.15s ease,box-shadow 0.15s ease,background 0.15s ease}
 .btn.primary:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(74,90,82,0.3)}
-.step{transition:transform 0.18s ease}
-.step:hover{transform:translateX(4px)}
 /* Mobile header (R18.1) — Download stays visible, section links collapse under 820px */
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .navmenu{display:none}

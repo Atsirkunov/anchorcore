@@ -32,17 +32,14 @@
   <!-- tweakable copy lives in src/main.ts + this HTML — no build system magic -->
   <header class="site-header">
     <div class="wrap">
-      <div class="brand"><svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg>AnchorCore</div>
+      <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg>AnchorCore</a>
       <!-- Nav IA (R18.3): every nav label matches its section heading verbatim; section ids stay stable (#roadmap is the legacy anchor for "Get started") -->
       <nav class="nav">
         <a href="#how">How it works</a>
         <a href="#demo">60-second demo</a>
         <a href="#guides">Guides</a>
-        <a href="#faq">FAQ</a>
         <a href="#pricing">Pricing</a>
-        <a href="#agent-skill">Agent skill</a>
-        <a href="#roadmap">Get started</a>
-        <a href="#privacy">Privacy notice</a>
+        <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">GitHub ↗</a>
       </nav>
       <a class="nav-cta" href="#download">Download</a>
       <!-- header nav (≤1080px): same section links, collapsed behind the burger — keep in sync with .nav (R18.1/R18.3) -->
@@ -52,11 +49,8 @@
           <a href="#how">How it works</a>
           <a href="#demo">60-second demo</a>
           <a href="#guides">Guides</a>
-          <a href="#faq">FAQ</a>
           <a href="#pricing">Pricing</a>
-          <a href="#agent-skill">Agent skill</a>
-          <a href="#roadmap">Get started</a>
-          <a href="#privacy">Privacy notice</a>
+          <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">GitHub ↗</a>
         </nav>
       </details>
     </div>
@@ -108,7 +102,7 @@
         </div>
       </div>
       <div class="flow">
-        <img src="/flow.svg" alt="Fragments from local folders, Drive documents, tickets and docs file into local memory; answers come back cited" loading="lazy" />
+        <img src="/flow.svg" width="1080" height="260" alt="Fragments from local folders, Drive documents, tickets and docs file into local memory; answers come back cited" />
         <p class="cap">Fragments in, cited answer out — local folders, Drive documents, tickets and docs file into memory on your machine; every answer carries its source.</p>
       </div>
     </section>
@@ -208,7 +202,7 @@
         </div>
         <div class="fig termwrap">
           <div class="term-bar"><span>agent → anchorcore mcp · stdio JSON-RPC</span><button id="term-replay" class="btn small secondary" type="button">Replay</button></div>
-          <div class="term-body" id="term-body" aria-live="polite"></div>
+          <div class="term-body" id="term-body"></div>
           <p class="cap">Abbreviated session — the wire carries full JSON-RPC <code>tools/call</code> returning the same cited answers as the browser UI.</p>
         </div>
         <p class="small">Personal use needs no Docker and no account — your data stays in a folder on your machine. Full protocol reference: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">agent docs (MCP)</a>.</p>
@@ -233,7 +227,7 @@
         <div class="code">mkdir -p .agents/skills/anchorcore-setup && curl -sL https://raw.githubusercontent.com/Atsirkunov/anchorcore/main/.agents/skills/anchorcore-setup/SKILL.md -o .agents/skills/anchorcore-setup/SKILL.md</div>
         <div class="fig termwrap">
           <div class="term-bar"><span>agent + anchorcore-setup skill · local REST</span><button id="skill-term-replay" class="btn small secondary" type="button">Replay</button></div>
-          <div class="term-body" id="skill-term-body" aria-live="polite"></div>
+          <div class="term-body" id="skill-term-body"></div>
           <p class="cap">Abbreviated session — the skill drives the local REST API (health → models → sources → sync → ask) and checks the honesty flags before reporting back.</p>
         </div>
         <p class="small">Skill file: <a href="https://raw.githubusercontent.com/Atsirkunov/anchorcore/main/.agents/skills/anchorcore-setup/SKILL.md">anchorcore-setup (copy/download)</a> — the CLI installs it into whatever skills dir your agent reads. Agent access protocol: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">Connect your agent (MCP)</a>.</p>
