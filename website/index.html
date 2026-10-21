@@ -8,18 +8,7 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <meta property="og:title" content="AnchorCore — Private AI Search with Cited Answers" />
   <meta property="og:description" content="A private AI search app. Ask your folders, Drive, Jira and Linear in plain language — get the answer and the exact source. Runs on your computer." />
-  <script type="application/ld+json">
-  {"@context":"https://schema.org","@type":"SoftwareApplication","name":"AnchorCore","applicationCategory":"BusinessApplication","operatingSystem":["macOS","Windows","Linux"],"description":"Private AI search app: ask your folders, Drive, Jira, Linear or any JSON API in plain language and get a cited answer. Local-first, runs on your computer.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"featureList":"private AI search, cited answers, local-first document search, Jira integration, Linear integration, Google Drive integration, source labels, model allowlist, MCP server"}
-  </script>
-  <script type="application/ld+json">
-  {"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
-    {"@type":"Question","name":"Is my data private?","acceptedAnswer":{"@type":"Answer","text":"Yes. AnchorCore runs on your own machine, stores data locally, and keeps secrets in your OS keychain (macOS, Windows) or, where none is available, an encrypted file in your data folder. Sensitive sources are never sent to cloud AI you have not approved."}},
-    {"@type":"Question","name":"How is this different from NotebookLM or ChatGPT file search?","acceptedAnswer":{"@type":"Answer","text":"Those are cloud-only uploads. AnchorCore is local-first and self-hostable, connects to folders, Drive, Jira and Linear directly, and gates sensitive sources per your model policy."}},
-    {"@type":"Question","name":"Do I need Ollama?","acceptedAnswer":{"@type":"Answer","text":"No. Full-text search works without it. Add Ollama for AI answers with citations."}},
-    {"@type":"Question","name":"Is it free?","acceptedAnswer":{"@type":"Answer","text":"Yes, the personal local app is free. Team self-hosted is quote-based: see anchorcore.dev/team. Hosted is coming soon."}},
-    {"@type":"Question","name":"Can I check the code myself?","acceptedAnswer":{"@type":"Answer","text":"Yes. AnchorCore is source-available: the repository is public, so you can read what the app does (no telemetry; it only contacts the endpoints you configure) and build it yourself. Personal use is free; team and commercial use require a separate license."}},{"@type":"Question","name":"Can I move to a new computer?","acceptedAnswer":{"@type":"Answer","text":"Yes. System → Backup & restore exports your whole index into one portable .anchorcore-backup file; import it on the new machine with a dry-run preview first. Credentials stay behind unless you opt into the passphrase-encrypted bundle."}}
-  ]}
-  </script>
+  <!-- JSON-LD (SoftwareApplication + FAQPage) is generated at build by the anchorcore-seo plugin in vite.config.ts from this page's visible content; do not hand-write it. -->
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://anchorcore.dev/" />
   <meta property="og:image" content="https://anchorcore.dev/og-card.png" />
