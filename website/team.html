@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AnchorCore for Teams — Self-hosted Private AI Search</title>
+  <meta name="description" content="Self-hosted private AI search for teams: one container on your infrastructure, source labels that gate cloud AI, cited answers. Request a quote." />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="canonical" href="https://anchorcore.dev/team" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="AnchorCore for Teams — Self-hosted Private AI Search" />
+  <meta property="og:description" content="Self-hosted private AI search for teams: one container on your infrastructure, source labels that gate cloud AI, cited answers. Request a quote." />
+  <meta property="og:url" content="https://anchorcore.dev/team" />
+  <meta property="og:image" content="https://anchorcore.dev/og-card.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://anchorcore.dev/og-card.png" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg>AnchorCore</a>
+      <!-- Nav IA (R18.3): every nav label matches its section heading verbatim; section ids stay stable (#roadmap is the legacy anchor for "Get started") -->
+      <nav class="nav">
+        <a href="/#how">How it works</a>
+        <a href="/#guides">Guides</a>
+        <a href="/#pricing">Pricing</a>
+        <a href="/team" aria-current="page">For teams</a>
+        <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">GitHub ↗</a>
+      </nav>
+      <a class="nav-cta" href="/#download">Download<span class="nav-cta-sfx"> — free for personal use</span></a>
+      <!-- header nav (≤1080px): same section links, collapsed behind the burger — keep in sync with .nav (R18.1/R18.3) -->
+      <details class="navmenu" id="navmenu">
+        <summary class="navmenu-btn"><span class="sr-only">Sections</span><span class="burger" aria-hidden="true"></span></summary>
+        <nav class="nav-mobile">
+          <a href="/#how">How it works</a>
+          <a href="/#guides">Guides</a>
+          <a href="/#pricing">Pricing</a>
+          <a href="/team" aria-current="page">For teams</a>
+          <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">GitHub ↗</a>
+        </nav>
+      </details>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <div class="wrap">
+        <div class="eyebrow">FOR TEAMS · SELF-HOSTED</div>
+        <h1>Private AI search for your team, on your infrastructure.</h1>
+        <p class="sub page-lede">The same cited answers as the personal app, run as one container you host. Your index and your documents stay on your servers. Reach out for a quote.</p>
+        <div class="cta"><a class="btn primary" href="#quote">Request a quote</a></div>
+      </div>
+    </section>
+
+    <section class="alt" id="compare">
+      <div class="wrap">
+        <h2>Personal vs Team</h2>
+        <div class="compare-wrap">
+          <table class="compare">
+            <caption>Both editions run the same Rust backend and retrieval.</caption>
+            <thead><tr><th scope="col"><span class="sr-only">Feature</span></th><th scope="col">Personal</th><th scope="col">Team · Self-hosted</th></tr></thead>
+            <tbody>
+              <tr><th scope="row">Where it runs</th><td>The desktop app on your computer (macOS, Windows, Linux)</td><td>One Docker container on your infrastructure</td></tr>
+              <tr><th scope="row">Install</th><td>One download, no Docker</td><td><code>docker compose up</code> from the repo, or the prebuilt image</td></tr>
+              <tr><th scope="row">Where data lives</th><td>A database on your disk</td><td>A SQLite file on the container's <code>/data</code> volume &mdash; no database server</td></tr>
+              <tr><th scope="row">Models</th><td>Local Ollama, or your own OpenAI-compatible API</td><td>Same</td></tr>
+              <tr><th scope="row">Sources</th><td>Folders, Drive, Jira, Linear, JSON APIs</td><td>Same</td></tr>
+              <tr><th scope="row">Sign-in</th><td>None &mdash; it only listens on your machine</td><td>Optional password sign-in; required before it will start on a non-local address</td></tr>
+              <tr><th scope="row">License</th><td>Free for personal use</td><td>Required for team and commercial use; checked offline at startup</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="differentiators">
+      <div class="wrap">
+        <h2>What you can check</h2>
+        <p class="sub page-lede">Each of these is in the public source, not on a roadmap.</p>
+        <div class="cols">
+          <div class="col"><h3>Source labels gate cloud AI</h3><p>Label a source <code>internal</code>, <code>public</code>, <code>sensitive</code> or <code>pii</code>. Sensitive and PII sources are kept out of answers from a cloud model you have not approved.</p></div>
+          <div class="col"><h3>Refusals leave a record</h3><p>When the label gate excludes sources, the app writes an event to its system log. If nothing survives the gate, it refuses to answer instead of guessing. Every agent <code>ask</code> and <code>search</code> call is logged too.</p></div>
+          <div class="col"><h3>Public-only mode for agents</h3><p>The MCP server has a <code>public_only</code> switch: answers come only from sources labelled <code>public</code>, so a coding agent can be pointed at what is safe to share.</p></div>
+          <div class="col"><h3>Portable backups</h3><p>Export the whole index to one file and import it elsewhere, with a dry-run preview first. Records are matched by stable IDs, not local row numbers. Credentials stay behind unless you opt into a passphrase-encrypted bundle.</p></div>
+          <div class="col"><h3>Cited answers</h3><p>Every answer lists the document and section it came from, in the browser and for coding agents.</p></div>
+          <div class="col"><h3>Your model choice</h3><p>Run models locally with Ollama, or bring your own OpenAI-compatible API. Without any model, keyword search still works.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="alt" id="deploy">
+      <div class="wrap">
+        <h2>Deployment</h2>
+        <p class="sub page-lede">One container, one process, state on one volume. Copy the example environment file, add your license and model settings, then:</p>
+        <div class="code">docker compose -f hosting/docker-compose.yml up --build</div>
+        <p class="small">A prebuilt image is published with each release. Put TLS in front with your usual proxy. Full steps: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/hosting/README.md" target="_blank" rel="noopener noreferrer">hosting/README</a>.</p>
+      </div>
+    </section>
+
+    <section id="quote">
+      <div class="wrap">
+        <h2>Request a quote</h2>
+        <p class="sub page-lede">Tell us a little about your team and we will reply by email.</p>
+        <form class="quote" id="quote-form" novalidate>
+          <div><label for="q-company">Company</label><input id="q-company" name="company" type="text" autocomplete="organization" required aria-describedby="quote-msg" /></div>
+          <div><label for="q-seats">Seats</label><input id="q-seats" name="seats" type="number" min="1" step="1" inputmode="numeric" required aria-describedby="quote-msg" /></div>
+          <div><label for="q-deploy">Deployment</label>
+            <select id="q-deploy" name="deployment" required aria-describedby="quote-msg">
+              <option value="">Choose one</option>
+              <option value="self-hosted">Self-hosted (Docker on our infrastructure)</option>
+              <option value="other">Other / not sure yet</option>
+            </select></div>
+          <div><label for="q-email">Work email</label><input id="q-email" name="email" type="email" autocomplete="email" required aria-describedby="quote-msg" /></div>
+          <div><label for="q-note">Note <span class="opt">(optional)</span></label><textarea id="q-note" name="note" rows="3"></textarea></div>
+          <div><button class="btn primary" type="submit">Request a quote</button></div>
+        </form>
+        <div id="quote-msg" class="capture-msg" role="status"></div>
+        <p class="small">We use these details only to reply to your request. Handled by Formspree as our processor &mdash; see the <a href="/privacy">Privacy notice</a>.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    <div class="wrap foot">
+      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg><b>AnchorCore</b> v1 local · free for personal use · Team self-hosted on request · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="/team">For teams</a> · <a href="/hosted">Hosted waitlist</a> · <a href="/privacy">Privacy notice</a> · <a href="/#trust">Trust &amp; verification</a></div>
+      <div class="mono">Private by default · cited by design</div>
+    </div>
+  </footer>
+
+  <script type="module" src="/src/pages.ts"></script>
+</body>
+</html>

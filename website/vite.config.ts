@@ -6,9 +6,9 @@ export default defineConfig({
   build: {
     outDir: "dist",
     rollupOptions: {
-      // two static entries: the landing page and the GDPR Art. 13 notice page
-      // (R18.11 — gets its own linkable route, /privacy, via its own HTML)
-      input: { main: "index.html", privacy: "privacy.html" }
+      // static entries: the landing page, the GDPR Art. 13 notice (R18.11) and the
+      // audience pages /team + /hosted (R44.16); each gets its clean route from its HTML
+      input: { main: "index.html", privacy: "privacy.html", team: "team.html", hosted: "hosted.html" }
     }
   }
 });
