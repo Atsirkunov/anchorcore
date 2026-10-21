@@ -211,7 +211,7 @@ ADR log. Append newest first.
 * **Alternatives considered:**
   - *A: Cloudflare Web Analytics* — rejected for now: breaks the no-analytics wording for visit/referrer data that is not decision-relevant at current traffic; revisit if visit→download conversion becomes the question.
   - *B: `/download/{os}` Worker + counter* — rejected for now: per-day OS trends are not worth a new moving part in the download path; GitHub asset counts already give per-OS totals.
-  * *Keep the bridge* — rejected: unaudited updates, no AnchorCore-specific value, contradicts the only-our-scripts claim.
+  - *Keep the bridge* — rejected: unaudited updates, no AnchorCore-specific value, contradicts the only-our-scripts claim.
 * **Consequences:**
   - Owner action: Cloudflare dashboard → Agent Readiness → WebMCP → off. Until it is flipped, the privacy notice's bridge disclosure stays; after, remove the disclosure from `website/privacy.html` and `website/README.md` in the same change as confirming the served HTML has no bridge script.
   - If analytics returns, update the privacy notice + README "no analytics" statement in the same change (R44.19 acceptance).
