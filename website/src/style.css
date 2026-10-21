@@ -66,7 +66,8 @@ h1{font-family:Georgia,serif;letter-spacing:-0.03em;line-height:1.04;font-size:v
 .agent-cta-head .btn{min-width:92px;white-space:nowrap;flex-shrink:0}
 .agent-cta-note{font-size:12px;color:var(--dim);line-height:1.5}
 @media(max-width:420px){.agent-cta-cmd{white-space:normal;word-break:break-word}}
-.capture{display:flex;gap:8px;margin:10px 0}
+.capture{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
+.capture label{flex-basis:100%;font-size:14px;font-weight:700}
 .capture input{flex:1;min-width:180px;padding:10px 12px;border-radius:8px;border:1px solid var(--control-border);background:var(--surface);font-size:14px}
 .capture-msg{font-size:12px;color:var(--sage);min-height:16px}
 .shot{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface);box-shadow:0 14px 36px rgba(26,29,26,0.09);max-width:none;margin:0}

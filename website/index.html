@@ -9,7 +9,7 @@
   <meta property="og:title" content="AnchorCore — Private AI Knowledge Base with Cited Answers" />
   <meta property="og:description" content="Turn folders, Drive, Jira & Linear into a private AI knowledge base. Ask what was decided — get cited answers. Local-first, runs on your machine." />
   <script type="application/ld+json">
-  {"@context":"https://schema.org","@type":"SoftwareApplication","name":"AnchorCore","applicationCategory":"BusinessApplication","operatingSystem":["macOS","Windows"],"description":"Private AI knowledge base: search folders, Drive, Jira and Linear, ask what was decided, get cited answers. Local-first, self-hosted.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"featureList":"private AI knowledge base, cited answers, local-first document search, Jira integration, Linear integration, Google Drive integration, source labels, model allowlist, MCP server"}
+  {"@context":"https://schema.org","@type":"SoftwareApplication","name":"AnchorCore","applicationCategory":"BusinessApplication","operatingSystem":["macOS","Windows","Linux"],"description":"Private AI knowledge base: search folders, Drive, Jira and Linear, ask what was decided, get cited answers. Local-first, self-hosted.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"featureList":"private AI knowledge base, cited answers, local-first document search, Jira integration, Linear integration, Google Drive integration, source labels, model allowlist, MCP server"}
   </script>
   <script type="application/ld+json">
   {"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
@@ -76,7 +76,7 @@
             <a id="cta-primary" class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download — Free for personal use</a>
             <a class="btn secondary" href="#demo">See 60-second demo</a>
           </div>
-          <div id="cta-note" class="cta-note">macOS & Windows • one download, no Docker • data stays on your machine</div>
+          <div id="cta-note" class="cta-note">macOS, Windows & Linux • one download, no Docker • data stays on your machine</div>
           <p id="first-launch" class="small">First launch: move AnchorCore to /Applications. macOS: open it, then System Settings → Privacy &amp; Security → Open Anyway. Windows: SmartScreen → More info → Run anyway. (Not yet Apple-notarized or store-signed.)</p>
 
           <div class="agent-cta">
@@ -308,9 +308,9 @@
       <div class="wrap">
         <h2>Pricing</h2>
         <div class="cols">
-          <div class="col"><h3>Personal</h3><div class="price">Free</div><p>Local app on your machine. Folders, Drive, Jira, Linear, cited answers. macOS &amp; Windows, one download, no Docker.</p><small><a href="#download">Download — free for personal use</a></small></div>
+          <div class="col"><h3>Personal</h3><div class="price">Free</div><p>Local app on your machine. Folders, Drive, Jira, Linear, cited answers. macOS, Windows &amp; Linux, one download, no Docker.</p><small><a href="#download">Download — free for personal use</a></small></div>
           <div class="col"><h3>Team · Self-hosted</h3><div class="price">One-time license</div><p>One Docker container in your VPC. Same cited answers for the whole team — perpetual, including a year of support and updates.</p><div class="cta"><a class="btn secondary" id="cta-team" href="mailto:alex@anchorcore.dev?subject=AnchorCore%20Team%20self-hosted%20license">Talk to us — Team license</a></div><small><a href="https://github.com/Atsirkunov/anchorcore/blob/main/hosting/README.md">Deploy via Docker — self-hosted</a></small></div>
-          <div class="col"><h3>Hosted</h3><div class="price">Soon</div><p>We host it, no setup. Join the waitlist for hosted early access, one-click Drive sign-in and Slack.</p><small><a href="#roadmap">Join the waitlist</a></small></div>
+          <div class="col"><h3>Hosted</h3><div class="price">Soon</div><p>We host it, no setup. Join the waitlist for hosted early access, one-click Drive sign-in and Slack.</p><small><a href="#roadmap" data-interest="hosted">Join the waitlist</a></small></div>
         </div>
         <!-- Wall of love (R18.13): the empty "opening soon" placeholder was removed. It returns when there is a real quote to show — an empty shelf is not social proof. -->
       </div>
@@ -320,16 +320,17 @@
     <section id="roadmap">
       <div class="wrap">
         <h2>Get started</h2>
-        <p>Free for personal use — download the app and ask your first cited question in a minute. Team self-hosted is a one-time platform license. Join the <code id="roadmap-track">personal</code> list for hosted early access, one-click Drive sign-in and Slack.</p>
+        <p>Free for personal use — download the app and ask your first cited question in a minute. Team self-hosted is a one-time platform license. Join the waitlist for hosted early access, one-click Drive sign-in and Slack.</p>
         <div class="cta">
           <a id="cta-roadmap" class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download — Free for personal use</a>
         </div>
         <p class="small">First launch: move AnchorCore to /Applications. macOS: open it, then System Settings → Privacy &amp; Security → Open Anyway. Windows: SmartScreen → More info → Run anyway. (Not yet Apple-notarized or store-signed.)</p>
         <form class="capture" id="capture-form-2">
-          <input id="email2" type="email" placeholder="Work email" aria-label="Work email" />
-          <button class="btn small" type="submit">Join waitlist</button>
+          <label for="email2">Email</label>
+          <input id="email2" type="email" placeholder="you@example.com" autocomplete="email" aria-describedby="capture2-msg" />
+          <button class="btn primary small" type="submit">Join waitlist</button>
         </form>
-        <div id="capture2-msg" class="capture-msg"></div>
+        <div id="capture2-msg" class="capture-msg" role="status"></div>
         <p class="small">By joining, you agree to receive AnchorCore updates by email — unsubscribe anytime. See <a href="/privacy">Privacy notice</a>.</p>
       </div>
     </section>
