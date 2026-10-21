@@ -4,6 +4,7 @@
   --surface:#ffffff;
   --border:#e2ddd6;
   --border2:#d4cfc6;
+  --control-border:#8a8378;
   --ink:#1a1d1a;
   --dim:#5C6470;
   --faint:#9aa0a8;
@@ -55,7 +56,7 @@ h1{font-family:Georgia,serif;letter-spacing:-0.03em;line-height:1.04;font-size:v
 .btn{display:inline-block;padding:10px 16px;border-radius:8px;font-weight:700;font-size:14px;text-decoration:none;cursor:pointer;border:1px solid transparent}
 .btn.primary{background:var(--sage);color:#fff}
 .btn.primary:hover{background:var(--sageH);text-decoration:none}
-.btn.secondary{background:var(--surface);color:var(--ink);border-color:var(--border)}
+.btn.secondary{background:var(--surface);color:var(--ink);border-color:var(--control-border)}
 .btn.small{padding:8px 12px;font-size:13px}
 .cta-note{font-size:clamp(12px,0.85vw,13.5px);color:var(--dim)}
 /* Hero agent-skill entry point (R18.19) — the other main way in, next to Download */
@@ -66,7 +67,7 @@ h1{font-family:Georgia,serif;letter-spacing:-0.03em;line-height:1.04;font-size:v
 .agent-cta-note{font-size:12px;color:var(--dim);line-height:1.5}
 @media(max-width:420px){.agent-cta-cmd{white-space:normal;word-break:break-word}}
 .capture{display:flex;gap:8px;margin:10px 0}
-.capture input{flex:1;min-width:180px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);font-size:14px}
+.capture input{flex:1;min-width:180px;padding:10px 12px;border-radius:8px;border:1px solid var(--control-border);background:var(--surface);font-size:14px}
 .capture-msg{font-size:12px;color:var(--sage);min-height:16px}
 .shot{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface);box-shadow:0 14px 36px rgba(26,29,26,0.09);max-width:none;margin:0}
 .shot-bar{padding:12px 14px;border-bottom:1px solid var(--border);font-size:12px;font-weight:700;color:var(--dim);background:var(--paper2)}
@@ -135,7 +136,7 @@ section{padding:var(--pad-sec) 0}
 .qa{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px 22px}
 footer{border-top:1px solid var(--border);padding:32px 0;background:var(--paper2)}
 .foot{display:flex;gap:12px;justify-content:space-between;flex-wrap:wrap;font-size:12px;color:var(--dim)}
-.soon{font-size:10px}
+.soon{font-size:12px}
 .cite .bar.sage{background:#4A5A52}
 .cite .bar.stone{background:#9A8B7A}
 .fig{margin-top:16px;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface)}
