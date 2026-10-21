@@ -147,23 +147,29 @@ fn word_break_in(chars: &[char], lo: usize, raw_end: usize) -> Option<usize> {
     None
 }
 
-/// B12 document cleaning (archived `cleaning.py` parity): control chars,
-/// page-number lines and whitespace per `clean_text`, plus repeated
-/// header/footer line stripping. Applied to the document copy that feeds
-/// chunking — `ingested_items.text` stays raw, exactly like the archived
-/// pipeline (`strip_repeated(clean_text(t), repeated_lines(t))`).
-pub fn clean_doc_text(text: &str) -> String {
-    let cleaned = clean_text_lines(text);
-    strip_repeated_lines(&cleaned, &repeated_lines(text))
-}
+/// Page-edge window (R43.2): repeated header/footer lines and page-number
+/// lines strip only within the first/last N non-blank content lines of each
+/// page segment. Headers/footers run 1–3 lines; anything deeper is content.
+const PAGE_EDGE_LINES: usize = 3;
 
-/// Per-line cleaning: `\r` normalisation, control-char strip, page-number
-/// line drop, intra-line whitespace collapse, blank-run collapse.
-fn clean_text_lines(text: &str) -> String {
+/// B12 document cleaning (archived `cleaning.py` parity, R43.2 page-boundary
+/// fix): control chars and whitespace clean doc-wide, but page-number lines
+/// and repeated header/footer lines strip ONLY at page boundaries — the old
+/// doc-wide strip deleted real table content (`Yes`, `N/A`, years, amounts).
+/// Page segments split on R36.10 `[page N]` marker lines; marker-less text is
+/// one segment, so only doc-edge boilerplate strips. Markers themselves
+/// always survive (the R36.10 breadcrumb plan reads them after chunking).
+/// Applied to the document copy that feeds chunking — `ingested_items.text`
+/// stays raw, exactly like the archived pipeline. Dropped boilerplate leaves
+/// no gap (blank runs collapse across it).
+pub fn clean_doc_text(text: &str) -> String {
+    let repeated = repeated_lines(text);
     let nls = text.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = nls.split('\n').collect();
+    let edges = page_edge_mask(&lines);
     let mut out: Vec<String> = Vec::new();
     let mut blanks = 0usize;
-    for line in nls.split('\n') {
+    for (i, line) in lines.iter().enumerate() {
         let noctrl: String = line.chars().filter(|c| !is_stripped_control(*c)).collect();
         if noctrl.trim().is_empty() {
             blanks += 1;
@@ -172,13 +178,57 @@ fn clean_text_lines(text: &str) -> String {
             }
             continue;
         }
-        blanks = 0;
-        if is_page_number_line(noctrl.trim()) {
-            continue;
+        let trimmed = noctrl.trim();
+        if crate::extract::page_marker_number(trimmed).is_none() && edges[i] {
+            if is_page_number_line(trimmed) || repeated.contains(&repeat_key(trimmed)) {
+                continue;
+            }
         }
+        blanks = 0;
         out.push(collapse_ws_rstrip(&noctrl));
     }
     out.join("\n").trim().to_string()
+}
+
+/// Edge mask (R43.2): line indices within the first/last `PAGE_EDGE_LINES`
+/// non-blank lines of each page segment. Marker lines split segments but are
+/// never edges themselves.
+fn page_edge_mask(lines: &[&str]) -> Vec<bool> {
+    let mut mask = vec![false; lines.len()];
+    let mut seg_start = 0;
+    for i in 0..=lines.len() {
+        let boundary = i == lines.len() || crate::extract::page_marker_number(lines[i].trim()).is_some();
+        if boundary {
+            mark_segment_edges(lines, &mut mask, seg_start, i);
+            seg_start = i + 1;
+        }
+    }
+    mask
+}
+
+fn mark_segment_edges(lines: &[&str], mask: &mut [bool], start: usize, end: usize) {
+    let mut head = 0;
+    for i in start..end {
+        if lines[i].trim().is_empty() {
+            continue;
+        }
+        if head >= PAGE_EDGE_LINES {
+            break;
+        }
+        mask[i] = true;
+        head += 1;
+    }
+    let mut tail = 0;
+    for i in (start..end).rev() {
+        if lines[i].trim().is_empty() {
+            continue;
+        }
+        if tail >= PAGE_EDGE_LINES {
+            break;
+        }
+        mask[i] = true;
+        tail += 1;
+    }
 }
 
 /// Control chars the cleaner strips (`\t`/`\n` survive; `\r` is normalised
@@ -224,14 +274,22 @@ fn is_page_number_line(s: &str) -> bool {
     orphan.is_match(s)
 }
 
-/// Lines repeated across the document (headers/footers/templates): lowercased
-/// stripped lines at/above threshold, computed on the raw text like the
-/// archived pipeline. Lines over 120 chars never count.
+/// Repeat-comparison key: trimmed, inner whitespace collapsed, lowercased —
+/// counting and stripping share it, so a double-spaced header still matches
+/// its cleaned form.
+fn repeat_key(line: &str) -> String {
+    line.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+/// Lines repeated across the document (headers/footers/templates): keys
+/// at/above threshold, counted on the raw text like the archived pipeline.
+/// Lines over 120 chars never count. R43.2 strips members only at page
+/// boundaries (see `page_edge_mask`) — mid-page repeats are table content.
 fn repeated_lines(text: &str) -> std::collections::HashSet<String> {
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut total = 0usize;
     for line in text.split('\n') {
-        let s = line.trim().to_lowercase();
+        let s = repeat_key(line);
         if s.is_empty() || s.chars().count() > 120 {
             continue;
         }
@@ -249,16 +307,6 @@ fn repeat_threshold(total: usize) -> usize {
     let r = total % 100;
     let rounded = q + if r > 50 { 1 } else if r < 50 { 0 } else { q % 2 };
     rounded.max(3)
-}
-
-fn strip_repeated_lines(text: &str, repeated: &std::collections::HashSet<String>) -> String {
-    if repeated.is_empty() {
-        return text.to_string();
-    }
-    text.split('\n')
-        .filter(|l| !repeated.contains(l.trim().to_lowercase().as_str()))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// Parser-emitted heading marker (R36.7): `#`–`######` + space, shared by
@@ -281,6 +329,17 @@ pub(crate) fn marker_heading(line: &str) -> Option<(i32, &str)> {
     Some((hashes as i32, title))
 }
 
+/// Heading kind — the prose splitter needs more than a level: ALL-CAPS lines
+/// follow context rules (set-off vs run-in) that numbered/marker headings
+/// don't. R43.3: `classify_heading` keeps its shape for the TOC-suppression
+/// probe; the splitter uses `classify_kind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeadingKind {
+    Marker,
+    Numbered,
+    Caps,
+}
+
 /// Single heading classifier — was `is_heading` + `heading_level` (+ 3 level
 /// helpers), which evaluated the same regexes twice. Returns the section level
 /// (`Some`) or `None` for body text. Level rules are unchanged: §-forms carry
@@ -288,10 +347,14 @@ pub(crate) fn marker_heading(line: &str) -> Option<(i32, &str)> {
 /// ALL-CAPS lines are level 1. R36.7 checks `#` markers first (they bypass
 /// the 80-char guard — parser structure, not heuristic guesswork).
 fn classify_heading(line: &str) -> Option<i32> {
+    classify_kind(line).map(|(_, level)| level)
+}
+
+fn classify_kind(line: &str) -> Option<(HeadingKind, i32)> {
     static RE_NUM: OnceLock<Regex> = OnceLock::new();
     static RE_CAPS: OnceLock<Regex> = OnceLock::new();
     if let Some((level, _)) = marker_heading(line) {
-        return Some(level);
+        return Some((HeadingKind::Marker, level));
     }
     let s = line.trim();
     if s.is_empty() || s.len() > 80 {
@@ -304,12 +367,89 @@ fn classify_heading(line: &str) -> Option<i32> {
         )
         .unwrap()
     });
-    let numbered = re.is_match(s);
+    // R43.3: dotted numerics that read as data, not structure, never section
+    // (`3.5 million users`, `1.0.31 release`, `21.10.2026 notes`,
+    // `10.0.0.1 gateway` used to open 1–2 line ghost sections).
+    let numbered = re.is_match(s) && !looks_like_non_heading_number(s);
     let caps = RE_CAPS.get_or_init(|| Regex::new(r"^[A-Z][A-Z0-9 &()/\-]{3,80}$").unwrap());
-    if !numbered && !(caps.is_match(s) && !s.chars().all(|c| c.is_ascii_digit())) {
+    let caps_hit =
+        caps.is_match(s) && !s.chars().all(|c| c.is_ascii_digit()) && !is_short_shout(s);
+    if !numbered && !caps_hit {
         return None;
     }
-    Some(numbered_heading_level(s))
+    let kind = if numbered {
+        HeadingKind::Numbered
+    } else {
+        HeadingKind::Caps
+    };
+    Some((kind, numbered_heading_level(s)))
+}
+
+/// R43.3: short single-token shouts (`NOTE`, `TODO`, `FIXME`) are admonition
+/// labels, never section headings — even set off by blanks. Multi-token and
+/// longer single-token CAPS (`ACME CORP`, `INTRODUCTION`) still classify here;
+/// the splitter's context rules decide those.
+const CAPS_MIN_TOKEN: usize = 8;
+
+fn is_short_shout(s: &str) -> bool {
+    !s.contains([' ', '\t']) && s.chars().count() < CAPS_MIN_TOKEN
+}
+
+/// R43.3: dotted-numeric openers that read as data, not structure. §-forms
+/// and article-word forms are distinctive enough to keep as-is; only
+/// dot-separated digit runs are screened: dates, IPv4 addresses, bare
+/// numbers with no title text, and quantities/versions whose remainder runs
+/// on in lowercase prose (`3.5 million`, `1.0.31 release`).
+fn looks_like_non_heading_number(s: &str) -> bool {
+    if s.starts_with('§') {
+        return false;
+    }
+    let lower = s.to_lowercase();
+    for w in [
+        "article ",
+        "annex ",
+        "section ",
+        "schedule ",
+        "rule ",
+        "appendix ",
+    ] {
+        if lower.starts_with(w) {
+            return false;
+        }
+    }
+    let raw_len: usize = s
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .map(|c| c.len_utf8())
+        .sum();
+    let token = s[..raw_len].trim_end_matches('.');
+    let rest = s[raw_len..]
+        .trim_start_matches([' ', '\t', ':', ')', '-', '.'])
+        .trim_start();
+    if rest.is_empty() {
+        return true;
+    }
+    let parts: Vec<&str> = token.split('.').collect();
+    if is_date_token(&parts) || is_ipv4_token(&parts) {
+        return true;
+    }
+    rest.chars().next().is_some_and(|c| c.is_lowercase())
+}
+
+fn is_date_token(parts: &[&str]) -> bool {
+    if parts.len() != 3 {
+        return false;
+    }
+    let ymd = parts[0].len() == 4 && parts[1].len() <= 2 && parts[2].len() <= 2;
+    let dmy = parts[0].len() <= 2 && parts[1].len() <= 2 && parts[2].len() == 4;
+    ymd || dmy
+}
+
+fn is_ipv4_token(parts: &[&str]) -> bool {
+    parts.len() == 4
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.len() <= 3 && p.parse::<u32>().is_ok_and(|n| n <= 255))
 }
 
 /// Level for a line already known to be a heading (see `classify_heading`).
@@ -501,8 +641,22 @@ pub fn chunk_document_with_sections(text: &str) -> (Vec<SectionMeta>, Vec<ChunkM
     let mut stack: Vec<usize> = Vec::new();
 
     for (idx, line) in lines.iter().enumerate() {
-        let level = if suppressed[idx] { None } else { classify_heading(line) };
-        if let Some(level) = level {
+        let classified = if suppressed[idx] {
+            None
+        } else {
+            classify_kind(line)
+        };
+        // R43.3: ALL-CAPS headings need set-off context (see below);
+        // numbered/marker headings section unconditionally.
+        let headed = match classified {
+            Some((HeadingKind::Caps, level)) => {
+                caps_section_level(&lines, idx, level, &raw_sections, &stack)
+                    .map(|l| (Some(HeadingKind::Caps), l))
+            }
+            Some((kind, level)) => Some((Some(kind), level)),
+            None => None,
+        };
+        if let Some((kind, level)) = headed {
             let title = section_title(line);
             // pop stack to find parent
             while let Some(&top) = stack.last() {
@@ -520,15 +674,18 @@ pub fn chunk_document_with_sections(text: &str) -> (Vec<SectionMeta>, Vec<ChunkM
                 Some(pp) if !pp.is_empty() => format!("{pp} > {title}"),
                 _ => title.clone(),
             };
-            let idx = raw_sections.len();
+            let ridx = raw_sections.len();
             raw_sections.push(RawSection {
                 title,
                 level,
                 parent,
                 path,
                 lines: vec![line.to_string()],
+                kind,
+                line_start: idx as i64 + 1,
+                line_end: 0,
             });
-            stack.push(idx);
+            stack.push(ridx);
         } else {
             if raw_sections.is_empty() {
                 // root section for leading content before first heading
@@ -539,6 +696,9 @@ pub fn chunk_document_with_sections(text: &str) -> (Vec<SectionMeta>, Vec<ChunkM
                     parent: None,
                     path: String::new(),
                     lines: Vec::new(),
+                    kind: None,
+                    line_start: 1,
+                    line_end: 0,
                 });
                 stack.push(idx);
             }
@@ -556,6 +716,9 @@ pub fn chunk_document_with_sections(text: &str) -> (Vec<SectionMeta>, Vec<ChunkM
             parent: None,
             path: String::new(),
             lines: Vec::new(),
+            kind: None,
+            line_start: 1,
+            line_end: 0,
         });
     }
 
@@ -569,7 +732,45 @@ pub fn chunk_document_with_sections(text: &str) -> (Vec<SectionMeta>, Vec<ChunkM
     } else {
         raw_sections
     };
-    materialize_opts(raw_sections, max_chars, true)
+    materialize_opts(
+        assign_line_ranges(raw_sections, lines.len() as i64),
+        max_chars,
+        true,
+    )
+}
+
+/// R43.3: ALL-CAPS headings need set-off context — a run-in CAPS line inside
+/// body text is an annotation, not a section (`ACME CORP` mid-paragraph used
+/// to pop the whole numbered tree to level 1). The following line must be
+/// blank/missing or short (a subtitle, not body prose); inside a numbered
+/// section without a preceding blank line, the CAPS line nests under its
+/// parent instead of popping to level 1. Set-off CAPS (`\n\nAPPENDIX\n\n`)
+/// still opens a level-1 section.
+const CAPS_FOLLOW_SHORT: usize = 60;
+
+fn caps_section_level(
+    lines: &[&str],
+    idx: usize,
+    level: i32,
+    raw_sections: &[RawSection],
+    stack: &[usize],
+) -> Option<i32> {
+    let followed = lines.get(idx + 1).map(|l| l.trim()).unwrap_or("");
+    if !followed.is_empty() && followed.chars().count() > CAPS_FOLLOW_SHORT {
+        return None;
+    }
+    let numbered_parent_level = stack
+        .last()
+        .and_then(|&t| raw_sections.get(t))
+        .filter(|rs| rs.kind == Some(HeadingKind::Numbered))
+        .map(|rs| rs.level);
+    if let Some(parent_level) = numbered_parent_level {
+        let set_off = idx == 0 || lines[idx - 1].trim().is_empty();
+        if !set_off {
+            return Some(parent_level + 1);
+        }
+    }
+    Some(level)
 }
 
 /// Section title for a heading line: marker headings (`# Title`) drop the
@@ -602,11 +803,20 @@ fn fallback_windows(text: &str) -> Vec<RawSection> {
     if paras.len() < 2 || total <= FALLBACK_WINDOW_MAX {
         return vec![root_section(text)];
     }
+    // R36.18a: paragraph line offsets (single-blank separators — the root
+    // text is cleaned, so blank runs are uniform and each para advances
+    // past exactly one blank line).
+    let mut para_starts = Vec::with_capacity(paras.len());
+    let mut next = 1i64;
+    for p in &paras {
+        para_starts.push(next);
+        next += p.split('\n').count() as i64 + 1;
+    }
     let mut raw = Vec::new();
     let mut s = 0;
     while s < paras.len() {
         let e = window_end(&paras, s);
-        raw.push(window_section(&paras[s..e]));
+        raw.push(window_section(&paras[s..e], para_starts[s]));
         if e >= paras.len() {
             break;
         }
@@ -644,7 +854,7 @@ fn overlap_start(paras: &[String], s: usize, e: usize) -> usize {
     j.min(e.saturating_sub(1)).max(s + 1)
 }
 
-fn window_section(paras: &[String]) -> RawSection {
+fn window_section(paras: &[String], start_line: i64) -> RawSection {
     let mut lines = Vec::new();
     for (i, p) in paras.iter().enumerate() {
         if i > 0 {
@@ -652,13 +862,48 @@ fn window_section(paras: &[String]) -> RawSection {
         }
         lines.extend(p.split('\n').map(|l| l.to_string()));
     }
+    // R36.18a: windows preset their exact span (they overlap by design, so
+    // the post-pass end rule would understate them — see its skip below).
+    let line_end = start_line + lines.len() as i64 - 1;
     RawSection {
         title: String::new(),
         level: 0,
         parent: None,
         path: String::new(),
         lines,
+        kind: None,
+        line_start: start_line,
+        line_end: line_end.max(start_line),
     }
+}
+
+/// R36.18a: section-granular line ranges (1-based, inclusive, relative to
+/// the chunked text — cleaned text for prose, raw for code/config). A
+/// section runs from its first line to the line before the next
+/// same-or-shallower section starts (or EOF): parents span their children,
+/// level-0 roots end at whatever section follows. Sections with a preset
+/// end (fallback windows) keep it. Chunks inherit their section's range
+/// in `materialize_opts` — the same granularity as markdown's split pieces.
+fn assign_line_ranges(mut raw: Vec<RawSection>, total_lines: i64) -> Vec<RawSection> {
+    for i in 0..raw.len() {
+        if raw[i].line_end != 0 {
+            continue;
+        }
+        let level = raw[i].level;
+        let mut end = total_lines;
+        for rs in raw.iter().skip(i + 1) {
+            if rs.level <= level || level == 0 {
+                end = rs.line_start - 1;
+                break;
+            }
+        }
+        raw[i].line_end = end.max(raw[i].line_start);
+    }
+    raw
+}
+
+fn total_lines(text: &str) -> i64 {
+    text.split('\n').count().max(1) as i64
 }
 
 /// Table shape inside a paragraph block (R36.7): Markdown pipe rows or the
@@ -772,6 +1017,27 @@ fn split_section(section: &str, max_chars: usize) -> Vec<String> {
 /// Paragraph packing with an R36.7 prose-only table rule: an over-cap table
 /// splits by row groups (header repeated) instead of mid-row. Code/config
 /// keep `tables = false` — tab-indented code must never read as a table.
+///
+/// R43.4: paragraph edge trim that preserves indentation (the old `trim()`
+/// stripped the first line's indent per paragraph — Python/YAML symbols over
+/// the cap lost nesting). Blank edge lines drop; content lines keep leading
+/// whitespace and lose trailing whitespace.
+fn trim_para_edges(p: &str) -> String {
+    let lines: Vec<&str> = p.lines().collect();
+    let mut start = 0;
+    while start < lines.len() && lines[start].trim().is_empty() {
+        start += 1;
+    }
+    let mut end = lines.len();
+    while end > start && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    lines[start..end]
+        .iter()
+        .map(|l| l.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 fn split_section_opts(section: &str, max_chars: usize, tables: bool) -> Vec<String> {
     static RE_SPLIT: OnceLock<Regex> = OnceLock::new();
     if section.chars().count() <= max_chars {
@@ -780,7 +1046,7 @@ fn split_section_opts(section: &str, max_chars: usize, tables: bool) -> Vec<Stri
     let re = RE_SPLIT.get_or_init(|| Regex::new(r"\n\s*\n").unwrap());
     let paras: Vec<String> = re
         .split(section)
-        .map(|p| p.trim().to_string())
+        .map(trim_para_edges)
         .filter(|p| !p.is_empty())
         .collect();
     let mut out = Vec::new();
@@ -819,6 +1085,35 @@ struct RawSection {
     parent: Option<usize>,
     path: String,
     lines: Vec<String>,
+    /// R43.3: prose-splitter heading kind (drives the CAPS context rules).
+    /// None for synthetic roots, fallback windows, and code/config sections.
+    kind: Option<HeadingKind>,
+    /// R36.18a: 1-based inclusive source lines (cleaned text for prose,
+    /// raw for code/config). Starts are set at creation; ends are filled
+    /// by `assign_line_ranges` (windows preset both).
+    line_start: i64,
+    line_end: i64,
+}
+
+/// R43.3: prose minimum chunk size (mirrors markdown `merge_short`/`MD_MIN`).
+/// A chunk under this merges into its section-predecessor instead of
+/// standing alone — tiny chunks win BM25 length normalization for free.
+/// Applied on the prose path only (see `materialize_opts`): code symbols
+/// and config keys are meaningful units at any size, and merging them
+/// would corrupt symbol/key citations.
+const PROSE_MIN: usize = 150;
+
+fn merge_short_parts(parts: &mut Vec<String>) {
+    let mut i = 1;
+    while i < parts.len() {
+        if parts[i].chars().count() < PROSE_MIN {
+            let text = parts.remove(i);
+            parts[i - 1].push_str("\n\n");
+            parts[i - 1].push_str(&text);
+        } else {
+            i += 1;
+        }
+    }
 }
 
 /// Shared tail: section rows + paragraph-packed chunks per section.
@@ -840,10 +1135,10 @@ fn materialize_opts(
             level: r.level,
             parent: r.parent,
             path: r.path.clone(),
-            // The prose/code/config splitters don't track source lines — only
-            // the markdown path fills ranges/kind/meta (migration 19 columns).
-            line_start: 0,
-            line_end: 0,
+            // R36.18a: prose/code/config ride the same range columns as
+            // markdown (migration 19); 0/0 survives only for old rows.
+            line_start: r.line_start,
+            line_end: r.line_end,
             kind: "section".to_string(),
             meta: "{}".to_string(),
         })
@@ -854,15 +1149,18 @@ fn materialize_opts(
         if text.trim().is_empty() {
             continue;
         }
-        let parts = split_section_opts(&text, max_chars, tables);
+        let mut parts = split_section_opts(&text, max_chars, tables);
+        if tables {
+            merge_short_parts(&mut parts);
+        }
         for p in parts {
             chunks.push(ChunkMeta {
                 content: p,
                 section_idx: Some(idx),
                 level: rs.level,
                 path: rs.path.clone(),
-                line_start: 0,
-                line_end: 0,
+                line_start: rs.line_start,
+                line_end: rs.line_end,
             });
         }
     }
@@ -884,6 +1182,9 @@ fn root_section(text: &str) -> RawSection {
         parent: None,
         path: String::new(),
         lines: text.split('\n').map(|l| l.to_string()).collect(),
+        kind: None,
+        line_start: 1,
+        line_end: 0,
     }
 }
 
@@ -895,6 +1196,7 @@ fn push_symbol(
     title: String,
     level: i32,
     first_line: &str,
+    line_no: i64,
 ) -> usize {
     let parent = parent.filter(|&p| !raw[p].title.is_empty());
     let path = match parent.map(|p| raw[p].path.clone()) {
@@ -908,6 +1210,9 @@ fn push_symbol(
         parent,
         path,
         lines: vec![first_line.to_string()],
+        kind: None,
+        line_start: line_no,
+        line_end: 0,
     });
     idx
 }
@@ -923,6 +1228,9 @@ fn append_code_line(raw: &mut Vec<RawSection>, stack: &mut Vec<(i64, usize)>, li
             parent: None,
             path: String::new(),
             lines: Vec::new(),
+            kind: None,
+            line_start: 1,
+            line_end: 0,
         });
         stack.push((-1, 0));
     }
@@ -1016,20 +1324,28 @@ pub fn chunk_for_doc_type(
 /// stay root-only instead of producing garbage sections.
 pub fn chunk_config_with_sections(text: &str, filename: &str) -> (Vec<SectionMeta>, Vec<ChunkMeta>) {
     let max_chars = env_usize("ANCHOR_CHUNK_MAX_CHARS", CHUNK_MAX_CHARS);
-    if is_minified(text) {
-        return materialize(vec![root_section(text)], max_chars);
+    let ext = file_ext(filename);
+    if ext.as_str() == "yaml" || ext.as_str() == "yml" {
+        return chunk_yaml_with_sections(text);
     }
-    match file_ext(filename).as_str() {
-        "yaml" | "yml" => chunk_yaml_with_sections(text),
-        "json" | "jsonc" => materialize(split_json_sections(text), max_chars),
-        "toml" => materialize(split_toml_sections(text), max_chars),
-        _ => materialize(vec![root_section(text)], max_chars),
-    }
+    let raw = if is_minified(text) {
+        vec![root_section(text)]
+    } else {
+        match ext.as_str() {
+            "json" | "jsonc" => split_json_sections(text),
+            "toml" => split_toml_sections(text),
+            _ => vec![root_section(text)],
+        }
+    };
+    materialize(assign_line_ranges(raw, total_lines(text)), max_chars)
 }
 
 pub fn chunk_yaml_with_sections(text: &str) -> (Vec<SectionMeta>, Vec<ChunkMeta>) {
     let max_chars = env_usize("ANCHOR_CHUNK_MAX_CHARS", CHUNK_MAX_CHARS);
-    materialize(split_yaml_sections(text), max_chars)
+    materialize(
+        assign_line_ranges(split_yaml_sections(text), total_lines(text)),
+        max_chars,
+    )
 }
 
 /// YAML key splitter: every mapping key opens a section (indent-nested like
@@ -1041,7 +1357,7 @@ fn split_yaml_sections(text: &str) -> Vec<RawSection> {
     let mut raw: Vec<RawSection> = Vec::new();
     let mut stack: Vec<(i64, usize)> = Vec::new();
     let mut symbols = 0usize;
-    for line in text.split('\n') {
+    for (li, line) in text.split('\n').enumerate() {
         let found = if symbols >= 500 { None } else { detect_yaml_key(line) };
         match found {
             Some((indent, title)) => {
@@ -1051,7 +1367,7 @@ fn split_yaml_sections(text: &str) -> Vec<RawSection> {
                 }
                 let parent = stack.last().map(|&(_, idx)| idx);
                 let level = symbol_level(&raw, parent);
-                let idx = push_symbol(&mut raw, parent, truncate_title(&title), level, line);
+                let idx = push_symbol(&mut raw, parent, truncate_title(&title), level, line, li as i64 + 1);
                 stack.push((indent, idx));
             }
             None => append_code_line(&mut raw, &mut stack, line),
@@ -1089,7 +1405,7 @@ fn split_json_sections(text: &str) -> Vec<RawSection> {
     let mut stack: Vec<(i64, usize)> = Vec::new();
     let mut symbols = 0usize;
     let mut in_block = false;
-    for line in text.split('\n') {
+    for (li, line) in text.split('\n').enumerate() {
         let probe = strip_jsonc_comment(line, &mut in_block);
         let found = if symbols >= 500 { None } else { detect_json_key(&probe) };
         match found {
@@ -1100,7 +1416,7 @@ fn split_json_sections(text: &str) -> Vec<RawSection> {
                 }
                 let parent = stack.last().map(|&(_, idx)| idx);
                 let level = symbol_level(&raw, parent);
-                let idx = push_symbol(&mut raw, parent, truncate_title(&title), level, line);
+                let idx = push_symbol(&mut raw, parent, truncate_title(&title), level, line, li as i64 + 1);
                 stack.push((indent, idx));
             }
             None => append_code_line(&mut raw, &mut stack, line),
@@ -1166,12 +1482,12 @@ fn split_toml_sections(text: &str) -> Vec<RawSection> {
     let mut table: Option<usize> = None;
     let mut current: Option<usize> = None;
     let mut symbols = 0usize;
-    for line in text.split('\n') {
+    for (li, line) in text.split('\n').enumerate() {
         if symbols < 500 {
             if let Some(name) = re_table.captures(line).map(|cap| cap[1].trim().to_string()) {
                 if !name.is_empty() {
                     symbols += 1;
-                    let idx = push_symbol(&mut raw, None, truncate_title(&name), 1, line);
+                    let idx = push_symbol(&mut raw, None, truncate_title(&name), 1, line, li as i64 + 1);
                     table = Some(idx);
                     current = Some(idx);
                     continue;
@@ -1181,7 +1497,7 @@ fn split_toml_sections(text: &str) -> Vec<RawSection> {
                 if !key.is_empty() {
                     symbols += 1;
                     let level = symbol_level(&raw, table);
-                    let idx = push_symbol(&mut raw, table, truncate_title(&key), level, line);
+                    let idx = push_symbol(&mut raw, table, truncate_title(&key), level, line, li as i64 + 1);
                     current = Some(idx);
                     continue;
                 }
@@ -1196,6 +1512,9 @@ fn split_toml_sections(text: &str) -> Vec<RawSection> {
                 parent: None,
                 path: String::new(),
                 lines: Vec::new(),
+                line_start: 1,
+                line_end: 0,
+                kind: None,
             });
         }
         let top = current.unwrap_or(0);
@@ -1216,15 +1535,16 @@ fn unquote_toml_key(key: &str) -> String {
 
 pub fn chunk_code_with_sections(text: &str, filename: &str) -> (Vec<SectionMeta>, Vec<ChunkMeta>) {
     let max_chars = env_usize("ANCHOR_CHUNK_MAX_CHARS", CHUNK_MAX_CHARS);
-    if is_minified(text) {
-        return materialize(vec![root_section(text)], max_chars);
-    }
-    let raw = match code_family(filename) {
-        CodeFamily::Python => split_python_symbols(text),
-        CodeFamily::Brace => split_brace_symbols(text, filename),
-        CodeFamily::Fallback => vec![root_section(text)],
+    let raw = if is_minified(text) {
+        vec![root_section(text)]
+    } else {
+        match code_family(filename) {
+            CodeFamily::Python => split_python_symbols(text),
+            CodeFamily::Brace => split_brace_symbols(text, filename),
+            CodeFamily::Fallback => vec![root_section(text)],
+        }
     };
-    materialize(raw, max_chars)
+    materialize(assign_line_ranges(raw, total_lines(text)), max_chars)
 }
 
 fn split_python_symbols(text: &str) -> Vec<RawSection> {
@@ -1234,7 +1554,7 @@ fn split_python_symbols(text: &str) -> Vec<RawSection> {
     });
     let mut raw: Vec<RawSection> = Vec::new();
     let mut stack: Vec<(i64, usize)> = Vec::new();
-    for line in text.split('\n') {
+    for (li, line) in text.split('\n').enumerate() {
         // `#` starts a comment outside strings; detection-only, content intact
         let probe = line.split('#').next().unwrap_or("");
         let found = re
@@ -1247,7 +1567,7 @@ fn split_python_symbols(text: &str) -> Vec<RawSection> {
                 }
                 let parent = stack.last().map(|&(_, idx)| idx);
                 let level = symbol_level(&raw, parent);
-                let idx = push_symbol(&mut raw, parent, truncate_title(&title), level, line);
+                let idx = push_symbol(&mut raw, parent, truncate_title(&title), level, line, li as i64 + 1);
                 stack.push((indent, idx));
             }
             None => append_code_line(&mut raw, &mut stack, line),
@@ -1263,7 +1583,7 @@ fn split_brace_symbols(text: &str, filename: &str) -> Vec<RawSection> {
     let mut stack: Vec<(i64, usize)> = Vec::new();
     let mut depth: i64 = 0;
     let mut symbols = 0usize;
-    for line in text.split('\n') {
+    for (li, line) in text.split('\n').enumerate() {
         let probe = strip_brace_comment(line);
         let found = if symbols >= 500 {
             None
@@ -1278,7 +1598,7 @@ fn split_brace_symbols(text: &str, filename: &str) -> Vec<RawSection> {
                 }
                 let parent = stack.last().map(|&(_, idx)| idx);
                 let level = symbol_level(&raw, parent);
-                let idx = push_symbol(&mut raw, parent, truncate_title(&title), level, line);
+                let idx = push_symbol(&mut raw, parent, truncate_title(&title), level, line, li as i64 + 1);
                 stack.push((depth, idx));
             }
             None => append_code_line(&mut raw, &mut stack, line),
@@ -1437,6 +1757,241 @@ mod tests {
         assert_eq!(c.len(), 2);
     }
     #[test]
+    fn classify_heading_rejects_data_lines() {
+        // R43.3: dotted numerics that read as data never section — each of
+        // these used to open a 1–2 line ghost section.
+        for line in [
+            "3.5 million users joined this quarter",
+            "1.0.31 release notes are ready",
+            "21.10.2026 notes from the meeting",
+            "10.0.0.1 gateway routes all traffic",
+            "21.10.2026 Quarterly Review",
+            "10.0.0.1 Gateway Status",
+            "4.2.1",
+            "NOTE",
+            "TODO",
+        ] {
+            assert_eq!(classify_heading(line), None, "{line}");
+        }
+        // …while real headings (numbered, §/article forms, set-off CAPS)
+        // still classify with unchanged levels.
+        assert_eq!(classify_heading("4.2.1 Subsection Detail"), Some(3));
+        assert_eq!(classify_heading("4.2 Title"), Some(2));
+        assert_eq!(classify_heading("§434 Scope"), Some(1));
+        assert_eq!(classify_heading("article 12 membership"), Some(1));
+        assert_eq!(classify_heading("4.2 (continued)"), Some(2));
+        assert_eq!(classify_heading("INTRODUCTION"), Some(1));
+        assert_eq!(classify_heading("ACME CORP"), Some(1));
+    }
+    #[test]
+    fn caps_heading_context_rules() {
+        // R43.3: a run-in CAPS line followed by body prose opens nothing …
+        let run_in = "Intro line one.\nACME CORP\nSupplies precision parts worldwide from three regional plants every quarter.";
+        let (sections, _) = chunk_document_with_sections(run_in);
+        assert!(
+            sections.iter().all(|s| s.title != "ACME CORP"),
+            "{sections:?}"
+        );
+        // … a set-off CAPS line still sections …
+        let set_off = "Intro line one.\n\nACME CORP\n\nSupplies precision parts worldwide.";
+        let (sections, _) = chunk_document_with_sections(set_off);
+        assert!(
+            sections.iter().any(|s| s.title == "ACME CORP"),
+            "{sections:?}"
+        );
+        // … and a run-in CAPS line inside a numbered section nests under it
+        // instead of popping the tree to level 1.
+        let nested = "4.2.1 Subsection\nSome body text here.\nFINAL VERDICT\nMore detail text.";
+        let (sections, _) = chunk_document_with_sections(nested);
+        let verdict = sections
+            .iter()
+            .find(|s| s.title == "FINAL VERDICT")
+            .expect("nested CAPS section");
+        assert_eq!(verdict.level, 4, "{sections:?}");
+        assert_eq!(verdict.path, "4.2.1 Subsection > FINAL VERDICT", "{sections:?}");
+        // … while a blank line before the CAPS line keeps it top-level.
+        let escaped = "4.2 Summary\nSome body text here.\n\nAPPENDIX\n\nAppendix body text.";
+        let (sections, _) = chunk_document_with_sections(escaped);
+        let levels: Vec<i32> = sections.iter().map(|s| s.level).collect();
+        assert_eq!(levels, vec![2, 1], "{sections:?}");
+    }
+    #[test]
+    fn merge_short_parts_merges_tiny_prose_chunks() {
+        // R43.3 port of markdown `merge_short`: a sub-150-char chunk folds
+        // into its section-predecessor; a short leading chunk still stands.
+        let mut parts = vec!["a".repeat(200), "tiny".to_string(), "b".repeat(200)];
+        merge_short_parts(&mut parts);
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].starts_with(&"a".repeat(200)) && parts[0].ends_with("tiny"));
+        let mut leading = vec!["tiny".to_string(), "b".repeat(200)];
+        merge_short_parts(&mut leading);
+        assert_eq!(leading.len(), 2);
+    }
+    #[test]
+    fn materialize_prose_path_merges_short_tail() {
+        // R43.3: the prose tail (`tables = true`) merges a short final
+        // chunk; code/config tails (`false`) keep small units intact.
+        let para1 = "w ".repeat(775);
+        let para2 = "v".repeat(100);
+        let mk = || RawSection {
+            title: "T".to_string(),
+            level: 1,
+            parent: None,
+            path: "T".to_string(),
+            lines: vec![para1.clone(), String::new(), para2.clone()],
+            kind: None,
+            line_start: 1,
+            line_end: 3,
+        };
+        let (_, prose) = materialize_opts(vec![mk()], 1600, true);
+        assert_eq!(prose.len(), 1, "short tail must merge on the prose path");
+        assert!(prose[0].content.contains(&para2));
+        let (_, units) = materialize_opts(vec![mk()], 1600, false);
+        assert_eq!(units.len(), 2, "code/config tails keep small units");
+    }
+    #[test]
+    fn split_section_opts_preserves_indentation() {
+        // R43.4: the paragraph edge trim keeps first-line indentation (the
+        // old whole-para `trim()` stripped it) while still dropping blank
+        // edge lines and trailing whitespace.
+        let para1 = format!("{}  ", "x".repeat(68));
+        let para2 = "    indented_value = compute_something(arg)";
+        let section = format!("{para1}\n\n{para2}");
+        let parts = split_section_opts(&section, 80, false);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], "x".repeat(68));
+        assert_eq!(parts[1], para2);
+    }
+    /// R43.4 reassembly contract: symbol/key splitters partition source
+    /// lines contiguously in order, so each section's chunks rejoin with
+    /// the paragraph separator and sections join with a single newline.
+    /// Holds when blank runs are single, no paragraph exceeds the cap,
+    /// lines carry no trailing whitespace, and no blank line sits right
+    /// before a symbol line (a section-trailing blank is edge-trimmed by
+    /// design) — all true of the fixtures below.
+    fn reassembled(chunks: &[ChunkMeta]) -> String {
+        let mut order: Vec<usize> = Vec::new();
+        for c in chunks {
+            if let Some(i) = c.section_idx {
+                if !order.contains(&i) {
+                    order.push(i);
+                }
+            }
+        }
+        order
+            .iter()
+            .map(|&i| {
+                chunks
+                    .iter()
+                    .filter(|c| c.section_idx == Some(i))
+                    .map(|c| c.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    #[test]
+    fn code_python_round_trips_bytes() {
+        // R43.4: a 2 KB Python file (one >1600-char function exercising the
+        // paragraph path, the rest nested symbols) reassembles byte-for-byte
+        // with indentation intact.
+        let mut groups = Vec::new();
+        for i in 0..12 {
+            groups.push(format!(
+                "        # Group {i}: validate then post the batch.\n        first = [e for e in entries if e.ready]\n        for entry in first:\n            self.post(entry.account, entry.amount)"
+            ));
+        }
+        let big_fn = format!(
+            "def reconcile_all(self, entries):\n    \"\"\"Reconcile every ready entry.\"\"\"\n\n{}",
+            groups.join("\n\n")
+        );
+        let mut methods = Vec::new();
+        for m in ["post", "summarize", "reset", "audit"] {
+            methods.push(format!(
+                "    def {m}(self, payload):\n        if payload is None:\n            return None\n        return self.store_{m}(payload)"
+            ));
+        }
+        let src = format!(
+            "{big_fn}\nclass Ledger:\n    \"\"\"Tracks balances.\"\"\"\n{}",
+            methods.join("\n")
+        );
+        assert!(src.len() > 2048, "fixture must exceed 2 KB, got {}", src.len());
+        let (_, chunks) = chunk_code_with_sections(&src, "ledger.py");
+        assert!(chunks.len() > 1);
+        assert_eq!(reassembled(&chunks), src);
+        assert!(chunks.iter().any(|c| c.content.contains("            self.post(")));
+    }
+    #[test]
+    fn config_yaml_round_trips_bytes() {
+        // R43.4: same contract for a 2 KB YAML block (fat keys with
+        // internal single blanks; every `key:` line opens a section).
+        let mut keys = Vec::new();
+        for k in ["gateway_routes", "ledger_routes"] {
+            let mut lines = vec![format!("{k}:")];
+            for i in 0..60 {
+                if i > 0 && i % 10 == 0 {
+                    lines.push(String::new());
+                }
+                lines.push(format!("  - host edge-{i:02}.example.com weight 10"));
+            }
+            keys.push(lines.join("\n"));
+        }
+        let src = keys.join("\n");
+        assert!(src.len() > 2048, "fixture must exceed 2 KB, got {}", src.len());
+        let (_, chunks) = chunk_yaml_with_sections(&src);
+        assert!(chunks.len() > 1);
+        assert_eq!(reassembled(&chunks), src);
+        assert!(chunks.iter().any(|c| c.content.contains("  - host edge-00.example.com")));
+    }
+    #[test]
+    fn prose_sections_carry_line_ranges() {
+        // R36.18a: 1-based inclusive ranges; parents span their children and
+        // chunks inherit their section's range.
+        let doc = "Intro line one.\nIntro line two.\n4.1 Details\nDetail body line.\n4.1.1 Deep Dive\nDeep body line one.\nDeep body line two.\n4.2 Next\nFinal body.";
+        let (sections, chunks) = chunk_document_with_sections(doc);
+        let ranges: Vec<(i64, i64)> =
+            sections.iter().map(|s| (s.line_start, s.line_end)).collect();
+        assert_eq!(ranges, vec![(1, 2), (3, 7), (5, 7), (8, 9)], "{sections:?}");
+        let deep = chunks
+            .iter()
+            .find(|c| c.path == "4.1 Details > 4.1.1 Deep Dive")
+            .expect("nested chunk");
+        assert_eq!((deep.line_start, deep.line_end), (5, 7));
+    }
+    #[test]
+    fn code_symbols_carry_line_ranges() {
+        // R36.18a: symbols span their bodies (code citations point at lines).
+        let src = "class Ledger:\n    \"\"\"Tracks balances.\"\"\"\n    def post(self, payload):\n        return payload\n    def reset(self):\n        pass\ndef helper():\n    return 1";
+        let (sections, chunks) = chunk_code_with_sections(src, "ledger.py");
+        let ranges: Vec<(i64, i64)> =
+            sections.iter().map(|s| (s.line_start, s.line_end)).collect();
+        assert_eq!(ranges, vec![(1, 6), (3, 4), (5, 6), (7, 8)], "{sections:?}");
+        let post = chunks.iter().find(|c| c.path.contains("def post")).expect("post chunk");
+        assert_eq!((post.line_start, post.line_end), (3, 4));
+    }
+    #[test]
+    fn fallback_windows_carry_line_ranges() {
+        // R36.18a: heading-less fallback windows carry exact spans (they
+        // overlap by design, so starts increase while ends may overlap).
+        let paras: Vec<String> = (0..60)
+            .map(|i| format!("Paragraph number {i} with enough words to reach a reasonable length here."))
+            .collect();
+        let doc = paras.join("\n\n");
+        let total = doc.split('\n').count() as i64;
+        let (sections, chunks) = chunk_document_with_sections(&doc);
+        assert!(sections.len() > 1, "must take the window path");
+        let mut prev_start = 0;
+        for s in &sections {
+            assert!(s.line_start >= 1 && s.line_end >= s.line_start, "{s:?}");
+            assert!(s.line_start > prev_start, "starts increase: {sections:?}");
+            prev_start = s.line_start;
+        }
+        assert_eq!(sections[0].line_start, 1);
+        assert_eq!(sections[sections.len() - 1].line_end, total);
+        assert!(chunks.iter().all(|c| c.line_start >= 1 && c.line_end >= c.line_start));
+    }
+    #[test]
     fn classify_window() {
         let t = "a".repeat(40000);
         let w = classify_windows(&t);
@@ -1498,31 +2053,111 @@ mod tests {
     }
     #[test]
     fn clean_doc_text_strips_controls_and_page_numbers() {
-        let raw = "Title\r\n\x00\x0bBody\u{200b} text\t\tspaced  \n42\nPage 3\n3 of 10\n- 12 -\n— 7 —\nSection 42 stays\n42 things stay\n12345 stays\n\n\nTail\u{feff}";
+        // R43.2: controls/whitespace clean doc-wide; page-number lines drop
+        // only at page boundaries; `[page N]` markers always survive.
+        let raw = "[page 1]\nTitle\r\n\x00\x0bBody\u{200b} text\t\tspaced  \nSection 42 stays\n42\n42 things stay\n12345 stays\nPage 3\nTail words here.\n- 12 -\n[page 2]\nSecond page opens here.\nMore content follows.\n3 of 10\n— 7 —\nFinal words.\n\n\nTail\u{feff}";
         let cleaned = clean_doc_text(raw);
         assert!(cleaned.contains("Title\nBody text spaced"), "{cleaned:?}");
+        assert!(cleaned.contains("[page 1]") && cleaned.contains("[page 2]"), "{cleaned:?}");
         assert!(!cleaned.contains("\u{200b}") && !cleaned.contains('\u{feff}'));
-        for dropped in ["\n42\n", "Page 3", "3 of 10", "- 12 -", "— 7 —"] {
+        // page-edge numbers drop …
+        for dropped in ["Page 3", "3 of 10", "- 12 -", "— 7 —"] {
             assert!(!cleaned.contains(dropped), "{cleaned:?}");
         }
-        for kept in ["Section 42 stays", "42 things stay", "12345 stays", "Tail"] {
+        // … mid-page numbers and number-carrying lines stay …
+        assert!(cleaned.contains("Section 42 stays\n42\n42 things stay"), "{cleaned:?}");
+        for kept in ["Section 42 stays", "42 things stay", "12345 stays", "Tail", "Final words."] {
             assert!(cleaned.contains(kept), "{cleaned:?}");
         }
+        // exactly one bare 42 survives (page 1 mid-page; page 2 has none).
+        assert_eq!(cleaned.matches("\n42\n").count(), 1, "{cleaned:?}");
         assert!(!cleaned.contains("\n\n\n"));
     }
     #[test]
     fn clean_doc_text_strips_repeated_headers() {
-        let page = "Acme Confidential\nBody line one.\nBody line two.";
-        let raw = format!("{page}\n{page}\n{page}\nFinal words here.");
+        // R43.2: repeated headers/footers strip at page boundaries only.
+        let page = |body: &str| format!("Acme Confidential\n{body}\nAcme Footer Line");
+        let raw = format!(
+            "[page 1]\n{}\n[page 2]\n{}\n[page 3]\n{}\n",
+            page("Body line one.\nBody line two."),
+            page("Body line three.\nBody line four."),
+            page("Body line five.\nBody line six."),
+        );
         let cleaned = clean_doc_text(&raw);
         assert!(!cleaned.contains("Acme Confidential"), "{cleaned:?}");
-        assert!(cleaned.contains("Final words here."), "{cleaned:?}");
-        // twice is not a pattern — kept.
+        assert!(!cleaned.contains("Acme Footer Line"), "{cleaned:?}");
+        assert!(cleaned.contains("Body line one."), "{cleaned:?}");
+        assert!(cleaned.contains("Body line six."), "{cleaned:?}");
+        assert!(cleaned.contains("[page 2]"), "{cleaned:?}");
+        // twice is not a pattern — kept (marker-less: doc edges only).
         let raw2 = "Acme Confidential\nBody.\nAcme Confidential\nOther.";
         assert!(clean_doc_text(raw2).contains("Acme Confidential"));
         // long lines never count toward repetition.
         let long = format!("{}\n{}\n{}\nshort", "L".repeat(121), "L".repeat(121), "L".repeat(121));
         assert!(clean_doc_text(&long).contains(&"L".repeat(121)));
+        // marker-less docs strip edge boilerplate repeated 3×+; the
+        // mid-document occurrence stays (same rule, one segment).
+        let raw3 = "Acme Confidential\nBody one.\nMiddle words here.\nAcme Confidential\nBody two.\nMore middle words.\nAcme Confidential";
+        let cleaned3 = clean_doc_text(raw3);
+        assert_eq!(cleaned3.matches("Acme Confidential").count(), 1, "{cleaned3:?}");
+        assert!(cleaned3.contains("Middle words here."), "{cleaned3:?}");
+    }
+    #[test]
+    fn clean_doc_text_keeps_table_cells_mid_page() {
+        // R43.2 regression: bare cell lines (`Yes`, `N/A`, years, amounts)
+        // repeated past the threshold used to strip doc-wide — they are
+        // content when mid-page. Header/footer/page-number lines at the page
+        // edges still strip.
+        let row = |vendor: &str, amount: &str, paid: &str, year: &str| {
+            format!("Vendor\n{vendor}\nEarned\n{amount}\nPaid\n{paid}\nYear\n{year}")
+        };
+        let raw = format!(
+            "[page 1]\nAcme Confidential\nVendor Rebate Statement\nRebate payouts by vendor follow below.\n{}\n{}\nSummary totals appear at the end of the statement.\nProgram notes continue on the next page here.\nContact finance with questions about payouts.\nPage 1\n\
+             [page 2]\nAcme Confidential\nContinued from the previous page here.\nGamma region rows appear first below.\n{}\n{}\nRegional totals were reconciled twice this cycle.\nPaid flags were reviewed by the finance team.\nPage 2\n\
+             [page 3]\nAcme Confidential\nFinal page of the rebate statement.\nRemaining vendor rows appear below.\n{}\n{}\nPaid flags are final for every vendor row.\nYear totals were reconciled twice today.\nStatement prepared by the finance team today.\nPage 3 of 3",
+            row("Alpha Supply", "1200", "Yes", "2024"),
+            row("Beta Parts", "800", "N/A", "2024"),
+            row("Gamma Goods", "950", "Yes", "2023"),
+            row("Delta Tools", "400", "N/A", "2024"),
+            row("Eta Parts", "600", "Yes", "2023"),
+            row("Zeta Supply", "750", "N/A", "2023"),
+        );
+        let cleaned = clean_doc_text(&raw);
+        // every cell survives, including above-threshold bare cells …
+        for cell in ["Yes", "N/A", "2024", "2023", "Vendor", "Earned", "Paid", "Year"] {
+            let want = raw.matches(cell).count();
+            assert_eq!(cleaned.matches(cell).count(), want, "{cell}: {cleaned:?}");
+        }
+        for amount in ["1200", "800", "950", "400", "600", "750"] {
+            assert!(cleaned.contains(amount), "{amount}: {cleaned:?}");
+        }
+        // … while edge boilerplate strips and markers survive.
+        assert!(!cleaned.contains("Acme Confidential"), "{cleaned:?}");
+        for footer in ["Page 1", "Page 2", "Page 3 of 3"] {
+            assert!(!cleaned.contains(footer), "{cleaned:?}");
+        }
+        assert!(cleaned.contains("[page 1]") && cleaned.contains("[page 3]"), "{cleaned:?}");
+    }
+    #[test]
+    fn clean_doc_text_keeps_eval_fixture_cells() {
+        // File-shaped cleaning pin (R43.2): table cells must survive
+        // page-boundary cleaning. Lives under eval_data but is NOT in the
+        // eval manifest — the harness inserts file bytes directly (no
+        // cleaning/chunking), so chunking fixes pin at unit level instead.
+        let path = format!(
+            "{}/tests/eval_data/corpus/support/vendor-rebate-statement.txt",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let raw = std::fs::read_to_string(&path).expect("eval fixture readable");
+        let cleaned = clean_doc_text(&raw);
+        for (cell, want) in [("Yes", 3), ("N/A", 3), ("2024", 3), ("2023", 3)] {
+            assert_eq!(cleaned.matches(cell).count(), want, "{cell}: {cleaned:?}");
+        }
+        for amount in ["1200", "800", "950", "400", "600", "750"] {
+            assert!(cleaned.contains(amount), "{amount}: {cleaned:?}");
+        }
+        assert!(!cleaned.contains("Acme Confidential"), "{cleaned:?}");
+        assert_eq!(cleaned.matches("[page ").count(), 3, "{cleaned:?}");
     }
     #[test]
     fn repeat_threshold_matches_python_rounding() {
