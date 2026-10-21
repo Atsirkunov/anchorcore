@@ -75,6 +75,21 @@ fn status_snapshot(settings: &crate::settings::SettingsService) -> StatusSnapsho
     }
 }
 
+/// R45.1: whether ingest uses the chat model at all (default: no) —
+/// (`extract_entities`, `distill_enabled`, model needed).
+fn ingest_model_use(settings: &crate::settings::SettingsService) -> (&'static str, bool, bool) {
+    let mode = match crate::classifier::extract_mode(settings) {
+        crate::classifier::ExtractMode::Off => "off",
+        crate::classifier::ExtractMode::Rules => "rules",
+        crate::classifier::ExtractMode::Llm => "llm",
+    };
+    (
+        mode,
+        crate::classifier::distill_enabled(settings),
+        crate::classifier::chat_model_needed(settings),
+    )
+}
+
 pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     // capture settings values before blocking (use cached snapshot without DB conn for speed)
@@ -82,6 +97,7 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
     let readiness = crate::ollama::model_readiness(&state.settings).await;
     let classifier_is_local = provider_is_local(&snap.classifier_base);
     let embed_is_local = provider_is_local(&snap.embed_base);
+    let (extract_entities, distill, chat_model_needed) = ingest_model_use(&state.settings);
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
@@ -109,7 +125,10 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
                 "provider": if classifier_is_local { "local" } else { "cloud" },
                 "base_url": snap.classifier_base,
                 "model": snap.classifier_model,
-                "concurrency": 4
+                "concurrency": 4,
+                "extract_entities": extract_entities,
+                "distill_enabled": distill,
+                "in_use": chat_model_needed
             },
             "retrieval": {
                 "calls": 0,
