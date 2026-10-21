@@ -62,26 +62,30 @@ struct Row {
     created_at: String,
 }
 
+/// Text column, NULL/absent read as empty (record columns default to '').
+fn text(r: &rusqlite::Row, i: usize) -> String {
+    r.get::<_, Option<String>>(i).ok().flatten().unwrap_or_default()
+}
+
 fn row_from_sql(r: &rusqlite::Row) -> rusqlite::Result<Row> {
-    let supersedes: String = r.get(8)?;
     Ok(Row {
         id: r.get(0)?,
-        summary: r.get(1)?,
-        review_status: r.get(2)?,
-        owner: r.get(3)?,
-        record_id: r.get(4)?,
-        record_status: r.get(5)?,
-        due: r.get(6)?,
-        done: r.get::<_, i64>(7)? != 0,
-        supersedes: supersedes.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect(),
-        superseded_by: r.get(9)?,
+        summary: text(r, 1),
+        review_status: text(r, 2),
+        owner: text(r, 3),
+        record_id: text(r, 4),
+        record_status: text(r, 5),
+        due: text(r, 6),
+        done: r.get::<_, Option<i64>>(7).ok().flatten().unwrap_or(0) != 0,
+        supersedes: text(r, 8).split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect(),
+        superseded_by: text(r, 9),
         item_id: r.get(10)?,
-        path: r.get::<_, Option<String>>(11)?.unwrap_or_default(),
-        title: r.get::<_, Option<String>>(12)?.unwrap_or_default(),
+        path: text(r, 11),
+        title: text(r, 12),
         source_id: r.get(13)?,
-        label: r.get::<_, Option<String>>(14)?.unwrap_or_default(),
-        chunk_id: r.get(15)?,
-        created_at: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
+        label: text(r, 14),
+        chunk_id: r.get::<_, Option<i64>>(15).ok().flatten(),
+        created_at: text(r, 16),
     })
 }
 
