@@ -379,6 +379,12 @@ jobs:
           pattern: AnchorCore-*
           merge-multiple: true
           path: artifacts
+      - name: Generate SHA256SUMS (R44.13)
+        run: |
+          set -e
+          cd artifacts
+          sha256sum AnchorCore-windows.zip AnchorCore-macos.zip AnchorCore-linux.zip > SHA256SUMS
+          cat SHA256SUMS
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
