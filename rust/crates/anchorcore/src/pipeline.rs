@@ -1306,8 +1306,10 @@ async fn store_batch(ctx: &ClassifyCtx, items: Vec<crate::classifier::Classified
     let count = items.len();
     run_db(&ctx.data_dir, move |conn| {
         for it in items {
-            let status = if it.confidence >= 0.7 { "verified" } else { "unverified" };
-            conn.execute("INSERT INTO entities (item_id, kind, summary, reasoning, confidence, author, source_ref, window_text, window_index, status, owner, created_at, updated_at, uid) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'',datetime('now'),datetime('now'),?11)", rusqlite::params![item_id, it.kind, it.summary, it.reasoning, it.confidence, it.author, it.source_ref, it.window_text, it.window_index, status, crate::db::new_uid()]).unwrap();
+            // R45.8: `verified` means a person confirmed it — extraction
+            // never promotes, whatever its confidence.
+            let r = &it.record;
+            conn.execute("INSERT INTO entities (item_id, kind, summary, reasoning, confidence, author, source_ref, window_text, window_index, status, owner, record_id, record_status, due, done, supersedes, superseded_by, created_at, updated_at, uid) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'unverified',?10,?11,?12,?13,?14,?15,?16,datetime('now'),datetime('now'),?17)", rusqlite::params![item_id, it.kind, it.summary, it.reasoning, it.confidence, it.author, it.source_ref, it.window_text, it.window_index, it.owner, r.record_id, r.record_status, r.due, r.done, r.supersedes, r.superseded_by, crate::db::new_uid()]).unwrap();
             let eid = conn.last_insert_rowid();
             for chunk_content in crate::chunking::chunk_text(&it.summary) {
                 let _ = conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content, created_at, uid) VALUES (?1,'entity',?2,?3,datetime('now'),?4)", rusqlite::params![eid, it.source_ref, chunk_content, crate::db::new_uid()]);
@@ -2387,8 +2389,8 @@ mod tests {
         let folder_tmp = tempdir().unwrap();
         let data_dir = data_tmp.path().to_string_lossy().to_string();
         let folder = folder_tmp.path();
-        write_doc(folder, "a.md", "# Alpha\n\nWe decided to use sqlite for vectors. Next step: review on Friday.\n");
-        write_doc(folder, "b.md", "# Beta\n\nWe agreed to postpone the launch. Owner: Bea will follow up.\n");
+        write_doc(folder, "a.md", "# Alpha\n\n**Decision:** We decided to use sqlite for vectors.\n\n## Action items\n\n- Ana: review on Friday.\n");
+        write_doc(folder, "b.md", "# Beta\n\n**Decision:** We agreed to postpone the launch.\n\n## Action items\n\n- Bea: follow up with the partners.\n");
         let (settings, sid) = seed_folder_source(&data_dir, folder);
         let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
         let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
@@ -2504,8 +2506,8 @@ mod tests {
         let folder_tmp = tempdir().unwrap();
         let data_dir = data_tmp.path().to_string_lossy().to_string();
         let folder = folder_tmp.path();
-        write_doc(folder, "a.md", "# Alpha\n\nWe decided to use sqlite for vectors. Next step: review on Friday.\n");
-        write_doc(folder, "b.md", "# Beta\n\nWe agreed to postpone the launch. Owner: Bea will follow up.\n");
+        write_doc(folder, "a.md", "# Alpha\n\n**Decision:** We decided to use sqlite for vectors.\n\n## Action items\n\n- Ana: review on Friday.\n");
+        write_doc(folder, "b.md", "# Beta\n\n**Decision:** We agreed to postpone the launch.\n\n## Action items\n\n- Bea: follow up with the partners.\n");
         let (settings, sid) = seed_folder_source(&data_dir, folder);
         let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
         let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
@@ -2624,7 +2626,7 @@ mod tests {
         let folder_tmp = tempdir().unwrap();
         let data_dir = data_tmp.path().to_string_lossy().to_string();
         let folder = folder_tmp.path();
-        write_doc(folder, "r.md", "# Sprint retro\n\nAttendees: Ana, Bo.\n\nWe decided to use sqlite for vectors. Next step: review on Friday.\n");
+        write_doc(folder, "r.md", "# Sprint retro\n\nAttendees: Ana, Bo.\n\n**Decision:** We decided to use sqlite for vectors.\n\n## Action items\n\n- Ana: review on Friday.\n");
         write_doc(folder, "s.md", "# Widget spec\n\nThe widget renders blue panels on load. Operators file tickets through the portal.\n");
         let (settings, sid) = seed_folder_source(&data_dir, folder);
         let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
@@ -2659,7 +2661,7 @@ mod tests {
         let folder_tmp = tempdir().unwrap();
         let data_dir = data_tmp.path().to_string_lossy().to_string();
         let folder = folder_tmp.path();
-        write_doc(folder, "p.md", "# Sprint retro\n\nAttendees: Ana, Bo.\n\nWe decided to use sqlite for vectors. Next step: review on Friday.\n");
+        write_doc(folder, "p.md", "# Sprint retro\n\nAttendees: Ana, Bo.\n\n**Decision:** We decided to use sqlite for vectors.\n\n## Action items\n\n- Ana: review on Friday.\n");
         let (settings, sid) = seed_folder_source(&data_dir, folder);
         let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
         let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));

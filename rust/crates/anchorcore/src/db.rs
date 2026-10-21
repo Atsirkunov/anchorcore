@@ -417,6 +417,8 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/20_vocabulary.sql")),
         // R45.0: drop a Python-era vec0 index this binary cannot load
         M::up_with_hook(include_str!("../migrations/21_drop_orphan_vec0.sql"), drop_orphan_vec0),
+        // R45.8: record fields on entities (decision id/status, action due/done)
+        M::up(include_str!("../migrations/23_entity_records.sql")),
     ])
 }
 
@@ -459,6 +461,15 @@ mod tests {
                 .query_row(&format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name='{col}'"), [], |r| r.get(0))
                 .unwrap();
             assert_eq!(n, 1, "{table}.{col} must exist after migrate");
+        }
+    }
+
+    /// Undo migration 23 (R45.8) so a re-run has real work to do.
+    fn drop_entity_record_columns(conn: &Connection) {
+        conn.execute("DROP INDEX IF EXISTS ix_entities_owner", []).unwrap();
+        for col in ["record_id", "record_status", "due", "done", "supersedes", "superseded_by"] {
+            conn.execute(&format!("ALTER TABLE entities DROP COLUMN {col}"), [])
+                .unwrap_or_else(|e| panic!("drop entities.{col}: {e}"));
         }
     }
 
@@ -524,6 +535,7 @@ mod tests {
             // so migration 20 has real work to do (same rule).
             conn.execute("DROP TABLE vocabulary", [])
                 .unwrap_or_else(|e| panic!("drop vocabulary: {e}"));
+            drop_entity_record_columns(&conn);
             conn.execute("DROP TABLE vec_chunks", []).unwrap();
             conn.pragma_update(None, "writable_schema", "ON").unwrap();
             conn.execute(
@@ -545,7 +557,11 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         run_migrations(&mut conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 21);
+        assert_eq!(v, 22);
+        let record_cols: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_table_info('entities') WHERE name IN ('record_id','due','done')", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(record_cols, 3, "migration 23 (R45.8) must add the record columns");
         let vocab: String = conn
             .query_row("SELECT name FROM sqlite_master WHERE type='table' AND name='vocabulary'", [], |r| r.get(0))
             .unwrap();
@@ -585,6 +601,7 @@ mod tests {
         let before = vec_trigger_sql(&conn);
         assert!(!before.is_empty(), "ensure_vec must create fallback triggers");
         conn.pragma_update(None, "user_version", 20).unwrap();
+        drop_entity_record_columns(&conn);
         run_migrations(&mut conn).unwrap();
         assert!(table_exists(&conn, "vec_chunks"));
         assert_eq!(vec_trigger_sql(&conn), before);

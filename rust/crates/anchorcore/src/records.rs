@@ -7,12 +7,11 @@
 //! `Action items` heading (`- [ ] Name: task — due YYYY-MM-DD`,
 //! `- Name: task. Owner: X. Due: Y.`) plus checkbox bullets anywhere.
 //! Never reads table rows or fenced code: reference docs (code tables, ISO
-//! field paths) produce nothing. Not wired into ingest yet — the pipeline
-//! step lands after R45.1 (handover 2026-10-21 §4.3).
-#![allow(dead_code)]
+//! field paths) produce nothing. Ingest calls it through
+//! `classifier::classify_rules_typed` (record bucket, `extract_entities=rules`).
 
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
@@ -54,6 +53,76 @@ pub struct ParsedRecord {
     pub decision: Option<DecisionRecord>,
     pub actions: Vec<ActionRecord>,
     pub attendees: Vec<String>,
+}
+
+/// R45.8: record columns on `entities` (migration 23); empty for LLM rows.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordFields {
+    pub record_id: String,
+    pub record_status: String,
+    pub due: String,
+    pub done: bool,
+    pub supersedes: String,
+    pub superseded_by: String,
+}
+
+const RECORD_REASONING: &str = "record parser";
+
+/// Parsed record → entity rows: one decision (title + summary) and one row
+/// per action item. Confidence 1.0 is "parsed, not guessed" — the review
+/// status stays unverified until a person confirms it.
+pub fn record_items(parsed: &ParsedRecord, source_ref: &str) -> Vec<crate::classifier::ClassifiedItem> {
+    let mut out = Vec::new();
+    if let Some(d) = &parsed.decision {
+        let summary = match &d.summary {
+            Some(s) if !s.eq_ignore_ascii_case(&d.title) => format!("{}: {}", d.title, s),
+            _ => d.title.clone(),
+        };
+        let record = RecordFields {
+            record_id: d.record_id.clone().unwrap_or_default(),
+            record_status: d.status.map(status_name).unwrap_or_default().to_string(),
+            supersedes: d.supersedes.join(", "),
+            superseded_by: d.superseded_by.clone().unwrap_or_default(),
+            ..Default::default()
+        };
+        out.push(item("decision", summary, d.owner.clone(), record, source_ref));
+    }
+    for a in &parsed.actions {
+        let record = RecordFields { due: a.due.clone().unwrap_or_default(), done: a.done, ..Default::default() };
+        out.push(item("action", a.task.clone(), a.owner.clone(), record, source_ref));
+    }
+    out
+}
+
+fn item(
+    kind: &str,
+    summary: String,
+    owner: Option<String>,
+    record: RecordFields,
+    source_ref: &str,
+) -> crate::classifier::ClassifiedItem {
+    crate::classifier::ClassifiedItem {
+        kind: kind.to_string(),
+        summary: summary.chars().take(1000).collect(),
+        reasoning: RECORD_REASONING.to_string(),
+        confidence: 1.0,
+        author: String::new(),
+        source_ref: source_ref.to_string(),
+        window_text: String::new(),
+        window_index: None,
+        owner: owner.unwrap_or_default(),
+        record,
+    }
+}
+
+fn status_name(s: DecisionStatus) -> &'static str {
+    match s {
+        DecisionStatus::Proposed => "proposed",
+        DecisionStatus::Accepted => "accepted",
+        DecisionStatus::Superseded => "superseded",
+        DecisionStatus::Rejected => "rejected",
+        DecisionStatus::Deferred => "deferred",
+    }
 }
 
 /// Field keys read from `**Key:** value` or a plain `Key: value` line.

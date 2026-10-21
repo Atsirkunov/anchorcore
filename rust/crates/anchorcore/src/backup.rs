@@ -461,6 +461,8 @@ fn export_entities(conn: &Connection, zip: &mut ArchiveWriter, opts: &ExportOpti
             'summary',e.summary,'reasoning',e.reasoning,'confidence',e.confidence,'author',e.author, \
             'source_ref',e.source_ref,'window_text',e.window_text,'window_index',e.window_index, \
             'status',e.status,'owner',e.owner,'dispute_count',e.dispute_count, \
+            'record_id',e.record_id,'record_status',e.record_status,'due',e.due,'done',e.done, \
+            'supersedes',e.supersedes,'superseded_by',e.superseded_by, \
             'created_at',e.created_at,'updated_at',e.updated_at) \
          FROM entities e JOIN ingested_items i ON i.id = e.item_id WHERE 1=1{} ORDER BY e.id",
         scope
@@ -1327,7 +1329,7 @@ fn apply_entity(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         let id = ctx.conn.last_insert_rowid();
         ctx.remember("entities", &uid, id);
-        return Ok(());
+        return apply_entity_record(ctx, rec, id);
     }
     let id = existing.unwrap();
     ctx.conn
@@ -1337,6 +1339,27 @@ fn apply_entity(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
     ctx.remember("entities", &uid, id);
+    apply_entity_record(ctx, rec, id)
+}
+
+/// R45.8 record columns; archives from older builds carry none and read as
+/// empty (re-sync re-derives them — the parser is deterministic).
+fn apply_entity_record(ctx: &mut ImportCtx, rec: &Value, id: i64) -> Result<(), String> {
+    let done = rec.get("done").and_then(|v| v.as_i64().or_else(|| v.as_bool().map(i64::from))).unwrap_or(0);
+    ctx.conn
+        .execute(
+            "UPDATE entities SET record_id=?2, record_status=?3, due=?4, done=?5, supersedes=?6, superseded_by=?7 WHERE id=?1",
+            rusqlite::params![
+                id,
+                str_field(rec, "record_id"),
+                str_field(rec, "record_status"),
+                str_field(rec, "due"),
+                done,
+                str_field(rec, "supersedes"),
+                str_field(rec, "superseded_by")
+            ],
+        )
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
