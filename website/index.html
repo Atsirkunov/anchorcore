@@ -171,7 +171,7 @@
               <span class="seal-chip">Every answer cited</span>
               <span class="seal-chip">On your machine</span>
             </div>
-            <p class="seal-verify">Source-available — <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">verify it in the code</a>: no telemetry, and the app only contacts the endpoints you configure.</p>
+            <p class="seal-verify">Source-available — <a href="#trust">see the proof</a>: no telemetry, and the app only contacts the endpoints you configure.</p>
             <details class="seal-more">
               <summary>How sensitive data is gated</summary>
               <table class="matrix">
@@ -181,6 +181,65 @@
               </table>
               <p class="cap">You approve each cloud provider explicitly. Public answers and agent access only ever see sources you marked public.</p>
             </details>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Trust: proof it stays on your machine (R44.13) -->
+    <section id="trust" class="alt">
+      <div class="wrap">
+        <h2>Proof it stays on your machine</h2>
+        <p class="trust-lead">Your index stays on your machine. Answers are generated locally unless you connect a cloud model. Here is everything the app can talk to, read from the source rather than promised.</p>
+
+        <div class="trust-grid">
+          <figure class="trust-map" aria-labelledby="trust-map-cap">
+            <div class="trust-core">
+              <b>Your machine</b>
+              <span>AnchorCore and your index (SQLite in <code>~/.anchorcore</code>)</span>
+              <span>Your folders</span>
+              <span>Local Ollama at <code>localhost:11434</code></span>
+            </div>
+            <ul class="trust-out">
+              <li><span class="trust-when t-never">default</span><b>Nothing else.</b> No background connections. Indexing, search and local answers need no network.</li>
+              <li><span class="trust-when t-ask">only when you click</span><b>api.github.com</b>: "Check for updates" fetches the newest release tag. Nothing about you or your knowledge is sent. An optional once-at-startup check is off by default.</li>
+              <li><span class="trust-when t-cfg">only if you connect it</span><b>Jira, Linear, Google Drive, a REST API</b>: each connector sends requests to the URL you configure for it (the REST connector to any address you enter, including local ones), with credentials you provide (kept in your OS keychain).</li>
+              <li><span class="trust-when t-cfg">only if you add a key</span><b>A cloud model you choose</b>: an OpenAI-compatible endpoint for answers, classification or embeddings. Your question and the retrieved passages go to that provider. With no key set, no answer request is made.</li>
+              <li><span class="trust-when t-ask">only when you pull a model</span><b>Ollama's model registry</b>: your local Ollama downloads models itself; AnchorCore only talks to Ollama on your machine.</li>
+            </ul>
+            <figcaption id="trust-map-cap" class="cap">Every outbound HTTP client in the Rust source is one of the above. Update-check details: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/updates.md" target="_blank" rel="noopener noreferrer">docs/updates.md</a>.</figcaption>
+          </figure>
+
+          <div class="trust-facts">
+            <h3>No telemetry</h3>
+            <p>The app contains no analytics, usage tracking or crash-reporting code. Check it yourself: the source is public, and the only outbound calls are the ones in the diagram. <a href="https://github.com/Atsirkunov/anchorcore/tree/main/rust/crates/anchorcore/src" target="_blank" rel="noopener noreferrer">Read the source</a>.</p>
+            <h3>Works offline, within limits</h3>
+            <p>With a local Ollama model and folder sources, indexing, search and answers run with Wi-Fi off. Connectors (Jira, Linear, Drive, REST), cloud models and update checks need a network.</p>
+            <h3>Sensitive sources are gated</h3>
+            <table class="matrix">
+              <tr><th scope="col">Source label</th><th scope="col">Local model</th><th scope="col">Approved cloud</th><th scope="col">Unapproved cloud</th></tr>
+              <tr><th scope="row">internal (default)</th><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
+              <tr><th scope="row">public</th><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
+              <tr><th scope="row">sensitive</th><td class="y">✓</td><td class="y">✓</td><td class="n">✗ held back, audited</td></tr>
+            </table>
+            <p class="small">"Approved" means a local endpoint, one you list in <code>ANCHOR_TRUSTED_PROVIDERS</code>, or <code>ANCHOR_CLOUD_TRUST=1</code>. Sensitive sources also skip cloud classification and embedding. Public sharing and agent <code>public_only</code> mode see only sources you marked public. There is no automatic PII detection and no SSO or role system in the local app.</p>
+          </div>
+        </div>
+
+        <div class="trust-grid trust-grid-b">
+          <div class="trust-facts">
+            <h3>Verify your download</h3>
+            <p>Each release carries a <code>SHA256SUMS</code> file next to the three zips. Download it into the same folder as your zip, then:</p>
+            <pre class="code trust-code">macOS / Linux:  shasum -a 256 -c SHA256SUMS --ignore-missing
+Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
+                (compare with the matching line in SHA256SUMS)</pre>
+            <p class="small"><b>Signing status:</b> the macOS app is ad-hoc signed, not Apple-notarized, and nothing is store-signed. That is why the first launch needs the "Open Anyway" / "Run anyway" step above. The checksum shows the file is the one the release published; the source is public so you can build it yourself. <a href="https://github.com/Atsirkunov/anchorcore/tree/main/docs/release-notes" target="_blank" rel="noopener noreferrer">Changelog and release notes</a>.</p>
+          </div>
+          <div class="trust-facts trust-builder">
+            <h3>Built by Aleksandr Tsirkunov</h3>
+            <p class="small">Product leader with a fintech background.</p>
+            <p>Every team I worked on lost the why behind its biggest decisions: in Slack threads, old tickets, and the heads of people who left. AnchorCore is the tool I wanted: ask in plain language, get the answer, and see the exact source. It runs on your machine, because the data I worked with couldn't go anywhere else.</p>
+            <p class="small"><a href="https://ee.linkedin.com/in/a-tsirkunov" target="_blank" rel="noopener noreferrer">LinkedIn</a> · <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noopener noreferrer">GitHub repository</a></p>
           </div>
         </div>
       </div>
@@ -348,7 +407,7 @@
 
   <footer>
     <div class="wrap foot">
-      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg><b>AnchorCore</b> v1 local · free for personal use · Team self-hosted licensed · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="/privacy">Privacy notice</a></div>
+      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#F2F0EB"/><rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke="#9A8B7A" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" fill="#4A5A52"/><rect x="32" y="17" width="16" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="29" width="12" height="6" rx="3" fill="#9A8B7A"/><rect x="32" y="41" width="16" height="6" rx="3" fill="#9A8B7A"/></svg><b>AnchorCore</b> v1 local · free for personal use · Team self-hosted licensed · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="/privacy">Privacy notice</a> · <a href="#trust">Trust &amp; verification</a></div>
       <div class="mono">Private by default · cited by design</div>
     </div>
   </footer>
