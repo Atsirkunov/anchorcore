@@ -43,6 +43,7 @@ If MCP starts working later, drop this skill again.
 | GET /items/:id/outline | section tree with sizes; read it before fetching a large file |
 | GET /nodes/:id?include=parent,children,siblings | section metadata + neighbours; fetch the item for the text |
 | GET /items?path_prefix=<relative prefix> | list items under a folder |
+| POST /qa {"question"} | gated alternative to search: in agent mode (`llm_mode: agent`) it returns `mode: "agent_compose"` — ranked citations with content, label/PII gate applied, no server model; compose the answer yourself. In local mode the server's model answers (`composed`); `context_only`/`none` carry a `warning` — never quote that text as an answer |
 
 A hit carries chunk_id, item_id, section_id, kind, summary (a match-centered
 preview), breadcrumb, item_title, doc_type, env, a score and a path (the

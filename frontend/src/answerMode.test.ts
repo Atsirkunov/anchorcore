@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { modeBannerNotes } from "./answerMode";
+import { isAgentCompose, modeBannerNotes } from "./answerMode";
 
 describe("modeBannerNotes (B58)", () => {
   it("is silent for composed hybrid answers", () => {
@@ -26,5 +26,18 @@ describe("modeBannerNotes (B58)", () => {
     expect(modeBannerNotes(undefined, undefined)).toEqual([]);
     expect(modeBannerNotes("none", "hybrid")).toEqual([]);
     expect(modeBannerNotes("whatever", "whatever")).toEqual([]);
+  });
+});
+
+describe("isAgentCompose (R45.2)", () => {
+  it("is true only for agent_compose", () => {
+    expect(isAgentCompose("agent_compose")).toBe(true);
+    expect(isAgentCompose("composed")).toBe(false);
+    expect(isAgentCompose("context_only")).toBe(false);
+    expect(isAgentCompose(undefined)).toBe(false);
+  });
+
+  it("agent_compose raises no degraded banner", () => {
+    expect(modeBannerNotes("agent_compose", "hybrid")).toEqual([]);
   });
 });

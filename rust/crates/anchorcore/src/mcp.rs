@@ -226,7 +226,8 @@ async fn tool_ask(question: &str, project_id: Option<i64>, public_only: bool, in
 /// (or omits it) — any non-composed mode warns in plain language, never
 /// silent. Mirrors `answer::degraded_warning` for harness agents.
 fn fallback_ask_warning(mode: &str) -> Option<String> {
-    if mode == "composed" {
+    // R45.2: agent_compose is the agent-writes-it mode, not a degradation.
+    if mode == "composed" || mode == "agent_compose" {
         return None;
     }
     if mode == "none" {
@@ -367,7 +368,7 @@ fn tool_defs() -> Value {
     json!([
         {
             "name": "ask",
-            "description": "Policy-gated composed answer from AnchorCore memory, with citations. Uses the server's configured answer model (the user's own — local Ollama or their OpenAI-compatible endpoint). Use when the material may be sensitive/PII or you want the server to enforce PII/provider policy before you see bytes. Otherwise prefer search so your own model composes from verbatim cited chunks. When no model composed the text the result carries mode != composed plus a plain-language warning — never quote warned text as an answer.",
+            "description": "Policy-gated answer from AnchorCore memory, with citations. In local LLM mode the server's configured answer model (the user's own — local Ollama or their OpenAI-compatible endpoint) writes it (mode=composed). In agent mode no server model runs: mode=agent_compose, the citations carry content, and you compose the answer from them yourself — by design, no warning. Use when the material may be sensitive/PII or you want the server to enforce PII/provider policy before you see bytes. Otherwise prefer search so your own model composes from verbatim cited chunks. Any other mode (context_only, none) carries a plain-language warning — never quote warned text as an answer.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -619,6 +620,8 @@ mod tests {
         // R23.4: older backends without `warning` still warn locally —
         // composed stays quiet, every other mode (incl. unknown) warns.
         assert!(fallback_ask_warning("composed").is_none());
+        // R45.2: agent mode is by design, never a degradation.
+        assert!(fallback_ask_warning("agent_compose").is_none());
         let ctx = fallback_ask_warning("context_only").expect("context_only must warn");
         assert!(ctx.contains("NOT a composed answer"), "ctx: {ctx}");
         let none = fallback_ask_warning("none").expect("none must warn");
@@ -638,6 +641,7 @@ mod tests {
         let desc = ask.get("description").and_then(|d| d.as_str()).unwrap_or("");
         assert!(desc.contains("warning"), "ask description must name the warning: {desc}");
         assert!(desc.contains("server's configured answer model"), "ask description must name BYOM: {desc}");
+        assert!(desc.contains("agent_compose"), "ask description must name agent mode: {desc}");
     }
 
     #[test]
@@ -678,6 +682,11 @@ mod tests {
     /// Raw-socket mock backend: `/csrf` answers fast with a token, `/qa`
     /// answers fast or slow per `slow_qa`.
     async fn spawn_ask_mock(slow_qa: bool) -> MockGuard {
+        spawn_ask_mock_with(slow_qa, "{\"answer\":\"ok\"}").await
+    }
+
+    /// Same mock, with a caller-chosen `/qa` JSON body.
+    async fn spawn_ask_mock_with(slow_qa: bool, qa_body: &'static str) -> MockGuard {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind mock");
         let addr = listener.local_addr().expect("mock addr");
@@ -696,7 +705,7 @@ mod tests {
                 let body = if head.contains("/csrf") {
                     "{\"csrf_token\":\"t\"}"
                 } else {
-                    "{\"answer\":\"ok\"}"
+                    qa_body
                 };
                 let _ = s
                     .write_all(
@@ -736,6 +745,28 @@ mod tests {
         } else {
             std::env::remove_var("ANCHOR_MCP_ASK_TIMEOUT");
         }
+    }
+
+    #[tokio::test]
+    async fn tool_ask_passes_agent_compose_through_without_warning() {
+        // R45.2: agent mode is by design — the MCP projection must not
+        // invent a degradation warning, and citations keep their content.
+        let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
+        let body = r#"{"answer":"Compose the answer yourself","mode":"agent_compose","retrieval":"hybrid","warning":null,"refusal":null,"citations":[{"chunk_id":7,"kind":"document","content":"the passage","source_ref":"f.md"}]}"#;
+        let mock = spawn_ask_mock_with(false, body).await;
+        let saved_url = std::env::var("ANCHOR_BACKEND_URL").ok();
+        std::env::set_var("ANCHOR_BACKEND_URL", &mock.base);
+        let v = tool_ask("q", None, false, false).await;
+        if let Some(u) = saved_url {
+            std::env::set_var("ANCHOR_BACKEND_URL", u);
+        } else {
+            std::env::remove_var("ANCHOR_BACKEND_URL");
+        }
+        let v = v.expect("ask ok");
+        assert_eq!(v.get("mode").and_then(|m| m.as_str()), Some("agent_compose"));
+        assert!(v.get("warning").is_none_or(|w| w.is_null()), "no warning in agent mode: {v}");
+        let c = &v["citations"][0];
+        assert_eq!(c.get("content").and_then(|x| x.as_str()), Some("the passage"));
     }
 
     #[tokio::test]

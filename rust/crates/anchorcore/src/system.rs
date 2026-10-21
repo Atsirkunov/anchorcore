@@ -80,6 +80,8 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
     // capture settings values before blocking (use cached snapshot without DB conn for speed)
     let snap = status_snapshot(&state.settings);
     let readiness = crate::ollama::model_readiness(&state.settings).await;
+    let llm_mode = crate::settings::llm_mode(&state.settings);
+    let answer_ready = crate::answer::answer_ready(&state.settings, readiness.answer_ready);
     let classifier_is_local = provider_is_local(&snap.classifier_base);
     let embed_is_local = provider_is_local(&snap.embed_base);
     let result = tokio::task::spawn_blocking(move || {
@@ -122,12 +124,16 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
                 "base_url": snap.embed_base,
                 "model": snap.embed_model,
             },
+            // R45.2: who writes answers — "agent" (the user's AI agent via
+            // MCP or the REST skill; no server chat model) or "local".
+            "llm_mode": llm_mode,
             "answer": {
                 "provider": snap.answer_provider,
                 "model": snap.answer_model,
                 "base_url": snap.answer_base,
+                "mode": llm_mode,
             },
-            "answer_ready": readiness.answer_ready,
+            "answer_ready": answer_ready,
             "pending_embeddings": pending,
             "failing_sources": failing,
             "tasks": {}
@@ -236,6 +242,7 @@ pub async fn onboarding_handler(State(state): State<AppState>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let settings = state.settings.clone();
     let readiness = crate::ollama::model_readiness(&settings).await;
+    let answer_ready = crate::answer::answer_ready(&settings, readiness.answer_ready);
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
@@ -279,7 +286,7 @@ pub async fn onboarding_handler(State(state): State<AppState>) -> Json<Value> {
                 "missing_models": readiness.missing_models
             },
             "answer_provider": answer_provider,
-            "answer_ready": readiness.answer_ready,
+            "answer_ready": answer_ready,
             "sample": {
                 "available": sample_available,
                 "path": sample_path

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import { stripPlaceholders } from "../placeholders";
 import { theme } from "../theme";
-import type { AppSettings, AskResponse } from "../types";
+import type { AppSettings, AskResponse, LlmMode } from "../types";
 
 type ProbeResult = { status: "pass" | "fail" | "inconclusive"; message: string };
 
@@ -261,6 +261,23 @@ export function SettingsTab() {
               </span>
             </span>
           </label>
+        </div>
+
+        <div style={styles.section}>
+          <div style={styles.sectionTitle}>Who writes the answers?</div>
+          <select
+            style={styles.input}
+            value={form?.llm_mode === "agent" ? "agent" : "local"}
+            onChange={(e) => form && setForm({ ...form, llm_mode: e.target.value as LlmMode })}
+          >
+            <option value="agent">My AI agent (MCP or the anchorcore-search skill)</option>
+            <option value="local">A local model on this computer</option>
+          </select>
+          <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 4, lineHeight: 1.5 }}>
+            Agent: AnchorCore runs no chat model for answers — <code>ask</code> returns ranked, cited passages
+            (<code>mode: agent_compose</code>) and your agent composes. Local: the answer model below writes them.
+            Switching needs no re-ingest.
+          </div>
         </div>
 
         <div style={styles.section}>
