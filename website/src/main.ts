@@ -90,6 +90,8 @@ function setTrack(t: Track) {
       cta.href = dl.url;
     }
   }
+  const firstLaunch = document.getElementById("first-launch");
+  if (firstLaunch) firstLaunch.hidden = t !== "personal";
   if (note) {
     if (t === "team") note.innerHTML = "Docker • one container • your VPC • one-time license, incl. a year of support";
     else if (t === "hosted") note.innerHTML = "Coming soon — we host it, no setup · <code>hosted</code> tab";
