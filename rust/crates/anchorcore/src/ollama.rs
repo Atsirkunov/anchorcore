@@ -76,7 +76,11 @@ fn local_base_for(settings: &SettingsService, base_key: &str) -> Option<String> 
 /// (role, model) pairs. Roles are display labels for the install UI.
 pub(crate) fn configured_local_models(settings: &SettingsService) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    if local_base_for(settings, "classifier_base_url").is_some() {
+    // R45.1: the classifier chat model is only needed when ingest opts in
+    // (`extract_entities=llm` or `distill_enabled`); default ingest is rules.
+    if crate::classifier::chat_model_needed(settings)
+        && local_base_for(settings, "classifier_base_url").is_some()
+    {
         let m = settings
             .get("classifier_model", None)
             .unwrap_or_else(|| "llama3.2:3b".to_string());

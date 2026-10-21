@@ -1541,7 +1541,7 @@ fn distill_unit_content(unit: &crate::classifier::DistilledUnit) -> String {
 // B18 distillation (record bucket → Q&A units), hash-skipped.
 // R22.1: uses the LLM distiller (rules fallback inside `Classifier::distill`).
 async fn distill_item(ctx: &ClassifyCtx) -> Result<(), String> {
-    let distill_enabled = ctx.settings.get("distill_enabled", None).map(|v| v == "true" || v == "1" || v == "True").unwrap_or(true);
+    let distill_enabled = crate::classifier::distill_enabled(&ctx.settings);
     // R33.4: structured files skip distillation too — paraphrase chunks are
     // the same noise class as extracted entities (and burn an LLM call).
     if ctx.skips_extraction()
@@ -2701,5 +2701,145 @@ mod tests {
         let kinds: Vec<String> = conn.prepare("SELECT DISTINCT kind FROM entities WHERE item_id=?1").unwrap().query_map([iid], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
         assert!(!kinds.is_empty());
         assert!(kinds.iter().all(|k| k == "decision" || k == "action" || k == "note"), "re-extracted kinds: {kinds:?}");
+    }
+
+    /// R45.1 counting mock: an OpenAI-compatible server that counts
+    /// `chat/completions` requests (answers an empty extraction) and 404s
+    /// everything else, so embeddings degrade to keyword-only.
+    async fn spawn_counting_chat_mock() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let counter = counter.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 65536];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..n]);
+                    let first = head.lines().next().unwrap_or("");
+                    let (status, body) = if first.contains("chat/completions") {
+                        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        ("200 OK", r#"{"choices":[{"message":{"content":"{\"items\":[],\"units\":[]}"}}]}"#)
+                    } else {
+                        ("404 Not Found", "{}")
+                    };
+                    let resp = format!("HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        (port, calls)
+    }
+
+    fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap().flatten() {
+            let target = to.join(entry.file_name());
+            if entry.path().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    async fn sync_with_new_job(pipe: &Pipeline, db_path: &std::path::Path, sid: i64, force: bool) {
+        let conn = crate::db::init_db(db_path).unwrap();
+        conn.execute("INSERT INTO jobs (source_id, kind, status, total, processed, result, created_at) VALUES (?1,'sync','running',0,0,'{}',datetime('now'))", [sid]).unwrap();
+        let jid = conn.last_insert_rowid();
+        drop(conn);
+        pipe.sync_source(sid, jid, force).await;
+        let conn = crate::db::init_db(db_path).unwrap();
+        let (status, err): (String, Option<String>) = conn.query_row("SELECT status, error FROM jobs WHERE id=?1", [jid], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(status, "done", "sync failed: {err:?}");
+    }
+
+    #[tokio::test]
+    async fn default_ingest_of_sample_makes_zero_chat_calls() {
+        // R45.1 DoD: a `sample/` folder sync with default settings never
+        // calls the chat model (rules extraction, no distillation), while
+        // opting into `extract_entities=llm` + `distill_enabled` does — the
+        // second half proves the counter actually sees model traffic.
+        let (port, calls) = spawn_counting_chat_mock().await;
+        let dir = tempdir().unwrap();
+        let corpus = dir.path().join("corpus");
+        copy_tree(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../sample"), &corpus);
+        let data_dir = dir.path().join("data").to_string_lossy().to_string();
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let cfg = serde_json::json!({"path": corpus.to_string_lossy()}).to_string();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('sample','folder',?1,1,'',0)", [cfg]).unwrap();
+        let sid = conn.last_insert_rowid();
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let settings = Arc::new(crate::settings::SettingsService::new(store));
+        settings.set_data_dir(std::path::Path::new(&data_dir));
+        let mock = format!("http://127.0.0.1:{port}");
+        for key in ["classifier_base_url", "embed_base_url", "ollama_base_url"] {
+            settings.set(key, &mock, &conn).unwrap();
+        }
+        drop(conn);
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings.clone(), data_dir.clone());
+
+        sync_with_new_job(&pipe, &db_path, sid, false).await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0, "default ingest made chat calls");
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let items: i64 = conn.query_row("SELECT COUNT(*) FROM ingested_items WHERE source_id=?1", [sid], |r| r.get(0)).unwrap();
+        let entities: i64 = conn.query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0)).unwrap();
+        let distilled: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE kind='distilled'", [], |r| r.get(0)).unwrap();
+        assert!(items >= 5, "sample corpus ingested: {items}");
+        assert!(entities > 0, "rules extraction still stores entities");
+        assert_eq!(distilled, 0, "distillation is opt-in");
+        assert!(!crate::classifier::chat_model_needed(&settings));
+
+        settings.set("extract_entities", "llm", &conn).unwrap();
+        settings.set("distill_enabled", "true", &conn).unwrap();
+        drop(conn);
+        assert!(crate::classifier::chat_model_needed(&settings));
+        sync_with_new_job(&pipe, &db_path, sid, true).await;
+        assert!(calls.load(std::sync::atomic::Ordering::SeqCst) > 0, "opt-in llm mode reaches the model");
+    }
+
+    #[tokio::test]
+    async fn extract_entities_off_stores_no_entities() {
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('s','folder','{}',1,'',0)", []).unwrap();
+        let sid = conn.last_insert_rowid();
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let settings = Arc::new(crate::settings::SettingsService::new(store));
+        settings.set_data_dir(dir.path());
+        settings.set("extract_entities", "off", &conn).unwrap();
+        let text = "# Meeting notes\nAttendees: Maya, Alex\n\nWe decided to migrate billing to Stripe.\n\n- [ ] Alex: draft the spec\n";
+        let hash = crate::hashing::content_hash(text);
+        conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale) VALUES (?1,'meeting.md','meeting.md',?2,?3,'',0)", rusqlite::params![sid, text, hash]).unwrap();
+        conn.execute("INSERT INTO jobs (source_id, kind, status, total, processed, result, created_at) VALUES (?1,'sync','running',1,0,'{}',datetime('now'))", [sid]).unwrap();
+        let jid = conn.last_insert_rowid();
+        drop(conn);
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
+        let doc = IngestionDoc {
+            external_id: "meeting.md".to_string(),
+            title: "meeting.md".to_string(),
+            text: text.to_string(),
+            author: String::new(),
+            updated_at: None,
+            source_ref: "meeting.md".to_string(),
+        };
+        let n = pipe.classify_and_store(&data_dir, sid, jid, &doc, false).await.unwrap();
+        assert_eq!(n, 0);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let entities: i64 = conn.query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0)).unwrap();
+        assert_eq!(entities, 0, "off mode stores no entities");
+        let chunks: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE kind='document'", [], |r| r.get(0)).unwrap();
+        assert!(chunks >= 1, "document chunks are still stored");
     }
 }
