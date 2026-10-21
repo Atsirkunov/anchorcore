@@ -491,7 +491,8 @@ function initSkillCopy(): void {
 // Airy scroll reveal — one observer, no deps
 function initReveal(): void {
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  const targets = document.querySelectorAll("section .wrap, .col, .step, .qa, .fig, .flow");
+  // the hero is above the fold: revealing it delays first paint (R44.3)
+  const targets = Array.from(document.querySelectorAll("section:not(.hero) .wrap, .col, .step, .qa, .fig, .flow")).filter((el) => !el.closest(".hero"));
   targets.forEach((el) => el.classList.add("reveal"));
   if (!("IntersectionObserver" in window)) {
     targets.forEach((el) => el.classList.add("in"));
