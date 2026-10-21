@@ -315,12 +315,62 @@ fn run_migrations(conn: &mut Connection) -> Result<(), rusqlite_migration::Error
         );
     }
     let result = migrations().to_latest(conn);
+    // Migration 21 removes an orphaned vec0 table; its triggers then point at
+    // nothing, and `ensure_vec` recreates the plain table + fallback triggers.
+    if !table_exists(conn, "vec_chunks") {
+        return result;
+    }
     for (_, sql) in &saved {
         if let Err(e) = conn.execute(sql, []) {
             tracing::warn!("failed to restore vec trigger after migrate: {}", e);
         }
     }
     result
+}
+
+fn table_exists(conn: &Connection, name: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [name],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
+}
+
+/// R45.0 hook for migration 21: drop a vec0 `vec_chunks` this binary cannot
+/// load. DROP TABLE needs the module, so the schema row goes via
+/// writable_schema; the shadow tables are plain and drop normally. A build
+/// that does link vec0 (R43.10) keeps its index untouched.
+fn drop_orphan_vec0(tx: &rusqlite::Transaction) -> rusqlite_migration::HookResult {
+    let sql: Option<String> = tx
+        .query_row("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'vec_chunks'", [], |r| r.get(0))
+        .ok();
+    let is_vec0 = sql.is_some_and(|s| s.to_ascii_lowercase().contains("using vec0"));
+    if !is_vec0 {
+        return Ok(());
+    }
+    match tx.query_row("SELECT COUNT(*) FROM vec_chunks", [], |r| r.get::<_, i64>(0)) {
+        Ok(_) => return Ok(()),
+        Err(e) if !e.to_string().contains("no such module: vec0") => return Err(e.into()),
+        Err(_) => {}
+    }
+    for (name, _) in vec_trigger_defs(tx) {
+        tx.execute(&format!("DROP TRIGGER IF EXISTS \"{}\"", name.replace('"', "\"\"")), [])?;
+    }
+    tx.pragma_update(None, "writable_schema", "ON")?;
+    let deleted = tx.execute("DELETE FROM sqlite_master WHERE type = 'table' AND name = 'vec_chunks'", []);
+    tx.pragma_update(None, "writable_schema", "RESET")?;
+    deleted?;
+    let shadows: Vec<String> = tx
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB 'vec_chunks_*'")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    for name in &shadows {
+        tx.execute(&format!("DROP TABLE IF EXISTS \"{}\"", name.replace('"', "\"\"")), [])?;
+    }
+    tracing::warn!("R45.0: removed orphaned vec0 index (vec_chunks + {} shadow tables)", shadows.len());
+    Ok(())
 }
 
 fn migrations() -> Migrations<'static> {
@@ -365,6 +415,8 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/19_markdown_ranges.sql")),
         // R40.7: corpus vocabulary table (rules + quarantined LLM pairs)
         M::up(include_str!("../migrations/20_vocabulary.sql")),
+        // R45.0: drop a Python-era vec0 index this binary cannot load
+        M::up_with_hook(include_str!("../migrations/21_drop_orphan_vec0.sql"), drop_orphan_vec0),
     ])
 }
 
@@ -482,6 +534,10 @@ mod tests {
             )
             .unwrap();
             conn.pragma_update(None, "writable_schema", "OFF").unwrap();
+            // vec0's shadow tables are plain tables (live-DB names).
+            for shadow in ["vec_chunks_info", "vec_chunks_chunks", "vec_chunks_rowids", "vec_chunks_vector_chunks00"] {
+                conn.execute(&format!("CREATE TABLE \"{shadow}\" (x)"), []).unwrap();
+            }
             conn.pragma_update(None, "user_version", 10).unwrap();
         }
         let before = vec_trigger_sql(&open_db(&path).unwrap());
@@ -489,18 +545,49 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         run_migrations(&mut conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 20);
+        assert_eq!(v, 21);
         let vocab: String = conn
             .query_row("SELECT name FROM sqlite_master WHERE type='table' AND name='vocabulary'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(vocab, "vocabulary", "migration 20 must create the table");
-        assert_eq!(vec_trigger_sql(&conn), before);
+        // R45.0 (migration 21): the orphaned vec0 index and its triggers are
+        // gone instead of restored — restoring them broke every chunk write.
+        assert!(vec_trigger_sql(&conn).is_empty(), "vec0 triggers must not be restored");
+        let leftovers: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE name GLOB 'vec_chunks*'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(leftovers, 0, "vec0 table + shadow tables must be dropped");
         let adopted: String = conn.query_row("SELECT processed_hash FROM ingested_items", [], |r| r.get(0)).unwrap();
         assert_eq!(adopted, "h", "migration 18 must backfill processed_hash=content_hash");
         let sys_sql: String = conn
             .query_row("SELECT sql FROM sqlite_master WHERE name = 'system_events'", [], |r| r.get(0))
             .unwrap();
         assert!(sys_sql.contains("DEFAULT CURRENT_TIMESTAMP"), "migration 13 must apply: {sys_sql}");
+        // The boot path then rebuilds the plain fallback index, and chunk
+        // writes (insert, embedding update, delete) work again.
+        ensure_vec(&conn);
+        let item: i64 = conn.query_row("SELECT id FROM ingested_items", [], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO chunks (item_id, content, embedding) VALUES (?1, 'body', x'00')", [item])
+            .unwrap();
+        let chunk = conn.last_insert_rowid();
+        conn.execute("UPDATE chunks SET embedding = x'01' WHERE id = ?1", [chunk]).unwrap();
+        conn.execute("DELETE FROM chunks WHERE id = ?1", [chunk]).unwrap();
+    }
+
+    #[test]
+    fn migration_21_keeps_plain_vec_chunks() {
+        // Fresh/Rust-made DBs have a plain vec_chunks table: migration 21
+        // must leave it and its fallback triggers alone.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("plain.db");
+        init_db(&path).unwrap();
+        let mut conn = open_db(&path).unwrap();
+        let before = vec_trigger_sql(&conn);
+        assert!(!before.is_empty(), "ensure_vec must create fallback triggers");
+        conn.pragma_update(None, "user_version", 20).unwrap();
+        run_migrations(&mut conn).unwrap();
+        assert!(table_exists(&conn, "vec_chunks"));
+        assert_eq!(vec_trigger_sql(&conn), before);
     }
 
     #[test]

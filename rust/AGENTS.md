@@ -23,7 +23,7 @@ This mirrors `/AGENTS.md` but for the `rust/` workspace. **Rust is now shipped**
 * **Toolchain on this box (2026-10-12): Rust builds work.** No MSVC, but a portable MinGW + GNU-host toolchain is installed and cached: `C:\Users\Aleksandr\.local\winlibs\mingw64\bin` (WinLibs 16.2, ucrt) + rustup `stable-x86_64-pc-windows-gnu`. Invoke:
   `$env:PATH = "C:\Users\Aleksandr\.local\winlibs\mingw64\bin;" + $env:PATH; cargo +stable-x86_64-pc-windows-gnu test --offline -p anchorcore --target x86_64-pc-windows-gnu` (from `rust/`). `cargo check`/`test`/`clippy`/`build` all work; `cargo +stable-x86_64-pc-windows-msvc` still fails (`link.exe` absent). `rust/target` is shared with the main checkout — a fresh `git worktree` needs `robocopy` of `rust/target` and `frontend/dist` (both gitignored) or a full rebuild + `npm run build` (see `docs/archive/handover-2026-10-10-b54-verify.md`).
 * CI runs the real `cargo test`/clippy on every push (`ci.yml` `rust-conformance`); keep them green locally too.
-* `vec0` vs Python scan fallback — `rust` should use `sqlite-vec` statically linked.
+* No `sqlite-vec` is linked: `vec_chunks` is a plain table and retrieval runs the embedding scan. Migration 21 (R45.0) drops Python-era vec0 indexes; linking sqlite-vec is R43.10.
 
 ## Cyclomatic complexity (Phase 13 — design for it from day one)
 
