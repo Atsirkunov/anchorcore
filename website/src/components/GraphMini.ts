@@ -14,7 +14,7 @@ export function renderGraphMini(containerId: string): void {
     <div class="graph-row">
       <div class="gnode"><b>Sarah</b><small>payments lead</small></div>
       <div class="gedge"><span>owns</span></div>
-      <div class="gnode"><b>billing migration</b><small>decision · 87%</small></div>
+      <div class="gnode"><b>billing migration</b><small>decision</small></div>
       <div class="gedge dashed"><span>blocked by</span></div>
       <div class="gnode warn"><b>retention gap</b><small>risk · closed</small></div>
     </div>

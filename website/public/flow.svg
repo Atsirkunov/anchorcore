@@ -42,6 +42,6 @@
     <rect x="804" y="93" width="244" height="13" rx="6" fill="#9aa0a8"/>
     <rect x="804" y="114" width="210" height="13" rx="6" fill="#9aa0a8"/>
     <rect x="804" y="135" width="244" height="13" rx="6" fill="#EDE8E0"/>
-    <text x="804" y="180" font-size="16" fill="#4A5A52">d2 · billing provider · 87%</text>
+    <text x="804" y="180" font-size="16" fill="#4A5A52">d2 · billing provider</text>
   </g>
 </svg>
