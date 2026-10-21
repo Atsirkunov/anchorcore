@@ -22,11 +22,5 @@
     "source": "docs/sample-ai.md",
     "title": "Try the AnchorCore AI startup sample",
     "description": "A second sample corpus: a fictional AI product company with model routing, evals and pricing decisions. Sync it and ask cited questions."
-  },
-  {
-    "slug": "mcp",
-    "source": "docs/mcp.md",
-    "title": "Connect your agent to AnchorCore over MCP",
-    "description": "Let Claude Code, Codex, opencode or Cursor read your AnchorCore memory through MCP: read-only tools, cited results, a public-only gate and an audit log."
   }
 ]
