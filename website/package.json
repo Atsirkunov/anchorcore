@@ -6,7 +6,8 @@
   "scripts": {
     "sample-zip": "node scripts/make-sample-zip.mjs",
     "dev": "npm run sample-zip && vite",
-    "build": "npm run sample-zip && vite build",
+    "check-session": "node scripts/check-session-quotes.mjs",
+    "build": "npm run sample-zip && npm run check-session && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src"

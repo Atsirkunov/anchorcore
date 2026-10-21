@@ -1,0 +1,46 @@
+{
+  "prompt": "Can we start the billing migration Monday? What's the rollback, and who owns it?",
+  "tool": { "name": "anchorcore.ask", "done": "done · 3 sources · local" },
+  "simLabel": "Simulated from the sample dataset",
+  "footer": "3 citations · answered on your machine",
+  "sources": [
+    {
+      "id": "S1",
+      "file": "decisions/d2-billing-provider-approval.md",
+      "kind": "decision",
+      "title": "Billing provider migration approved",
+      "tone": "sage",
+      "quotes": [
+        "Rollback plan: feature flag toggles back to the legacy provider per tenant.",
+        "Owner: Sarah."
+      ]
+    },
+    {
+      "id": "S2",
+      "file": "specs/billing-migration-runbook.md",
+      "kind": "runbook",
+      "title": "Runbook: Billing provider migration",
+      "tone": "stone",
+      "quotes": [
+        "mirror invoices to the new provider (write-only; no customer impact)",
+        "the flag can flip any tenant back to legacy within five minutes"
+      ]
+    },
+    {
+      "id": "S3",
+      "file": "meetings/m2-q3-planning.md",
+      "kind": "meeting notes",
+      "title": "Q3 Planning",
+      "tone": "sage",
+      "quotes": ["Billing provider migration parallel-run starts Monday. Sarah owns it."]
+    }
+  ],
+  "answer": [
+    { "text": "The billing provider migration's parallel run is scheduled to start Monday", "cite": ["S3"] },
+    { "text": " and it is write-only, with no customer impact", "cite": ["S2"] },
+    { "text": ". Rollback is a feature flag that toggles a tenant back to the legacy provider", "cite": ["S1"] },
+    { "text": ", and the runbook says it can flip any tenant back within five minutes", "cite": ["S2"] },
+    { "text": ". Sarah owns it", "cite": ["S1", "S3"] },
+    { "text": "." }
+  ]
+}

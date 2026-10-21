@@ -1,4 +1,5 @@
 import { renderGraphMini } from "./components/GraphMini";
+import { initClaudeSession } from "./components/ClaudeSession";
 import { marked } from "marked";
 import obsidianMd from "../../docs/guides/obsidian-vault.md?raw";
 import quickstartMd from "../../docs/sample-dataset.md?raw";
@@ -529,6 +530,8 @@ void initGuides();
 initGuideTabs();
 initCorpus();
 initReveal();
+initClaudeSession("cs-hero");
+initClaudeSession("cs-demo");
 initTerminal("term-body", "term-replay", TERM_LINES);
 initTerminal("skill-term-body", "skill-term-replay", SKILL_LINES);
 // render after DOM ready (both graphs are JS-built; R18.6 keeps them in sync)
