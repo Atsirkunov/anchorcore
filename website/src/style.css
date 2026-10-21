@@ -316,3 +316,28 @@ code{background:var(--paper2);border:1px solid var(--border);border-radius:6px;p
 @media(min-width:1600px){.hero>.flow{width:100%}}
 @media(min-width:2800px){:root{--wrap:1680px}.faq{max-width:1320px}}
 @media (prefers-reduced-motion: reduce){.term-body .caret{animation:none}.reveal{opacity:1;transform:none;transition:none}.shot-body .q,.shot-body .a,.shot-body .cites .cite{animation:none}.guide-panel{animation:none}.seal-drawer,.seal-dot{opacity:1;animation:none}.seal-anim{animation:none}}
+
+/* R44.13 trust section */
+.trust-lead{color:var(--dim);max-width:var(--wrap-narrow);margin:0 0 24px}
+.trust-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:24px;align-items:start}
+.trust-grid-b{margin-top:24px}
+.trust-map{margin:0;border:1px solid var(--border);border-radius:14px;background:var(--paper);overflow:hidden}
+.trust-core{display:flex;flex-direction:column;gap:4px;padding:16px 18px;background:var(--sageSoft);border-bottom:1px solid var(--border);border-left:3px solid var(--sage);font-size:var(--fs-body)}
+.trust-core b{color:var(--sage)}
+.trust-out{list-style:none;margin:0;padding:0}
+.trust-out li{padding:12px 18px 12px 34px;border-bottom:1px solid var(--border);font-size:var(--fs-body);line-height:1.55;position:relative}
+.trust-out li::before{content:"\2192";position:absolute;left:14px;top:12px;color:var(--stone);font-weight:800}
+.trust-when{display:block;font-family:ui-monospace,Menlo,monospace;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:2px}
+.t-never{color:var(--sage)}
+.t-ask{color:var(--dim)}
+.t-cfg{color:var(--sageH)}
+.trust-map .cap{font-size:12px;color:var(--dim);padding:10px 18px;margin:0}
+.trust-facts{padding:20px 22px;border:1px solid var(--border);border-radius:14px;background:var(--paper)}
+.trust-facts h3{margin:0 0 6px;font-size:var(--fs-h3)}
+.trust-facts h3:not(:first-child){margin-top:18px}
+.trust-facts p{margin:0 0 8px;font-size:var(--fs-body)}
+.trust-facts p.small{font-size:clamp(12px,0.85vw,13px)}
+.trust-facts code{font-size:12px}
+.trust-code{margin:10px 0;white-space:pre;overflow-x:auto}
+.trust-builder{border-left:3px solid var(--sage)}
+@media (max-width:860px){.trust-grid{grid-template-columns:minmax(0,1fr)}}
