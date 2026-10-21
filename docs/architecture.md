@@ -1,6 +1,6 @@
 # AnchorCore — Architecture Overview
 
-> Stack: **Rust (Axum) · React (Vite) · SQLite (vec0 + FTS5) · Ollama
+> Stack: **Rust (Axum) · React (Vite) · SQLite (FTS5 + embedding scan) · Ollama
 > or BYO cloud LLM APIs** — env-driven. **Rust is the shipped backend everywhere:
 > the local app and the one-container Team image (`hosting/`, R19.1). Python
 > `backend/` is archived on tag `archive/python-final` (conformance suite).**
@@ -30,7 +30,7 @@ flowchart TB
         api --- review["Review API<br/>low-confidence · duplicates"]
         api --- projects["Projects API<br/>scoped search"]
         api --- jobs["Job Manager<br/>background jobs · cancel"]
-        db[("Entity Graph<br/>SQLite + sqlite-vec + FTS5")]
+        db[("Entity Graph<br/>SQLite + FTS5 + embeddings table")]
         settings[("app_settings<br/>runtime overrides")]
         secrets["Secrets<br/>OS Keychain"]
         api --- db
@@ -64,7 +64,7 @@ flowchart LR
     type --> classify["Classify windows<br/>(local Ollama or cloud, parallel)"]
     classify --> entities["Entities + window context<br/>(SQLite)"]
     classify --> embed["Embed chunks<br/>(local or cloud)"]
-    embed --> vec["sqlite-vec index"]
+    embed --> vec["embeddings table (cosine scan)"]
     classify --> fts["FTS5 keyword index"]
     entities --> review["Review UI<br/>context panel · confirm / merge / reclassify"]
 ```
@@ -108,7 +108,7 @@ chunks flat. Full detail: `docs/guides/hierarchical-toc.md`.
 sequenceDiagram
     participant U as User (browser)
     participant A as AnchorCore App
-    participant V as sqlite-vec
+    participant V as Embedding scan
     participant F as FTS5 (chunks_fts)
     participant O as Ollama
     participant M as BYO LLM API
@@ -133,7 +133,7 @@ sequenceDiagram
 
 *Flat:* `ask` resolves project source ids → the planner picks tools (`hybrid`
 always, `who_knows` on ownership cues) → the executor runs them with one
-shared embedding call (`hybrid` = vec0 vector + FTS5 keyword) → fusion (RRF
+shared embedding call (`hybrid` = vector scan + FTS5 keyword) → fusion (RRF
 `score=Σ w/(60+rank)`, age decay, per-item diversity cap, context expansion,
 near-duplicate dedupe) → 1–2 hop graph walk → source-label gate for
 unapproved providers (`sensitive` sources excluded) → cited generation. Every retrieval path takes an
@@ -143,7 +143,7 @@ score.
 *Hierarchical (shipped in 1.0.12):* the same pipeline with a TOC pre-stage
 (`toc_search` before flat hybrid). Persisted sections + tags let retrieval
 prune *before* vector search: tag/SQL filter, summary-node vector search over
-~5k summaries, then leaf vec0 restricted to the top sections. Falls back to
+~5k summaries, then leaf vector scan restricted to the top sections. Falls back to
 flat hybrid when the TOC pass is empty. Context expansion reads same-section
 siblings. Endpoints: `GET /sections`, `GET /tags`.
 
@@ -335,7 +335,7 @@ erDiagram
         datetime created_at
     }
     VEC_CHUNKS {
-        int rowid "virtual vec0 768d cosine (SQLite-only)"
+        int rowid "plain table of 768d embeddings (cosine scan in code)"
         bytes embedding
     }
     PROJECT_SOURCES {
@@ -375,12 +375,12 @@ erDiagram
 | Web UI | Connect sources, project scoping, review queue, Q&A chat, model settings | React SPA (Vite, TS, 6 tabs) |
 | API | All endpoints, orchestration, config | **Rust Axum (shipped)** — same binary in the local app and the Team container; Python `backend/` archived (conformance) |
 | Entity Store | Entities, provenance, window context, sync state | SQLite (Rust `rusqlite`) — local app and Team container |
-| Vector Store | Chunk embeddings + similarity search | sqlite-vec vec0 when the module is present, same file; in-code cosine scan fallback (Rust) |
+| Vector Store | Chunk embeddings + similarity search | embeddings table in the same SQLite file; vector search is an in-code cosine scan (no vec0 module is linked) |
 | Keyword Store | FTS5 bm25 for hybrid retrieval | SQLite FTS5 (trigger-synced, same file) |
 | Classifier | Doc-type detection + entity extraction | Ollama or cloud OpenAI-compatible + rule fallback (Rust `classifier.rs`) |
 | Embedder | Chunk embeddings | Ollama or cloud OpenAI-compatible (Rust `embedder.rs`) |
 | Answer Engine | Planner → Executor → RRF fusion → graph walk → cited answer | BYO cloud model or Ollama (Rust `answer.rs`/`retrieval.rs`) |
-| Retrieval | Vector cosine + FTS5 bm25, who_knows owner/author ranking, `relationships` graph walk | sqlite-vec + FTS5 + SQL (Rust) |
+| Retrieval | Vector cosine + FTS5 bm25, who_knows owner/author ranking, `relationships` graph walk | embedding scan + FTS5 + SQL (Rust) |
 | Job Manager | Background sync/reclassify + cancel | `jobs` table, `MAX_CONCURRENT=2` (Rust `jobs.rs`) |
 | Settings Service | Runtime-mutable model config | `app_settings` table + SecretStore (Rust `settings.rs`) |
 | Secret Store | Credentials (Jira token, model keys) | OS Keychain via `keyring` + encrypted-file fallback (Rust `secrets.rs`) |
@@ -406,7 +406,7 @@ erDiagram
 
 | Interface | v1 (shipped) | v2+ swap |
 |---|---|---|
-| `VectorStore` | sqlite-vec | Qdrant / pgvector (hosted cloud, B49) |
+| `VectorStore` | SQLite embedding scan | Qdrant / pgvector (hosted cloud, B49) |
 | `ModelClient` | Ollama + BYO OpenAI-compatible | Any provider |
 | `SecretStore` | Keychain | Cloud secret manager |
 | `Connector` | Folder, Drive, Jira, Linear, REST | Slack, Notion, Confluence |
@@ -418,7 +418,7 @@ erDiagram
 
 ```
 v1 (shipped; current version: see docs/release-notes/): local-first app — folder/Drive/Jira/Linear/REST connectors,
-    document-aware classification + review queue, cited Q&A (hybrid RRF + vec0 +
+    document-aware classification + review queue, cited Q&A (hybrid RRF + vector scan +
     planner/executor + graph walk + distillation + projects + source-label gate),
     hierarchical sections, MCP mode, Team self-hosted (Docker + offline license),
     Windows/macOS apps

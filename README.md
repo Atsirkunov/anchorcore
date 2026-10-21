@@ -1,10 +1,11 @@
 # AnchorCore
 
-Your memory — finally searchable.
+Ask your files. Get the answer and the exact source.
 
-AnchorCore turns your folders, Drive, Jira, Linear and JSON APIs into a private AI knowledge base
-on your own machine. Ask "what was decided about X, and why?" — get a cited answer
-that shows exactly where it came from.
+AnchorCore is a private AI search app. Connect your folders, Drive, Jira, Linear — or any JSON API —
+and ask "what was decided about X, and why?" in plain language. You get a cited answer that shows
+exactly where it came from. Your index stays on your machine; answers are generated locally unless
+you connect a cloud model.
 
 ## Download
 
@@ -12,23 +13,28 @@ Free for personal use. No account, no Docker, no setup:
 
 - [Download for Windows](https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-windows.zip)
 - [Download for macOS](https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-macos.zip)
+- [Download for Linux](https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-linux.zip)
 
 Unzip, run, and the app opens in your browser. Your data stays in `~/.anchorcore`
-on your machine — nothing leaves it unless you configure a cloud model.
+on your machine. Connectors you enable (Drive, Jira, Linear, REST) and any cloud model
+you configure make network requests; see the
+[security notes](https://anchorcore.dev/security) for the full list.
 The app keeps running in the system tray (Windows) / menu bar (macOS) — quit
-it from there; closing the browser tab doesn't stop it.
+it from there; closing the browser tab doesn't stop it. Linux has no tray yet.
+Verify a download against `SHA256SUMS` on the release page.
 
 > First launch: move AnchorCore to `/Applications`. macOS: open it, then System Settings → Privacy & Security → Open Anyway (the app isn't Apple-notarized yet).
-> Windows: SmartScreen → More info → Run anyway.
+> Windows: SmartScreen → More info → Run anyway. (Windows and Linux builds aren't code-signed; nothing is store-signed.)
 
 ## 60-second start
 
 1. Download and run the app (above).
-2. Sources → Local folder → point at the repo's `sample/` demo corpus (grab the
-   folder from GitHub; release zips ship the app only — or use your own) → Sync.
+2. Sources → Local folder → point at the `sample/` demo corpus (download
+   [sample.zip](https://anchorcore.dev/sample.zip) and unzip it, or use the folder
+   in this repo; release zips ship the app only — or use your own files) → Sync.
 3. Ask: "What was decided about instant payments, and why?" → cited answer.
 4. Optional: **System tab → MCP** connects Claude Code, Codex, opencode, Cursor or
-   Claude Desktop to the same memory — the app writes the client config for you, so
+   Claude Desktop to the same index — the app writes the client config for you, so
    there is nothing to build. The onboarding wizard's last step offers the same card.
 
 Tip: install [Ollama](https://ollama.com) and pull `llama3.2:3b` +
@@ -37,10 +43,10 @@ Tip: install [Ollama](https://ollama.com) and pull `llama3.2:3b` +
 ## Editions
 
 - **Personal** — this app. Free forever for personal use (see [License](#license)).
-- **Team (self-hosted)** — one Docker container in your VPC, one-time platform
-  license (perpetual, incl. 1 year of support/updates). See
+- **Team (self-hosted)** — one Docker container in your VPC, licensed per quote:
+  [request a quote](https://anchorcore.dev/team). See
   [hosting/README.md](./hosting/README.md).
-- **Hosted** — coming soon.
+- **Hosted** — coming soon; [join the waitlist](https://anchorcore.dev/hosted).
 
 ## License
 
@@ -50,7 +56,8 @@ Team and commercial use requires a paid license.
 ## Docs
 
 - [Agent setup skill](./.agents/skills/anchorcore-setup/SKILL.md) — hand it to your agent: install, configure models and sources, connect MCP, verify answers
-- [Agent connectivity (MCP)](./docs/mcp.md) — how harnesses (Claude Code, Codex, opencode, Cursor) use the memory
+- [Agent connectivity (MCP)](./docs/mcp.md) — how harnesses (Claude Code, Codex, opencode, Cursor) search your files
+- [Security notes](https://anchorcore.dev/security) — network endpoints, label gate, secrets, known limits
 - [Backup, export & device migration](./docs/backup.md) — portable `.anchorcore-backup` archives, secrets model, CLI + UI walkthrough
 - [Updates](./docs/updates.md) — manual release check (no background pings), the startup-check opt-in, what updating does to your data
 - [System tray](./docs/tray.md) — Open + Quit from the tray/menu bar, opt-outs, headless notes
@@ -100,8 +107,8 @@ ollama pull nomic-embed-text  # embeddings
 ## Model configuration (Settings tab — no restart)
 
 All model providers are configured in-app (runtime-mutable, DB-backed
-`app_settings` overriding `.env` defaults; secrets in the OS keychain, never
-in DB/logs):
+`app_settings` overriding `.env` defaults; secrets in the OS keychain on macOS and Windows (encrypted-file fallback elsewhere),
+never in the DB):
 
 | Section | Local | Cloud |
 |---|---|---|
@@ -116,7 +123,7 @@ Each section: provider dropdown, API key, base URL, model, **Test connection**.
 
 ```
 Sources (folder, Drive, Jira, Linear, REST) -> extract text -> clean -> chunk -> classify -> entities + window context
-                                          -> embed chunks (sqlite-vec)
+                                          -> embed chunks (vectors in SQLite; cosine scan at query time)
                                           -> FTS5 keyword index (chunks_fts)
                                           -> (Phase 14) section tree + summary nodes + tags
 ```
@@ -143,7 +150,7 @@ Sources (folder, Drive, Jira, Linear, REST) -> extract text -> clean -> chunk ->
   thread phrased it as "what's the timeout?". An IDF gate (`0.15` signal) skips low-signal
   filler from vector search (it stays keyword-findable in FTS5).
 
-**Retrieval:** Q&A fuses vector search (sqlite-vec) with FTS5 keyword search via **RRF**, then age decay, per-item diversity cap, context expansion, and near-duplicate dedupe. A planner picks `hybrid` + `who_knows` per query, and a graph walk adds 1–2 hop related entities. Full detail: [architecture.md §4](./docs/architecture.md#4-data-flow--qa) + [hierarchical-toc.md](./docs/guides/hierarchical-toc.md).
+**Retrieval:** Q&A fuses vector search (embedding scan) with FTS5 keyword search via **RRF**, then age decay, per-item diversity cap, context expansion, and near-duplicate dedupe. A planner picks `hybrid` + `who_knows` per query, and a graph walk adds 1–2 hop related entities. Full detail: [architecture.md §4](./docs/architecture.md#4-data-flow--qa) + [hierarchical-toc.md](./docs/guides/hierarchical-toc.md).
 
 **Scale — hierarchical TOC (Phase 14, shipped in 1.0.12):** flat chunks don't scale to 150k+ chunks (5k docs, `scripts/build_business_corpus.py`). Before, `chunk_document` derived `sections` then discarded the tree — no `section_id`/`path`/`level`. Now `sections` (parent/level/path/summary + `summary_embedding`) + dynamic `tags`/`chunk_tags` (reuse if `cosine>0.82` else create) are persisted (`migrations/11_sections.sql`, `12_tags.sql`). Retrieval is coarse-to-fine: TOC/tag SQL prune → summary-node vector search (~5k sections) → leaf vec0 `WHERE c.section_id IN (:top5)` within winning sections (`retrieval.rs:836` `toc_search`), avoiding flat `vector_search_scan` fallback. Endpoints `GET /sections?item_id=&source_id=`, `GET /sections/:id/chunks`, `GET /tags`, `GET /tags/:id/chunks`; UI shows `path` breadcrumb `Art 12 › 12.3` + tag chips + `tag_reuse_threshold` in Settings. See `docs/architecture.md:3` + `docs/guides/hierarchical-toc.md` + `rust/BACKLOG.md:Phase 14`.
 
@@ -203,9 +210,9 @@ resets the thread.
 | `projects` / `project_sources` | source bundles for scoped search (B15) |
 | `entities` | kinds decision/document/action/note; `window_text`/`window_index` = classifier input; status verified/disputed/stale |
 | `relationships` | typed links (supersedes/depends_on/owns/blocks) |
-| `chunks` | `kind` = document/entity/distilled (+ section_summary/doc_summary Phase 14); `section_id`/`level`/`path` (Phase 14); legacy `is_pii`/`pii_categories` columns (unwritten since R35.1 — auto-flagging removed); embeddings (float32 blobs); FTS5 `chunks_fts` + vec0 `vec_chunks` (B33) kept in sync by triggers (SQLite-only; in-code scan fallback) |
+| `chunks` | `kind` = document/entity/distilled (+ section_summary/doc_summary Phase 14); `section_id`/`level`/`path` (Phase 14); legacy `is_pii`/`pii_categories` columns (unwritten since R35.1 — auto-flagging removed); embeddings (float32 blobs); FTS5 `chunks_fts` + `vec_chunks` table (B33; no vec0 module is linked — retrieval is an in-code cosine scan) kept in sync by triggers |
 | `sections` / `tags` / `chunk_tags` | Phase 14: hierarchical TOC (`sections` parent/level/path/summary + `summary_embedding`) + dynamic taxonomy (`tags` embedding + count, many:many via `chunk_tags`; reuse if `cosine>0.82` else create) |
-| `chunks_fts` / `vec_chunks` | FTS5 keyword index / vec0 cosine index (SQLite), triggers sync; in-code cosine scan when vec0 is unavailable |
+| `chunks_fts` / `vec_chunks` | FTS5 keyword index / plain embeddings table (SQLite), triggers sync; vector search is an in-code cosine scan (no vec0 module linked) |
 | `merge_actions` | duplicate proposals + decisions |
 | `jobs` | sync/reclassify progress + history |
 | `system_events` | structured error/audit trail |

@@ -28,7 +28,7 @@ A system that becomes an organization's memory — understanding decisions, owne
 
 ## 4. Customer (v1) — two doors, one product
 
-**Master positioning (hero A, chosen):** *Your memory — finally searchable.* (see `design-system.md:5.1` for variants)
+**Master positioning (hero A, chosen):** *Your memory — finally searchable.* *(Superseded 2026-10-21 by R44.9: hero is now "Ask your files. Get the answer and the exact source.", category noun "private AI search" — see `design-system.md` §5.)*
 
 **Tracks — same local app, different language:**
 
@@ -50,13 +50,13 @@ No sales team, no procurement cycle in v1. Website has one page with a Personal/
 | Model tiering | Ollama (local, 3B) for classification; BYO big models via API for Q&A/planning |
 | Model access | Bring-your-own-key (v1); bundled access v2–3 |
 | Trust layer | Sources + confidence + review UI (v1); contradictions & verification workflows (v2) |
-| Retrieval | SQLite + sqlite-vec, local embeddings (`nomic-embed-text`), swappable VectorStore |
+| Retrieval | SQLite (FTS5 + in-code embedding scan; sqlite-vec is not linked — R43.10), local embeddings (`nomic-embed-text`), swappable VectorStore |
 | Sync | Incremental connector polls/cursors; folder watcher + hourly scan fallback; hash dedup; delete cascades |
 | Data model | Uniform entity graph (entities + typed relationships + provenance); contradictions as external layer |
 | Answers | Planner → executor → fusion → graph walk, section-level citations, cheap default BYO model |
 | Identity | Hash dedup in-source; cross-source duplicate proposals for manual merge |
-| Billing | Personal local free forever; Team self-hosted = one-time platform license (perpetual + 1yr maintenance), offline ed25519 key (`rust/crates/anchorcore/src/license.rs`, issue via `scripts/make_license.py`); hosted pricing TBD from pilots |
-| Security | OS keychain for credentials; secrets never in DB/config/logs |
+| Billing | Personal local free forever; Team self-hosted = one-time platform license (perpetual + 1yr maintenance), offline ed25519 key (`rust/crates/anchorcore/src/license.rs`, issue via `scripts/make_license.py`); hosted pricing TBD from pilots. *(Superseded 2026-10-21: Team pricing is quote-only and the fee structure is undecided — see `rust/docs/decisions.md`.)* |
+| Security | OS keychain for credentials (macOS/Windows; encrypted-file fallback elsewhere); secrets never in DB/config |
 
 ## 6. How Data Becomes Knowledge
 
@@ -108,7 +108,7 @@ Do not compete with Claude, ChatGPT, or Gemini on intelligence. AnchorCore owns:
 | Phase | Price |
 |---|---|
 | Validation (v1, now) | Personal local free — gather feedback |
-| Team self-hosted (now) | One-time platform license, perpetual incl. 1yr support/updates; no per-seat, no numbers on site |
+| Team self-hosted (now) | One-time platform license, perpetual incl. 1yr support/updates; no per-seat, no numbers on site. *(Superseded 2026-10-21: Team pricing is quote-only and the fee structure is undecided — see `rust/docs/decisions.md`.)* |
 | Hosted (v2+) | Pricing TBD from pilot conversations |
 | Enterprise | Support contract / on-prem, scoped per deal |
 

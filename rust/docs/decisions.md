@@ -217,3 +217,17 @@ ADR log. Append newest first.
   - If analytics returns, update the privacy notice + README "no analytics" statement in the same change (R44.19 acceptance).
 
 ---
+
+## 2026-10-21 — R44.9 / R44.16: positioning + Team pricing posture
+
+* **Decision:** The public voice is "private AI search" with the hero "Ask your files. Get the answer and the exact source." ("memory", "second brain", "knowledge base" retired from the site). Team is quote-only: `/team` says "Request a quote" and no price, range, license model or support-fee structure appears on the site, the root README or `hosting/README.md`. The fee structure is undecided (owner exploring a fixed license plus an annual support fee); nothing is published until it is chosen.
+* **Context:** The previous docs promised a "one-time, perpetual license incl. 1 year of support/updates". The owner has not landed on that; publishing it would pre-commit pricing. The license *mechanism* (offline-verified key, maintenance expiry warns and runs) is unchanged in code and still documented factually in `hosting/README.md`.
+* **Alternatives considered:**
+  - *Publish a price anchor/range on `/team`* — rejected: no number decided.
+  - *Keep the one-time-license wording* — rejected: contradicts the undecided structure.
+* **Consequences:**
+  - `docs/product-plan.md` and `docs/v2v3-scope.md` keep their original pricing rows as history, annotated as superseded.
+  - `LICENSE.md` is legal text and is unchanged ("separate paid license"); revisit with counsel once pricing is chosen.
+  - The in-app Ask tab heading still says "Ask your memory" — separate follow-up.
+
+---

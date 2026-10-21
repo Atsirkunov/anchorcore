@@ -53,7 +53,7 @@ cargo build --release
 | Symptom | Cause | Fix |
 |---|---|---|
 | UI missing a feature that's in source | stale exe (frontend bundled at build time) | rebuild / re-tag |
-| macOS "cannot be verified" | no notarization (free tier) | right-click → Open, or Open Anyway (B24) |
+| macOS "cannot be verified" | no notarization (free tier) | System Settings → Privacy & Security → Open Anyway (right-click → Open no longer works on recent macOS) |
 | Release has no artifacts | workflow failed | check Actions tab logs; fix, re-tag |
 
 ---

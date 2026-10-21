@@ -17,7 +17,7 @@ rust/
   AGENTS.md          — agent guide for this workspace (mirrors /AGENTS.md but Rust-specific)
   Cargo.toml         — workspace root
   crates/
-    anchorcore/      — axum + rusqlite + sqlite-vec binary
+    anchorcore/      — axum + rusqlite binary (FTS5 + embedding scan; sqlite-vec not linked)
       Cargo.toml
       src/
         main.rs      — entry (mirrors backend/run_app.py)

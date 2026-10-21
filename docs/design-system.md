@@ -80,30 +80,19 @@ instead of inlining colors.
 
 ## 5. Messaging — website + app copy (one voice)
 
-**Positioning:** *Your memory — finally searchable.* / *Connect your knowledge to any AI model.*
+**Positioning (R44.9, 2026-10-21):** *Ask your files. Get the answer and the exact source.* One category noun — **private AI search** — and one result noun — **cited answer**. "Memory", "second brain" and "knowledge base" are retired from the website (the glossary lives in `website/README.md`); the in-app Ask tab heading still says "Ask your memory" and is a separate follow-up.
 
-### 5.1 Website hero — Personal / Team / Hosted tracks
+### 5.1 Website hero
 
 **Master headline:**
-> **Your memory — finally searchable.**
-> Turn folders, Drive, Jira and Linear into a private AI knowledge base. Ask “what was decided about X, and why?” — get a cited answer that shows exactly where it came from. Private by default, on your machine.
+> **Ask your files. Get the answer and the exact source.**
+> A private AI search app. Connect your folders, Drive, Jira, Linear — or any JSON API — and ask in plain language. It finds the decision, who made it and why, and shows the page it came from. Your index stays on your machine. Answers are generated locally unless you connect a cloud model.
 
-**Track copy (same product, three doors — one brand, no color split):**
+**One label per action, everywhere:** *Download — free for personal use* · *Watch it work* · *Join the waitlist* (Hosted) · *Request a quote* (Team).
 
-| Track | Who | Headline variant | Subhead | Proof point |
-|---|---|---|---|---|
-| **Personal** | Solo PM, founder, researcher | **Your memory — finally searchable.** | Your notes, PDFs, Jira, Linear and Drive in one searchable private memory. Ask like you remember it — get the source. | “300-page PDF? Page 250 still cited. Your second brain, not another chatbot.” |
-| **Team** | 3–30 person team, PM-led | **Run on your infrastructure — one container.** | Self-hosted knowledge base in one command. Your data stays with you, same cited answers for the whole team. One-time platform license, yours to run — no cloud required. | “One Docker container — your team's memory, on your infra. Who owns billing? Cited, not guessed.” |
-| **Hosted** | Waiting list | **Hosted — coming soon.** | We host it for you, same private memory, no setup. Join waitlist for early access. | “No Docker, no infra — just connect and ask. Your memory, hosted.” |
+**Audiences are pages, not a toggle (R44.16):** the hero is Personal only. `/team` is a quote-request page (no price, range or fee structure; the pricing model is undecided — `rust/docs/decisions.md`), `/hosted` is a one-field waitlist. `?track=team|hosted` redirects to them. The hero's right-hand card is a scripted simulation of a coding agent calling AnchorCore over the sample dataset, labelled as a simulation (R44.11).
 
-Body copy swaps per tab but **design stays identical** — same accent, same
-cited-answer mock. Don't make two brands.
-
-**Implementation (shipped):** one page, `Personal | Team · Self-hosted |
-Hosted` toggle under the headline; track persisted to site `localStorage` +
-`?track=` param. Default **Personal**. CTA per track: Personal = OS-aware
-download button, Team = Docker/hosting docs link, Hosted = waitlist anchor.
-Email capture tags the track. No prices on site.
+**Claims discipline:** the site only claims what the repo supports — no SSO/roles (R43.18), no address guard on the REST connector, no analytics/telemetry, keychain on macOS/Windows only (encrypted-file fallback elsewhere), Windows/Linux builds not code-signed. Evidence lives on `/security` and the landing `#trust` section.
 
 **Alternates** if the master headline fatigues:
 * B: *AI is smart. It just doesn't remember working at your company.*
@@ -119,12 +108,12 @@ app URL, not shared storage.
 
 ### 5.2 Website structure (light theme, same accent)
 
-1. **Hero** — headline + cited-answer mock + download buttons.
+1. **Hero** — headline + sources strip + download buttons + simulated agent session + a two-path strip (use the app ∥ plug into your coding agent).
 2. **Problem → Solution** — 3 columns: *Fragmented knowledge* → *Lost reasoning* → *AnchorCore: every answer shows its source*.
 3. **How it works** — 3 steps with icons + plain pipeline line (`connect → read → file → ask → cited answer`), sections visual, relationship visual, sealed-by-design privacy strip.
 4. **Live demo** — connect `sample/`, 4 questions answered (scripts in `docs/sample-dataset.md`); browser + MCP columns; abbreviated agent-session replay.
-5. **Guides** — one section (R18.7): folder/sample/REST entry cards that deep-link into one-at-a-time guide panels rendered from repo markdown, plus a projects card (the PII card left with R35.1).
-6. **FAQ, Pricing, Roadmap** — 7 FAQs, 3 tiers without prices, download + waitlist capture.
+5. **Guides** — entry cards linking to prerendered guide pages `/guides/*` (R44.15, built from repo markdown at build time), plus a projects card. A `#trust` section sits before the demo; `/security`, `/vs/notebooklm`, `/team` and `/hosted` are separate pages.
+6. **FAQ, Pricing, Roadmap** — FAQ (JSON-LD generated from the visible text), 3 tiers without prices (Team = request a quote), download + waitlist capture.
 7. **Privacy notice + Footer** — GDPR notice section; `v1 local · free for personal use · Team self-hosted licensed · Hosted soon.`
 
 **Voice:** short, factual, no superlatives. Same as app: `No relevant knowledge found yet.` not "Oops!"
