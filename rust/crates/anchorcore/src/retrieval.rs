@@ -582,6 +582,7 @@ fn exec_vec_search(
     let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Text(q_json)];
     append_source_filter(&mut sql, &mut params, source_ids);
     append_section_filter(&mut sql, &mut params, section_ids);
+    append_vector_family_filter(conn, &mut sql, &mut params);
     if let Some(clause) = scope.kind_clause() {
         sql.push_str(clause);
     }
@@ -782,17 +783,21 @@ fn load_chunks_with_embedding_filtered(
     qa_exclude_disputed: bool,
 ) -> Vec<Hit> {
     // Document chunks only — the scan path must match the vec0 path (R33.3).
-    let sql = "SELECT c.id, c.entity_id, COALESCE(c.item_id, e.item_id), c.content, c.source_ref, c.is_pii, e.status, i.source_id, c.section_id, c.path \
-               FROM chunks c \
-               LEFT JOIN entities e ON e.id = c.entity_id \
-               LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
-               WHERE c.embedding IS NOT NULL AND c.kind IN ('document')";
-    let mut stmt = match conn.prepare(sql) {
+    let mut sql = String::from(
+        "SELECT c.id, c.entity_id, COALESCE(c.item_id, e.item_id), c.content, c.source_ref, c.is_pii, e.status, i.source_id, c.section_id, c.path \
+         FROM chunks c \
+         LEFT JOIN entities e ON e.id = c.entity_id \
+         LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
+         WHERE c.embedding IS NOT NULL AND c.kind IN ('document')",
+    );
+    let mut params: Vec<rusqlite::types::Value> = Vec::new();
+    append_vector_family_filter(conn, &mut sql, &mut params);
+    let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return vec![],
     };
     let rows = stmt
-        .query_map([], |r| {
+        .query_map(rusqlite::params_from_iter(params.iter()), |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, Option<i64>>(1)?,
@@ -824,6 +829,20 @@ fn load_chunks_with_embedding_filtered(
         }
     }
     out
+}
+
+/// R45.5: restrict a vector leg to vectors in the active query vector's
+/// family (`embed_fp::comparable_fingerprints`) — mixed vector spaces are
+/// never compared. Out-of-family and unstamped vectors drop out (keyword-only)
+/// until the backfill re-embeds them. No active fingerprint = no filter.
+fn append_vector_family_filter(conn: &Connection, sql: &mut String, params: &mut Vec<rusqlite::types::Value>) {
+    let Some(fps) = crate::embed_fp::comparable_fingerprints(conn) else { return };
+    if fps.is_empty() {
+        sql.push_str(" AND 0");
+        return;
+    }
+    sql.push_str(&format!(" AND c.embed_fp IN ({})", placeholders(fps.len())));
+    params.extend(fps.into_iter().map(rusqlite::types::Value::Text));
 }
 
 fn get_embedding(conn: &Connection, chunk_id: i64) -> Option<Vec<u8>> {
@@ -3749,6 +3768,49 @@ mod tests {
         let hits = vector_search_filtered(&conn, &v, None, None, 8, false);
         assert_eq!(hits.len(), 1, "empty vec0 must not shadow the populated scan");
         assert!(hits[0].score > 0.99);
+    }
+
+    #[test]
+    fn vector_search_never_compares_mixed_families() {
+        // R45.5: identical bytes, different provenance. Only vectors in the
+        // active query vector's family are compared; unstamped and foreign
+        // vectors are keyword-only until re-embedded.
+        let (_dir, conn) = harness_db();
+        let sid = insert_source(&conn, "s1", "internal");
+        let iid = insert_item(&conn, sid, "doc1");
+        let mut v = vec![0.0f32; 768];
+        v[0] = 1.0;
+        let blob = crate::embedder::pack_single(&v);
+        let mut ids = Vec::new();
+        for (text, fp) in [
+            ("ollama nomic vector", Some("ollama:nomic-embed-text:768")),
+            ("builtin nomic vector", Some("builtin:nomic-embed-text-v1.5:768")),
+            ("other model vector", Some("ollama:mxbai-embed-large:768")),
+            ("unstamped vector", None),
+        ] {
+            let cid = insert_chunk(&conn, Some(iid), None, text);
+            conn.execute("UPDATE chunks SET embedding=?1, embed_fp=?2 WHERE id=?3", rusqlite::params![blob, fp, cid]).unwrap();
+            ids.push(cid);
+        }
+        let found = |conn: &Connection| {
+            let mut got: Vec<i64> = vector_search_filtered(conn, &v, None, None, 8, false).iter().map(|h| h.chunk_id).collect();
+            got.sort();
+            got
+        };
+        // No query fingerprint recorded yet: pre-R45.5 behavior, all compared.
+        assert_eq!(found(&conn), ids);
+        // A nomic query compares against both nomic providers only.
+        crate::embed_fp::record_active_fingerprint(&conn, "builtin:nomic-embed-text-v1.5:768").unwrap();
+        assert_eq!(found(&conn), vec![ids[0], ids[1]]);
+        // Switching models: only that model's vectors.
+        crate::embed_fp::record_active_fingerprint(&conn, "ollama:mxbai-embed-large:768").unwrap();
+        assert_eq!(found(&conn), vec![ids[2]]);
+        // Same model, different dim (e.g. a Matryoshka cut): not comparable.
+        crate::embed_fp::record_active_fingerprint(&conn, "ollama:nomic-embed-text:256").unwrap();
+        assert!(found(&conn).is_empty());
+        // A model nothing was embedded with: vector leg empty, not mixed.
+        crate::embed_fp::record_active_fingerprint(&conn, "ollama:all-minilm:768").unwrap();
+        assert!(found(&conn).is_empty());
     }
 
     #[test]
