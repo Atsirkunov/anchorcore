@@ -37,6 +37,7 @@ mod mcp_setup;
 mod ollama;
 mod pipeline;
 mod projects;
+mod query_expand;
 mod records;
 mod records_api;
 mod retrieval;

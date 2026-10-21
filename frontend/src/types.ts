@@ -221,6 +221,8 @@ export type ItemMeta = {
   path: string;
   /** @deprecated PII marking was removed from the UI (owner decision 2026-10-13); the backend still sends this for compat. */
   is_pii: boolean;
+  /** R45.13: the file is used as a glossary (its rows teach search). */
+  is_glossary?: boolean;
 };
 
 export type ItemList = {
@@ -333,15 +335,14 @@ export type MergeProposal = {
   reason: string;
 };
 
-export type VocabProposal = {
+/** R45.13: a people-owned glossary entry (typed in, or from a marked file). */
+export type GlossaryEntry = {
   id: number;
   term: string;
   expansion: string;
-  origin: string;
-  confirmations: number;
-  item_id: number;
-  item_title: string;
-  external_id: string;
+  origin: "manual" | "glossary";
+  item_id: number | null;
+  path: string | null;
 };
 
 export type Job = {

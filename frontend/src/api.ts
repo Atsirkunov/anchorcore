@@ -1,4 +1,4 @@
-import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, ConflictLink, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult, UpdateStatus, VocabProposal } from "./types";
+import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, ConflictLink, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult, UpdateStatus } from "./types";
 
 export class RequestAbortedError extends Error {
   constructor(message = "Request cancelled") {
@@ -203,12 +203,20 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ proposal_id: proposalId, decision }),
     }),
-  vocabulary: () => request<VocabProposal[]>("/review/vocabulary"),
-  decideVocab: (id: number, decision: "approve" | "reject") =>
-    request<{ approved: boolean; term: string; expansion: string }>(`/review/vocabulary/${id}`, {
+  // R45.13: people-owned glossary (replaces the "Words to confirm" queue).
+  glossary: () => request<import("./types").GlossaryEntry[]>("/glossary"),
+  addGlossaryEntry: (term: string, expansion: string) =>
+    request<import("./types").GlossaryEntry>("/glossary", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decision }),
+      body: JSON.stringify({ term, expansion }),
+    }),
+  deleteGlossaryEntry: (id: number) => request<{ deleted: number }>(`/glossary/${id}`, { method: "DELETE" }),
+  setItemGlossary: (itemId: number, isGlossary: boolean) =>
+    request<{ id: number; is_glossary: boolean }>(`/items/${itemId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_glossary: isGlossary }),
     }),
 
   ask: (question: string, history: AskTurn[] = [], projectId?: number, signal?: AbortSignal, publicOnly = false) =>

@@ -194,6 +194,34 @@ async fn rewrite_question(settings: &SettingsService, req: &AskRequest) -> Strin
     original_question
 }
 
+/// R45.13: append local-model acronym expansions to the retrieval query.
+/// Same trust gate as the follow-up rewrite (the question goes to the
+/// answer model); acronyms the vocabulary already knows skip the call.
+async fn expand_acronyms(settings: &SettingsService, question: &str, data_dir: &str) -> String {
+    let acronyms = crate::query_expand::query_acronyms(question);
+    if acronyms.is_empty() || !crate::query_expand::enabled(settings) || !is_answer_trusted(settings) {
+        return question.to_string();
+    }
+    let base = settings.get("answer_base_url", None).unwrap_or_default();
+    if !crate::common::provider_is_local(&base) && settings.get("answer_api_key", None).unwrap_or_default().is_empty() {
+        return question.to_string();
+    }
+    let data_dir = data_dir.to_string();
+    let asked = acronyms.clone();
+    let known = tokio::task::spawn_blocking(move || {
+        let conn = crate::common::open_data_db(&data_dir);
+        crate::vocab::known_terms(&conn, &asked)
+    })
+    .await
+    .unwrap_or_default();
+    let unknown: Vec<String> = acronyms.into_iter().filter(|a| !known.contains(&a.to_lowercase())).collect();
+    let extras = crate::query_expand::expand(settings, &unknown, answer_timeout(settings)).await;
+    if extras.is_empty() {
+        return question.to_string();
+    }
+    format!("{} {}", question, extras.join(" "))
+}
+
 async fn record_degraded(data_dir: &str) {
     // R10.5: only record qa warnings when retrieval actually degraded (hits empty) — not on every qa
     // Python records these only when embedding failed / no hits; previously Rust spammed 2 warnings per qa
@@ -549,9 +577,12 @@ pub async fn ask(
     // rewrite (the agent already sends standalone questions).
     let agent_mode = crate::settings::is_agent_mode(settings);
     let question = if agent_mode { req.question.clone() } else { rewrite_question(settings, &req).await };
+    // R45.13: local mode may widen the *retrieval* query with acronym
+    // expansions from the answer model; the answer prompt keeps `question`.
+    let retrieval_q = if agent_mode { question.clone() } else { expand_acronyms(settings, &question, data_dir).await };
     // R8.1: embed query for vector search (hybrid) — B58 strict: None when
     // remote unavailable, so retrieval degrades to honest keyword-only.
-    let query_embedding = embedder.embed_query(&question).await;
+    let query_embedding = embedder.embed_query(&retrieval_q).await;
     let retrieval = if query_embedding.is_some() { "hybrid" } else { "keyword_only" };
     // Do DB retrieval in blocking thread to avoid holding !Send Connection across await
     let data_dir_string = data_dir.to_string();
@@ -560,7 +591,7 @@ pub async fn ask(
     let public_only = req.public_only.unwrap_or(false);
     let history_for_gen: Vec<AskTurn> = req.history.clone().unwrap_or_default().into_iter().filter(|t| !t.content.trim().is_empty()).collect();
     let settings_clone = settings_snapshot(settings);
-    let q_for_block = question.clone();
+    let q_for_block = retrieval_q.clone();
     let hits = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir_for_hits);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
@@ -1726,6 +1757,48 @@ mod tests {
         assert!(res.warning.is_none(), "composed must not warn, got {:?}", res.warning);
         assert_eq!(res.answer, "mocked answer");
         assert!(!res.citations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn local_mode_expands_unknown_acronyms_once_and_agent_mode_never() {
+        // R45.13: one budgeted call per new acronym set, cached; known
+        // vocabulary skips the call; agent mode and the off switch make none.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let task = tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut buf = vec![0u8; 16384];
+                let _ = sock.read(&mut buf).await;
+                let body = r#"{"choices":[{"message":{"content":"{\"QZX\": \"quarterly zebra index\"}"}}]}"#;
+                let head = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len());
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body.as_bytes()).await;
+            }
+        });
+        settings.set("answer_base_url", &base, &conn).unwrap();
+        settings.set("answer_model", "expand-test-model", &conn).unwrap();
+        let n = || calls.load(std::sync::atomic::Ordering::SeqCst);
+        let q = expand_acronyms(&settings, "what is the QZX trend", &data_dir).await;
+        assert_eq!(q, "what is the QZX trend quarterly zebra index");
+        assert_eq!(n(), 1);
+        assert_eq!(expand_acronyms(&settings, "QZX again", &data_dir).await, "QZX again quarterly zebra index");
+        assert_eq!(n(), 1, "cached per acronym set");
+        crate::vocab::add_manual(&conn, "kyc", "know your customer").unwrap();
+        assert_eq!(expand_acronyms(&settings, "our KYC rules", &data_dir).await, "our KYC rules");
+        assert_eq!(n(), 1, "known vocabulary skips the call");
+        settings.set("llm_mode", "agent", &conn).unwrap();
+        assert_eq!(expand_acronyms(&settings, "the WQV metric", &data_dir).await, "the WQV metric");
+        settings.set("llm_mode", "local", &conn).unwrap();
+        settings.set("acronym_expansion", "false", &conn).unwrap();
+        assert_eq!(expand_acronyms(&settings, "the WQV metric", &data_dir).await, "the WQV metric");
+        assert_eq!(n(), 1, "agent mode + off switch make no calls");
+        task.abort();
     }
 
     /// R45.2: counting OpenAI-compatible mock — every accepted connection is
