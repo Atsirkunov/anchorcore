@@ -144,14 +144,14 @@
             <span class="seal-dot"></span>
           </div>
           <div class="seal-copy">
-            <p class="seal-head">Sealed by design — nothing leaves your machine.</p>
+            <p class="seal-head">Sealed by design — nothing leaves your machine unless you connect it.</p>
             <div class="seal-chips">
               <span class="seal-chip">Private by default</span>
               <span class="seal-chip">Secrets stored locally</span>
               <span class="seal-chip">Every answer cited</span>
               <span class="seal-chip">On your machine</span>
             </div>
-            <p class="seal-verify">Source-available — <a href="#trust">see the proof</a>: no telemetry, and the app only contacts the endpoints you configure.</p>
+            <p class="seal-verify">Source-available — <a href="#trust">see the proof</a>: no telemetry, and the app only contacts the endpoints you configure (plus GitHub when you click "Check for updates").</p>
             <details class="seal-more">
               <summary>How sensitive data is gated</summary>
               <table class="matrix">
@@ -181,7 +181,7 @@
               <span>Local Ollama at <code>localhost:11434</code></span>
             </div>
             <ul class="trust-out">
-              <li><span class="trust-when t-never">default</span><b>Nothing else.</b> No background connections. Indexing, search and local answers need no network.</li>
+              <li><span class="trust-when t-never">default</span><b>Nothing else.</b> No connections until you enable a connector or add a cloud key. Indexing folders, search and local answers need no network. Enabled Jira sources re-sync on a timer (default every 15 minutes), and the embedding backfill (at startup and every 15 minutes) calls only the embedding endpoint you configured.</li>
               <li><span class="trust-when t-ask">only when you click</span><b>api.github.com</b>: "Check for updates" fetches the newest release tag. Nothing about you or your knowledge is sent. An optional once-at-startup check is off by default.</li>
               <li><span class="trust-when t-cfg">only if you connect it</span><b>Jira, Linear, Google Drive, a REST API</b>: each connector sends requests to the URL you configure for it (the REST connector to any address you enter, including local ones), with credentials you provide (kept in your OS keychain on macOS and Windows, otherwise in an encrypted file in your data folder).</li>
               <li><span class="trust-when t-cfg">only if you add a key</span><b>A cloud model you choose</b>: an OpenAI-compatible endpoint for answers, classification or embeddings. Your question and the retrieved passages go to that provider. With no key set, no answer request is made.</li>
@@ -201,8 +201,9 @@
               <tr><th scope="row">internal (default)</th><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
               <tr><th scope="row">public</th><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
               <tr><th scope="row">sensitive</th><td class="y">✓</td><td class="y">✓</td><td class="n">✗ held back, audited</td></tr>
+              <tr><th scope="row">pii</th><td class="y">✓</td><td class="y">✓</td><td class="n">✗ held back, audited</td></tr>
             </table>
-            <p class="small">"Approved" means a local endpoint, one you list in <code>ANCHOR_TRUSTED_PROVIDERS</code>, or <code>ANCHOR_CLOUD_TRUST=1</code>. Sensitive sources also skip cloud classification and embedding. Public sharing and agent <code>public_only</code> mode see only sources you marked public. There is no automatic PII detection and no SSO or role system in the local app.</p>
+            <p class="small">"Approved" means a local endpoint, one you list in <code>ANCHOR_TRUSTED_PROVIDERS</code>, or <code>ANCHOR_CLOUD_TRUST=1</code>. Sensitive and pii sources also skip cloud classification and embedding. <code>pii</code> is a source label you choose; the separate per-document PII mark is manual and advisory today. Public sharing and agent <code>public_only</code> mode see only sources you marked public. Nothing is detected as PII automatically, and there is no SSO or role system in the local app.</p>
           </div>
         </div>
 
@@ -278,7 +279,7 @@ Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
     <section id="guides">
       <div class="wrap">
         <h2>Guides</h2>
-        <p class="sub">Each card opens a full walkthrough on its own page.</p>
+        <p class="sub">Each card opens a full walkthrough on its own page. <a href="/guides">See all guides</a>.</p>
         <div class="cols">
           <div class="col" id="guide-obsidian"><h3>Your Obsidian vault</h3><p>Already have a vault? Keep it. Point AnchorCore at the folder → <code>Sync</code> → <code>Ask</code>. Same notes — answers quote the exact passages instead of dumping whole files into the AI. Nothing to migrate, nothing to leave.</p><small><a href="/guides/obsidian">Open the vault guide</a></small></div>
           <div class="col" id="guide-quickstart"><h3>Quick start — the sample company</h3><p>Download the app → open it → <a href="/sample.zip" download>download sample.zip</a> and unzip it → Sources → Local folder → Sync → Ask. Your data lives on your machine. No Docker, no account.</p><small>10 files → about 40 entities · <a href="/guides/sample">Open the sample guide</a></small></div>
@@ -303,7 +304,7 @@ Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
         <div class="faq">
           <div class="qa"><h3>Is my data private?</h3><p>Yes. The app only listens on your own machine, keeps everything in a database on your disk, and stores passwords in your OS keychain (macOS, Windows) or an encrypted local file. Sources you mark Sensitive are never sent to cloud AI unless you explicitly approve that provider.</p></div>
           <div class="qa"><h3>Can I move to a new computer?</h3><p>Yes. System → Backup &amp; restore exports your whole index — sources, entities, review state — into one portable <code>.anchorcore-backup</code> file. Import it on the new machine (preview the dry run first); credentials stay behind unless you opt into the passphrase-encrypted bundle. Full guide: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/backup.md">Backup, export &amp; device migration</a>.</p></div>
-          <div class="qa"><h3>Can I check the code myself?</h3><p>Yes — AnchorCore is source-available. The repository is public: read exactly what the Rust app does (no telemetry; it only contacts endpoints you configure) or build it yourself. Personal use is free; team and commercial use need a separate license — see <a href="https://github.com/Atsirkunov/anchorcore/blob/main/LICENSE.md">LICENSE.md</a>.</p></div>
+          <div class="qa"><h3>Can I check the code myself?</h3><p>Yes — AnchorCore is source-available. The repository is public: read exactly what the Rust app does (no telemetry; it only contacts endpoints you configure, plus GitHub when you click "Check for updates") or build it yourself. Personal use is free; team and commercial use need a separate license — see <a href="https://github.com/Atsirkunov/anchorcore/blob/main/LICENSE.md">LICENSE.md</a>.</p></div>
           <div class="qa"><h3>How does it read documents?</h3><p>It splits documents at their headings (§4.2, 3.1.1, Article 12…) and packs the text into short passages. Each section gets a summary and topic tags, so answers cite the exact section — not “somewhere in the PDF”.</p></div>
           <div class="qa"><h3>Does it stay fast as my library grows?</h3><p>Yes. It narrows thousands of documents to the few relevant sections via tags and summaries, then searches only those. Measured at ~7ms per search on a 30k-chunk benchmark (<a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/guides/hierarchical-toc.md">results</a>, <a href="https://github.com/Atsirkunov/anchorcore/blob/main/rust/scripts/bench_retrieval.py">script</a>); larger libraries are projected, not yet measured.</p></div>
           <div class="qa"><h3>Is it free?</h3><p>Personal local app — free. Team self-hosted (one Docker container, your VPC) is quote-based — <a href="/team">request a quote</a>. Hosted is coming soon — <a href="/hosted">join the waitlist</a>.</p></div>
