@@ -81,6 +81,41 @@ pub fn bucket_distills(doc_type: &str) -> bool {
     doc_type == "record"
 }
 
+/// R45.1: how ingest extracts entities (`extract_entities` setting).
+/// `rules` (default) is deterministic; `llm` is the opt-in and the only mode
+/// that calls the chat model; `off` stores no entities. Unknown values read
+/// as the default so a typo never silently starts model calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtractMode {
+    Off,
+    Rules,
+    Llm,
+}
+
+pub fn extract_mode(settings: &SettingsService) -> ExtractMode {
+    let raw = settings.get("extract_entities", None).unwrap_or_default();
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "off" => ExtractMode::Off,
+        "llm" => ExtractMode::Llm,
+        _ => ExtractMode::Rules,
+    }
+}
+
+/// R45.1: LLM distillation is opt-in (default off) — retrieval excludes
+/// `distilled` chunks from the leaf pool, so the calls bought nothing.
+pub fn distill_enabled(settings: &SettingsService) -> bool {
+    settings
+        .get("distill_enabled", None)
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1"))
+        .unwrap_or(false)
+}
+
+/// R45.1: whether ingest needs the classifier chat model at all. Readiness
+/// and the Ollama probe only ask for the model when this is true.
+pub fn chat_model_needed(settings: &SettingsService) -> bool {
+    extract_mode(settings) == ExtractMode::Llm || distill_enabled(settings)
+}
+
 /// R40.7: one classify call returns items + Tier-2 vocabulary piggyback
 /// (zero extra calls — `defined_terms` rides the same JSON response).
 #[derive(Debug, Clone)]
@@ -157,6 +192,17 @@ impl Classifier {
         // noise and review-queue filler. No LLM call is attempted either.
         if doc_type == "code" {
             return ClassifyOutput { items: Vec::new(), defined_terms: Vec::new() };
+        }
+        // R45.1: no chat model unless `extract_entities=llm` opts in.
+        match extract_mode(&self.settings) {
+            ExtractMode::Off => return ClassifyOutput { items: Vec::new(), defined_terms: Vec::new() },
+            ExtractMode::Rules => {
+                return ClassifyOutput {
+                    items: classify_rules_typed(text, source_ref, doc_type),
+                    defined_terms: Vec::new(),
+                }
+            }
+            ExtractMode::Llm => {}
         }
         if !cloud_trusted && !self.provider_is_local() {
             tracing::info!("classification gate: remote provider unconfirmed; using rules");

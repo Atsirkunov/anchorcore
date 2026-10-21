@@ -17,6 +17,8 @@ pub const SETTING_KEYS: &[&str] = &[
     "answer_reasoning_effort",
     "tag_reuse_threshold",
     "update_check_enabled",
+    "extract_entities",
+    "distill_enabled",
 ];
 pub const SECRET_KEYS: &[&str] = &["answer_api_key", "classifier_api_key", "embed_api_key"];
 pub const ALL_KEYS: &[&str] = &[
@@ -32,6 +34,8 @@ pub const ALL_KEYS: &[&str] = &[
     "answer_reasoning_effort",
     "tag_reuse_threshold",
     "update_check_enabled",
+    "extract_entities",
+    "distill_enabled",
     "answer_api_key",
     "classifier_api_key",
     "embed_api_key",
@@ -95,6 +99,9 @@ fn env_value(key: &str) -> Option<String> {
         "embed_base_url" => None,
         "answer_reasoning_effort" => Some("none".to_string()),
         "tag_reuse_threshold" => Some("0.82".to_string()),
+        // R45.1: ingest makes no chat-model calls unless these opt in.
+        "extract_entities" => Some("rules".to_string()),
+        "distill_enabled" => Some("false".to_string()),
         _ => None,
     }
 }
@@ -433,7 +440,12 @@ async fn test_ollama(settings: &SettingsService) -> Value {
         .next()
         .unwrap_or("nomic-embed-text")
         .to_string();
-    let missing: Vec<String> = [classifier.clone(), embed.clone()]
+    // R45.1: the classifier model only counts when ingest opts into it.
+    let mut wanted = vec![embed];
+    if crate::classifier::chat_model_needed(settings) {
+        wanted.insert(0, classifier);
+    }
+    let missing: Vec<String> = wanted
         .into_iter()
         .filter(|m| !models.contains(m))
         .collect();
