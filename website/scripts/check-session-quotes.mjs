@@ -4,7 +4,9 @@
 // the raw MCP `search` response the card shows (whitespace runs collapsed, since the markdown
 // is hard-wrapped). With `--dist` it also checks the BUILT dist/index.html
 // (generated from the same data file by scripts/session-html.ts) carries every
-// quote twice (hero + #demo). Exits 1 on any miss so `npm run build` fails.
+// quote in the hero card. It also checks the hero Browser-app card against
+// scripts/app-capture.json (answer verbatim, quotes verbatim in sample/).
+// Exits 1 on any miss so `npm run build` fails.
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,12 +55,32 @@ for (const src of data.sources) {
     }
     if (dist) {
       const n = html.split(`“${esc(q)}”`).length - 1;
-      if (n < 2) {
-        console.error(`check-session-quotes: dist/index.html must carry the quote twice (hero + #demo), found ${n}:\n  "${q}"`);
+      if (n < 1) {
+        console.error(`check-session-quotes: dist/index.html must carry the quote in the hero card, found ${n}:\n  "${q}"`);
         bad++;
       }
     }
   }
 }
+// Browser-app card (#ap-hero): its answer must be the captured /qa answer
+// verbatim, and every .ap-quote must be verbatim in the sample file it names.
+const app = JSON.parse(readFileSync(join(here, "app-capture.json"), "utf8"));
+const page = dist ? html : readFileSync(join(here, "..", "index.html"), "utf8");
+const card = page.match(/<div class="ap" id="ap-hero">[\s\S]*?<div class="ap-foot">/)?.[0] ?? "";
+const unesc = (s) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+const text = (s) => norm(unesc(s.replace(/<[^>]+>/g, ""))).trim();
+const answerHtml = card.match(/<p class="ap-label">Answer<\/p>([\s\S]*?)<\/div>/)?.[1] ?? "";
+const shown = [...answerHtml.matchAll(/<p class="ap-p">([\s\S]*?)<\/p>/g)].map((m) => text(m[1])).join(" ");
+if (!card) { console.error("check-session-quotes: #ap-hero card missing"); bad++; }
+else if (shown !== norm(app.answer).trim()) { console.error(`check-session-quotes: app card answer differs from app-capture.json:\n  "${shown}"`); bad++; }
+let appQuotes = 0;
+for (const m of card.matchAll(/<p class="ap-quote" data-file="([^"]+)">“([\s\S]*?)”<\/p>/g)) {
+  appQuotes++;
+  if (!app.citations.some((c) => c.file === m[1])) { console.error(`check-session-quotes: app quote file ${m[1]} not cited in app-capture.json`); bad++; }
+  let src = "";
+  try { src = norm(readFileSync(join(sample, m[1]), "utf8")); } catch { console.error(`check-session-quotes: missing sample file ${m[1]}`); bad++; continue; }
+  if (!src.includes(norm(unesc(m[2])))) { console.error(`check-session-quotes: app quote not verbatim in sample/${m[1]}:\n  "${m[2]}"`); bad++; }
+}
+if (card && appQuotes === 0) { console.error("check-session-quotes: app card has no quotes"); bad++; }
 if (bad) process.exit(1);
-console.log(`check-session-quotes${dist ? " (dist)" : ""}: ok (${data.sources.reduce((n, s) => n + s.quotes.length, 0)} quotes)`);
+console.log(`check-session-quotes${dist ? " (dist)" : ""}: ok (${data.sources.reduce((n, s) => n + s.quotes.length, 0)} quotes, app card ${appQuotes})`);

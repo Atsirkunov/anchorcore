@@ -15,6 +15,15 @@
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:image" content="https://anchorcore.dev/og-card.png" />
   <link rel="canonical" href="https://anchorcore.dev/" />
+  <script>
+    // Theme before first paint (no flash) — same resolution as src/themeMode.ts.
+    (function () {
+      var m = null;
+      try { m = localStorage.getItem("theme-mode"); } catch (e) {}
+      var dark = m === "dark" || (m !== "light" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+    })();
+  </script>
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
@@ -30,7 +39,7 @@
         <a href="/team">For teams</a>
         <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">GitHub ↗</a>
       </nav>
-      <a class="nav-cta" href="#download">Download<span class="nav-cta-sfx"> — free for personal use</span></a>
+      <a class="nav-cta" href="#download">Download</a>
       <!-- header nav (≤1080px): same section links, collapsed behind the burger — keep in sync with .nav (R18.1/R18.3) -->
       <details class="navmenu" id="navmenu">
         <summary class="navmenu-btn"><span class="sr-only">Sections</span><span class="burger" aria-hidden="true"></span></summary>
@@ -46,131 +55,110 @@
   </header>
 
   <main>
-    <!-- Hero — personal copy only; Team and Hosted have their own pages (R44.16) -->
+    <!-- Hero: headline, one sentence, one button, the demo. Everything else lives lower (R44.16 personal copy only) -->
     <section class="hero">
       <div class="wrap hero-grid">
         <div>
-          <div class="eyebrow">PRIVATE AI SEARCH · RUNS ON YOUR COMPUTER</div>
-          <h1 id="hero-title">Ask your files. Get the answer and the exact source.</h1>
-          <p id="hero-sub" class="sub">A private AI search app. Connect your folders, Drive, Jira, Linear — or any JSON API — and ask in plain language. It finds the decision, who made it and why, and shows the page it came from. Your index stays on your machine. Answers are generated locally unless you connect a cloud model.</p>
-
-          <p class="proof">300-page PDF? The answer cites page 250.</p>
-
-          <div class="cta" id="download">
-            <a id="cta-primary" class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download — free for personal use</a>
-            <a class="btn secondary" href="#demo">Watch it work</a>
+          <p class="eyebrow">Private AI search · runs on your computer</p>
+          <h1 id="hero-title">Ask your files. Get the answer and the <span class="cited">exact source</span>.</h1>
+          <p id="hero-sub" class="sub">Connect folders, Drive, Jira or Linear and ask in plain language. AnchorCore finds the decision, who made it and why, and shows the page it came from.</p>
+          <div class="cta">
+            <a id="cta-primary" class="btn primary" href="#download">Download, free for personal use</a>
+            <a class="btn secondary" href="#use">For coding agents</a>
           </div>
-          <p class="sources-strip">Folders &amp; Obsidian · PDFs, Word, Excel · Google Drive · Jira · Linear · <a href="/guides/json-api">Any JSON API</a></p>
-          <div id="cta-note" class="cta-note">macOS, Windows & Linux • one download, no Docker • data stays on your machine</div>
-          <p id="first-launch" class="small">First launch: move AnchorCore to /Applications. macOS: open it, then System Settings → Privacy &amp; Security → Open Anyway. Windows: SmartScreen → More info → Run anyway. (Not yet Apple-notarized or store-signed.)</p>
         </div>
 
-        <div class="shot cs" id="cs-hero"><!--session:cs-hero--></div>
-      </div>
-      <div class="wrap paths">
-        <div class="path">
-          <div class="path-head">Use the app</div>
-          <p>Download it, connect a folder, and ask in your browser. macOS, Windows &amp; Linux, no Docker, no account.</p>
-          <a href="#download">Download — free for personal use</a>
-        </div>
-        <div class="path agent-cta">
-          <div class="agent-cta-head">Plug into your coding agent
-            <button class="btn small secondary" id="skill-copy" type="button">Copy</button>
+        <!-- Same question, two answer modes (Settings → Who writes the answers). Without JS the agent panel shows and the app panel stays in the DOM. -->
+        <div class="demo-switch">
+          <div class="tabs" role="tablist" aria-label="Who writes the answer">
+            <button type="button" role="tab" id="tab-term" aria-controls="panel-term" aria-selected="true">Your agent writes it</button>
+            <button type="button" role="tab" id="tab-app" aria-controls="panel-app" aria-selected="false" tabindex="-1">A local model writes it</button>
           </div>
-          <code class="agent-cta-cmd" id="skill-cmd">npx skills add Atsirkunov/anchorcore --skill anchorcore-setup</code>
-          <div class="agent-cta-note">Claude Code, Codex, opencode, Cursor — it installs and launches the app if needed, picks your model, connects folders, and proves a cited answer. <a href="#agent-skill">Agent skill</a> · <a href="#demo">MCP</a></div>
+          <div role="tabpanel" id="panel-term" aria-labelledby="tab-term">
+            <div class="shot cs" id="cs-hero"><!--session:cs-hero--></div>
+          </div>
+          <div role="tabpanel" id="panel-app" aria-labelledby="tab-app" hidden>
+            <!-- Browser-app card (final frame is real HTML; AppSession.ts only reveals it). The answer is
+                 verbatim from scripts/app-capture.json and quotes are verbatim from sample/ — both checked
+                 by scripts/check-session-quotes.mjs. Re-capture rather than edit. -->
+            <div class="ap" id="ap-hero">
+              <div class="ap-bar"><span class="ap-url">127.0.0.1:8000</span><span class="ap-nav"><b>Ask</b><span>Sources</span><span>Entities</span></span><button class="ap-replay" type="button">Replay</button></div>
+              <div class="ap-body">
+                <div class="ap-ask"><span class="ap-input"><span class="ap-q">Who owns the billing provider migration, and how do we roll it back?</span></span><span class="ap-btn">Ask</span></div>
+                <div class="ap-answer">
+                  <p class="ap-label">Answer</p>
+                  <p class="ap-p"><span class="ap-seg">According to </span><span class="ap-mark" data-cite="S1">[S1]</span><span class="ap-seg">, the billing provider migration is owned by Sarah.</span></p>
+                  <p class="ap-p"><span class="ap-seg">To roll back the migration, the feature flag toggles can be flipped back to the legacy provider per tenant, as stated in </span><span class="ap-mark" data-cite="S2">[S2]</span><span class="ap-seg">. This process assumes that the rollback works until the legacy provider is decommissioned.</span></p>
+                </div>
+                <div class="ap-sources">
+                  <p class="ap-label">Sources · 3</p>
+                  <ol>
+                    <li class="ap-src" data-id="S1"><span class="ap-sid">S1</span><div><b>Decision: Billing provider migration approved</b><small>decisions/d2-billing-provider-approval.md · lines 1–18</small><p class="ap-quote" data-file="decisions/d2-billing-provider-approval.md">“Rollback plan: feature flag toggles back to the legacy provider per tenant.”</p></div></li>
+                    <li class="ap-src" data-id="S2"><span class="ap-sid">S2</span><div><b>Runbook: Billing provider migration › Steps</b><small>specs/billing-migration-runbook.md §2 · lines 6–20</small><p class="ap-quote" data-file="specs/billing-migration-runbook.md">“the flag can flip any tenant back to legacy within five minutes”</p></div></li>
+                    <li class="ap-src" data-id="S3"><span class="ap-sid">S3</span><div><b>Runbook: Billing provider migration</b><small>specs/billing-migration-runbook.md §1 · lines 1–4</small><p class="ap-quote" data-file="specs/billing-migration-runbook.md">“Approved in decisions/d2. Owner: Sarah.”</p></div></li>
+                  </ol>
+                </div>
+              </div>
+              <div class="ap-foot">answered on your machine by a local llama3.2:3b · sample folder</div>
+            </div>
+          </div>
         </div>
-      </div>
-      <div class="flow">
-        <img src="/flow.svg" width="1080" height="260" alt="Fragments from local folders, Drive documents, tickets and docs file into indexed on your computer; answers come back cited" />
-        <p class="cap">Fragments in, cited answer out — local folders, Drive documents, tickets and docs are indexed on your machine; every answer carries its source.</p>
       </div>
     </section>
 
-    <!-- Problem → Solution -->
-    <section class="alt">
-      <div class="wrap">
-        <h2>Fragmented knowledge → lost reasoning → AnchorCore</h2>
-        <div class="cols">
-          <div class="col"><h3>Fragmented</h3><p>Slack, Jira, Confluence, Drive, PDFs — decisions live everywhere, no single place to search.</p></div>
-          <div class="col"><h3>Lost reasoning</h3><p>Not what was decided, but <em>why</em>. Chat scrolls past it, people leave with it.</p></div>
-          <div class="col"><h3>AnchorCore</h3><p>Each decision filed with its source and section. Every answer shows where it came from — not a guess.</p></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- How it works -->
     <section id="how">
       <div class="wrap">
         <h2>How it works</h2>
         <div class="steps">
-          <div class="step"><span>1</span><h3>Everything in one index</h3><p>Point it at a folder, Google Drive, Jira, Linear, or any JSON API — decisions are indexed into one private search. Nothing to migrate; automatic sync keeps it fresh.</p><code>connect → read → file</code></div>
-          <div class="step"><span>2</span><h3>Decisions, not just documents</h3><p>Each document is read for what matters — who decided what and why, who owns it, what it replaces — instead of dumping whole files into the AI's prompt.</p><code>who · what · why</code></div>
-          <div class="step"><span>3</span><h3>Answers that show their work</h3><p>Ask in plain language — in the browser, or from your coding agent. Every answer cites its source and section, never a guess.</p><code>Ask → cited answer</code></div>
+          <div class="step"><span>1.1</span><h3>Connect what you already have</h3><p>A folder or Obsidian vault, Google Drive, Jira, Linear, or <a href="/guides/json-api">any JSON API</a>. PDFs, Word, Excel and Markdown are read as they are. It re-syncs on its own; nothing moves.</p></div>
+          <div class="step"><span>1.2</span><h3>Indexed by section</h3><p>Documents are split at their headings, and decision records keep their owner, status and what they replace. All of it sits in one database on your disk.</p></div>
+          <div class="step"><span>1.3</span><h3>Answers point at the passage</h3><p>Ask in the browser or from your coding agent. Every answer lists its sources down to the section and line range, so you can open the page and check.</p></div>
         </div>
-        <div class="code">connect → read → file → ask → cited answer</div>
-        <div class="duo">
-          <div class="fig">
-            <div class="toc">
-              <p class="toc-head"><span>TOC — sections tree</span><span>§3 · §4 · 3.2</span></p>
-              <ul class="toc-tree">
-                <li><span class="toc-tag">section</span><b>§3 Billing migration</b><small>§3 Billing — 3 passages · webhooks</small></li>
-                <li><span class="toc-tag">section</span><b>§4 Instant payments</b><small>§4 Transfers — 2 passages · payout</small></li>
-                <li class="child"><span class="toc-tag">under §3</span><b>3.2 Parallel-run plan</b><small>path: §3 Billing › 3.2 Parallel-run plan — breadcrumb</small></li>
-              </ul>
-              <div class="toc-side">
-                <p class="toc-side-h">TAGS — auto topics</p>
-                <p class="toc-chips"><span class="toc-chip sage">billing</span><span class="toc-chip">webhooks</span><span class="toc-chip">rollout</span></p>
-                <p class="toc-side-p">similar topics merge automatically<br />count: billing×3, rollout×2</p>
-                <p class="toc-hr"></p>
-                <p class="toc-side-h">HOW A SEARCH RUNS</p>
-                <p class="toc-side-p ink">topics → summaries → passages</p>
-                <p class="toc-side-p">~7 ms per search on a <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/guides/hierarchical-toc.md" target="_blank" rel="noreferrer">30k-chunk benchmark</a></p>
-              </div>
+        <div class="fig">
+          <div class="toc">
+            <p class="toc-head"><span>Sections tree</span><span>§3 · §4 · 3.2</span></p>
+            <ul class="toc-tree">
+              <li><span class="toc-tag">section</span><b>§3 Billing migration</b><small>3 passages · webhooks</small></li>
+              <li><span class="toc-tag">section</span><b>§4 Instant payments</b><small>2 passages · payout</small></li>
+              <li class="child"><span class="toc-tag">under §3</span><b>3.2 Parallel-run plan</b><small>path: §3 Billing › 3.2 Parallel-run plan</small></li>
+            </ul>
+            <div class="toc-side">
+              <p class="toc-side-h">How a search runs</p>
+              <p class="toc-side-p ink">topics, then section summaries, then passages</p>
+              <p class="toc-side-p">~7 ms per search on a <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/guides/hierarchical-toc.md" target="_blank" rel="noreferrer">30k-chunk benchmark</a></p>
             </div>
-            <p class="cap">Headings become a sections tree — answers cite §3.2, not “somewhere in the PDF”.</p>
           </div>
-          <div class="fig">
-            <div id="graph-mini"></div>
-            <p class="cap">Decisions link to their owners and to what blocks them — answers follow those links.</p>
-          </div>
+          <p class="cap">Headings become a tree, so a citation can say §3.2 of a 300-page PDF.</p>
         </div>
-        <!-- Sealed by design — privacy as step 0 of how it works, not its own chapter -->
-        <div class="seal">
-          <div class="seal-anim" aria-hidden="true">
-            <span class="seal-drawer"></span>
-            <span class="seal-drawer"></span>
-            <span class="seal-drawer"></span>
-            <span class="seal-dot"></span>
+      </div>
+    </section>
+
+    <section id="use" class="alt">
+      <div class="wrap">
+        <h2>Who writes the answer</h2>
+        <div class="cols two plain">
+          <div class="col">
+            <h3>A local model, in the app</h3>
+            <p>Download, open it, add a folder, ask. A local model writes the answer, or switch to agent mode and the app shows the cited passages your agent gets. It runs at <code>127.0.0.1:8000</code> with no account and no Docker. Try it on the <a href="/guides/sample">sample company</a> first.</p>
           </div>
-          <div class="seal-copy">
-            <p class="seal-head">Sealed by design — nothing leaves your machine unless you connect it.</p>
-            <div class="seal-chips">
-              <span class="seal-chip">Private by default</span>
-              <span class="seal-chip">Secrets stored locally</span>
-              <span class="seal-chip">Every answer cited</span>
-              <span class="seal-chip">On your machine</span>
+          <div class="col">
+            <h3>Your coding agent</h3>
+            <p>Claude Code, Codex, opencode and Cursor search your files over MCP or the local REST API and write the answer themselves, so the app needs no chat model. The setup skill installs the app, connects folders and checks the first cited answer.</p>
+            <div class="agent-cta">
+              <code class="agent-cta-cmd" id="skill-cmd">npx skills add Atsirkunov/anchorcore --skill anchorcore-setup</code>
+              <button class="btn small secondary" id="skill-copy" type="button">Copy</button>
             </div>
-            <p class="seal-verify">Source-available — <a href="#trust">see the proof</a>: no telemetry, and the app only contacts the endpoints you configure (plus GitHub when you click "Check for updates").</p>
-            <details class="seal-more">
-              <summary>How sensitive data is gated</summary>
-              <table class="matrix">
-                <tr><th scope="col"></th><th scope="col">local model</th><th scope="col">listed provider</th><th scope="col">anyone else</th></tr>
-                <tr><th scope="row">ordinary sources</th><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
-                <tr><th scope="row">sensitive</th><td class="y">✓</td><td class="y">✓</td><td class="n">✗ refused, audited</td></tr>
-              </table>
-              <p class="cap">You approve each cloud provider explicitly. Public answers and agent access only ever see sources you marked public.</p>
-            </details>
+            <p class="small"><a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">Agent docs (MCP)</a></p>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- Trust: proof it stays on your machine (R44.13) -->
-    <section id="trust" class="alt">
+    <!-- Trust: proof it stays on your machine (R44.13) — the one privacy section on the page -->
+    <section id="trust">
       <div class="wrap">
-        <h2>Proof it stays on your machine</h2>
-        <p class="trust-lead">Your index stays on your machine. Answers are generated locally unless you connect a cloud model. Here is everything the app can talk to, read from the source rather than promised. <a href="/security">Read the full security notes</a>.</p>
+        <h2>What leaves your machine</h2>
+        <p class="trust-lead">Your index stays on your machine, and answers are generated locally unless you connect a cloud model. Below is everything the app can talk to, read from the source. <a href="/security">Full security notes</a>.</p>
 
         <div class="trust-grid">
           <figure class="trust-map" aria-labelledby="trust-map-cap">
@@ -192,9 +180,9 @@
 
           <div class="trust-facts">
             <h3>No telemetry</h3>
-            <p>The app contains no analytics, usage tracking or crash-reporting code. Check it yourself: the source is public, and the only outbound calls are the ones in the diagram. <a href="https://github.com/Atsirkunov/anchorcore/tree/main/rust/crates/anchorcore/src" target="_blank" rel="noopener noreferrer">Read the source</a>.</p>
+            <p>The app contains no analytics, usage tracking or crash-reporting code. The source is public, and the only outbound calls are the ones listed here. <a href="https://github.com/Atsirkunov/anchorcore/tree/main/rust/crates/anchorcore/src" target="_blank" rel="noopener noreferrer">Read the source</a>.</p>
             <h3>Works offline, within limits</h3>
-            <p>With a local Ollama model for both indexing and answers, and folder sources, everything runs with Wi-Fi off. If answers use a cloud model, they need a network. Connectors (Jira, Linear, Drive, REST), cloud models and update checks need a network.</p>
+            <p>With a local Ollama model and folder sources, everything runs with Wi-Fi off. Connectors, cloud models and update checks need a network.</p>
             <h3>Sensitive sources are gated</h3>
             <table class="matrix">
               <tr><th scope="col">Source label</th><th scope="col">Local model</th><th scope="col">Approved cloud</th><th scope="col">Unapproved cloud</th></tr>
@@ -206,162 +194,84 @@
             <p class="small">"Approved" means a local endpoint, one you list in <code>ANCHOR_TRUSTED_PROVIDERS</code>, or <code>ANCHOR_CLOUD_TRUST=1</code>. Sensitive and pii sources also skip cloud classification and embedding. <code>pii</code> is a source label you choose; the separate per-document PII mark is manual and advisory today. Public sharing and agent <code>public_only</code> mode see only sources you marked public. Nothing is detected as PII automatically, and there is no SSO or role system in the local app.</p>
           </div>
         </div>
-
-        <div class="trust-grid trust-grid-b">
-          <div class="trust-facts">
-            <h3>Verify your download</h3>
-            <p>Each release carries a <code>SHA256SUMS</code> file next to the three zips. Download it into the same folder as your zip, then:</p>
-            <pre class="code trust-code">macOS / Linux:  shasum -a 256 -c SHA256SUMS --ignore-missing
-Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
-                (compare with the matching line in SHA256SUMS)</pre>
-            <p class="small"><b>Signing status:</b> the macOS app is ad-hoc signed and not Apple-notarized; the Windows and Linux builds are not code-signed; nothing is store-signed. That is why the first launch needs the "Open Anyway" / "Run anyway" step above. The checksum shows the file is the one the release published; the source is public so you can build it yourself. <a href="https://github.com/Atsirkunov/anchorcore/tree/main/docs/release-notes" target="_blank" rel="noopener noreferrer">Changelog and release notes</a>.</p>
-          </div>
-          <div class="trust-facts trust-builder">
-            <h3>Built by a seasoned product leader</h3>
-            <p>Every team I worked on lost the why behind its biggest decisions: in Slack threads, old tickets, and the heads of people who left. AnchorCore is the tool I wanted: ask in plain language, get the answer, and see the exact source. It runs on your machine, because the data I worked with couldn't go anywhere else.</p>
-            <p class="small"><a href="https://ee.linkedin.com/in/a-tsirkunov" target="_blank" rel="noopener noreferrer">LinkedIn</a> · <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noopener noreferrer">GitHub repository</a></p>
-          </div>
-        </div>
       </div>
     </section>
 
-    <!-- Live demo -->
-    <section id="demo" class="alt">
+    <!-- Founder note: first person, to be replaced with the owner's own story -->
+    <section id="why">
       <div class="wrap">
-        <h2>60-second demo</h2>
-        <ol class="demo">
-          <li><b>Connect</b> the <code>sample/</code> demo folder (<a href="/sample.zip" download>download sample.zip</a>, unzip anywhere) — 10 files become about 40 linked decisions, people and specs.</li>
-          <li>Ask: <code>What was decided about instant payments, and why?</code> → cited <code>PRD v3 §4.2</code>.</li>
-          <li>Follow-up: <code>show the steps for it</code> → <code>instant-payments-spec.md</code> steps 1–6.</li>
-          <li>Ask: <code>Who owns the billing provider migration?</code> → <code>Sarah</code>, traced through the planning notes.</li>
-        </ol>
-        <div class="fig"><div class="shot cs" id="cs-demo"><!--session:cs-demo--></div>
-          <p class="cap">Claude Code calling AnchorCore's MCP <code>search</code> tool on the sample dataset. The results are real; the answer is written by the agent from them.</p></div>
-        <div class="cols two">
-          <div class="col"><h3>In the browser — for humans</h3><p>Download, unzip, run — the app opens at <code>http://127.0.0.1:8000</code> → Sources → Local folder → <code>sample/</code> → Sync → Ask. Cited answers with clickable section links.</p><code>download → unzip → run</code></div>
-          <div class="col"><h3>From your agent — via MCP</h3><p>Claude Code, Codex, opencode, Cursor. Same private search over MCP — <code>ask</code> and <code>search</code> return the same cited answers, no browser needed. Same privacy gates; every agent answer is logged.</p><code>anchorcore mcp</code></div>
-        </div>
-        <div class="fig termwrap">
-          <div class="term-bar"><span>agent → anchorcore mcp</span><button id="term-replay" class="btn small secondary" type="button">Replay</button></div>
-          <div class="term-body" id="term-body"></div>
-          <p class="cap">Abbreviated session — the agent gets the same cited answers as the browser UI.</p>
-        </div>
-        <p class="small">Personal use needs no Docker and no account — your data stays in a folder on your machine. Full protocol reference: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">agent docs (MCP)</a>.</p>
-        <div class="fig">
-          <div id="graph-mini-2"></div>
-          <p class="cap">One question, linked answers — owner → decision → risk, traced through the notes. Irrelevant branches are pruned before answering.</p>
-        </div>
+        <h2>Why I built it</h2>
+        <p>Every team I worked on lost the why behind its biggest decisions: in Slack threads, old tickets, and the heads of people who left. AnchorCore is the tool I wanted: ask in plain language, get the answer, and see the exact source. It runs on your machine, because the data I worked with couldn't go anywhere else.</p>
+        <p class="small"><a href="https://ee.linkedin.com/in/a-tsirkunov" target="_blank" rel="noopener noreferrer">LinkedIn</a> · <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noopener noreferrer">GitHub repository</a></p>
       </div>
     </section>
 
-    <!-- Agent skill -->
-    <section id="agent-skill">
-      <div class="wrap">
-        <h2>Agent skill</h2>
-        <p class="sub">Your coding agent sets AnchorCore up for you — install, models, sources, verification — by driving the local API. Claude Code, Codex, opencode, Cursor.</p>
-        <div class="cols two">
-          <div class="col"><h3>Setup from your agent</h3><p>Copy the <code>anchorcore-setup</code> skill into your agent's skills folder, then ask: “set up AnchorCore”. It probes the app, pulls the models, connects your folders, and proves the first cited answer — asking you only for secrets and approvals.</p><code>copy skill → ask → verified</code></div>
-          <div class="col"><h3>What the skill does</h3><p>Health check → answer-model choice (your agent's own model, local Ollama, or your OpenAI-compatible endpoint) → sources with trust labels → agent connection → end-to-end verification. It checks how the app is running and says so when answers are degraded.</p><code>setup → verify → report</code></div>
-        </div>
-        <div class="code">npx skills add Atsirkunov/anchorcore --skill anchorcore-setup</div>
-        <p class="small">Installs into your agent's skills folder — no <code>npx</code>? Copy it by hand instead:</p>
-        <div class="code">mkdir -p .agents/skills/anchorcore-setup && curl -sL https://raw.githubusercontent.com/Atsirkunov/anchorcore/main/.agents/skills/anchorcore-setup/SKILL.md -o .agents/skills/anchorcore-setup/SKILL.md</div>
-        <div class="fig termwrap">
-          <div class="term-bar"><span>agent + anchorcore-setup skill · local REST</span><button id="skill-term-replay" class="btn small secondary" type="button">Replay</button></div>
-          <div class="term-body" id="skill-term-body"></div>
-          <p class="cap">Abbreviated session — the skill drives the local REST API (health → models → sources → sync → ask) and checks the app is healthy before reporting back.</p>
-        </div>
-        <p class="small">Skill file: <a href="https://raw.githubusercontent.com/Atsirkunov/anchorcore/main/.agents/skills/anchorcore-setup/SKILL.md">anchorcore-setup (copy/download)</a> — the CLI installs it into whatever skills dir your agent reads. Agent access protocol: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">Connect your agent (MCP)</a>.</p>
-      </div>
-    </section>
-
-    <!-- Guides — entry cards linking to the prerendered /guides/* pages (R44.15) -->
-    <section id="guides">
+    <!-- Guides — entry links to the prerendered /guides/* pages (R44.15) -->
+    <section id="guides" class="alt">
       <div class="wrap">
         <h2>Guides</h2>
-        <p class="sub">Each card opens a full walkthrough on its own page. <a href="/guides">See all guides</a>.</p>
-        <div class="cols">
-          <div class="col" id="guide-obsidian"><h3>Your Obsidian vault</h3><p>Already have a vault? Keep it. Point AnchorCore at the folder → <code>Sync</code> → <code>Ask</code>. Same notes — answers quote the exact passages instead of dumping whole files into the AI. Nothing to migrate, nothing to leave.</p><small><a href="/guides/obsidian">Open the vault guide</a></small></div>
-          <div class="col" id="guide-quickstart"><h3>Quick start — the sample company</h3><p>Download the app → open it → <a href="/sample.zip" download>download sample.zip</a> and unzip it → Sources → Local folder → Sync → Ask. Your data lives on your machine. No Docker, no account.</p><small>10 files → about 40 entities · <a href="/guides/sample">Open the sample guide</a></small></div>
-          <div class="col" id="guide-rest"><h3>Any JSON API</h3><p>Tickets, issues, CMS, your own backend — point at the API, map its fields, preview 5 records, sync. Passwords and tokens are stored locally, in your OS keychain on macOS and Windows.</p><small><a href="/guides/json-api">Open the JSON API guide</a></small></div>
+        <div class="cols plain">
+          <div class="col" id="guide-quickstart"><h3><a href="/guides/sample">The sample company</a></h3><p>Ten files about a fictional company. Connect them and ask your first cited question in a minute.</p></div>
+          <div class="col" id="guide-obsidian"><h3><a href="/guides/obsidian">Your Obsidian vault</a></h3><p>Point AnchorCore at the vault folder. Your notes stay where they are.</p></div>
+          <div class="col" id="guide-rest"><h3><a href="/guides/json-api">Any JSON API</a></h3><p>Tickets, a CMS, your own backend: map its fields, preview five records, sync.</p></div>
         </div>
-        <div class="cols two">
-          <div class="col" id="guide-ai"><h3>Try the AI startup</h3><p>Prefer a software company as the example? A second sample corpus: a fictional AI product company with decisions, evals and specs to ask about.</p><small><a href="/guides/ai-startup">Open the AI startup guide</a></small></div>
-          <div class="col" id="guide-mcp"><h3>Connect your agent</h3><p>Claude Code, Codex, opencode and Cursor can search your files over MCP: read-only tools, cited results, a public-only gate, and ask/search calls logged.</p><small><a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md" target="_blank" rel="noopener noreferrer">Read the MCP doc on GitHub ↗</a></small></div>
-        </div>
-        <div class="cols two">
-          <div class="col"><h3>Projects — scoped search</h3><p>Group sources into projects — Client X, Research, Team. Pick one to scope every question to just those sources, or search everything.</p><small>Projects in the header · public-only toggle for sharing</small></div>
-          <div class="col"><h3>Source labels</h3><p>Label each source Public, Internal, or Sensitive. Sensitive ones are never sent to cloud AI you haven't approved — matched locally only, every refusal logged.</p><small>per-source labels</small></div>
-        </div>
-        <p class="docs-strip">Internals &amp; integrations: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/guides/hierarchical-toc.md">Sections &amp; citations</a> · <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/architecture.md">How search works</a> · <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/mcp.md">Agent access (MCP)</a> · <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/backup.md">Backup &amp; migration</a></p>
+        <p class="docs-strip"><a href="/guides">All guides</a>, including <a href="/guides/ai-startup">the AI startup sample</a> and <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/backup.md">backup and migration</a>.</p>
       </div>
     </section>
 
-    <!-- FAQ -->
+    <!-- FAQ (feeds the FAQPage JSON-LD in vite.config.ts — keep the qa markup shape) -->
     <section id="faq">
       <div class="wrap">
         <h2>FAQ</h2>
         <div class="faq">
-          <div class="qa"><h3>Is my data private?</h3><p>Yes. The app only listens on your own machine, keeps everything in a database on your disk, and stores passwords in your OS keychain (macOS, Windows) or an encrypted local file. Sources you mark Sensitive are never sent to cloud AI unless you explicitly approve that provider.</p></div>
-          <div class="qa"><h3>Can I move to a new computer?</h3><p>Yes. System → Backup &amp; restore exports your whole index — sources, entities, review state — into one portable <code>.anchorcore-backup</code> file. Import it on the new machine (preview the dry run first); credentials stay behind unless you opt into the passphrase-encrypted bundle. Full guide: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/backup.md">Backup, export &amp; device migration</a>.</p></div>
-          <div class="qa"><h3>Can I check the code myself?</h3><p>Yes — AnchorCore is source-available. The repository is public: read exactly what the Rust app does (no telemetry; it only contacts endpoints you configure, plus GitHub when you click "Check for updates") or build it yourself. Personal use is free; team and commercial use need a separate license — see <a href="https://github.com/Atsirkunov/anchorcore/blob/main/LICENSE.md">LICENSE.md</a>.</p></div>
-          <div class="qa"><h3>How does it read documents?</h3><p>It splits documents at their headings (§4.2, 3.1.1, Article 12…) and packs the text into short passages. Each section gets a summary and topic tags, so answers cite the exact section — not “somewhere in the PDF”.</p></div>
-          <div class="qa"><h3>Does it stay fast as my library grows?</h3><p>Yes. It narrows thousands of documents to the few relevant sections via tags and summaries, then searches only those. Measured at ~7ms per search on a 30k-chunk benchmark (<a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/guides/hierarchical-toc.md">results</a>, <a href="https://github.com/Atsirkunov/anchorcore/blob/main/rust/scripts/bench_retrieval.py">script</a>); larger libraries are projected, not yet measured.</p></div>
-          <div class="qa"><h3>Is it free?</h3><p>Personal local app — free. Team self-hosted (one Docker container, your VPC) is quote-based — <a href="/team">request a quote</a>. Hosted is coming soon — <a href="/hosted">join the waitlist</a>.</p></div>
-          <div class="qa"><h3>Do I need Ollama?</h3><p>No. Without it you still get full-text search over everything. Add Ollama (one install, two free models) for AI answers with citations.</p></div>
-          <div class="qa"><h3>Citations you can click?</h3><p>Every answer lists its sources with section links like <code>Art 12 › 12.3</code> — click to jump to the passage. Coding agents get the same cited format.</p></div>
-          <div class="qa"><h3>How is this different from NotebookLM or ChatGPT file search?</h3><p>Those are cloud uploads. AnchorCore runs on your machine, connects to folders, Drive, Jira, Linear and APIs — not just uploads — and never sends sources you marked sensitive to AI you haven't approved. <a href="/vs/notebooklm">Full comparison with NotebookLM</a>.</p></div>
+          <div class="qa"><h3>Do I need Ollama?</h3><p>No. Without a model you still get full-text search, and in agent mode your coding agent writes the answer from AnchorCore's cited results. Add Ollama (one install, free models) to get answers inside the app.</p></div>
+          <div class="qa"><h3>How is this different from NotebookLM or ChatGPT file search?</h3><p>Those are cloud uploads. AnchorCore runs on your machine, connects to folders, Drive, Jira, Linear and APIs, and keeps sources you marked sensitive away from AI you haven't approved. <a href="/vs/notebooklm">Full comparison with NotebookLM</a>.</p></div>
+          <div class="qa"><h3>Does it stay fast as my library grows?</h3><p>It narrows thousands of documents to the few relevant sections via tags and summaries, then searches only those. Measured at ~7ms per search on a 30k-chunk benchmark (<a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/guides/hierarchical-toc.md">results</a>, <a href="https://github.com/Atsirkunov/anchorcore/blob/main/rust/scripts/bench_retrieval.py">script</a>); larger libraries are projected, not yet measured.</p></div>
+          <div class="qa"><h3>Can I move to a new computer?</h3><p>Yes. System → Backup &amp; restore exports your whole index into one portable <code>.anchorcore-backup</code> file. Credentials stay behind unless you opt into the passphrase-encrypted bundle. <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/backup.md">Backup guide</a>.</p></div>
+          <div class="qa"><h3>Is it open source?</h3><p>It is source-available: the repository is public, so you can read what the app does or build it yourself. Personal use is free; team and commercial use need a license. See <a href="https://github.com/Atsirkunov/anchorcore/blob/main/LICENSE.md">LICENSE.md</a>.</p></div>
         </div>
       </div>
     </section>
 
-    <!-- Pricing -->
     <section id="pricing" class="alt">
       <div class="wrap">
         <h2>Pricing</h2>
-        <div class="cols">
-          <div class="col"><h3>Personal</h3><div class="price">Free</div><p>Local app on your machine. Folders, Drive, Jira, Linear, cited answers. macOS, Windows &amp; Linux, one download, no Docker.</p><small><a href="#download">Download — free for personal use</a></small></div>
-          <div class="col"><h3>Team · Self-hosted</h3><div class="price">Reach out for a quote</div><p>One Docker container in your VPC. Same cited answers for the whole team.</p><div class="cta"><a class="btn secondary" id="cta-team" href="/team">Request a quote</a></div><small><a href="/team">What Team adds</a></small></div>
-          <div class="col"><h3>Hosted</h3><div class="price">Soon</div><p>We host it, no setup. Join the waitlist for hosted early access, one-click Drive sign-in and Slack.</p><small><a href="/hosted">Join the waitlist</a></small></div>
+        <div class="cols plain">
+          <div class="col"><h3>Personal</h3><div class="price">Free</div><p>The local app on your machine, with every connector and cited answers.</p></div>
+          <div class="col"><h3>Team, self-hosted</h3><div class="price">By quote</div><p>One Docker container in your VPC, the same cited answers for the whole team. <a id="cta-team" href="/team">Request a quote</a>.</p></div>
+          <div class="col"><h3>Hosted</h3><div class="price">Soon</div><p>We run it for you, with one-click Drive sign-in and Slack. <a href="/hosted">Join the waitlist</a>.</p></div>
         </div>
-        <!-- Wall of love (R18.13): the empty "opening soon" placeholder was removed. It returns when there is a real quote to show — an empty shelf is not social proof. -->
       </div>
     </section>
 
-    <!-- Roadmap -->
-    <section id="roadmap">
+    <!-- Download: the one place for the button, platforms, first-launch caveats and checksums. #roadmap is the legacy "Get started" anchor. -->
+    <section id="download">
+      <span id="roadmap" class="anchor"></span>
       <div class="wrap">
-        <h2>Get started</h2>
-        <p>Free for personal use — download the app and ask your first cited question in a minute. Running it for a team? <a href="/team">Request a quote</a>. Hosted is coming — join the waitlist for early access, one-click Drive sign-in and Slack.</p>
+        <h2>Download</h2>
         <div class="cta">
-          <a id="cta-roadmap" class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download — free for personal use</a>
+          <a id="cta-roadmap" class="btn primary" href="https://github.com/Atsirkunov/anchorcore/releases" target="_blank" rel="noreferrer">Download, free for personal use</a>
         </div>
-        <p class="small">First launch: move AnchorCore to /Applications. macOS: open it, then System Settings → Privacy &amp; Security → Open Anyway. Windows: SmartScreen → More info → Run anyway. (Not yet Apple-notarized or store-signed.)</p>
+        <p id="cta-note" class="small">macOS, Windows and Linux. One download, no Docker, no account.</p>
+        <h3>First launch</h3>
+        <p id="first-launch" class="small">The builds are not yet Apple-notarized or code-signed, so your OS asks once. macOS: move AnchorCore to Applications, open it, then System Settings → Privacy &amp; Security → Open Anyway. Windows: SmartScreen → More info → Run anyway.</p>
+        <h3>Verify the file</h3>
+        <p class="small">Each release has a <code>SHA256SUMS</code> file next to the zips. Put it in the same folder as your download and run <code>shasum -a 256 -c SHA256SUMS --ignore-missing</code> (on Windows, compare <code>Get-FileHash</code> with the matching line). <a href="https://github.com/Atsirkunov/anchorcore/tree/main/docs/release-notes" target="_blank" rel="noopener noreferrer">Release notes</a>.</p>
         <form class="capture" id="capture-form-2">
-          <label for="email2">Email</label>
+          <label for="email2">On a phone? Get the link by email</label>
           <input id="email2" type="email" placeholder="you@example.com" autocomplete="email" aria-describedby="capture2-msg" />
-          <button class="btn primary small" type="submit">Join the waitlist</button>
+          <button class="btn primary small" type="submit">Send it</button>
         </form>
         <div id="capture2-msg" class="capture-msg" role="status"></div>
-        <p class="small">By joining, you agree to receive AnchorCore updates by email — unsubscribe anytime. See <a href="/privacy">Privacy notice</a>.</p>
-      </div>
-    </section>
-
-    <!-- Privacy notice (GDPR Art. 13) — keep in sync with the actual data flows in src/main.ts -->
-    <!-- Privacy notice — the full GDPR Art. 13 text is its own page (R18.11) -->
-<section id="privacy" class="alt">
-      <div class="wrap">
-        <h2>Privacy notice</h2>
-        <p class="sub">Short version: this site doesn't track you. The only personal data we receive is your email if you join a waitlist, plus the company details you choose to send in a Team quote request.</p>
-        <p class="small">No cookies, no analytics, no trackers. Waitlist and quote-request submissions are stored by Formspree under a data-processing agreement, and you can unsubscribe anytime. <a href="/privacy">Read the full privacy notice</a>.</p>
+        <p class="small">We only use your email for AnchorCore updates; unsubscribe anytime. <a href="/privacy">Privacy notice</a>.</p>
       </div>
     </section>
   </main>
 
   <footer>
     <div class="wrap foot">
-      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-sage"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-stone"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-stone"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-stone"/></svg><b>AnchorCore</b> v1 local · free for personal use · Team self-hosted on request · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="/team">For teams</a> · <a href="/hosted">Hosted waitlist</a> · <a href="/privacy">Privacy notice</a> · <a href="#trust">Trust &amp; verification</a> · <a href="/security">Security notes</a> · <a href="/vs/notebooklm">vs NotebookLM</a></div>
-      <div>Private by default · cited by design</div>
+      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-sage"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-stone"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-stone"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-stone"/></svg><b>AnchorCore</b> · <a href="https://github.com/Atsirkunov/anchorcore">GitHub</a> · <a href="/team">For teams</a> · <a href="/hosted">Hosted waitlist</a> · <a href="/security">Security notes</a> · <a href="/privacy">Privacy notice</a> · <a href="/vs/notebooklm">vs NotebookLM</a></div>
+      <div>This site sets no cookies and runs no analytics.</div>
     </div>
   </footer>
 

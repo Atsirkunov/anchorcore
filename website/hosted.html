@@ -14,6 +14,15 @@
   <meta property="og:image" content="https://anchorcore.dev/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:image" content="https://anchorcore.dev/og-card.png" />
+  <script>
+    // Theme before first paint (no flash) — same resolution as src/themeMode.ts.
+    (function () {
+      var m = null;
+      try { m = localStorage.getItem("theme-mode"); } catch (e) {}
+      var dark = m === "dark" || (m !== "light" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+    })();
+  </script>
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
@@ -28,7 +37,7 @@
         <a href="/team">For teams</a>
         <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">GitHub ↗</a>
       </nav>
-      <a class="nav-cta" href="/#download">Download<span class="nav-cta-sfx"> — free for personal use</span></a>
+      <a class="nav-cta" href="/#download">Download</a>
       <!-- header nav (≤1080px): same section links, collapsed behind the burger — keep in sync with .nav (R18.1/R18.3) -->
       <details class="navmenu" id="navmenu">
         <summary class="navmenu-btn"><span class="sr-only">Sections</span><span class="burger" aria-hidden="true"></span></summary>
