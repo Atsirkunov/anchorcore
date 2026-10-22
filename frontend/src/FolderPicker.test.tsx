@@ -112,7 +112,7 @@ describe("FolderPicker", () => {
     vi.spyOn(api, "browseFolders").mockImplementation(async (path?: string) => (path ? HOME : ROOTS));
     const onSelect = vi.fn();
     const host = await renderPicker({ onSelect });
-    const homeRow = buttons(host).find((b) => b.textContent === "📁 Home");
+    const homeRow = buttons(host).find((b) => b.textContent === "Home/");
     expect(homeRow).toBeDefined();
     await clickAsync(homeRow!);
     expect(host.textContent).toContain("Current: /home/u");

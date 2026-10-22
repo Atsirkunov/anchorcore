@@ -1,48 +1,61 @@
-/** Shared visual tokens (B37). Replaces per-file inline `styles` color
- * literals so the palette stays consistent and changeable in one place.
- * Palette: C3 Stone & Sage — vault/archive, matte, non-AI (paper #F2F0EB, sage #4A5A52). */
+/** Shared visual tokens (B37). Values are CSS variables defined in theme.css
+ * (light by default, dark via prefers-color-scheme), so every inline style
+ * follows the OS theme without re-rendering. Palette: Archive — ink on paper,
+ * oxblood for citations and links, shared with anchorcore.dev. */
 export const theme = {
-  bg: "#121416",
-  bgElevated: "#1A1E20",
-  bgCard: "#23282B",
-  bgHover: "#2c3235",
-  border: "#343a3e",
-  borderSoft: "#2a2f33",
-  text: "#E8E6E1",
-  textMuted: "#9aa0a8",
-  textDim: "#7a828c",
-  accent: "#4A5A52",
-  accentAlt: "#8FA99E",
-  onAccent: "#fff",
-  greenBg: "#14532d",
-  greenText: "#a7f3d0",
-  mutedBg: "#3f3f46",
-  amberBg: "#451a03",
-  markText: "#1a1d1a",
-  purple: "#6E7D75",
-  green: "#7a9a8a",
-  amber: "#9A8B7A",
-  red: "#c98a7a",
-  redBg: "#2B1E1D",
-  redBorder: "#3d2a28",
-  redText: "#e8c4bc",
-  blue: "#7E9AB0",
-  blueBg: "#1d2a33",
-  buttonBg: "#2c3235",
+  bg: "var(--ac-bg)",
+  bgElevated: "var(--ac-bg-elevated)",
+  bgCard: "var(--ac-bg-card)",
+  bgHover: "var(--ac-bg-hover)",
+  border: "var(--ac-border)",
+  borderSoft: "var(--ac-border-soft)",
+  text: "var(--ac-text)",
+  textMuted: "var(--ac-text-muted)",
+  textDim: "var(--ac-text-dim)",
+  // primary buttons: ink
+  accent: "var(--ac-accent)",
+  // links, highlights and citation marks: oxblood
+  accentAlt: "var(--ac-cite)",
+  cite: "var(--ac-cite)",
+  citeSoft: "var(--ac-cite-soft)",
+  onAccent: "var(--ac-on-accent)",
+  greenBg: "var(--ac-green-bg)",
+  greenText: "var(--ac-green-text)",
+  mutedBg: "var(--ac-muted-bg)",
+  amberBg: "var(--ac-amber-bg)",
+  markText: "var(--ac-mark-text)",
+  purple: "var(--ac-slate)",
+  green: "var(--ac-green)",
+  amber: "var(--ac-amber)",
+  red: "var(--ac-red)",
+  redBg: "var(--ac-red-bg)",
+  redBorder: "var(--ac-red-border)",
+  redText: "var(--ac-red-text)",
+  blue: "var(--ac-blue)",
+  blueBg: "var(--ac-blue-bg)",
+  buttonBg: "var(--ac-button-bg)",
+  overlay: "var(--ac-overlay)",
+  shadow: "var(--ac-shadow)",
+  sans: "var(--ac-sans)",
+  serif: "var(--ac-serif)",
+  mono: "var(--ac-mono)",
 };
+
+/** Corner radius for every box: square, document-like. Dots keep 50%. */
+export const radius = 2;
 
 export const commonStyles = {
   input: {
     padding: "0.55rem 0.75rem",
-    borderRadius: 8,
+    borderRadius: radius,
     border: `1px solid ${theme.border}`,
     background: theme.bgCard,
     color: theme.text,
   },
   button: {
     padding: "0.55rem 1rem",
-    borderRadius: 8,
-    border: "none",
+    borderRadius: radius,
+    border: `1px solid ${theme.border}`,
     background: theme.buttonBg,
     color: theme.text,
     cursor: "pointer",
@@ -50,7 +63,7 @@ export const commonStyles = {
   card: {
     background: theme.bgCard,
     border: `1px solid ${theme.border}`,
-    borderRadius: 8,
+    borderRadius: radius,
     padding: "0.75rem 1rem",
   },
 } as const satisfies Record<string, React.CSSProperties>;

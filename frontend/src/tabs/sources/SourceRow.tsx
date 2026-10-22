@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../../api";
-import { theme, commonStyles } from "../../theme";
+import { theme, commonStyles, radius } from "../../theme";
 import type { Job, Source } from "../../types";
 import { SourceEditForm } from "./SourceForm";
 
@@ -39,11 +39,11 @@ export function SourceRow({
   const [actionError, setActionError] = useState<string | null>(null);
 
   function configSummary(): string {
-    if (source.connector === "folder") return config.path ? `📁 ${config.path}` : "folder source";
-    if (source.connector === "gdrive") return config.folder_id ? `📂 Drive:${config.folder_id.slice(0, 10)}…` : "Drive source";
-    if (source.connector === "rest") return config.base_url ? `🔌 ${(config.base_url + (config.list_path ?? "")).slice(0, 48)}` : "REST source";
+    if (source.connector === "folder") return config.path ? config.path : "folder source";
+    if (source.connector === "gdrive") return config.folder_id ? `Drive: ${config.folder_id.slice(0, 10)}…` : "Drive source";
+    if (source.connector === "rest") return config.base_url ? (config.base_url + (config.list_path ?? "")).slice(0, 48) : "REST source";
     const parts = [config.base_url, config.project].filter(Boolean);
-    return parts.length ? `🔗 ${parts.join(" · ")}` : "Jira source";
+    return parts.length ? parts.join(" · ") : "Jira source";
   }
 
   async function startJob(id: number, kind: "sync" | "reclassify") {
@@ -82,7 +82,7 @@ export function SourceRow({
       style={{
         background: theme.bgCard,
         border: `1px solid ${theme.border}`,
-        borderRadius: 8,
+        borderRadius: radius,
         padding: "0.6rem 0.9rem",
       }}
     >
@@ -98,7 +98,7 @@ export function SourceRow({
                   background: theme.redBg,
                   color: theme.redText,
                   padding: "0.1rem 0.5rem",
-                  borderRadius: 999,
+                  borderRadius: radius,
                   fontWeight: 700,
                 }}
               >
@@ -109,7 +109,7 @@ export function SourceRow({
         <div style={{ fontSize: 12, color: theme.textMuted }}>
           {source.connector} · last sync: {source.last_synced_at ? new Date(source.last_synced_at).toLocaleString() : "never"}
         </div>
-        <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 2 }} title={configSummary()}>
+        <div style={{ fontSize: 12, fontFamily: theme.mono, color: theme.textMuted, marginTop: 2, overflowWrap: "anywhere" }} title={configSummary()}>
           {configSummary()}
         </div>
         {source.label !== "internal" && (
@@ -121,7 +121,7 @@ export function SourceRow({
             <div style={{ marginTop: 6 }}>
               <div style={{ fontSize: 12, color: theme.accentAlt }}>{jobLabel(job)}</div>
               {job.total > 0 && (
-                <div style={{ height: 6, borderRadius: 3, background: theme.border, marginTop: 4, overflow: "hidden" }}>
+                <div style={{ height: 6, borderRadius: radius, background: theme.border, marginTop: 4, overflow: "hidden" }}>
                   <div
                     style={{
                       height: "100%",

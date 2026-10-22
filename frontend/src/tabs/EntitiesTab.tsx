@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { theme } from "../theme";
+import { theme, radius } from "../theme";
 import { basename, docTypeLabel, kindLabel, needsLook, shortRef, statusLabel } from "../entityLabels";
 import { ActionsView, DecisionsView } from "./RecordsViews";
 import type { ConflictLink, Dispute, Entity, MergeProposal, Section } from "../types";
@@ -60,7 +60,7 @@ function docTypeStyle(docType: string): React.CSSProperties {
     color,
     border: `1px solid ${color}`,
     padding: "0.15rem 0.5rem",
-    borderRadius: 999,
+    borderRadius: radius,
     fontWeight: 700,
   };
 }
@@ -302,7 +302,7 @@ function EntityRow(props: EntityRowProps) {
   const { e } = props;
   const bucket = docTypeLabel(e.doc_type);
   return (
-    <article style={{ ...styles.card, borderLeft: `4px solid ${KIND_COLORS[e.kind] ?? theme.textDim}` }}>
+    <article style={styles.card}>
       <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontSize: 11, color: theme.textMuted }} title={`Item #${e.id}`}>
           #{e.id}
@@ -348,7 +348,7 @@ function EntityRow(props: EntityRowProps) {
             {props.contextOpen ? "Hide context ▲" : "Show context ▼"}
           </button>
           {props.contextOpen && (
-            <div style={{ marginTop: 6, padding: "0.6rem 0.75rem", background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: 6, maxHeight: 360, overflowY: "auto" }}>
+            <div style={{ marginTop: 6, padding: "0.6rem 0.75rem", background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: radius, maxHeight: 360, overflowY: "auto" }}>
               <div style={{ fontSize: 11, color: theme.textDim, textTransform: "uppercase", marginBottom: 4 }}>
                 {props.context?.item_title || "Source"} · {shortRef(props.context?.source_ref || e.source_ref)}
               </div>
@@ -357,7 +357,7 @@ function EntityRow(props: EntityRowProps) {
                   {t}
                 </pre>
               ))}
-              <pre style={{ whiteSpace: "pre-wrap", margin: "6px 0", fontSize: 12, background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: 6, padding: "0.5rem 0.6rem", color: theme.text }}>
+              <pre style={{ whiteSpace: "pre-wrap", margin: "6px 0", fontSize: 12, background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.5rem 0.6rem", color: theme.text }}>
                 {props.context?.window_text || e.window_text}
               </pre>
               {props.context?.expanded_after.map((t, i) => (
@@ -424,7 +424,7 @@ function DuplicatesSection({
 }) {
   if (dupes.length === 0) return null;
   return (
-    <section style={{ ...styles.docCard, borderLeft: `4px solid ${theme.amber}`, marginBottom: 12 }}>
+    <section style={{ ...styles.docCard, borderColor: theme.amber, marginBottom: 12 }}>
       <div style={{ fontWeight: 700, fontSize: 13 }}>Possible doubles ({dupes.length})</div>
       <div style={{ fontSize: 12, color: theme.textDim, margin: "2px 0 8px" }}>
         These pairs look like the same thing twice. Merging keeps A and removes B — it can&apos;t be undone.
@@ -848,7 +848,7 @@ export function AllEntitiesView() {
         <span style={{ fontSize: 12, color: statusFilter === "needs_review" ? theme.amber : theme.textDim }}>
           {filtered.length} / {entities.length} items{groupedPref ? ` · ${groups.length} documents` : ""} · {needCount} need a look
         </span>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 4, alignItems: "center", border: `1px solid ${theme.border}`, borderRadius: 999, padding: 2, background: theme.bgCard }}>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 4, alignItems: "center", border: `1px solid ${theme.border}`, borderRadius: radius, padding: 2, background: theme.bgCard }}>
           <button onClick={() => setGrouped(true)} style={{ ...styles.toggle, ...(groupedPref ? styles.toggleActive : {}) }}>
             Grouped
           </button>
@@ -884,7 +884,7 @@ export function AllEntitiesView() {
             const bulkDisputing = disputeTarget?.scope === "bulk" && disputeTarget.itemId === itemId;
             const bulkRunning = bulkBusy === itemId;
             return (
-              <section key={itemId} style={{ ...styles.docCard, borderLeft: `4px solid ${need > 0 ? theme.accent : theme.greenBg}` }}>
+              <section key={itemId} style={styles.docCard}>
                 <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 220 }}>
                     <div style={{ fontWeight: 700, fontSize: 13, color: theme.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{docTitle}</div>
@@ -904,10 +904,10 @@ export function AllEntitiesView() {
                   </button>
                 </div>
                 {isOpen && docCtx[itemId]?.full_text && (
-                  <div style={{ marginTop: 8, padding: "0.6rem 0.75rem", background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: 6, maxHeight: 320, overflowY: "auto" }}>
+                  <div style={{ marginTop: 8, padding: "0.6rem 0.75rem", background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: radius, maxHeight: 320, overflowY: "auto" }}>
                     <div style={{ fontSize: 11, color: theme.textDim, textTransform: "uppercase", marginBottom: 4 }}>Whole doc — {docTitle}</div>
                     {sectionsByItem[itemId] && sectionsByItem[itemId].length > 1 && (
-                      <div style={{ marginBottom: 8, display: "grid", gap: 3, padding: "0.4rem 0.5rem", background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: 6 }}>
+                      <div style={{ marginBottom: 8, display: "grid", gap: 3, padding: "0.4rem 0.5rem", background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: radius }}>
                         <div style={{ fontSize: 10, color: theme.textDim, textTransform: "uppercase" }}>Sections</div>
                         {sectionsByItem[itemId].map((s) => (
                           <div key={s.id} style={{ fontSize: 11 }}>
@@ -1021,19 +1021,19 @@ export function EntitiesTab() {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  viewSwitch: { display: "flex", gap: 4, marginBottom: 12, border: `1px solid ${theme.border}`, borderRadius: 999, padding: 2, background: theme.bgCard, width: "fit-content" },
-  card: { background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: 7, padding: "0.6rem 0.8rem" },
-  cardSmall: { background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: 7, padding: "0.6rem 0.8rem" },
-  docCard: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: 8, padding: "0.7rem 0.9rem" },
-  docCount: { fontSize: 11, background: theme.bgHover, color: theme.textMuted, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 600 },
-  needBadge: { fontSize: 10, background: theme.amberBg, color: theme.amber, border: `1px solid ${theme.amber}`, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 700 },
-  docToggle: { background: "none", border: `1px solid ${theme.border}`, color: theme.accentAlt, borderRadius: 6, padding: "0.2rem 0.5rem", cursor: "pointer", fontSize: 11 },
-  badge: { fontSize: 11, color: theme.bg, padding: "0.1rem 0.5rem", borderRadius: 999, fontWeight: 700, textTransform: "uppercase" },
-  statusBadge: { fontSize: 10, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 700 },
-  button: { padding: "0.3rem 0.7rem", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bgHover, color: theme.text, cursor: "pointer", fontSize: 12 },
+  viewSwitch: { display: "flex", gap: 4, marginBottom: 12, border: `1px solid ${theme.border}`, borderRadius: radius, padding: 2, background: theme.bgCard, width: "fit-content" },
+  card: { background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.6rem 0.8rem" },
+  cardSmall: { background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.6rem 0.8rem" },
+  docCard: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.7rem 0.9rem" },
+  docCount: { fontSize: 11, background: theme.bgHover, color: theme.textMuted, padding: "0.15rem 0.5rem", borderRadius: radius, fontWeight: 600 },
+  needBadge: { fontSize: 10, background: theme.amberBg, color: theme.amber, border: `1px solid ${theme.amber}`, padding: "0.15rem 0.5rem", borderRadius: radius, fontWeight: 700 },
+  docToggle: { background: "none", border: `1px solid ${theme.border}`, color: theme.accentAlt, borderRadius: radius, padding: "0.2rem 0.5rem", cursor: "pointer", fontSize: 11 },
+  badge: { fontSize: 10, fontFamily: theme.mono, color: theme.bg, padding: "0.1rem 0.5rem", borderRadius: radius, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" },
+  statusBadge: { fontSize: 10, padding: "0.15rem 0.5rem", borderRadius: radius, fontWeight: 700 },
+  button: { padding: "0.3rem 0.7rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgHover, color: theme.text, cursor: "pointer", fontSize: 12 },
   disabled: { opacity: 0.5, cursor: "not-allowed" },
-  input: { padding: "0.3rem 0.5rem", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, fontSize: 12 },
-  toggle: { background: "none", border: "none", color: theme.textDim, padding: "0.2rem 0.6rem", borderRadius: 999, cursor: "pointer", fontSize: 12, fontWeight: 600 },
+  input: { padding: "0.3rem 0.5rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, fontSize: 12 },
+  toggle: { background: "none", border: "none", color: theme.textDim, padding: "0.2rem 0.6rem", borderRadius: radius, cursor: "pointer", fontSize: 12, fontWeight: 600 },
   toggleActive: { background: theme.accent, color: theme.onAccent },
   link: { background: "none", border: "none", color: theme.accentAlt, cursor: "pointer", fontSize: 12, padding: 0, textDecoration: "underline" },
 };

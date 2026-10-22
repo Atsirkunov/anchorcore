@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
+import { ThemeSwitch } from "./ThemeSwitch";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { modelIssues } from "./modelHealth";
 import { useProjects } from "./useProjects";
-import { theme } from "./theme";
+import { theme, radius } from "./theme";
 import { OnboardingWizard } from "./OnboardingWizard";
 import { UpdateBanner } from "./Updates";
 import { AskTab } from "./tabs/AskTab";
@@ -90,7 +91,17 @@ export default function App() {
         />
       )}
       <header style={styles.header}>
-        <h1 style={styles.title}>AnchorCore</h1>
+        <h1 style={styles.title}>
+          {/* brand mark: same shape as favicon.svg / the website, coloured by tokens */}
+          <svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true" style={{ flexShrink: 0 }}>
+            <rect x="2" y="2" width="60" height="60" rx="14" fill="none" stroke={theme.border} strokeWidth="4" />
+            <rect x="16" y="12" width="10" height="40" rx="3" fill={theme.cite} />
+            <rect x="32" y="17" width="16" height="6" rx="3" fill={theme.textDim} />
+            <rect x="32" y="29" width="12" height="6" rx="3" fill={theme.textDim} />
+            <rect x="32" y="41" width="16" height="6" rx="3" fill={theme.textDim} />
+          </svg>
+          AnchorCore
+        </h1>
         <nav style={styles.nav}>
           {PRIMARY_TABS.map((t) => (
             <button
@@ -144,9 +155,10 @@ export default function App() {
             </option>
           ))}
         </select>
-        <span style={{ color: online === false ? theme.red : online ? theme.green : theme.textDim, fontSize: 12 }}>
+        <span style={{ color: online === false ? theme.red : online ? theme.green : theme.textDim, fontSize: 12, fontFamily: theme.mono }}>
           {online === false ? "API offline" : online ? "API online" : "checking…"}
         </span>
+        <ThemeSwitch />
       </header>
       <UpdateBanner onOpen={() => setTab("system")} />
       {bannerVisible && (
@@ -206,31 +218,33 @@ export default function App() {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  wrap: { minHeight: "100vh", background: theme.bg, color: theme.text, fontFamily: "system-ui, sans-serif" },
+  wrap: { minHeight: "100vh", background: theme.bg, color: theme.text, fontFamily: theme.sans },
   header: {
     display: "flex",
     alignItems: "center",
     gap: 20,
     rowGap: 12,
     flexWrap: "wrap",
-    padding: "1rem 2rem",
-    borderBottom: `1px solid ${theme.borderSoft}`,
-    background: theme.bgElevated,
+    padding: "0 2rem",
+    borderBottom: `1px solid ${theme.text}`,
+    background: theme.bg,
   },
-  title: { fontSize: 18, margin: 0, marginRight: 8 },
-  nav: { display: "flex", gap: 2, alignItems: "center", flexWrap: "wrap" },
-  navDivider: { width: 1, height: 20, background: theme.border, margin: "0 8px" },
+  title: { display: "flex", alignItems: "center", gap: 8, fontFamily: theme.sans, fontSize: 17, fontWeight: 600, letterSpacing: "-0.01em", margin: "0 8px 0 0" },
+  nav: { display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap", alignSelf: "stretch" },
+  navDivider: { width: 1, height: 18, background: theme.border, margin: "0 8px" },
   tabSecondary: { color: theme.textDim, fontSize: 13 },
   tab: {
     background: "none",
     border: "none",
     color: theme.textMuted,
-    padding: "0.5rem 0.9rem",
-    borderRadius: 8,
+    padding: "1.1rem 0.7rem 1rem",
+    borderRadius: 0,
+    borderBottom: "2px solid transparent",
+    marginBottom: -1,
     cursor: "pointer",
     fontSize: 14,
   },
-  tabActive: { background: theme.bgHover, color: theme.text },
+  tabActive: { color: theme.text, borderBottom: `2px solid ${theme.text}`, fontWeight: 600 },
   banner: {
     display: "flex",
     alignItems: "flex-start",
@@ -241,17 +255,18 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13,
     borderBottom: `1px solid ${theme.redBorder}`,
   },
-  dismiss: { background: "none", border: `1px solid ${theme.redBorder}`, color: theme.redText, borderRadius: 6, padding: "0.2rem 0.6rem", cursor: "pointer" },
+  dismiss: { background: "none", border: `1px solid ${theme.redBorder}`, color: theme.redText, borderRadius: radius, padding: "0.2rem 0.6rem", cursor: "pointer" },
   main: { padding: "2.5rem 2rem 4rem", maxWidth: 880, margin: "0 auto" },
   jobsBadge: {
     display: "flex",
     alignItems: "center",
     gap: 6,
-    background: theme.bgHover,
+    background: theme.bgCard,
     border: `1px solid ${theme.accentAlt}`,
+
     color: theme.accentAlt,
     padding: "0.25rem 0.6rem",
-    borderRadius: 999,
+    borderRadius: radius,
     fontSize: 12,
     cursor: "pointer",
   },
@@ -259,10 +274,11 @@ const styles: Record<string, React.CSSProperties> = {
     background: theme.bgCard,
     border: `1px solid ${theme.border}`,
     color: theme.text,
-    borderRadius: 6,
+    borderRadius: radius,
     padding: "0.3rem 0.6rem",
     fontSize: 13,
     maxWidth: 180,
+
   },
   spinner: {
     width: 10,

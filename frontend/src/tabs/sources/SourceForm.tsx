@@ -3,7 +3,7 @@ import { api } from "../../api";
 import { FolderPicker } from "../../FolderPicker";
 import { LABEL_OPTIONS } from "./labels";
 import { stripPlaceholders } from "../../placeholders";
-import { theme, commonStyles } from "../../theme";
+import { theme, commonStyles, radius } from "../../theme";
 import type { Source } from "../../types";
 
 function LabelSelect({
@@ -72,7 +72,7 @@ function JiraProjectPicker({
   }
 
   return (
-    <div style={{ display: "grid", gap: 6, border: `1px solid ${theme.border}`, borderRadius: 6, padding: 8, background: theme.bgCard }}>
+    <div style={{ display: "grid", gap: 6, border: `1px solid ${theme.border}`, borderRadius: radius, padding: 8, background: theme.bgCard }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <button onClick={load} disabled={loading || !base_url || !email || !token} style={commonStyles.button} type="button">
           {loading ? "Loading…" : "Load Jira projects"}
@@ -244,7 +244,7 @@ function RestFields({
       {preview && (
         <div style={{ display: "grid", gap: 4, borderTop: `1px solid ${theme.border}`, paddingTop: 6 }}>
           {preview.docs.map((d) => (
-            <div key={d.source_ref} style={{ fontSize: 12, border: `1px solid ${theme.border}`, borderRadius: 6, padding: 6, background: theme.bgCard }}>
+            <div key={d.source_ref} style={{ fontSize: 12, border: `1px solid ${theme.border}`, borderRadius: radius, padding: 6, background: theme.bgCard }}>
               <div style={{ fontWeight: 600 }}>{d.title || "(no title)"}</div>
               <div style={{ color: theme.textDim }}>{d.source_ref}{d.author ? ` · ${d.author}` : ""}</div>
               <div style={{ color: theme.textMuted }}>{d.text_preview.slice(0, 160)}{d.text_preview.length > 160 ? "…" : ""}</div>
@@ -355,7 +355,7 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
           </>
         )}
         <LabelSelect value={label} onChange={setLabel} />
-        <button onClick={addSource} disabled={busy} style={commonStyles.button}>
+        <button onClick={addSource} disabled={busy} style={{ ...commonStyles.button, background: theme.accent, color: theme.onAccent, borderColor: theme.accent, fontWeight: 600 }}>
           {busy ? "Adding…" : "Add source"}
         </button>
       </div>

@@ -1,80 +1,76 @@
 # AnchorCore — Design System & Messaging
 
 > For a non-UX owner: copy-paste tokens + rules. No taste required — pick the preset, don't invent.
-> App (browser UI) is **dark, calm, trust-first**. Website is **light, same accent** — one brand, two surfaces.
+> App and website share one look (**Archive**, 2026-10-22): ink on paper, IBM Plex, oxblood for citations. The app is light by default with a matching dark set, chosen by the header Auto / Light / Dark switch (Auto follows the OS).
 
 ---
 
 ## 1. Brand principles
 
-* **Trust over clever.** You store company memory. Look like a filing system, not a game. No gradients, no neon.
-* **Show your work.** Every answer cites source + section. Citations are first-class UI, not footnotes.
-* **Calm density.** PMs read 200 lines/day. Dense but scannable: `14px` body, `12-13px` meta, generous `16px` section gaps.
-* **Local-first signal.** "Private by default" is visual: lock icon, "on your machine" badge, no cloud ornament.
+* **Trust over clever.** You store company memory. Look like a filed document, not a game. No gradients, no glow, no emoji.
+* **Show your work.** Every answer cites source + section. Citations are first-class UI, not footnotes — and the only thing that gets the accent colour.
+* **Calm density.** Dense but scannable: `14px` body, `12-13px` meta, `16px` serif answers, generous section gaps.
+* **Local-first signal.** "Private by default" is stated in words where it matters, not decorated.
 
 ---
 
-## 2. Color — one palette, two themes
+## 2. Color — one palette, light + dark
 
-Stone & Sage (C3) — vault/archive, matte, non-AI. Dark app = warm black
-`#121416` + sage `#4A5A52`; light site = paper `#F2F0EB` + same sage.
-Replaces indigo/cyan to signal *memory / filing system*, not chatbot.
+Archive: ink `#1F1B16` on paper `#F6F5F2`; oxblood `#8C2F2B` means "this is
+sourced" (citation marks, `§` numbers, links, selected state). Primary buttons
+are ink, never oxblood (red reads as "delete" on a button).
 
 ### 2.1 Tokens (single sources of truth)
 
-App tokens live in `frontend/src/theme.ts` (`theme.*`); site tokens in
-`website/src/style.css` (`:root`). Same hues, different key names:
+App tokens are CSS variables in `frontend/src/theme.css` (`--ac-*`, light in
+`:root`, dark under `:root[data-theme="dark"]`, set by `themeMode.ts` + an inline
+pre-paint script in `index.html`; the choice is stored as `theme-mode` in localStorage); components read them through
+`frontend/src/theme.ts` (`theme.*` = `var(--ac-*)` strings). Site tokens live in
+`website/src/style.css` (`:root`).
 
-| Hue | App (`theme.ts`) | Site (`style.css`) |
-|---|---|---|
-| page bg | `bg #121416` | `--paper #F2F0EB` |
-| surface / card | `bgElevated #1A1E20`, `bgCard #23282B` | `--surface #ffffff` |
-| borders | `border #343a3e`, `borderSoft #2a2f33` | `--border #e2ddd6`, `--border2 #d4cfc6` |
-| text | `text #E8E6E1`, `textMuted #9aa0a8`, `textDim #7a828c` | `--ink #1a1d1a`, `--dim #5C6470`, `--faint #9aa0a8` |
-| accent (sage) | `accent #4A5A52`, `accentAlt #8FA99E` | `--sage #4A5A52`, `--sageH #3f4d46`, `--sageSoft #E2E8E3` |
-| stone | `amber #9A8B7A` | `--stone #9A8B7A` |
-| kinds | `purple #6E7D75`, `blue #7E9AB0`, `amber`, `green #7a9a8a` | (n/a — app only) |
-| danger | `red #c98a7a`, `redBg #2B1E1D`, `redBorder #3d2a28` | `#a85a4a` |
-
-**Why sage `#4A5A52` not indigo `#6366f1`:** indigo tested as trustworthy but reads as chatbot/SaaS (Linear/Notion AI). Sage is desaturated, editorial — signals *archive / foundry / vault* = memory + reliability + privacy. Progress/spinner uses the sage tint, not cyan. One matte accent = one mental model.
+| Role | App light (`--ac-*`) | App dark | Site (`style.css`) |
+|---|---|---|---|
+| page bg | `bg #F6F5F2` | `#151412` | `--paper #F6F5F2` |
+| card / panel | `bg-card #FFFFFF`, `bg-elevated #FFFFFF` | `#221F1B`, `#1C1A17` | `--surface #ffffff` |
+| borders | `border #D6D1C7`, `border-soft #E6E2DB` | `#3D372F`, `#2E2A24` | `--border #DCD8D0` |
+| text | `text #1F1B16`, `text-muted #4F473D`, `text-dim #6B6257` | `#ECE8E1`, `#C4BBAE`, `#A1978A` | `--ink`, `--dim #5E554A` |
+| primary button | `accent #1F1B16` on `#FFFFFF` | `#ECE8E1` on `#151412` | `--ink` |
+| citations / links | `cite #8C2F2B`, `cite-soft #F3E6E3` | `#E39A8F`, `#3A2421` | `--cite #8C2F2B`, `--cite-soft` |
+| status | `green #2F5D46`, `amber #85550F`, `red #A3332C`, `blue #2F5577`, `slate #4E5B69` | lighter tints | (n/a) |
+| type | `--ac-sans` / `--ac-serif` / `--ac-mono` = IBM Plex Sans / Serif / Mono | same | `--sans` / `--serif` / `--mono` |
 
 **Rules for non-designers:**
-1. Never invent a hex. App: only `theme.*`. Site: only `:root` vars.
-2. Backgrounds layer page → section → card. Don't skip layers.
-3. Text: content → labels → empty states, brightest to faintest. Never pure white on dark bg.
-4. Danger bg/border only for banners, never for buttons.
-5. Kind colors only on left border + badge — not whole cards.
-6. When changing a shared hue, change `theme.ts` and `style.css` in the same commit.
+1. Never invent a hex. App: only `theme.*` (add a token to `theme.css` + `theme.ts` first). Site: only `:root` vars.
+2. Oxblood only for citations, `§` marks, links and "selected". Errors use `red`, which is brighter.
+3. No coloured left-border stripes on cards; say the status in words (a coloured mono label).
+4. Danger bg/border only for banners and destructive buttons.
+5. When changing a shared hue, change `theme.css` and `website/src/style.css` in the same commit.
 
-### 2.2 Contrast (WCAG AA) — Stone & Sage
-* `text #E8E6E1` on `bg #121416` = 13.9:1 ✓
-* `accent #4A5A52` on paper `#F2F0EB` = 6.8:1 ✓ (light site CTA, matte)
-* `accent #4A5A52` on white = 7.2:1 ✓
-* `textMuted #9aa0a8` on dark surface = 4.9:1 ✓ — do not lighten further.
+### 2.2 Contrast (WCAG AA)
+* `text #1F1B16` on `bg #F6F5F2` ≈ 15:1 ✓ · `text-dim #6B6257` on `bg` ≈ 5.6:1 ✓
+* `cite #8C2F2B` on white ≈ 8:1 ✓ · dark `cite #E39A8F` on `#221F1B` ≈ 7:1 ✓
 
 ---
 
 ## 3. Typography & spacing
 
-* **Font:** `system-ui, -apple-system, Segoe UI, Inter, sans-serif`. No webfont — faster, native feel. If you add one, Inter only. (Site hero uses a Georgia serif for the non-AI editorial tell.)
-* **Scale:** `12` meta / `13` input labels / `14` body / `16` card title / `18` page title. `line-height 1.6` for answer bubbles.
-* **Radius:** `6` inputs/badges, `7-8` cards, `8` bubbles, `999` pills. Matte, no glow.
-* **Spacing:** `8` tight (input gap), `12` card gap, `16` section, `24` header gap. Don't add `4px` tweaks.
+* **Fonts:** IBM Plex, bundled with the app and the site (`@fontsource/*`, latin subsets) — the app works offline and the site loads nothing from third parties. Sans for UI, Serif for headings, questions and answer text, Mono for paths, line ranges, badges and labels.
+* **Scale:** `11` mono labels / `12` meta / `14` body / `16` serif answer / `20` question / page titles serif.
+* **Radius:** `radius = 2` from `theme.ts` everywhere; `50%` only for dots and spinners.
+* **Spacing:** `8` tight, `12` card gap, `16-28` between answers/sections.
 
 ---
 
-## 4. App UX — keep layout, fix consistency
+## 4. App UX
 
-Current 5 tabs (Ask, Sources, Entities, Settings, System) are correct. No navigation redesign needed. (PII tab removed 2026-10-12, R35.1; Review folded into Entities 2026-10-14, R31.2.)
+Five tabs (Ask, Sources, Entities, Settings, System). Header: brand mark, text tabs with an ink underline on the active one, one ink rule under the bar.
 
-**Token adoption: done.** `frontend/src/theme.ts` is the single source and no
-literal hex remains outside it. New UI must import `theme` / `commonStyles`
-instead of inlining colors.
+**Ask (R-archive, 2026-10-22):** each question reads above its answer (newest pair first). Local mode: serif answer with `[S1]` marks (mono, oxblood, hover highlights the source card), then numbered source cards: breadcrumb title, path relative to the folder source + `§` + line range (mono), one excerpt. Agent mode: no answer block; the same cards are the content ("Evidence for your agent"). `answerText.ts` strips `[match N]` marks and renders a safe markdown subset (paragraphs, lists, bold) as React nodes — never HTML.
 
 **Standing micro-rules:**
-* Button primary = sage accent, secondary = card bg + subtle border.
+* Primary button = ink; secondary = light fill + border.
 * Empty states keep faint text + one-line hint.
-* Citations: dark card + kind-colored left accent — this *is* the brand.
+* Citations: white card, `S1` in oxblood mono — this *is* the brand.
 
 ---
 

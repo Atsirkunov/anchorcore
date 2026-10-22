@@ -4,7 +4,7 @@ import { api } from "./api";
 import { FolderPicker } from "./FolderPicker";
 import { McpConnectCard } from "./McpConnect";
 import { summarizePulls, useModelPull } from "./useModelPull";
-import { theme } from "./theme";
+import { theme, radius } from "./theme";
 import type { Citation, LlmMode, OnboardingState } from "./types";
 
 const STEPS = ["Setup checks", "Configure model", "Connect a source", "Ask a question", "Connect an agent"];
@@ -305,7 +305,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
                   </button>
                 ) : (
                   <div style={{ marginTop: 6 }}>
-                    <div style={{ background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: 6, height: 8, overflow: "hidden" }}>
+                    <div style={{ background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: radius, height: 8, overflow: "hidden" }}>
                       <div style={{ background: theme.accentAlt, height: "100%", width: `${pullSummary.pct}%` }} />
                     </div>
                     {pull.pulls.map((p) => (
@@ -425,7 +425,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
               {state?.sample.available ? " You can also use the bundled sample corpus to try it." : null}
             </div>
             {state?.sample.available && (
-              <button style={{ ...styles.button, background: theme.blueBg, color: theme.accentAlt }} disabled={busy} onClick={connectSample}>
+              <button style={{ ...styles.button, background: theme.citeSoft, color: theme.accentAlt }} disabled={busy} onClick={connectSample}>
                 {busy ? "Syncing sample…" : "Try the sample corpus"}
               </button>
             )}
@@ -539,7 +539,7 @@ const styles: Record<string, React.CSSProperties> = {
   backdrop: {
     position: "fixed",
     inset: 0,
-    background: "rgba(7, 9, 12, 0.82)",
+    background: theme.overlay,
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
@@ -549,16 +549,16 @@ const styles: Record<string, React.CSSProperties> = {
   card: {
     background: theme.bgCard,
     border: `1px solid ${theme.border}`,
-    borderRadius: 12,
+    borderRadius: radius,
     padding: "1.4rem 1.6rem",
     maxWidth: 640,
     width: "100%",
-    boxShadow: "0 12px 40px rgba(0,0,0,0.5)",
+    boxShadow: theme.shadow,
   },
   header: { marginBottom: 14 },
   steps: { display: "flex", gap: 12, fontSize: 12, color: theme.textDim, marginBottom: 14, flexWrap: "wrap" },
-  step: { padding: "0.2rem 0.6rem", borderRadius: 999, background: theme.bgElevated },
-  stepActive: { background: theme.blueBg, color: theme.accentAlt },
+  step: { padding: "0.2rem 0.6rem", borderRadius: radius, background: theme.bgElevated },
+  stepActive: { background: theme.citeSoft, color: theme.accentAlt },
   stepDone: { color: theme.green },
   body: { display: "grid", gap: 10 },
   checkRow: { display: "flex", alignItems: "center", gap: 8, fontSize: 14 },
@@ -566,7 +566,7 @@ const styles: Record<string, React.CSSProperties> = {
   note: {
     background: theme.bgElevated,
     border: `1px solid ${theme.border}`,
-    borderRadius: 8,
+    borderRadius: radius,
     padding: "0.6rem 0.8rem",
     fontSize: 13,
     color: theme.text,
@@ -575,7 +575,7 @@ const styles: Record<string, React.CSSProperties> = {
   code: {
     background: theme.bg,
     border: `1px solid ${theme.border}`,
-    borderRadius: 6,
+    borderRadius: radius,
     padding: "0.5rem 0.7rem",
     fontSize: 12,
     overflowX: "auto",
@@ -584,14 +584,14 @@ const styles: Record<string, React.CSSProperties> = {
   input: {
     flex: 1,
     padding: "0.55rem 0.75rem",
-    borderRadius: 8,
+    borderRadius: radius,
     border: `1px solid ${theme.border}`,
     background: theme.bg,
     color: theme.text,
   },
   button: {
     padding: "0.5rem 1rem",
-    borderRadius: 8,
+    borderRadius: radius,
     border: "none",
     background: theme.buttonBg,
     color: theme.text,
@@ -602,7 +602,7 @@ const styles: Record<string, React.CSSProperties> = {
   answerBox: {
     background: theme.bgElevated,
     border: `1px solid ${theme.border}`,
-    borderRadius: 8,
+    borderRadius: radius,
     padding: "0.7rem 0.9rem",
     fontSize: 14,
     maxHeight: 260,
@@ -612,7 +612,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: theme.amberBg,
     color: theme.amber,
     border: `1px solid ${theme.amber}`,
-    borderRadius: 8,
+    borderRadius: radius,
     padding: "0.45rem 0.7rem",
     fontSize: 12,
     marginBottom: 10,

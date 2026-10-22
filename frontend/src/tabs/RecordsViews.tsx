@@ -2,7 +2,7 @@
 // (the same endpoints the MCP `decisions`/`actions` tools wrap).
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
-import { theme } from "../theme";
+import { theme, radius } from "../theme";
 import type { ActionFilters, ActionRecord, DecisionRecord, RecordProvenance } from "../types";
 
 function Provenance({ p }: { p: RecordProvenance }) {
@@ -182,13 +182,13 @@ export function ActionsView() {
 const styles: Record<string, React.CSSProperties> = {
   toolbar: { display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" },
   list: { display: "flex", flexDirection: "column", gap: 8 },
-  card: { background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: 7, padding: "0.6rem 0.8rem" },
+  card: { background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.6rem 0.8rem" },
   rowHead: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 },
-  recordId: { fontSize: 11, fontWeight: 700, color: theme.accentAlt },
-  badge: { fontSize: 10, padding: "0.15rem 0.5rem", borderRadius: 999, fontWeight: 700, textTransform: "uppercase" },
+  recordId: { fontSize: 11, fontFamily: theme.mono, fontWeight: 600, color: theme.accentAlt },
+  badge: { fontSize: 10, fontFamily: theme.mono, padding: "0.15rem 0.5rem", borderRadius: radius, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" },
   meta: { fontSize: 12, color: theme.textDim },
-  provenance: { fontSize: 11, color: theme.textMuted, marginLeft: "auto" },
-  summary: { fontSize: 14, color: theme.text },
-  notice: { fontSize: 12, color: theme.amber, background: theme.amberBg, padding: "0.4rem 0.6rem", borderRadius: 6 },
-  input: { padding: "0.3rem 0.5rem", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, fontSize: 12 },
+  provenance: { fontSize: 11, fontFamily: theme.mono, color: theme.textMuted, marginLeft: "auto" },
+  summary: { fontSize: 15, fontFamily: theme.serif, color: theme.text },
+  notice: { fontSize: 12, color: theme.amber, background: theme.amberBg, padding: "0.4rem 0.6rem", borderRadius: radius },
+  input: { padding: "0.3rem 0.5rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, fontSize: 12 },
 };

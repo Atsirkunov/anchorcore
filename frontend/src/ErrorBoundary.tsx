@@ -1,6 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { api } from "./api";
-import { theme } from "./theme";
+import { theme, radius } from "./theme";
 
 type Props = {
   children: ReactNode;
@@ -55,9 +55,9 @@ export class ErrorBoundary extends Component<Props, State> {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  card: { background: theme.bgCard, border: `1px solid ${theme.redBorder}`, borderRadius: 8, padding: "1rem 1.25rem", color: theme.redText },
+  card: { background: theme.bgCard, border: `1px solid ${theme.redBorder}`, borderRadius: radius, padding: "1rem 1.25rem", color: theme.redText },
   title: { fontWeight: 600, marginBottom: 8 },
-  detail: { whiteSpace: "pre-wrap", fontSize: 12, color: theme.red, background: theme.bgElevated, padding: "0.5rem 0.75rem", borderRadius: 6, margin: "0 0 12px" },
-  button: { padding: "0.4rem 0.9rem", borderRadius: 6, border: `1px solid ${theme.redBorder}`, background: theme.redBg, color: theme.redText, cursor: "pointer", fontSize: 13 },
+  detail: { whiteSpace: "pre-wrap", fontSize: 12, color: theme.red, background: theme.bgElevated, padding: "0.5rem 0.75rem", borderRadius: radius, margin: "0 0 12px" },
+  button: { padding: "0.4rem 0.9rem", borderRadius: radius, border: `1px solid ${theme.redBorder}`, background: theme.redBg, color: theme.redText, cursor: "pointer", fontSize: 13 },
   link: { fontSize: 13, color: theme.accentAlt, textDecoration: "none", alignSelf: "center" },
 };

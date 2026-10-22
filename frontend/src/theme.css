@@ -1,0 +1,89 @@
+/* Visual tokens (theme.ts reads these as var(--ac-*)). Archive palette, shared
+   with anchorcore.dev: ink on paper, IBM Plex, oxblood (--ac-cite) reserved for
+   citations, section marks and links. Light by default; the dark set applies
+   when <html data-theme="dark"> — set from the Auto/Light/Dark switch
+   (themeMode.ts), Auto following the OS. Without the attribute: light.
+   Change a value here, never inline in a component. */
+@import "@fontsource/ibm-plex-sans/latin-400.css";
+@import "@fontsource/ibm-plex-sans/latin-600.css";
+@import "@fontsource/ibm-plex-serif/latin-500.css";
+@import "@fontsource/ibm-plex-mono/latin-400.css";
+@import "@fontsource/ibm-plex-mono/latin-600.css";
+
+:root {
+  color-scheme: light;
+  --ac-bg: #F6F5F2;
+  --ac-bg-elevated: #FFFFFF;
+  --ac-bg-card: #FFFFFF;
+  --ac-bg-hover: #E7E4DD;
+  --ac-border: #D6D1C7;
+  --ac-border-soft: #E6E2DB;
+  --ac-text: #1F1B16;
+  --ac-text-muted: #4F473D;
+  --ac-text-dim: #6B6257;
+  --ac-accent: #1F1B16;
+  --ac-on-accent: #FFFFFF;
+  --ac-cite: #8C2F2B;
+  --ac-cite-soft: #F3E6E3;
+  --ac-button-bg: #E7E4DD;
+  --ac-green: #2F5D46;
+  --ac-green-bg: #E1ECE4;
+  --ac-green-text: #24493A;
+  --ac-amber: #85550F;
+  --ac-amber-bg: #F5EAD2;
+  --ac-red: #A3332C;
+  --ac-red-bg: #F7E5E2;
+  --ac-red-border: #E3B9B3;
+  --ac-red-text: #7E2823;
+  --ac-blue: #2F5577;
+  --ac-blue-bg: #E3EAF2;
+  --ac-slate: #4E5B69;
+  --ac-muted-bg: #E7E4DD;
+  --ac-mark-text: #1F1B16;
+  --ac-overlay: rgba(31, 27, 22, 0.45);
+  --ac-shadow: 6px 6px 0 #1F1B16;
+  --ac-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --ac-serif: "IBM Plex Serif", Georgia, serif;
+  --ac-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ac-bg: #151412;
+  --ac-bg-elevated: #1C1A17;
+  --ac-bg-card: #221F1B;
+  --ac-bg-hover: #2C2823;
+  --ac-border: #3D372F;
+  --ac-border-soft: #2E2A24;
+  --ac-text: #ECE8E1;
+  --ac-text-muted: #C4BBAE;
+  --ac-text-dim: #A1978A;
+  --ac-accent: #ECE8E1;
+  --ac-on-accent: #151412;
+  --ac-cite: #E39A8F;
+  --ac-cite-soft: #3A2421;
+  --ac-button-bg: #2C2823;
+  --ac-green: #8CC2A2;
+  --ac-green-bg: #1E3127;
+  --ac-green-text: #B5DCC4;
+  --ac-amber: #DDB167;
+  --ac-amber-bg: #3A2C13;
+  --ac-red: #E8968B;
+  --ac-red-bg: #36201D;
+  --ac-red-border: #5C342E;
+  --ac-red-text: #F2C5BE;
+  --ac-blue: #9BBAD6;
+  --ac-blue-bg: #1C2834;
+  --ac-slate: #A9B5C2;
+  --ac-muted-bg: #34302A;
+  --ac-mark-text: #151412;
+  --ac-overlay: rgba(0, 0, 0, 0.6);
+  --ac-shadow: 6px 6px 0 #000000;
+}
+
+html, body { margin: 0; background: var(--ac-bg); color: var(--ac-text); font-family: var(--ac-sans); }
+button, input, select, textarea { font-family: inherit; }
+code, pre, kbd { font-family: var(--ac-mono); }
+a { color: var(--ac-cite); }
+:focus-visible { outline: 2px solid var(--ac-cite); outline-offset: 2px; }
+h1, h2, h3 { font-family: var(--ac-serif); font-weight: 500; letter-spacing: -0.01em; }

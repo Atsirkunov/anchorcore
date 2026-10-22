@@ -50,7 +50,7 @@ Rules that must not break:
 1. Schema: `db.rs` + migration `N+1` in `migrations/*.sql` (register it; one-shot backfills go in real `M::up` SQL, never `ensure_columns`; extend the v10-sim migration test the same way). No `backend/` mirror — it is archived.
 2. API: handler + route in `main.rs` (frontend fallback stays last).
 3. Wire into `retrieval.rs`/`pipeline.rs` if it affects retrieval/ingestion.
-4. Frontend: `types.ts` + `api.ts` + tab component; `theme.ts` tokens, no inline hex; `npm run build` must pass (then re-`cargo build --release` to embed).
+4. Frontend: `types.ts` + `api.ts` + tab component; `theme.ts` tokens (CSS vars from `theme.css`, light + dark), no inline hex; `npm run build` must pass (then re-`cargo build --release` to embed).
 5. Gates: `cargo test` + `cargo check` green, lizard no-new-warnings, golden eval green; conformance suite when touching shared API behavior.
 6. Docs in the same commit (`rust/BACKLOG.md` row → DONE, `docs/` update, decision in `rust/docs/decisions.md` when you chose between real options).
 7. CCN ≤ 15 per function (lizard): split orchestrators into named phase helpers, guard clauses over nesting, `run_db` for blocking DB work.
@@ -115,5 +115,5 @@ Rules that must not break:
 - `OnboardingWizard.tsx` — mode choice (who writes answers) + Ollama checks → connect a folder or the bundled `sample/` corpus (dev checkout only; packaged apps report unavailable) → ask with cited answer.
 - `FolderPicker.tsx` — folder browser (`GET /system/fs`: child dirs only, no canonicalization). Keep the typed-path input.
 - `AskTab` renders turns newest-first. `SourcesTab` is a thin composition (`tabs/sources/*`); job polling is the single `useJobsPoll` hook; `projects` state lives in `ProjectsContext`.
-- `theme.ts` tokens (no inline hex); `api.ts request()` throws `Error(detail)`, 30s timeout, `RequestAbortedError` on cancel; `types.ts` mirrors backend schemas; `main.tsx` error boundaries per tab.
+- `theme.ts` tokens = `var(--ac-*)` from `theme.css` (Archive palette shared with the website, light default + dark via the header Auto/Light/Dark switch (`themeMode.ts`, `data-theme` on `<html>`, pre-paint script in `index.html`); `radius` export; IBM Plex bundled — no inline hex, no left-border stripes; see `docs/design-system.md`). Ask renders via `AnswerView.tsx` + `answerText.ts` (strips `[match N]`, safe markdown subset, `[S1]` marks); the answer model's context drops match marks (`retrieval::strip_match_marks`), agent payloads keep them; `api.ts request()` throws `Error(detail)`, 30s timeout, `RequestAbortedError` on cancel; `types.ts` mirrors backend schemas; `main.tsx` error boundaries per tab.
 - Website: CI auto-deploys anchorcore.dev on `v*` tags when `website/` changed (needs Cloudflare secrets); manual fallback `cd website && npm run build && npx wrangler deploy`. Landing copy uses only the `sample/` or `sample-ai/` corpora — never `business-scale` leftovers. `/.webmcp/bridge.js` is edge-injected (WebMCP), not a repo asset (`website/README.md`).

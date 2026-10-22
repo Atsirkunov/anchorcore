@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api } from "../../api";
 import { useProjects } from "../../useProjects";
-import { theme, commonStyles } from "../../theme";
+import { theme, commonStyles, radius } from "../../theme";
 import type { Source } from "../../types";
 
 /** B37: project create + per-source membership toggles (moved out of the
@@ -67,7 +67,7 @@ export function ProjectSection({ sources, onChanged }: { sources: Source[]; onCh
       style={{
         background: theme.bgElevated,
         border: `1px solid ${theme.border}`,
-        borderRadius: 8,
+        borderRadius: radius,
         padding: "0.9rem 1rem",
         marginBottom: 16,
       }}
@@ -95,7 +95,7 @@ export function ProjectSection({ sources, onChanged }: { sources: Source[]; onCh
       ) : (
         <div style={{ display: "grid", gap: 8 }}>
           {projects.map((p) => (
-            <div key={p.id} style={{ border: `1px solid ${theme.border}`, borderRadius: 6, padding: "0.5rem 0.7rem" }}>
+            <div key={p.id} style={{ border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.5rem 0.7rem" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <span style={{ fontWeight: 600, fontSize: 13 }}>
                   {p.name} {p.is_default && <span title="default scope">★</span>}
@@ -129,7 +129,7 @@ export function ProjectSection({ sources, onChanged }: { sources: Source[]; onCh
                         fontSize: 12,
                         padding: "0.2rem 0.6rem",
                         ...(inProject
-                          ? { background: theme.blueBg, color: theme.accentAlt }
+                          ? { background: theme.citeSoft, color: theme.accentAlt }
                           : { background: theme.buttonBg, color: theme.textMuted }),
                       }}
                     >

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import { theme } from "./theme";
+import { theme, radius } from "./theme";
 import type { BackupImportReport, Job } from "./types";
 
 /**
@@ -306,7 +306,7 @@ export function BackupCard() {
 }
 
 const styles = {
-  card: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: 8, padding: "0.7rem 0.9rem" },
+  card: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.7rem 0.9rem" },
   cardTitle: { fontWeight: 600, marginBottom: 4 },
   row: {
     display: "flex",
@@ -314,20 +314,20 @@ const styles = {
     gap: 4,
     background: theme.bgCard,
     border: `1px solid ${theme.border}`,
-    borderRadius: 6,
+    borderRadius: radius,
     padding: "0.5rem 0.75rem",
   },
   check: { display: "flex", gap: 6, alignItems: "center", fontSize: 13 },
   input: {
     padding: "0.4rem 0.6rem",
-    borderRadius: 6,
+    borderRadius: radius,
     border: `1px solid ${theme.border}`,
     background: theme.bg,
     color: theme.text,
   },
   button: {
     padding: "0.4rem 0.8rem",
-    borderRadius: 6,
+    borderRadius: radius,
     border: `1px solid ${theme.border}`,
     background: theme.buttonBg,
     color: theme.text,
@@ -336,7 +336,7 @@ const styles = {
   },
   primary: {
     padding: "0.4rem 0.8rem",
-    borderRadius: 6,
+    borderRadius: radius,
     border: `1px solid ${theme.accent}`,
     background: theme.accent,
     color: theme.onAccent,

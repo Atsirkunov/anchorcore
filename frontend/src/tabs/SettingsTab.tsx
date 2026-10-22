@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import { stripPlaceholders } from "../placeholders";
-import { theme } from "../theme";
+import { theme, radius } from "../theme";
 import type { AppSettings, AskResponse, LlmMode } from "../types";
 
 type ProbeResult = { status: "pass" | "fail" | "inconclusive"; message: string };
@@ -331,7 +331,7 @@ export function SettingsTab() {
               style={{
                 marginTop: 8,
                 padding: "0.5rem 0.75rem",
-                borderRadius: 6,
+                borderRadius: radius,
                 background: probeResult.status === "pass" ? theme.greenBg : probeResult.status === "fail" ? theme.redBg : theme.amberBg,
                 color: probeResult.status === "pass" ? theme.greenText : probeResult.status === "fail" ? theme.redText : theme.amber,
                 fontSize: 13,
@@ -346,7 +346,7 @@ export function SettingsTab() {
           <div
             style={{
               padding: "0.5rem 0.75rem",
-              borderRadius: 6,
+              borderRadius: radius,
               background: testResult.ok ? theme.greenBg : theme.redBg,
               color: testResult.ok ? theme.greenText : theme.redText,
               fontSize: 13,
@@ -370,8 +370,8 @@ export function SettingsTab() {
 
 const styles: Record<string, React.CSSProperties> = {
   label: { display: "block", fontSize: 12, color: theme.textMuted, marginBottom: 4, marginTop: 8 },
-  input: { width: "100%", padding: "0.5rem 0.75rem", borderRadius: 8, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, boxSizing: "border-box" },
-  button: { marginTop: 10, padding: "0.5rem 1rem", borderRadius: 8, border: "none", background: theme.buttonBg, color: theme.text, cursor: "pointer", fontSize: 13 },
-  section: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: 8, padding: "0.9rem 1rem" },
+  input: { width: "100%", padding: "0.5rem 0.75rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, boxSizing: "border-box" },
+  button: { marginTop: 10, padding: "0.5rem 1rem", borderRadius: radius, border: "none", background: theme.buttonBg, color: theme.text, cursor: "pointer", fontSize: 13 },
+  section: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.9rem 1rem" },
   sectionTitle: { fontWeight: 600, fontSize: 14, marginBottom: 4 },
 };

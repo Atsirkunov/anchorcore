@@ -1245,7 +1245,9 @@ fn build_answer_context(hits: &[retrieval::Hit]) -> String {
     for (i, h) in hits.iter().enumerate() {
         let window = crate::retrieval::content_window(&h.content, h.chunk_id, 2000)
             .unwrap_or_else(|| h.content.chars().take(2000).collect::<String>());
-        let section = format!("[S{}] {}", i + 1, window);
+        // Marks locate the match for agents; a small answer model copies them
+        // into prose ("[S1] [match 7]"), so the generation context drops them.
+        let section = format!("[S{}] {}", i + 1, crate::retrieval::strip_match_marks(&window));
         let add = section.chars().count() + if sections.is_empty() { 0 } else { 2 };
         if used_chars + add > budget_chars {
             if sections.is_empty() {
@@ -2167,6 +2169,15 @@ mod tests {
         let (text, composed) = generate_answer(&settings, "q", "ctx", &[]).await;
         assert!(!composed, "slow model must not compose, got: {}", text.chars().take(120).collect::<String>());
         assert!(text.contains("Answer model unreachable"), "text: {}", text.chars().take(160).collect::<String>());
+    }
+
+    #[test]
+    fn build_answer_context_drops_match_marks() {
+        let mut h = mk_hit(1, false);
+        h.content = "intro\n[match 7]\nOwner: Sarah.\n[/match 7]\ntail".to_string();
+        let ctx = build_answer_context(&[h]);
+        assert_eq!(ctx, "[S1] intro\nOwner: Sarah.\ntail");
+        assert!(!ctx.contains("[match"), "marks leaked into the answer context: {}", ctx);
     }
 
     #[test]
