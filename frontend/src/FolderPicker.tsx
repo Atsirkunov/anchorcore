@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
-import { commonStyles, theme } from "./theme";
+import { commonStyles, theme, radius } from "./theme";
 import type { FolderListing } from "./types";
 
 function message(e: unknown): string {
@@ -125,7 +125,7 @@ export function FolderPicker({
           <>
             {dirs.map((d) => (
               <button key={d.path} type="button" style={styles.dir} title={d.path} disabled={loading} onClick={() => go(d.path)}>
-                📁 {d.name}
+                {d.name}/
               </button>
             ))}
             {dirs.length === 0 && <div style={styles.hint}>No subfolders — you can select this folder.</div>}
@@ -160,7 +160,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
     background: theme.bgElevated,
     border: `1px solid ${theme.border}`,
-    borderRadius: 8,
+    borderRadius: radius,
     padding: "0.6rem 0.75rem",
   },
   row: { display: "flex", gap: 8, alignItems: "center" },
@@ -184,7 +184,7 @@ const styles: Record<string, React.CSSProperties> = {
     maxHeight: 200,
     overflowY: "auto",
     border: `1px solid ${theme.borderSoft}`,
-    borderRadius: 6,
+    borderRadius: radius,
     background: theme.bg,
     padding: 4,
   },
@@ -192,7 +192,7 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: "left",
     background: theme.bgCard,
     border: `1px solid ${theme.borderSoft}`,
-    borderRadius: 6,
+    borderRadius: radius,
     color: theme.text,
     padding: "0.35rem 0.6rem",
     fontSize: 13,

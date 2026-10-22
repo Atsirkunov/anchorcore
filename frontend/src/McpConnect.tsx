@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
-import { theme } from "./theme";
+import { theme, radius } from "./theme";
 import type { McpClient, McpInfo } from "./types";
 
 /**
@@ -173,11 +173,11 @@ export function McpConnectCard() {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  card: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: 8, padding: "0.7rem 0.9rem" },
+  card: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.7rem 0.9rem" },
   cardTitle: { fontWeight: 600, marginBottom: 4 },
   clientRow: { display: "flex", alignItems: "center", gap: 8, padding: "0.35rem 0", borderBottom: `1px solid ${theme.border}` },
-  clientButton: { padding: "0.35rem 0.7rem", borderRadius: 8, border: "none", background: theme.buttonBg, color: theme.text, cursor: "pointer", fontSize: 12, flexShrink: 0 },
-  code: { flex: 1, fontSize: 12, background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: 6, padding: "0.5rem 0.75rem", wordBreak: "break-all" },
-  pre: { margin: "6px 0 0", padding: "0.5rem 0.75rem", fontSize: 12, background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: 6, overflowX: "auto" },
+  clientButton: { padding: "0.35rem 0.7rem", borderRadius: radius, border: "none", background: theme.buttonBg, color: theme.text, cursor: "pointer", fontSize: 12, flexShrink: 0 },
+  code: { flex: 1, fontSize: 12, background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.5rem 0.75rem", wordBreak: "break-all" },
+  pre: { margin: "6px 0 0", padding: "0.5rem 0.75rem", fontSize: 12, background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: radius, overflowX: "auto" },
   summary: { fontSize: 12, color: theme.textMuted, cursor: "pointer" },
 };

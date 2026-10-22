@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
-import { commonStyles, theme } from "./theme";
+import { commonStyles, theme, radius } from "./theme";
 import type { UpdateStatus } from "./types";
 
 /**
@@ -170,7 +170,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: "none",
     border: `1px solid ${theme.blue}`,
     color: theme.text,
-    borderRadius: 6,
+    borderRadius: radius,
     padding: "0.2rem 0.6rem",
     cursor: "pointer",
   },

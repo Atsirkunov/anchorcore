@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
-import { theme } from "../theme";
+import { theme, radius } from "../theme";
 import type { GlossaryEntry, ItemMeta } from "../types";
 
 /**
@@ -137,13 +137,13 @@ export function GlossaryPanel() {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  card: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: 8, padding: "0.7rem 0.9rem", marginBottom: 12 },
+  card: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.7rem 0.9rem", marginBottom: 12 },
   header: { background: "none", border: "none", color: theme.text, fontWeight: 700, fontSize: 13, padding: 0, cursor: "pointer" },
   hint: { fontSize: 12, color: theme.textDim, marginTop: 2 },
   subhead: { fontSize: 12, fontWeight: 700, color: theme.textMuted },
   row: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
-  input: { padding: "0.3rem 0.5rem", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bgElevated, color: theme.text, fontSize: 12 },
-  button: { padding: "0.3rem 0.7rem", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bgHover, color: theme.text, cursor: "pointer", fontSize: 12 },
+  input: { padding: "0.3rem 0.5rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgElevated, color: theme.text, fontSize: 12 },
+  button: { padding: "0.3rem 0.7rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgHover, color: theme.text, cursor: "pointer", fontSize: 12 },
   link: { background: "none", border: "none", color: theme.accentAlt, cursor: "pointer", fontSize: 12, padding: 0, textDecoration: "underline" },
   list: { listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 4 },
   entry: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12, color: theme.text },

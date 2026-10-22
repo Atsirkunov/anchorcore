@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api, RequestAbortedError } from "../api";
-import { theme } from "../theme";
-import { AGENT_COMPOSE_HINT, isAgentCompose, modeBannerNotes } from "../answerMode";
+import { theme, radius } from "../theme";
 import type { AskResponse, AskTurn } from "../types";
+import { AnswerView, type AnswerTurn } from "./AnswerView";
 
 // R23.4: the server warns in plain language whenever no answer model ran
 // (`AskResponse.warning`, Some unless mode == "composed"). Carried per turn
@@ -15,31 +15,16 @@ const SAMPLE_QUESTIONS = [
   "Show the steps for it",
 ];
 
-function Breadcrumb({ path }: { path?: string }) {
-  if (!path) return null;
-  const parts = path.split(" > ");
-  return (
-    <span style={{ fontSize: 11, color: theme.textDim }}>
-      {parts.map((p, i) => (
-        <span key={i}>
-          {i > 0 && <span style={{ margin: "0 4px", color: theme.textMuted }}>›</span>}
-          <span style={{ color: i === parts.length - 1 ? theme.text : theme.textDim }}>{p}</span>
-        </span>
-      ))}
-    </span>
-  );
+/** Question/answer pairs, newest first — the question reads above its answer. */
+function pairs(turns: Turn[]): AnswerTurn[] {
+  const out: AnswerTurn[] = [];
+  for (let i = 0; i + 1 < turns.length; i += 2) {
+    const a = turns[i + 1];
+    out.push({ question: turns[i].content, answer: a.content, citations: a.citations ?? [], mode: a.mode, retrieval: a.retrieval, warning: a.warning });
+  }
+  return out.reverse();
 }
 
-function TagChips({ tags }: { tags?: string[] }) {
-  if (!tags || tags.length === 0) return null;
-  return (
-    <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap", marginLeft: 6 }}>
-      {tags.slice(0, 4).map((t) => (
-        <span key={t} style={{ fontSize: 10, background: theme.bgHover, color: theme.accentAlt, border: `1px solid ${theme.border}`, padding: "0.1rem 0.4rem", borderRadius: 999 }}>{t}</span>
-      ))}
-    </span>
-  );
-}
 export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSources?: () => void }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [question, setQuestion] = useState("");
@@ -47,14 +32,20 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
   const [error, setError] = useState<string | null>(null);
   const [publicOnly, setPublicOnly] = useState(false);
   const [sourceCount, setSourceCount] = useState<number | null>(null);
+  // folder roots, so citations read "specs/runbook.md" instead of an absolute path
+  const [roots, setRoots] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     api
       .listSources()
-      .then((sources) => {
-        if (!cancelled) setSourceCount(sources.length);
+      .then(async (sources) => {
+        if (cancelled) return;
+        setSourceCount(sources.length);
+        const folders = sources.filter((s) => s.connector === "folder");
+        const configs = await Promise.all(folders.map((s) => api.sourceConfig(s.id).catch(() => ({}) as Record<string, string>)));
+        if (!cancelled) setRoots(configs.map((c) => c.path).filter((p): p is string => !!p));
       })
       .catch(() => {
         if (!cancelled) setSourceCount(null);
@@ -104,7 +95,7 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-        <h2 style={{ margin: 0 }}>Ask your memory</h2>
+        <h2 style={{ margin: 0 }}>Ask</h2>
         {turns.length > 0 && (
           <button onClick={clearContext} style={styles.clearButton} title="Forget the conversation — the next question is asked standalone">
             Clear context
@@ -123,13 +114,13 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
           onChange={(e) => setQuestion(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && submit()}
           placeholder={turns.length ? "Follow-up… e.g. show the steps for it" : "What was decided about X, and why?"}
-          style={{ flex: 1, padding: "0.8rem 1rem", borderRadius: 10, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, fontSize: 14 }}
+          style={{ flex: 1, padding: "0.8rem 1rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, fontSize: 14 }}
         />
-        <button onClick={submit} disabled={busy} style={{ padding: "0.6rem 1.2rem", borderRadius: 8, border: "none", background: theme.accent, color: theme.onAccent, cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.6 : 1 }}>
+        <button onClick={submit} disabled={busy} style={{ padding: "0.6rem 1.2rem", borderRadius: radius, border: "none", background: theme.accent, color: theme.onAccent, cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.6 : 1 }}>
           {busy ? "Thinking…" : "Ask"}
         </button>
         {busy && (
-          <button onClick={cancel} style={{ padding: "0.6rem 1rem", borderRadius: 8, border: `1px solid ${theme.redBorder}`, background: theme.redBg, color: theme.redText, cursor: "pointer" }}>
+          <button onClick={cancel} style={{ padding: "0.6rem 1rem", borderRadius: radius, border: `1px solid ${theme.redBorder}`, background: theme.redBg, color: theme.redText, cursor: "pointer" }}>
             Cancel
           </button>
         )}
@@ -166,75 +157,15 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
       {error && <p style={{ color: theme.red }}>{error}</p>}
 
       {turns.length > 0 && (
-        <div style={{ display: "grid", gap: 22, marginTop: 28 }}>
-          {[...turns].reverse().map((t, i) => {
-            const key = `${t.role}-${i}-${t.content.slice(0, 32)}`;
-            const stagger = `${Math.min(i * 0.07, 0.35)}s`;
-            return t.role === "user" ? (
-              <div
-                key={key}
-                className="animated"
-                style={{ ...styles.bubble, background: theme.bgHover, marginLeft: 64, animation: `rise 0.45s ease both`, animationDelay: stagger }}
-              >
-                <div style={{ fontSize: 11, color: theme.accentAlt, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>You</div>
-                <div style={{ whiteSpace: "pre-wrap" }}>{t.content}</div>
-              </div>
-            ) : (
-              <div
-                key={key}
-                className="animated"
-                style={{ ...styles.bubble, background: theme.bgCard, animation: `popIn 0.45s ease both`, animationDelay: stagger }}
-              >
-                <div style={{ fontSize: 11, color: theme.purple, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>AnchorCore</div>
-                {t.warning ? <div style={styles.degradedNote}>{t.warning}</div> : null}
-                {modeBannerNotes(t.mode, t.retrieval).map((note) => (
-                  <div key={note} style={styles.degradedNote}>
-                    {note}
-                  </div>
-                ))}
-                {isAgentCompose(t.mode) ? (
-                  // R45.2: agent mode — evidence view, neutral hint, no answer text.
-                  <div style={styles.agentNote}>{AGENT_COMPOSE_HINT}</div>
-                ) : (
-                  <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.7 }}>{t.content}</div>
-                )}
-                {t.citations && t.citations.length > 0 && (
-                  <div style={{ marginTop: 14 }}>
-                    <div style={{ fontSize: 12, color: theme.textMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                      {isAgentCompose(t.mode) ? "Evidence" : "Sources"} · {t.citations.length}
-                    </div>
-                    {t.citations.map((c, j) => (
-                      <div
-                        key={`${c.source_ref}-${j}`}
-                        className="animated"
-                        style={{ ...styles.cite, animation: `rise 0.4s ease both`, animationDelay: `${Math.min(j * 0.08, 0.4)}s` }}
-                      >
-                        <span style={{ color: theme.purple }}>[{c.kind}]</span>{c.doc_type === "code" && <span style={{ color: theme.blue }}> [code]</span>} {c.summary}
-                        {isAgentCompose(t.mode) && c.snippet && (
-                          <div style={{ whiteSpace: "pre-wrap", color: theme.text, margin: "6px 0" }}>{c.snippet}</div>
-                        )}
-                        <div style={{ color: theme.textDim, fontSize: 12 }}>{c.source_ref} · score {c.score}</div>
-                        {c.conflicts_with && c.conflicts_with.length > 0 && (
-                          <div style={{ color: theme.amber, fontSize: 12 }}>contradicts {c.conflicts_with.map((id) => `#${id}`).join(", ")}</div>
-                        )}
-                        {c.path && (
-                          <div style={{ marginTop: 3 }}>
-                            <Breadcrumb path={c.path} />
-                          </div>
-                        )}
-                        <TagChips tags={c.tags} />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+        <div style={{ display: "grid", gap: 28, marginTop: 28 }}>
+          {pairs(turns).map((p, i) => (
+            <AnswerView key={`${turns.length - i}-${p.question.slice(0, 24)}`} turn={p} roots={roots} latest={i === 0} />
+          ))}
         </div>
       )}
       {turns.length === 0 && !busy && (
         <div style={styles.starter}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>Try one:</div>
+          <p style={styles.starterLabel}>Try one</p>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {SAMPLE_QUESTIONS.map((q) => (
               <button key={q} onClick={() => setQuestion(q)} style={styles.chip}>
@@ -270,60 +201,26 @@ const styles: Record<string, React.CSSProperties> = {
     animation: "spin 0.8s linear infinite",
     flexShrink: 0,
   },
-  bubble: {
-    border: `1px solid ${theme.border}`,
-    borderRadius: 14,
-    padding: "1.25rem 1.4rem",
-    fontSize: 14,
-  },
-  degradedNote: {
-    background: theme.amberBg,
-    color: theme.amber,
-    border: `1px solid ${theme.amber}`,
-    borderRadius: 8,
-    padding: "0.45rem 0.7rem",
-    fontSize: 12,
-    marginBottom: 10,
-  },
-  agentNote: {
-    background: theme.blueBg,
-    color: theme.blue,
-    border: `1px solid ${theme.blue}`,
-    borderRadius: 8,
-    padding: "0.45rem 0.7rem",
-    fontSize: 12,
-    marginBottom: 10,
-    lineHeight: 1.5,
-  },
-  cite: {
-    marginTop: 8,
-    padding: "0.7rem 0.9rem",
-    background: theme.bgElevated,
-    borderRadius: 10,
-    fontSize: 13,
-    lineHeight: 1.6,
-  },
   clearButton: {
     background: "none",
-    border: `1px solid ${theme.redBorder}`,
-    color: theme.redText,
-    borderRadius: 6,
+    border: `1px solid ${theme.border}`,
+    color: theme.textMuted,
+    borderRadius: radius,
     padding: "0.25rem 0.6rem",
     cursor: "pointer",
     fontSize: 12,
   },
   starter: {
-    marginTop: 24,
+    marginTop: 28,
+    paddingTop: 18,
+    borderTop: `1px solid ${theme.border}`,
+  },
+  starterLabel: { margin: "0 0 8px", fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", color: theme.textDim },
+  chip: {
     background: theme.bgCard,
     border: `1px solid ${theme.border}`,
-    borderRadius: 14,
-    padding: "1.5rem 1.6rem",
-  },
-  chip: {
-    background: theme.bgHover,
-    border: `1px solid ${theme.border}`,
     color: theme.text,
-    borderRadius: 999,
+    borderRadius: radius,
     padding: "0.35rem 0.8rem",
     cursor: "pointer",
     fontSize: 13,

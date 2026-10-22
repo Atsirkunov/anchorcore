@@ -4,7 +4,7 @@ import { BackupCard } from "../BackupCard";
 import { McpConnectCard } from "../McpConnect";
 import { useModelPull } from "../useModelPull";
 import { UpdateCard } from "../Updates";
-import { theme } from "../theme";
+import { theme, radius } from "../theme";
 import type { Job, LogFile, McpClient, SystemEvent, SystemStatus } from "../types";
 
 const POLL_MS = 10000;
@@ -246,10 +246,11 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
       ) : (
         <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 6, marginBottom: 20 }}>
           {events.map((e) => (
-            <li key={e.id} style={{ ...styles.row, borderLeft: `3px solid ${levelColor(e.level)}` }}>
+            <li key={e.id} style={styles.row}>
               <div>
+                <span style={{ fontSize: 11, fontFamily: theme.mono, textTransform: "uppercase", color: levelColor(e.level) }}>{e.level}</span>{" "}
                 <span style={{ fontSize: 12, color: theme.textMuted }}>{new Date(e.created_at).toLocaleString()}</span>{" "}
-                <span style={{ fontSize: 12, background: theme.bgHover, borderRadius: 4, padding: "0 0.35rem" }}>
+                <span style={{ fontSize: 12, background: theme.bgHover, borderRadius: radius, padding: "0 0.35rem" }}>
                   {e.component}
                 </span>{" "}
                 {e.source_name && <span style={{ fontSize: 12, color: theme.accentAlt }}>{e.source_name}</span>}
@@ -267,12 +268,12 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
       ) : (
         <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 6, marginBottom: 20 }}>
           {jobs.map((j) => (
-            <li key={j.id} style={{ ...styles.row, borderLeft: `3px solid ${j.status === "failed" ? theme.red : j.status === "cancelled" ? theme.amber : j.status === "running" ? theme.accentAlt : theme.green}` }}>
+            <li key={j.id} style={styles.row}>
               <div style={{ fontSize: 12, color: theme.textMuted }}>
                 #{j.id} {j.kind} · {new Date(j.created_at).toLocaleString()} · {j.processed}/{j.total}
               </div>
               <div style={{ fontSize: 13 }}>
-                {j.status}
+                <span style={{ fontFamily: theme.mono, color: j.status === "failed" ? theme.red : j.status === "cancelled" ? theme.amber : j.status === "running" ? theme.accentAlt : theme.green }}>{j.status}</span>
                 {j.status === "done" && j.result && (
                   <span> — {j.result.items ?? 0} items, {j.result.entities ?? 0} entities{j.result.purged ? `, ${j.result.purged} purged` : ''}{j.result.unchanged ? `, ${j.result.unchanged} unchanged` : ''}</span>
                 )}
@@ -477,7 +478,7 @@ function AgentSkillsCard() {
         </div>
       ))}
       {pending && (
-        <div style={{ ...styles.row, marginTop: 8, borderLeft: `3px solid ${theme.amber}` }}>
+        <div style={{ ...styles.row, marginTop: 8, borderColor: theme.amber }}>
           <div style={{ fontSize: 13, fontWeight: 600 }}>Install {pending.title} into {pending.clientName}?</div>
           <div style={{ fontSize: 12, color: theme.textMuted, wordBreak: "break-all" }}>
             This writes {pending.path}. An identical file is left alone; a different file is backed up first, never
@@ -507,10 +508,10 @@ function AgentSkillsCard() {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  button: { padding: "0.5rem 1rem", borderRadius: 8, border: "none", background: theme.buttonBg, color: theme.text, cursor: "pointer" },
-  select: { padding: "0.5rem 0.75rem", borderRadius: 8, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text },
-  card: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: 8, padding: "0.7rem 0.9rem" },
+  button: { padding: "0.5rem 1rem", borderRadius: radius, border: "none", background: theme.buttonBg, color: theme.text, cursor: "pointer" },
+  select: { padding: "0.5rem 0.75rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text },
+  card: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.7rem 0.9rem" },
   cardTitle: { fontWeight: 600, marginBottom: 4 },
-  row: { display: "flex", flexDirection: "column", gap: 2, background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: 6, padding: "0.5rem 0.75rem" },
+  row: { display: "flex", flexDirection: "column", gap: 2, background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.5rem 0.75rem" },
   link: { color: theme.accentAlt, fontSize: 13, textDecoration: "none" },
 };

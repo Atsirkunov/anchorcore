@@ -1629,6 +1629,22 @@ fn mark_close(chunk_id: i64) -> String {
     format!("[/match {}]", chunk_id)
 }
 
+/// True for a line that is exactly a match mark (`[match 12]` / `[/match 12]`).
+fn is_mark_line(line: &str) -> bool {
+    let t = line.trim();
+    let inner = t.strip_prefix("[/match ").or_else(|| t.strip_prefix("[match "));
+    inner
+        .and_then(|rest| rest.strip_suffix(']'))
+        .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Content without its match-mark lines — for prose consumers (the answer
+/// model's context) that must not echo the marks back to people. Agent-facing
+/// payloads keep the marks (R36.3).
+pub fn strip_match_marks(content: &str) -> String {
+    content.lines().filter(|l| !is_mark_line(l)).collect::<Vec<_>>().join("\n")
+}
+
 /// Parent bytes: subtree chunks in document order, matched ones wrapped in
 /// marks, joined with blank lines. Non-matched chunks appear bare.
 fn assemble_parent(chunks: &[(i64, String)], matched: &HashSet<i64>) -> String {
