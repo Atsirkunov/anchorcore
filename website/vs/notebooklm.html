@@ -7,6 +7,15 @@
 <meta name="description" content="Comparing AnchorCore with NotebookLM (now Gemini Notebook): a local-first alternative that indexes folders, Jira, Linear and Drive on your machine and cites the exact section. Where each fits." />
 <link rel="canonical" href="https://anchorcore.dev/vs/notebooklm" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <script>
+    // Theme before first paint (no flash) — same resolution as src/themeMode.ts.
+    (function () {
+      var m = null;
+      try { m = localStorage.getItem("theme-mode"); } catch (e) {}
+      var dark = m === "dark" || (m !== "light" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+    })();
+  </script>
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
@@ -21,7 +30,7 @@
         <a href="/team">For teams</a>
         <a href="https://github.com/Atsirkunov/anchorcore" target="_blank" rel="noreferrer">GitHub ↗</a>
       </nav>
-      <a class="nav-cta" href="/#download">Download<span class="nav-cta-sfx"> — free for personal use</span></a>
+      <a class="nav-cta" href="/#download">Download</a>
       <!-- header nav (≤1080px): same section links, collapsed behind the burger — keep in sync with .nav (R18.1/R18.3) -->
       <details class="navmenu" id="navmenu">
         <summary class="navmenu-btn"><span class="sr-only">Sections</span><span class="burger" aria-hidden="true"></span></summary>
@@ -82,7 +91,7 @@
 
 <h2 id="try">Try it</h2>
 <p>The quickest test is the sample company: <a href="/guides/sample">download <code>sample.zip</code></a>, sync it, and ask a cited question. How it handles your data is on the <a href="/security">security notes</a>; running it for a team is on <a href="/team">For teams</a>.</p>
-<p><a class="btn primary" href="/#download">Download — free for personal use</a> <a class="btn secondary" href="/#demo">Watch it work</a></p>
+<p><a class="btn primary" href="/#download">Download — free for personal use</a> <a class="btn secondary" href="/guides/sample">Try the sample</a></p>
 </div>
       </div>
     </article>

@@ -1,7 +1,8 @@
-import { renderGraphMini } from "./components/GraphMini";
 import { initClaudeSession } from "./components/ClaudeSession";
+import { initAppSession } from "./components/AppSession";
 import { initEmailCapture } from "./capture";
 import { initNavMenu } from "./nav";
+import { initThemeSwitch } from "./themeMode";
 
 // Direct download assets (release.yml — keep these file names in sync).
 const WIN_ZIP = "https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-windows.zip";
@@ -41,7 +42,7 @@ function personalDownload(): { url: string; label: string; altHtml: string; mobi
   const os = currentOs();
   const links = (skip?: string) => Object.entries(DESKTOP).filter(([k]) => k !== skip).map(([, d]) => `<a href="${d.url}">${d.name}</a>`).join(" · ");
   if (os === "mobile") return { url: "#roadmap", label: "Email me the download link", altHtml: `Desktop app: ${links()}`, mobile: true };
-  return { url: DESKTOP[os].url, label: "Download — free for personal use", altHtml: `Also: ${links(os)}`, mobile: false };
+  return { url: DESKTOP[os].url, label: "Download, free for personal use", altHtml: `Also: ${links(os)}`, mobile: false };
 }
 
 // Phones get the email form (interest=download) instead of a zip they cannot run.
@@ -54,12 +55,12 @@ function applyDownload(a: HTMLAnchorElement, dl: ReturnType<typeof personalDownl
 
 function initDownloadLinks(): void {
   const dl = personalDownload();
-  for (const id of ["cta-primary", "cta-roadmap"]) {
+  for (const id of ["cta-roadmap"]) {
     const a = document.getElementById(id) as HTMLAnchorElement | null;
     if (a) applyDownload(a, dl);
   }
   const note = document.getElementById("cta-note");
-  if (note) note.innerHTML = `macOS, Windows & Linux • one download, no Docker • data stays on your machine · ${dl.altHtml}`;
+  if (note) note.innerHTML = `macOS, Windows and Linux. One download, no Docker, no account. ${dl.altHtml}`;
 }
 
 // Audience pages replaced the hero toggle (R44.16): old ?track= links still land
@@ -98,7 +99,7 @@ function initHashNav() {
       const isActive = hash !== "" && a.getAttribute("href") === hash;
       a.style.textDecoration = isActive ? "underline" : "none";
       a.style.textUnderlineOffset = isActive ? "3px" : "";
-      a.style.color = isActive ? "var(--sage)" : "var(--ink)";
+      a.style.color = isActive ? "var(--cite)" : "var(--ink)";
       if (isActive) a.setAttribute("aria-current", "location");
       else a.removeAttribute("aria-current");
     });
@@ -125,116 +126,8 @@ function initHashNav() {
   sections.forEach(s => spy.observe(s));
 }
 
-// GraphMini — 3 nodes, Stone & Sage, no new hex (uses CSS vars)
 
-// Terminal animations — abbreviated sessions (demo + agent-skill sections).
-// MCP shapes mirror rust/crates/anchorcore/src/mcp.rs (tools/call with
-// name + arguments.question); skill shapes mirror the anchorcore-setup skill
-// (local REST: health → models → sources → sync → ask + honesty flags).
-// The on-page captions note both are abbreviated.
-type TermLine = { cls: string; text: string; type?: boolean; pause?: number };
-const TERM_LINES: TermLine[] = [
-  { cls: "t-dim", text: "$ anchorcore mcp", type: true },
-  { cls: "t-dim", text: "# stdio MCP mode — spawned by your harness, no browser", pause: 350 },
-  { cls: "t-out", text: '→ tools/call {"name": "ask", "arguments": {"question": "Who owns the billing provider migration?"}}', type: true },
-  { cls: "t-dim", text: "··· searching your files: meaning + keywords + links", pause: 650 },
-  { cls: "t-in", text: "← Sarah owns the billing provider migration — parallel run starts Monday.", pause: 300 },
-  { cls: "t-in", text: "← [decision] d2-billing-provider-approval · owner: Sarah" },
-  { cls: "t-in", text: "← [note] m2-q3-planning · 74%" },
-  { cls: "t-dim", text: "← done: 1 answer · 2 citations · logged" },
-];
-
-const SKILL_LINES: TermLine[] = [
-  { cls: "t-dim", text: "$ GET /health → {\"status\": \"ok\"}", type: true },
-  { cls: "t-out", text: "→ GET /system/status · answer_ready: false · missing: embed_model" },
-  { cls: "t-dim", text: "$ POST /system/ollama/pull {\"models\": [\"llama3.2:3b\", \"nomic-embed-text\"]}", pause: 350 },
-  { cls: "t-dim", text: "··· pulling models · two free downloads, then local forever", pause: 650 },
-  { cls: "t-dim", text: "$ POST /sources {\"connector\": \"folder\", \"name\": \"Sample\"} → id 3" },
-  { cls: "t-dim", text: "$ POST /sources/3/sync → done · about 40 entities filed", pause: 400 },
-  { cls: "t-out", text: "→ POST /qa {\"question\": \"Who owns the billing provider migration?\"}", type: true },
-  { cls: "t-in", text: "← Sarah owns the billing provider migration — parallel run starts Monday.", pause: 300 },
-  { cls: "t-in", text: "← [decision] d2-billing-provider-approval · mode=composed" },
-  { cls: "t-dim", text: "← done: cited answer · 2 citations · local-only" },
-];
-
-function termLine(el: HTMLElement, cls: string, text: string): void {
-  const div = document.createElement("div");
-  div.className = cls;
-  div.textContent = text;
-  el.appendChild(div);
-}
-
-function initTerminal(bodyId: string, replayId: string, lines: TermLine[]): void {
-  const body = document.getElementById(bodyId);
-  const replay = document.getElementById(replayId);
-  if (!body) return;
-  // Typed output is decorative; screen readers get the full transcript once (R44.8)
-  body.setAttribute("aria-hidden", "true");
-  const transcript = document.createElement("div");
-  transcript.className = "sr-only";
-  transcript.textContent = lines.map((l) => l.text).join("\n");
-  body.after(transcript);
-  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  let started = false;
-  let run = 0;
-
-  function renderAll(): void {
-    body!.innerHTML = "";
-    for (const line of lines) termLine(body!, line.cls, line.text);
-  }
-
-  async function play(): Promise<void> {
-    const my = ++run;
-    body!.innerHTML = "";
-    const caret = document.createElement("span");
-    caret.className = "caret";
-    for (const line of lines) {
-      if (line.pause) await new Promise((r) => setTimeout(r, line.pause));
-      if (my !== run) return;
-      if (line.type && !reduced) {
-        const div = document.createElement("div");
-        div.className = line.cls;
-        body!.appendChild(div);
-        div.appendChild(caret);
-        for (let i = 1; i <= line.text.length; i++) {
-          div.insertBefore(document.createTextNode(line.text[i - 1]), caret);
-          await new Promise((r) => setTimeout(r, 14));
-          if (my !== run) return;
-        }
-        caret.remove();
-      } else {
-        termLine(body!, line.cls, line.text);
-      }
-    }
-  }
-
-  function start(): void {
-    if (started) return;
-    started = true;
-    if (reduced) renderAll();
-    else void play();
-  }
-
-  replay?.addEventListener("click", () => {
-    if (reduced) renderAll();
-    else void play();
-  });
-
-  if ("IntersectionObserver" in window) {
-    const obs = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting)) {
-        start();
-        obs.disconnect();
-      }
-    }, { threshold: 0.3 });
-    obs.observe(body);
-  } else {
-    start();
-  }
-}
-
-
-// Hero agent-skill card: copy the install command (R18.19). No JS: the code stays
+// Agent card: copy the skill install command (R18.19). No JS: the code stays
 // visible and selectable, only the one-click copy is lost.
 function selectText(el: HTMLElement): void {
   const range = document.createRange();
@@ -266,16 +159,40 @@ function initSkillCopy(): void {
   });
 }
 
-// Airy scroll reveal — one observer, no deps
+// Hero demo: one question, two places to ask it (coding agent | browser app).
+// Without JS the agent panel shows; the app panel stays in the DOM, hidden.
+function initDemoTabs(onShow: Record<string, () => void>): void {
+  const tabs = [...document.querySelectorAll<HTMLButtonElement>(".demo-switch [role=tab]")];
+  const select = (tab: HTMLButtonElement, focus: boolean): void => {
+    for (const t of tabs) {
+      const on = t === tab;
+      t.setAttribute("aria-selected", String(on));
+      t.tabIndex = on ? 0 : -1;
+      const panel = document.getElementById(t.getAttribute("aria-controls") ?? "");
+      if (panel) panel.hidden = !on;
+      if (on && panel) onShow[panel.id]?.();
+    }
+    if (focus) tab.focus();
+  };
+  tabs.forEach((tab, i) => {
+    tab.addEventListener("click", () => select(tab, false));
+    tab.addEventListener("keydown", (e) => {
+      const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+      if (step) select(tabs[(i + step + tabs.length) % tabs.length], true);
+    });
+  });
+}
+
+// Scroll reveal, an enhancement only: content is visible unless this runs, and
+// it never runs for reduced motion or automation (headless capture, crawlers
+// that execute JS but never scroll). Printing reveals everything.
 function initReveal(): void {
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches || navigator.webdriver) return;
+  if (!("IntersectionObserver" in window)) return;
   // the hero is above the fold: revealing it delays first paint (R44.3)
-  const targets = Array.from(document.querySelectorAll("section:not(.hero) .wrap, .col, .step, .qa, .fig, .flow")).filter((el) => !el.closest(".hero"));
+  const targets = Array.from(document.querySelectorAll("section:not(.hero) .wrap, .col, .step, .qa, .fig")).filter((el) => !el.closest(".hero"));
   targets.forEach((el) => el.classList.add("reveal"));
-  if (!("IntersectionObserver" in window)) {
-    targets.forEach((el) => el.classList.add("in"));
-    return;
-  }
+  window.addEventListener("beforeprint", () => targets.forEach((el) => el.classList.add("in")));
   const obs = new IntersectionObserver(
     (entries) => {
       for (const e of entries) {
@@ -294,19 +211,8 @@ initEmailCapture();
 if (!redirectLegacyTrack() && !redirectLegacyGuide()) initDownloadLinks();
 initHashNav();
 initNavMenu();
+initThemeSwitch();
 initSkillCopy();
 initReveal();
 initClaudeSession("cs-hero");
-initClaudeSession("cs-demo");
-initTerminal("term-body", "term-replay", TERM_LINES);
-initTerminal("skill-term-body", "skill-term-replay", SKILL_LINES);
-// render after DOM ready (both graphs are JS-built; R18.6 keeps them in sync)
-const renderGraphs = () => {
-  renderGraphMini("graph-mini");
-  renderGraphMini("graph-mini-2");
-};
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", renderGraphs);
-} else {
-  renderGraphs();
-}
+initDemoTabs({ "panel-app": initAppSession("ap-hero") });

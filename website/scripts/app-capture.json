@@ -1,0 +1,51 @@
+{
+  "_note": "Raw POST /qa response from the browser-app card (website hero, Browser app tab), trimmed to the fields the card shows; source_ref made sample-relative. Captured 2026-10-22 against sample/ with llm_mode=local, answer model llama3.2:3b via Ollama, 1.1.0 build. Re-capture instead of editing.",
+  "question": "Who owns the billing provider migration, and how do we roll it back?",
+  "model": "llama3.2:3b",
+  "mode": "composed",
+  "answer": "According to [S1], the billing provider migration is owned by Sarah.\n\nTo roll back the migration, the feature flag toggles can be flipped back to the legacy provider per tenant, as stated in [S2]. This process assumes that the rollback works until the legacy provider is decommissioned.",
+  "citations": [
+    {
+      "id": "S1",
+      "file": "decisions/d2-billing-provider-approval.md",
+      "source_ref": "decisions/d2-billing-provider-approval.md",
+      "breadcrumb": "Decision: Billing provider migration approved",
+      "line_start": 1,
+      "line_end": 18,
+      "tags": [
+        "approved",
+        "billing",
+        "migration",
+        "provider"
+      ]
+    },
+    {
+      "id": "S2",
+      "file": "specs/billing-migration-runbook.md",
+      "source_ref": "specs/billing-migration-runbook.md §2",
+      "breadcrumb": "Runbook: Billing provider migration > Steps",
+      "line_start": 6,
+      "line_end": 20,
+      "tags": [
+        "cohort",
+        "flag",
+        "legacy",
+        "provider"
+      ]
+    },
+    {
+      "id": "S3",
+      "file": "specs/billing-migration-runbook.md",
+      "source_ref": "specs/billing-migration-runbook.md §1",
+      "breadcrumb": "Runbook: Billing provider migration",
+      "line_start": 1,
+      "line_end": 4,
+      "tags": [
+        "billing",
+        "migration",
+        "runbook",
+        "step"
+      ]
+    }
+  ]
+}
