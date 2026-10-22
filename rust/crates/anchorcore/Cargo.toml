@@ -53,7 +53,7 @@ open = "5"
 [dev-dependencies]
 tempfile = "3"
 tower = "0.5"
-# conformance: reuse Python backend/tests as black-box HTTP tests
+# tests/api_*: black-box HTTP contract tests (spawn the binary, reqwest)
 
 # R34.1: tray is Windows/macOS only — target-gated so Linux/CI builds need no
 # system tray libraries (tray.rs is a stub there).

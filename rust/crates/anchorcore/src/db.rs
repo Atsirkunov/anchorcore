@@ -253,8 +253,9 @@ fn ensure_vec(conn: &Connection) {
     if let Err(e) = conn.execute(&sql, []) {
         let msg = e.to_string();
         if msg.contains("no such module: vec0") {
-            // fallback for test conformance when sqlite-vec not statically linked (Rust bundled sqlite)
-            // Create dummy table + triggers so test_vec_chunks_table_exists passes (Python checks this)
+            // fallback when sqlite-vec is not statically linked (Rust bundled sqlite):
+            // plain table + sync triggers so the scan-backed stack has a stable
+            // shape (pinned by tests/api_smoke.rs::fts_and_vec_tables_exist_without_vec0)
             let _ = conn.execute("CREATE TABLE IF NOT EXISTS vec_chunks (rowid INTEGER PRIMARY KEY, embedding BLOB)", []);
             let fallbacks = [
                 r#"CREATE TRIGGER IF NOT EXISTS vec_chunks_ai AFTER INSERT ON chunks WHEN new.embedding IS NOT NULL BEGIN INSERT OR IGNORE INTO vec_chunks(rowid, embedding) VALUES (new.id, new.embedding); END"#,

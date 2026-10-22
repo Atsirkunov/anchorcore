@@ -16,8 +16,8 @@ name: Release
 # tag, so version-only releases don't churn the edge. Requires repo secrets
 # CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID (token needs Workers deploy
 # permissions; see https://developers.cloudflare.com/fundamentals/api/get-started/create-token/).
-# (Legacy Python jobs removed — backend/ is archived on tag archive/python-final;
-# only the conformance suite fetches it frozen.)
+# (Python is fully retired — backend/ survives only as history on tag
+# archive/python-final; nothing checks it out.)
 
 on:
   push:

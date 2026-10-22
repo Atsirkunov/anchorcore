@@ -3,27 +3,6 @@ name: CI
 on: push
 
 jobs:
-  backend:
-    name: Backend tests (Python, archived)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: Restore archived backend/
-        run: |
-          git fetch origin tag archive/python-final --no-tags
-          git checkout archive/python-final -- backend
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: backend/requirements.txt
-      - run: pip install -r backend/requirements.txt
-      # Frozen backend's __version__ (1.0.12) intentionally lags live Cargo.toml —
-      # test_version_is_single_source_of_truth compares the two, so it fails on
-      # every version bump. Deselected; version single-source is enforced by the
-      # version-drift job (scripts/sync_version.py --check).
-      - run: PYTHONPATH=backend python -m pytest backend/tests -q --ignore=backend/tests/test_mcp.py --deselect backend/tests/test_system.py::test_version_is_single_source_of_truth
-
   version-drift:
     name: Version single-source check
     runs-on: ubuntu-latest
@@ -35,21 +14,13 @@ jobs:
       - run: python scripts/sync_version.py --check
       - run: python rust/scripts/sync_version.py --check
 
-  rust-conformance:
-    name: Rust conformance (vs Rust on :8123)
+  rust:
+    name: Rust build + tests
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v6
-      - name: Restore archived backend/ (conformance suite)
-        run: |
-          git fetch origin tag archive/python-final --no-tags
-          git checkout archive/python-final -- backend
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
       - uses: actions/setup-node@v6
         with:
           node-version: "20"
@@ -68,7 +39,7 @@ jobs:
       - name: Build Rust binary
         working-directory: rust
         run: cargo build -p anchorcore
-      - name: Cargo check + unit tests
+      - name: Cargo check + tests (unit + API contract + golden eval)
         working-directory: rust
         run: |
           cargo check -p anchorcore
@@ -82,49 +53,6 @@ jobs:
       - name: Clippy (unwrap_used)
         working-directory: rust
         run: cargo clippy -p anchorcore -- -D clippy::unwrap_used --allow clippy::needless_return --allow clippy::manual_range_contains || echo "clippy warnings allowed for now (R11.3) — fix gradually"
-      - name: Start Rust on :8123
-        run: |
-          rm -rf /tmp/ac-ci-data /tmp/ac-ci-test.db
-          mkdir -p /tmp/ac-ci-data
-          ANCHOR_DATA_DIR=/tmp/ac-ci-data ANCHOR_DATABASE_URL=sqlite:////tmp/ac-ci-test.db \
-            ANCHOR_SECRETS_NO_KEYRING=1 ANCHOR_OLLAMA_BASE_URL=http://localhost:1 \
-            ANCHOR_ALLOW_TEST_URLS=1 \
-            ANCHOR_CLASSIFIER_TIMEOUT=1.0 ANCHOR_HTTP_CONNECT_TIMEOUT=0.2 \
-            ANCHOR_ANSWER_BASE_URL=https://api.openai.com/v1 \
-            ./rust/target/debug/anchorcore --port 8123 --data-dir /tmp/ac-ci-data &
-          echo $! > /tmp/ac-ci.pid
-          for i in $(seq 1 15); do
-            if curl -sf http://127.0.0.1:8123/health | grep -q ok; then break; fi
-            sleep 1
-          done
-          curl -sf http://127.0.0.1:8123/health || (cat /tmp/ac-ci-data/anchorcore.log || true; exit 1)
-      - name: Conformance pytest vs Rust
-        run: |
-          pip install -r backend/requirements.txt
-          # Same deselect as backend job: frozen __version__ lags live Cargo.toml.
-          # B54: Rust /system/onboarding adds answer_ready; the frozen exact-shape
-          # assertion (test_onboarding_state) predates it. Deselected here only —
-          # the backend job still runs it against frozen Python (5 keys).
-          # R35.1: the /pii/* auto-detect endpoints are deleted server-side, so
-          # the two client tests retire here (the scan/config unit tests in the
-          # same file still run — they cover frozen Python only).
-          # R33.7: R33.3 narrowed the retrieval pool to document chunks, so the
-          # two tests below — which expect an entity's own chunk to surface as
-          # a citation — fail against Rust (red since 1.0.27, pre-existing).
-          # Deselected here only until R33.7 re-tests dispute exclusion under
-          # the leaf-pool contract; the backend job still runs them against
-          # frozen Python.
-          # R45.8: extraction is record-structure-only — prose sentences yield
-          # no entities. The seven tests below feed prose fixtures ("We decided
-          # to ...") and assert entities>=1; ingest itself still passes (items
-          # stored, job totals/history green). Deselected here only; the Rust
-          # suite pins the record parser (records.rs) natively.
-          # R45.9: who_knows + graph_expand are deleted (no production callers;
-          # ownership/supersession are GET /actions + GET /decisions). The five
-          # tests below assert the deleted legs. Deselected here only.
-          PYTHONPATH=backend ANCHOR_DATA_DIR=/tmp/ac-ci-data ANCHOR_DATABASE_URL=sqlite:////tmp/ac-ci-test.db \
-            ANCHOR_SECRETS_NO_KEYRING=1 ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 \
-            python -m pytest backend/tests -q --ignore=backend/tests/test_mcp.py --deselect backend/tests/test_system.py::test_version_is_single_source_of_truth --deselect backend/tests/test_system.py::test_onboarding_state --deselect backend/tests/test_pii.py::test_config_roundtrip --deselect backend/tests/test_pii.py::test_scan_endpoint_flags_and_review --deselect backend/tests/test_disputes.py::test_disputed_entity_stops_being_cited --deselect backend/tests/test_smoke.py::test_full_document_chunking --deselect backend/tests/test_classification.py::test_entity_window_context_attached --deselect backend/tests/test_disputes.py::test_dispute_records_audit_and_increments --deselect backend/tests/test_gate.py::test_sensitive_source_still_ingests_with_rules --deselect backend/tests/test_smoke.py::test_folder_ingest_flow --deselect backend/tests/test_smoke.py::test_delete_source_cascades_entities --deselect backend/tests/test_smoke.py::test_job_history_and_progress --deselect backend/tests/test_smoke.py::test_reclassify_runs_as_job --deselect backend/tests/test_graph_retrieval.py::test_graph_expand_surfaces_connected_entities --deselect backend/tests/test_graph_retrieval.py::test_graph_expand_ranks_strong_kinds_first --deselect backend/tests/test_graph_retrieval.py::test_graph_expand_excludes_stale_and_caps_fanout --deselect backend/tests/test_graph_retrieval.py::test_qa_includes_graph_citations --deselect backend/tests/test_planner.py::test_who_knows_surfaces_owner_entities
       - name: MCP smoke — stdio handshake, 6 tools (R20.5)
         run: |
           set -e
@@ -140,10 +68,6 @@ jobs:
           done
           echo "ok: tools/list over stdio carries all six tools (ask, search, get_entity, get_source, list_sources, memory_status)"
           echo "ok: the built binary answers tools/list over stdio with 6 tools incl. search"
-
-      - name: Stop Rust
-        if: always()
-        run: kill $(cat /tmp/ac-ci.pid) || true; sleep 1; cat /tmp/ac-ci-data/anchorcore.log || true
 
   frontend:
     name: Frontend build + lint + tests

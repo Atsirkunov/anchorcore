@@ -1,7 +1,7 @@
 # AnchorCore — Packaging Plan
 
 > Goal: ship AnchorCore as a runnable app a non-developer can launch.
-> Status: **Rust shipped** (current version: see `docs/release-notes/`) — `rust/target/release/anchorcore` release binary (`frontend/dist` embedded via `include_dir!`, ad-hoc `codesign`) is the local artifact. **Python `backend/` PyInstaller (`packaging.spec`) is archived on tag `archive/python-final`** (conformance suite fetches it frozen). Legacy `dist/AnchorCore.exe/.app` (B20/B24) remain documented for history.
+> Status: **Rust shipped** (current version: see `docs/release-notes/`) — `rust/target/release/anchorcore` release binary (`frontend/dist` embedded via `include_dir!`, ad-hoc `codesign`) is the local artifact. **Python `backend/` PyInstaller (`packaging.spec`) is archived history on tag `archive/python-final`** (nothing consumes it). Legacy `dist/AnchorCore.exe/.app` (B20/B24) remain documented for history.
 
 ---
 
@@ -30,7 +30,7 @@ cargo build --release
 
 ## 3. Historical: Python builds (archived on tag `archive/python-final`)
 
-Archived — the spec, `backend/`, and start scripts are frozen on the tag; the hosting image fetches that snapshot. Do not use for local dev:
+Archived — the spec, `backend/`, and start scripts are frozen on the tag (history only; the hosting image builds the Rust binary from main since R19.1). Do not use for local dev:
 
 ```powershell
 .\build.ps1   # Windows legacy

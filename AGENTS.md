@@ -1,6 +1,6 @@
 # AnchorCore — agent guide (living file)
 
-> `backend/` (Python) is archived, not in the tree — restore with `git checkout archive/python-final -- backend` before any `backend/` command. It is conformance-only; new work is Rust.
+> `backend/` (Python) is archived history on tag `archive/python-final` — nothing checks it out (R45.16 retired the last consumers). New work is Rust.
 
 Read this before doing anything. It distills what a fresh session needs so it doesn't re-explore the repo. Update it whenever you learn something that would have helped at the start — but keep it tight: live contracts only, no war stories, no line numbers (they drift), no phase history (that lives in `rust/BACKLOG.md` / `rust/BACKLOG-archive.md`).
 
@@ -15,8 +15,7 @@ Local-first "company memory": connect sources (folder, Jira, Linear, Drive, REST
 ## How to run / test / release
 
 - Dev: `cargo run -p anchorcore -- --port 8000 --data-dir ~/.anchorcore` (migrations, watcher, jobs).
-- Rust tests: `cargo test -p anchorcore` green + `cargo check` clean (strict: `RUSTFLAGS="-D warnings"`; clippy `unwrap_used` is allowed crate-wide). Lizard gate: no new warnings vs the accepted baseline (listed in `rust/AGENTS.md`).
-- Conformance (needs `backend/` restored from the tag): `cargo run -p anchorcore -- --port 8123 --data-dir /tmp/ac-dev` + `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=test_mcp.py`. Honest accounting via CI `rust-conformance`.
+- Rust tests: `cargo test -p anchorcore` green + `cargo check` clean (strict: `RUSTFLAGS="-D warnings"`; clippy `unwrap_used` is allowed crate-wide). Lizard gate: no new warnings vs the accepted baseline (listed in `rust/AGENTS.md`). The API contract tests (`tests/api_*.rs`, black-box HTTP against a spawned binary) run inside `cargo test` — no separate conformance step.
 - Frontend: `cd frontend && npm run build` (tsc + vite; must pass before a UI change is done).
 - Team image: `docker compose -f hosting/docker-compose.yml up --build`. License gate `ANCHOR_EDITION=team` (`license.rs`; issue via `python scripts/make_license.py`).
 - Release: `docs/releasing.md` is the checklist (bump `rust/Cargo.toml` → draft notes → tag `vX.Y.Z` → push). CI builds `AnchorCore-{windows,macos,linux}.zip` on every `v*` tag (ad-hoc signed, not notarized).
@@ -51,7 +50,7 @@ Rules that must not break:
 2. API: handler + route in `main.rs` (frontend fallback stays last).
 3. Wire into `retrieval.rs`/`pipeline.rs` if it affects retrieval/ingestion.
 4. Frontend: `types.ts` + `api.ts` + tab component; `theme.ts` tokens (CSS vars from `theme.css`, light + dark), no inline hex; `npm run build` must pass (then re-`cargo build --release` to embed).
-5. Gates: `cargo test` + `cargo check` green, lizard no-new-warnings, golden eval green; conformance suite when touching shared API behavior.
+5. Gates: `cargo test` + `cargo check` green, lizard no-new-warnings, golden eval green; extend `tests/api_*.rs` when touching shared API behavior.
 6. Docs in the same commit (`rust/BACKLOG.md` row → DONE, `docs/` update, decision in `rust/docs/decisions.md` when you chose between real options).
 7. CCN ≤ 15 per function (lizard): split orchestrators into named phase helpers, guard clauses over nesting, `run_db` for blocking DB work.
 

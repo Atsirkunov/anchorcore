@@ -3,7 +3,7 @@
 > Stack: **Rust (Axum) · React (Vite) · SQLite (FTS5 + embedding scan) · Ollama
 > or BYO cloud LLM APIs** — env-driven. **Rust is the shipped backend everywhere:
 > the local app and the one-container Team image (`hosting/`, R19.1). Python
-> `backend/` is archived on tag `archive/python-final` (conformance suite).**
+> `backend/` is archived history on tag `archive/python-final` (nothing consumes it).**
 
 ---
 
@@ -373,7 +373,7 @@ erDiagram
 | Container | Responsibility | Tech |
 |---|---|---|
 | Web UI | Connect sources, project scoping, review queue, Q&A chat, model settings | React SPA (Vite, TS, 6 tabs) |
-| API | All endpoints, orchestration, config | **Rust Axum (shipped)** — same binary in the local app and the Team container; Python `backend/` archived (conformance) |
+| API | All endpoints, orchestration, config | **Rust Axum (shipped)** — same binary in the local app and the Team container; Python `backend/` archived (history only) |
 | Entity Store | Entities, provenance, window context, sync state | SQLite (Rust `rusqlite`) — local app and Team container |
 | Vector Store | Chunk embeddings + similarity search | embeddings table in the same SQLite file; vector search is an in-code cosine scan (no vec0 module is linked) |
 | Keyword Store | FTS5 bm25 for hybrid retrieval | SQLite FTS5 (trigger-synced, same file) |

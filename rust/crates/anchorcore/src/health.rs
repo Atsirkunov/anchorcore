@@ -29,6 +29,18 @@ pub async fn health(State(state): State<AppState>) -> Json<Value> {
     let readiness = crate::ollama::model_readiness(&state.settings).await;
     let ollama = if readiness.reachable { "ok" } else { "offline" };
     let answer_key = answer_provider(&state.settings);
+    // R45.17: the model banner needs to know whether an offline Ollama takes
+    // search down with it (local embeds) or is irrelevant (cloud embeds).
+    let embed_base = state
+        .settings
+        .get("embed_base_url", None)
+        .or_else(|| state.settings.get("ollama_base_url", None))
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
+    let embedder_provider = if crate::common::provider_is_local(&embed_base) {
+        "local"
+    } else {
+        "cloud"
+    };
 
     Json(json!({
         "status": "ok",
@@ -38,6 +50,7 @@ pub async fn health(State(state): State<AppState>) -> Json<Value> {
             "answer_key": answer_key,
             "missing_models": readiness.missing_models,
             "answer_ready": crate::answer::answer_ready(&state.settings, readiness.answer_ready),
+            "embedder": { "provider": embedder_provider },
             "pending_embeddings": pending_embeddings,
             "tasks": {},
             "classifier": { "concurrency": 4 },
