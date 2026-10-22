@@ -306,3 +306,31 @@ ADR log. Append newest first.
   - R45.4 → R45.6 → R45.7 and R45.10 are unblocked; the R45.3 CI-only legs (MinGW, x86 mkl, Ollama CPU baseline) still need a CI run before the engine decision entry is final.
   - `query_expand::enabled` is true only on an explicit on-value; agent mode still never expands.
 
+---
+
+## 2026-10-22 — R45.16: retire the Python conformance suite (owner decision)
+
+* **Decision:** Delete the CI `backend` job (frozen code testing itself) and the `rust-conformance` pytest leg; port the still-valid HTTP contract into `tests/api_*.rs` (black-box: each test spawns the binary on a free port with a fresh temp DB). Tag `archive/python-final` stays as read-only history — nothing checks it out.
+* **Context:** The frozen suite was decaying: 19 deselects pinned removed behaviour (vec0, `/pii/*` auto-detect, who-knows/graph legs, prose-entity extraction), and a full audit showed most of the rest tested Python internals against themselves even in "conformance" mode (queue bounds drove the Python `JobManager`; the diversity-cap tests drove the Python `AnswerEngine`; 16 tests skipped outright vs Rust). Four cloud-gate tests could never run against Rust at all (monkeypatched Python settings). The suite could not be updated without moving the archive tag, so every behaviour change added another deselect instead of a test.
+* **Alternatives considered:**
+  - *Keep the suite and keep deselecting* — rejected: the deselect list is where contract coverage goes to die; the suite was already down to partial signal.
+  - *Update the frozen suite in place (move the tag)* — rejected: editing the archive destroys the "frozen reference" property; the port achieves the same coverage in the shipped language.
+  - *Port as in-process router tests (axum oneshot)* — rejected: needs a lib target carved out of the binary; spawning the real binary tests the shipped artifact (migrations, startup sweep, CSRF) with zero production-code changes.
+* **Consequences:**
+  - `cargo test -p anchorcore` is the only Rust gate (535 unit + 60 contract + 104 golden eval). CI has no Python step left except `version-drift` (which only runs `sync_version.py --check`).
+  - Behaviour reframed for current contracts, not copied: dispute exclusion is pinned on `GET /decisions` (entity chunks are never evidence since R33.3); the PII auto-scan tests became a manual-mark round-trip (R35.1); the B15 project-scoping test finally runs (it skipped under the shared-DB harness).
+  - Known gaps left open: `answer_reasoning_effort` persists but generation never sends it (found while porting; needs an owner call on whether the setting lives); the `vec_chunks` plain table + sync triggers exist only because the old suite asserted them (removal needs a migration — not done here).
+
+---
+
+## 2026-10-22 — R45.17: the model banner only claims what is actually down
+
+* **Decision:** `/health` gains `embedder.provider` (local/cloud, a pure settings read like `/system/status`), and the banner branches on it plus the mode-aware `answer_ready`: both down / answers only / search only / silent when cloud answers and cloud embeddings cover Ollama. The missing-models line asks for search quality when an answer model is ready. The "classification falls back to simple rules" clause is gone — rules are the default classifier since R45.1.
+* **Context:** Owner report: the red "Ollama is offline" banner persisted on an agent/cloud setup where everything worked. The line predates agent mode and the rules default; it never looked at `answer_ready` (which already encodes both).
+* **Alternatives considered:**
+  - *Frontend-only, branch on `answer_ready` alone* — rejected: with local embeds and Ollama down, search really is keyword-only, but with cloud embeds it is not; the frontend could not tell them apart without the provider field.
+  - *Silence the banner whenever answers are ready* — rejected: keyword-only search is a real degradation worth one calm line; per-answer notes alone are easy to miss.
+* **Consequences:**
+  - `Health.components.embedder` is optional in the UI types (old backends omit it; absent counts as local — the narrow note is the safe side).
+  - Adjacent wart left alone: the onboarding wizard's missing-models note ("answers and classification stay basic") is not mode-aware either — first-run only, flagged for the R45.6 wizard finish.
+

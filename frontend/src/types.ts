@@ -62,6 +62,7 @@ export type Health = {
     answer_key: string;
     missing_models: string[];
     answer_ready: boolean;
+    embedder?: { provider: string };
     pending_embeddings: number;
     tasks: Record<string, string>;
     classifier: ClassifierStats;

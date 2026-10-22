@@ -78,11 +78,10 @@ fn invalid_value(key: &str, value: &Value) -> Option<String> {
 }
 const CACHE_TTL: Duration = Duration::from_secs(3);
 
-// Test-only Ollama URL: the suite and CI conformance point Ollama at a dead
-// port so degradation paths are exercised. A real launch must never honor it —
+// Test-only Ollama URL: the test harness points Ollama at a dead port so
+// degradation paths are exercised. A real launch must never honor it —
 // if it leaks in via env/.env/DB (stray export, `open` env inheritance), fall
-// back to the real default and warn. Tests opt in with ANCHOR_ALLOW_TEST_URLS=1
-// (mirrors Python config.guard_test_ollama_url).
+// back to the real default and warn. Tests opt in with ANCHOR_ALLOW_TEST_URLS=1.
 fn is_test_sentinel_url(value: &str) -> bool {
     let v = value.trim_end_matches('/');
     v == "http://localhost:1" || v == "http://127.0.0.1:1"
@@ -423,7 +422,7 @@ pub async fn test_connection_handler(
 }
 
 fn connect_timeout() -> std::time::Duration {
-    // Conftest sets ANCHOR_HTTP_CONNECT_TIMEOUT=0.2 to keep suite fast (Windows quirk)
+    // The test harness sets ANCHOR_HTTP_CONNECT_TIMEOUT=0.2 to keep the suite fast (Windows quirk)
     if let Ok(v) = std::env::var("ANCHOR_HTTP_CONNECT_TIMEOUT") {
         if let Ok(f) = v.parse::<f64>() {
             return std::time::Duration::from_secs_f64(f.clamp(0.05, 10.0));

@@ -1,6 +1,6 @@
 # AnchorCore Rust Port — workspace
 
-> **Status: shipped** (since `v1.0.9`, 2026-08-21; current version: see `docs/release-notes/`). Python `backend/` is archived on tag `archive/python-final` (frozen conformance; see R19.1: `hosting/` is the one-container Rust Team image); Rust `rust/` is the shipped artifact (single source `rust/Cargo.toml:6`). `backend/tests` green vs Rust on `:8123` (`cargo test` + `cargo check` green via CI `rust-conformance`). See `docs/archive/rust-port.md:1` (evaluation closed) + `rust/BACKLOG.md` (open work; completed Phases 0–17 in `rust/BACKLOG-archive.md`) + `docs/archive/handover-2026-08-21-retire.md:1`.
+> **Status: shipped** (since `v1.0.9`, 2026-08-21; current version: see `docs/release-notes/`). Python `backend/` is archived history on tag `archive/python-final` (nothing consumes it — R45.16 retired the conformance suite; see R19.1: `hosting/` is the one-container Rust Team image); Rust `rust/` is the shipped artifact (single source `rust/Cargo.toml:6`). The API contract tests (`tests/api_*.rs`) run inside `cargo test`. See `docs/archive/rust-port.md:1` (evaluation closed) + `rust/BACKLOG.md` (open work; completed Phases 0–17 in `rust/BACKLOG-archive.md`) + `docs/archive/handover-2026-08-21-retire.md:1`.
 
 ## Why a separate folder?
 
@@ -28,7 +28,7 @@ rust/
 
 ## Contract
 
-* **API:** must be byte-for-byte compatible with `backend/app/routers/*` (same routes, same JSON, same error shapes). The `backend/tests` suite is the conformance suite.
+* **API:** must be byte-for-byte compatible with the archived `backend/app/routers/*` (same routes, same JSON, same error shapes). The `tests/api_*.rs` suite pins the contract.
 * **DB:** reads/writes the *same* SQLite file (Alembic migrations are source of truth; Rust uses `rusqlite` + `refinery`/`rusqlite_migration` to apply them, never invents schema).
 * **Secrets:** OS keychain via `keyring` crate, same keys as `backend/app/secrets.py:1`.
 * **Frontend:** embedded via `include_dir!` (like `packaging.spec` does for `frontend/dist`).
@@ -42,10 +42,9 @@ cargo run -p anchorcore -- --port 8123 --data-dir /tmp/ac-data & curl http://127
 cargo test -p anchorcore  # all green (harness + jobs atomic + auth 401 + scheduler + R10.4 queue)
 cargo check -p anchorcore # 0 warnings
 scripts/sync_version.py --check # prints: ok <version> (single source)
-# restore backend/ first: git checkout archive/python-final -- backend
-PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=test_mcp.py # honest accounting vs Rust
+cargo test -p anchorcore --test api_smoke # one contract file; full suite is `cargo test -p anchorcore`
 ```
 
 Release is `rust/Cargo.toml:6` single edit → `scripts/sync_version.py` → `cargo test` + `cargo build --release` → `git tag vX.Y.Z` → `git push origin vX.Y.Z` (CI `release.yml` builds `AnchorCore-{windows,macos,linux}.zip`).
 
-Petite note: `backend/` is archived on tag `archive/python-final` (frozen conformance path); `packaging.spec` retired with it.
+Petite note: `backend/` is archived history on tag `archive/python-final`; `packaging.spec` retired with it.
