@@ -39,7 +39,8 @@ If MCP starts working later, drop this skill again.
 | Call | Use |
 |---|---|
 | POST /qa/search {"query","limit","include_content"} | ranked hits; filters: kind, symbol, path_prefix, env |
-| GET /items/:id | the whole file or document; text is in content (same as `text`) |
+| GET /media/:asset_id?format=json | one image to look at: `{mime, w, h, size, data_base64}`; asset ids come from `images` on hits/citations. Without `format=json` you get the raw bytes |
+| GET /items/:id | the whole file or document; text is in content (same as `text`); `assets` lists its images |
 | GET /items/:id/outline | section tree with sizes; read it before fetching a large file |
 | GET /nodes/:id?include=parent,children,siblings | section metadata + neighbours; fetch the item for the text |
 | GET /items?path_prefix=<relative prefix> | list items under a folder |
@@ -56,6 +57,18 @@ line numbers are not returned, so count lines in the fetched text if you cite
 them. By default hits omit chunk bytes — set `include_content:true` (alias
 for `fields:"content"`) to get them verbatim, and follow `next_cursor` for
 further pages.
+
+Images: add `images` to `fields` (e.g. `"fields":"content,images"`; `all`
+includes them) and each hit lists the pictures on its passage —
+`{asset_id, alt, caption, mime, w, h, url}`. Agent-mode /qa citations always
+carry them. When the question is about something visual (a screen, a
+diagram, a chart), fetch the image with GET /media/:asset_id?format=json and
+look at it before answering; alt/caption are hints, not the picture. The
+JSON form refuses images over 1.5 MB with 413 + `size` + the raw `url`;
+sensitive sources answer 403 `refusal: "gated_provider"` under an untrusted
+provider, like search. `url: null` means the bytes were not stored (over the
+size cap) — say so instead of guessing. MCP clients get the same call as the
+`get_asset` tool.
 
 For "what did we decide about X, is it still current?", "who owns X?" or
 "what's open/overdue for Alex?", call /decisions or /actions before search:

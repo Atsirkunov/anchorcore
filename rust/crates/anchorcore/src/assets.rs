@@ -614,16 +614,16 @@ pub fn refs_for_item(conn: &Connection, item_id: i64) -> Vec<Value> {
     .unwrap_or_default()
 }
 
-/// One asset for `GET /media/:uid`: (mime, source label, bytes if stored).
-pub type Media = (String, String, Option<Vec<u8>>);
+/// One asset for `GET /media/:uid`: (mime, source label, bytes if stored, (w, h)).
+pub type Media = (String, String, Option<Vec<u8>>, (Option<i64>, Option<i64>));
 
 pub fn load_media(conn: &Connection, uid: &str) -> Result<Option<Media>, String> {
     conn.query_row(
-        "SELECT a.mime, s.label, b.bytes FROM assets a \
+        "SELECT a.mime, s.label, b.bytes, a.w, a.h FROM assets a \
          JOIN ingested_items i ON i.id = a.item_id JOIN sources s ON s.id = i.source_id \
          LEFT JOIN asset_blobs b ON b.hash = a.bytes_hash WHERE a.uid = ?1",
         [uid],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, (r.get(3)?, r.get(4)?))),
     )
     .optional()
     .map_err(|e| e.to_string())

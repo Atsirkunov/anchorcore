@@ -38,7 +38,8 @@ needs custom glue; MCP is the glue.
 | Tool | Parameters | Returns | Maps to |
 |---|---|---|---|
 | `ask` | `question` (required), `project_id?`, `public_only?`, `include_content?` | composed answer (local mode) or `agent_compose` evidence (agent mode, §3.2) + citations with provenance (item id + file path + title + env class on every citation; full chunk bytes on opt-in — always in agent mode — capped at 4000 chars with `content_truncated`) + `mode`/`warning` flags (§3.1) | `POST /qa`, `POST /qa/public` |
-| `search` | `query` (required), `k` (default 8, max 50), `project_id?`, `public_only?`, `env?` (`live`/`test`) | cited chunks with provenance (item id/title/path, env class, source ref, score); summaries/snippets window on the match; test fixtures rank below live hits unless the query names them; long chunks capped at 4000 chars with `content_truncated` flagged | `POST /qa/search` |
+| `search` | `query` (required), `k` (default 8, max 50), `project_id?`, `public_only?`, `env?` (`live`/`test`) | cited chunks with provenance (item id/title/path, env class, source ref, score); summaries/snippets window on the match; test fixtures rank below live hits unless the query names them; long chunks capped at 4000 chars with `content_truncated` flagged; `images` (asset refs on the passage, R46.10 — fetch with `get_asset`) | `POST /qa/search` |
+| `get_asset` | `asset_id` (from `images` on a hit/citation) | the image as an MCP image block + metadata (`mime`, `w`, `h`, `size`, `url`); SVG returns as markup text; over 1.5 MB → error with size + raw url; sensitive sources gated like `search` (R46.10) | `GET /media/:uid?format=json` |
 | `get_entity` | `entity_id` | entity + parent item/chunk links (`item_id`, `chunk_id`) + legacy item PII flag (deprecated) | Entity graph |
 | `get_source` | `source_id` | source details (no config/secrets) | Sources |
 | `list_sources` | — | names, connectors, last sync | Sources |
