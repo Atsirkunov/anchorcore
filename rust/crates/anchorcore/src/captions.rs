@@ -120,16 +120,22 @@ fn store_target(conn: &Connection, source_id: i64, t: &TargetIn) -> Result<Strin
 
 /// Where the caption chunk sits now: (item id, section id, section path).
 /// A target that no longer resolves falls back to its item, then to the
-/// image's own item.
-fn resolve_target(conn: &Connection, stored: &str, own_item: i64) -> (i64, Option<i64>, String) {
-    let Ok(t) = serde_json::from_str::<Value>(stored) else { return (own_item, None, String::new()) };
+/// image's own item and section; `own_crumb` (a PDF image's `p. N`) names
+/// that place more precisely than the section path.
+fn resolve_target(conn: &Connection, stored: &str, own_item: i64, own_section: Option<i64>, own_crumb: Option<&str>) -> (i64, Option<i64>, String) {
+    let own = || {
+        let path = own_section.and_then(|id| conn.query_row("SELECT path FROM sections WHERE id=?1", [id], |r| r.get::<_, String>(0)).ok());
+        let crumb = own_crumb.map(str::to_string).or(path).unwrap_or_default();
+        (own_item, own_section, crumb)
+    };
+    let Ok(t) = serde_json::from_str::<Value>(stored) else { return own() };
     let by_uid = |table: &str, uid: &str| -> Option<i64> {
         let col = if table == "entities" { "item_id" } else { "id" };
         conn.query_row(&format!("SELECT {col} FROM {table} WHERE uid=?1"), [uid], |r| r.get(0)).ok().flatten()
     };
     let entity_item = t["entity"].as_str().and_then(|u| by_uid("entities", u));
     let Some(item) = entity_item.or_else(|| t["item"].as_str().and_then(|u| by_uid("ingested_items", u))) else {
-        return (own_item, None, String::new());
+        return own();
     };
     let section = t["section"].as_str().and_then(|p| {
         conn.query_row("SELECT id, path FROM sections WHERE item_id=?1 AND path=?2 ORDER BY level, id LIMIT 1", params![item, p], |r| {
@@ -145,26 +151,40 @@ fn resolve_target(conn: &Connection, stored: &str, own_item: i64) -> (i64, Optio
 
 // ----- the caption chunk -----
 
+/// `p. N` from a PDF image's context (`p. N — nearby text`, R46.16).
+fn page_crumb(context: &str) -> Option<String> {
+    let head = context.split(" — ").next()?;
+    let n = head.strip_prefix("p. ")?;
+    (!n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).then(|| head.to_string())
+}
+
 /// Rebuild one asset's caption chunk from its people-owned fields. An
 /// unchanged caption at an unchanged path keeps its vector; otherwise the
 /// vector clears and the backfill re-embeds it.
 pub fn materialize(conn: &Connection, asset_id: i64) -> Result<(), String> {
-    let row: (String, i64, String, String, String) = conn
-        .query_row("SELECT uid, item_id, manual_caption, manual_target, attribution FROM assets WHERE id=?1", [asset_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+    let row: (String, i64, Option<i64>, String, String, String, String) = conn
+        .query_row("SELECT uid, item_id, section_id, manual_caption, manual_target, attribution, context FROM assets WHERE id=?1", [asset_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
         })
         .map_err(|e| e.to_string())?;
-    let (uid, own_item, caption, target, attribution) = row;
+    let (uid, own_item, own_section, caption, target, attribution, context) = row;
     let chunk_uid = caption_uid(&uid);
     if caption.trim().is_empty() || attribution == "ignored" {
         conn.execute("DELETE FROM chunks WHERE uid=?1", [&chunk_uid]).map_err(|e| e.to_string())?;
         return Ok(());
     }
-    let (item, section, crumb) = resolve_target(conn, &target, own_item);
+    let page = page_crumb(&context);
+    let (item, section, crumb) = resolve_target(conn, &target, own_item, own_section, page.as_deref());
     let path = if crumb.is_empty() { CAPTION_CRUMB.to_string() } else { format!("{crumb} > {CAPTION_CRUMB}") };
     let source_ref: String = conn
         .query_row("SELECT external_id FROM ingested_items WHERE id=?1", [own_item], |r| r.get(0))
         .map_err(|e| e.to_string())?;
+    write_caption_chunk(conn, &chunk_uid, (item, section), &path, &source_ref, &caption)
+}
+
+/// Update in place (keeping the vector when content + path are unchanged),
+/// else insert.
+fn write_caption_chunk(conn: &Connection, chunk_uid: &str, (item, section): (i64, Option<i64>), path: &str, source_ref: &str, caption: &str) -> Result<(), String> {
     let changed = conn
         .execute(
             "UPDATE chunks SET item_id=?2, section_id=?3, path=?4, source_ref=?5, content=?6, \
@@ -206,6 +226,9 @@ struct Current {
     attribution: String,
     caption: String,
     target: String,
+    /// What sync derives when a person clears their fields: `none` for
+    /// files (refreshed after the write), the page/chunk split for embeds.
+    sync_attribution: &'static str,
 }
 
 fn load_current(conn: &Connection, uid: &str) -> Result<Current, PatchError> {
@@ -215,6 +238,7 @@ fn load_current(conn: &Connection, uid: &str) -> Result<Current, PatchError> {
         [uid],
         |r| {
             Ok(Current {
+                sync_attribution: "none",
                 id: r.get(0)?,
                 source_id: r.get(1)?,
                 origin: r.get(2)?,
@@ -226,6 +250,12 @@ fn load_current(conn: &Connection, uid: &str) -> Result<Current, PatchError> {
     )
     .optional()?
     .ok_or(PatchError::NotFound)
+    .and_then(|mut cur| {
+        if cur.origin == "embed" {
+            cur.sync_attribution = crate::assets::embed_sync_attribution(conn, cur.id).map_err(PatchError::Db)?;
+        }
+        Ok(cur)
+    })
 }
 
 fn next_caption(cur: &Current, patch: &Patch) -> Result<String, PatchError> {
@@ -245,10 +275,8 @@ fn next_attribution(cur: &Current, patch: &Patch, caption: &str, target: &str) -
         "ignored".to_string()
     } else if !caption.is_empty() || !target.is_empty() {
         "manual".to_string()
-    } else if cur.origin == "embed" {
-        "embedded".to_string()
     } else {
-        "none".to_string()
+        cur.sync_attribution.to_string()
     }
 }
 
@@ -309,7 +337,7 @@ fn target_view(conn: &Connection, stored: &str, own_item: i64) -> Value {
     if stored.is_empty() {
         return Value::Null;
     }
-    let (item, section, path) = resolve_target(conn, stored, own_item);
+    let (item, section, path) = resolve_target(conn, stored, own_item, None, None);
     let title: String = conn.query_row("SELECT title FROM ingested_items WHERE id=?1", [item], |r| r.get(0)).unwrap_or_default();
     json!({"item_id": item, "section_id": section, "section_path": path, "item_title": title})
 }

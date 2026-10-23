@@ -512,6 +512,55 @@ impl PdfQualityNote {
 /// output is kept unless the detector trips, in which case a flow-layout
 /// re-extraction runs and the better-scoring text wins (ties keep standard).
 fn extract_pdf_labeled(bytes: &[u8], label: &str) -> Result<(String, Option<PdfQualityNote>), String> {
+    extract_pdf_text(bytes, label).map(|(text, note)| (with_pdf_images(text, bytes), note))
+}
+
+/// R46.16: the images each page draws, as `![](embedded:pdf:<obj>)` lines
+/// closing that page block (image-only pages gain a block of their own).
+/// Added after the split-word catcher so markers never score as text. No
+/// image objects (vector-only charts) = text unchanged.
+fn with_pdf_images(text: String, bytes: &[u8]) -> String {
+    let Ok(doc) = lopdf::Document::load_mem(bytes) else { return text };
+    let images = crate::pdf_images::page_images(&doc);
+    if images.is_empty() {
+        return text;
+    }
+    let marks: std::collections::BTreeMap<u32, Vec<String>> = images
+        .into_iter()
+        .map(|(page, ids)| (page, ids.into_iter().map(|id| format!("![]({}{})", crate::assets::EMBEDDED_SCHEME, crate::pdf_images::part_for(id))).collect()))
+        .collect();
+    merge_page_lines(&text, &marks)
+}
+
+/// Rebuild marker-delimited page blocks with extra lines appended per page,
+/// in page order. Text before the first marker stays in front.
+fn merge_page_lines(text: &str, extra: &std::collections::BTreeMap<u32, Vec<String>>) -> String {
+    let mut front: Vec<&str> = Vec::new();
+    let mut blocks: std::collections::BTreeMap<u32, Vec<String>> = std::collections::BTreeMap::new();
+    let mut current: Option<u32> = None;
+    for line in text.lines() {
+        if let Some(n) = page_marker_number(line) {
+            current = Some(n);
+            blocks.entry(n).or_default();
+            continue;
+        }
+        match current {
+            Some(n) => blocks.entry(n).or_default().push(line.to_string()),
+            None => front.push(line),
+        }
+    }
+    for (page, lines) in extra {
+        blocks.entry(*page).or_default().extend(lines.iter().cloned());
+    }
+    let mut out: Vec<String> = front.iter().map(|l| l.to_string()).collect();
+    for (page, lines) in blocks {
+        out.push(format!("[page {page}]"));
+        out.extend(lines);
+    }
+    out.join("\n")
+}
+
+fn extract_pdf_text(bytes: &[u8], label: &str) -> Result<(String, Option<PdfQualityNote>), String> {
     // R36.10: per-page extraction so page markers ride both candidates —
     // the pipeline turns them into breadcrumb page numbers. Markers are
     // detector-neutral (`page` is a known word, digits never count).

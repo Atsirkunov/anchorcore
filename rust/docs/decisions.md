@@ -439,3 +439,15 @@ ADR log. Append newest first.
   - *Allow cross-source targets* — rejected for now: the caption would take the target's label while the bytes keep the image source's label. One gate would then say "sensitive" and the other "public" for the same picture. Same-source keeps one label. Widening it needs a rule for which label wins.
   - *Rebuild caption chunks on every store (delete them with the document's chunks)* — rejected: an unchanged caption would lose its vector on every sync. The chunk is kept and only re-pointed. Content or path changes clear the vector.
 * **Consequences:** `ignore` deletes the chunk but keeps the asset and the person's text, and un-ignoring restores both. Clearing caption and target hands attribution back to sync (`embedded`, or `none`/`referenced` for files). Deleting a target item cascades its caption chunk away; the people fields stay on the asset, and the next PATCH re-materializes it on the image's own item.
+
+---
+
+## 2026-10-23 — R46.16: PDF pictures are extracted, never rendered (owner decision)
+
+* **Decision:** A PDF's image XObjects become embed assets. The owner's rule: if a PDF has a picture, extract it; if it doesn't, ignore it. `pdf_images.rs` walks each page's content stream for drawn images (`Do`, through Form XObjects up to depth 4). It does not trust the resource dictionary, because generators share one resource dict across pages. Extraction adds one `![](embedded:pdf:<obj>-<gen>)` line to the end of the image's page block. `assets::store_embedded` resolves the marker from the PDF on disk (folder) or from the downloaded package (Drive). JPEG (`DCTDecode` only) passes through unchanged. 8-bit Gray/RGB samples are re-encoded as PNG, with an 8-bit `SMask` used as alpha. JPX/JBIG2/CCITT/CMYK/Indexed/stencil images and other bit depths are skipped. The context is the page (`p. N — nearby words`). An image on a page with no words of its own goes to Unplaced images (`attribution='none'`).
+* **Context:** PDFs were text-only. A drawn picture in a PDF is the same kind of thing as one in a docx (R46.8). Most "save as PDF" charts are vector drawings with no image object, though.
+* **Alternatives considered:**
+  - *Rasterize pages (pdfium/mupdf)* — rejected: it needs a large native dependency on all three platforms, and every vector page would become an image with no context. The owner's rule is extract-or-ignore.
+  - *Attribute images from the page resource dict* — rejected: shared resources would attach every image to every page.
+  - *Decode CMYK/Indexed/JPX* — deferred: it needs color management or codecs. Skipped images stay out until real corpora show they matter (R46.14 measurement).
+* **Consequences:** `lopdf` + `png` are now direct deps (the same versions `pdf-extract` already pulls in). Overlapping prose chunks re-read the same marker, so each ref is capped at its count in the item text. Clearing a person's caption gives back the page-derived split (`embedded` or `none`) through `assets::embed_sync_attribution`. Captions on PDF images sit at `p. N > caption by a person`.

@@ -251,7 +251,8 @@ fn context_for(chunk_path: &str, text: &str, span: (usize, usize)) -> String {
     let window = format!("{} {}", &text[start..span.0], &text[span.1..end]);
     let window = md_image_re().replace_all(&window, " ");
     let window = html_img_re().replace_all(&window, " ");
-    let window = window.split_whitespace().collect::<Vec<_>>().join(" ");
+    // A window edge can cut a ref in half; its fragments are not context.
+    let window = window.split_whitespace().filter(|w| !w.contains(EMBEDDED_SCHEME) && !w.contains("](")).collect::<Vec<_>>().join(" ");
     match (chunk_path.trim().is_empty(), window.is_empty()) {
         (true, _) => window,
         (false, true) => chunk_path.trim().to_string(),
@@ -489,17 +490,28 @@ pub fn store_embedded(conn: &Connection, source_id: i64, item_id: i64, place: Op
         .map_err(|e| e.to_string())?;
     let mut rows = Vec::new();
     let mut ordinals: HashMap<String, usize> = HashMap::new();
-    // R46.8: the document's own package, read once for all its images.
-    let mut from_disk: Option<Option<Vec<u8>>> = None;
+    let mut packages = Packages { given: package, place, disk: None, pdf: None };
+    let pages = pdf_ref_pages(conn, item_id);
+    let in_text = ref_counts(conn, item_id);
     for (chunk_id, section_id, path, content) in host_chunks(conn, item_id)? {
-        for r in scan_refs(&content) {
+        let refs = scan_refs(&content);
+        // R46.16: an image on a chunk with no words of its own (a bare
+        // slide) has no context to be found by — unplaced.
+        let chunk_words = has_words(&content, &refs);
+        for r in refs {
             let n = ordinals.entry(r.src.clone()).or_default();
+            // Prose chunks overlap: a ref past its count in the document text
+            // is the next chunk re-reading the same bytes, not a new image.
+            if in_text.get(&r.src).is_some_and(|max| *n >= *max) {
+                continue;
+            }
             *n += 1;
+            // PDF chunks pack several pages: page + words come from the page.
+            let page = pages.get(&(r.src.clone(), *n));
+            let words = page.map_or(chunk_words, |p| p.1);
+            let crumb = page.map_or_else(|| path.clone(), |p| format!("p. {}", p.0));
             let resolved = match r.src.strip_prefix(EMBEDDED_SCHEME) {
-                Some(part) => {
-                    let pkg = package.or_else(|| from_disk.get_or_insert_with(|| place.and_then(|p| std::fs::read(&p.doc).ok())).as_deref());
-                    pkg.and_then(|bytes| resolve_embedded(part, bytes, cap))
-                }
+                Some(part) => packages.resolve(part, cap),
                 None => resolve(&r.src, place, cap),
             };
             let Some(resolved) = resolved else { continue };
@@ -512,8 +524,8 @@ pub fn store_embedded(conn: &Connection, source_id: i64, item_id: i64, place: Op
                 src: if r.src.starts_with("data:") { "data:".to_string() } else { r.src.clone() },
                 alt: r.alt.clone(),
                 caption: r.caption.clone(),
-                context: context_for(&path, &content, r.span),
-                attribution: "embedded",
+                context: context_for(&crumb, &content, r.span),
+                attribution: if words { "embedded" } else { "none" },
                 resolved,
             });
         }
@@ -521,7 +533,129 @@ pub fn store_embedded(conn: &Connection, source_id: i64, item_id: i64, place: Op
     conn.execute("BEGIN IMMEDIATE", []).map_err(|e| e.to_string())?;
     let res = write_embedded(conn, source_id, item_id, &rows, cap);
     conn.execute(if res.is_ok() { "COMMIT" } else { "ROLLBACK" }, []).map_err(|e| e.to_string())?;
-    res.map(|_| rows.len())
+    res?;
+    // Embed assets just moved to the new sections: people's captions on
+    // them follow (R46.12/R46.16).
+    crate::captions::refresh_for_item(conn, item_id)?;
+    Ok(rows.len())
+}
+
+/// How often each ref occurs in the item text: the true count that
+/// overlapping chunk windows must not exceed. Empty when the item keeps no
+/// text (the cap then does not apply).
+fn ref_counts(conn: &Connection, item_id: i64) -> HashMap<String, usize> {
+    let text: String = conn.query_row("SELECT text FROM ingested_items WHERE id=?1", [item_id], |r| r.get(0)).unwrap_or_default();
+    let mut out = HashMap::new();
+    for r in scan_refs(&text) {
+        *out.entry(r.src).or_default() += 1;
+    }
+    out
+}
+
+/// R46.16: (src, ordinal) → (page, page has words) for the `embedded:pdf:`
+/// refs of a PDF item, read from the item text (which keeps `[page N]`
+/// markers; stored chunks do not). Empty for every other item.
+fn pdf_ref_pages(conn: &Connection, item_id: i64) -> HashMap<(String, usize), (u32, bool)> {
+    let needle = format!("{EMBEDDED_SCHEME}{}", crate::pdf_images::PART_PREFIX);
+    let text: Option<String> = conn
+        .query_row("SELECT text FROM ingested_items WHERE id=?1 AND instr(text, ?2) > 0", params![item_id, needle], |r| r.get(0))
+        .ok();
+    let mut out = HashMap::new();
+    let Some(text) = text else { return out };
+    let mut ordinals: HashMap<String, usize> = HashMap::new();
+    let mut page = 0u32;
+    let mut block = String::new();
+    let mut pending: Vec<(String, usize)> = Vec::new();
+    let flush = |page: u32, block: &str, pending: &mut Vec<(String, usize)>, out: &mut HashMap<(String, usize), (u32, bool)>| {
+        let words = has_words(block, &scan_refs(block));
+        for key in pending.drain(..) {
+            out.insert(key, (page, words));
+        }
+    };
+    for line in text.lines() {
+        if let Some(n) = crate::extract::page_marker_number(line) {
+            flush(page, &block, &mut pending, &mut out);
+            (page, block) = (n, String::new());
+            continue;
+        }
+        for r in scan_refs(line) {
+            let n = ordinals.entry(r.src.clone()).or_default();
+            *n += 1;
+            pending.push((r.src, *n));
+        }
+        block.push_str(line);
+        block.push('\n');
+    }
+    flush(page, &block, &mut pending, &mut out);
+    out
+}
+
+/// What sync derives for an embed asset (`embedded` or `none`, R46.16), so
+/// a person clearing their fields hands back the same split. The uid is
+/// deterministic (item uid + src + ordinal), which recovers the ordinal.
+pub fn embed_sync_attribution(conn: &Connection, asset_id: i64) -> Result<&'static str, String> {
+    let (uid, item_id, src, host, item_uid): (String, i64, String, String, String) = conn
+        .query_row(
+            "SELECT a.uid, a.item_id, a.src, COALESCE(c.content, ''), COALESCE(i.uid, '') FROM assets a \
+             JOIN ingested_items i ON i.id = a.item_id LEFT JOIN chunks c ON c.id = a.chunk_id WHERE a.id=?1",
+            [asset_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    let page_words = pdf_ref_pages(conn, item_id)
+        .into_iter()
+        .find(|((s, n), _)| *s == src && asset_uid(&item_uid, s, *n) == uid)
+        .map(|(_, (_, words))| words);
+    let words = page_words.unwrap_or_else(|| has_words(&host, &scan_refs(&host)));
+    Ok(if words { "embedded" } else { "none" })
+}
+
+/// True when a chunk carries text besides its image references.
+pub fn has_words(content: &str, refs: &[ImageRef]) -> bool {
+    let mut rest = String::with_capacity(content.len());
+    let mut at = 0;
+    for r in refs {
+        rest.push_str(&content[at..r.span.0]);
+        at = r.span.1;
+    }
+    rest.push_str(&content[at..]);
+    rest.chars().any(char::is_alphanumeric)
+}
+
+/// The document's own container, read once for all its images: an Office
+/// zip (R46.8) or a PDF (R46.16), held in memory (Drive, R46.15) or read
+/// from `place.doc` (folder).
+struct Packages<'a> {
+    given: Option<&'a [u8]>,
+    place: Option<&'a DocPlace>,
+    disk: Option<Option<Vec<u8>>>,
+    pdf: Option<Option<lopdf::Document>>,
+}
+
+impl Packages<'_> {
+    fn bytes(&mut self) -> Option<&[u8]> {
+        let place = self.place;
+        match self.given {
+            Some(b) => Some(b),
+            None => self.disk.get_or_insert_with(|| place.and_then(|p| std::fs::read(&p.doc).ok())).as_deref(),
+        }
+    }
+
+    fn resolve(&mut self, part: &str, cap: u64) -> Option<Resolved> {
+        if !part.starts_with(crate::pdf_images::PART_PREFIX) {
+            return self.bytes().and_then(|b| resolve_embedded(part, b, cap));
+        }
+        if self.pdf.is_none() {
+            let doc = self.bytes().and_then(|b| lopdf::Document::load_mem(b).ok());
+            self.pdf = Some(doc);
+        }
+        let img = crate::pdf_images::decode(self.pdf.as_ref()?.as_ref()?, part, cap)?;
+        if img.w < MIN_EMBEDDED_PX || img.h < MIN_EMBEDDED_PX {
+            return None;
+        }
+        let info = ImageInfo { mime: img.mime, w: Some(img.w), h: Some(img.h) };
+        Some(Resolved { bytes: img.bytes, size: img.size, ref_path: String::new(), info })
+    }
 }
 
 fn write_embedded(conn: &Connection, source_id: i64, item_id: i64, rows: &[AssetRow], cap: u64) -> Result<(), String> {
@@ -679,8 +813,8 @@ pub fn load_media(conn: &Connection, uid: &str) -> Result<Option<Media>, String>
 pub fn hosts_images(name: &str) -> bool {
     let base = name.rsplit(['/', '\\']).next().unwrap_or(name).to_ascii_lowercase();
     let html = base.ends_with(".html") || base.ends_with(".htm");
-    // R46.8: Office/ODF documents carry `embedded:` markers.
-    let office = [".docx", ".docm", ".pptx", ".pptm", ".odt", ".odp"].iter().any(|e| base.ends_with(e));
+    // R46.8: Office/ODF documents carry `embedded:` markers; R46.16: PDFs too.
+    let office = [".docx", ".docm", ".pptx", ".pptm", ".odt", ".odp", ".pdf"].iter().any(|e| base.ends_with(e));
     html || office || (crate::markdown::is_markdown_filename(&base) && crate::extract::diagram_kind(&base).is_none())
 }
 
@@ -771,7 +905,7 @@ mod tests {
 
     #[test]
     fn hosts_images_is_markdown_and_html_only() {
-        for yes in ["a.md", "docs/b.MARKDOWN", "c.html", "d.htm", "e.docx", "f.PPTX", "g.odt"] {
+        for yes in ["a.md", "docs/b.MARKDOWN", "c.html", "d.htm", "e.docx", "f.PPTX", "g.odt", "h.pdf"] {
             assert!(hosts_images(yes), "{yes}");
         }
         for no in ["a.drawio", "b.excalidraw.json", "c.svg", "d.txt", "e.py", "gdrive:abc"] {

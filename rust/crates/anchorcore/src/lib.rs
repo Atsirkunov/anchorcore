@@ -38,6 +38,7 @@ pub mod markdown;
 pub mod mcp;
 pub mod mcp_setup;
 pub mod ollama;
+pub mod pdf_images;
 pub mod pipeline;
 pub mod projects;
 pub mod query_expand;

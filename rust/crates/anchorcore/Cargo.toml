@@ -46,6 +46,9 @@ dotenvy = "0.15"
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 ignore = "0.4"
 pdf-extract = "0.12"
+# R46.16: PDF image objects (same versions pdf-extract already pulls in)
+lopdf = { version = "0.42", default-features = false }
+png = "0.18"
 notify = "6"
 include_dir = "0.7"
 mime_guess = "2"
