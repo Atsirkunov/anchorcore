@@ -3185,6 +3185,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pdf_pictures_store_per_page_and_wordless_pages_are_unplaced() {
+        // R46.16: drawn image objects become assets on their page; a page
+        // with words hosts `embedded`, an image-only page is unplaced; vector
+        // drawing and unsupported (CMYK) samples store nothing.
+        let data_tmp = tempdir().unwrap();
+        let folder_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().to_string_lossy().to_string();
+        std::fs::write(folder_tmp.path().join("flows.pdf"), crate::pdf_images::tests::fixture()).unwrap();
+        let (settings, sid) = seed_folder_source(&data_dir, folder_tmp.path());
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
+        let cfg = serde_json::json!({"path": folder_tmp.path().to_string_lossy()});
+        run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        let conn = crate::db::init_db(&crate::db::resolve_db_path(&data_dir)).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT a.mime, a.w, a.attribution, a.context, b.bytes IS NOT NULL FROM assets a LEFT JOIN asset_blobs b ON b.hash = a.bytes_hash ORDER BY a.id")
+            .unwrap();
+        let rows: Vec<(String, i64, String, String, bool)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(rows.len(), 2, "CMYK + vector pages store nothing: {rows:?}");
+        assert_eq!((rows[0].0.as_str(), rows[0].1, rows[0].2.as_str(), rows[0].4), ("image/png", 40, "embedded", true), "{rows:?}");
+        // A short PDF packs pages into one chunk; the page comes from the item text.
+        assert!(rows[0].3.starts_with("p. 1 — Page one words"), "attributed to its page: {rows:?}");
+        assert_eq!((rows[1].0.as_str(), rows[1].1, rows[1].2.as_str()), ("image/jpeg", 640, "none"), "{rows:?}");
+        assert!(rows[1].3.starts_with("p. 2"), "{rows:?}");
+        let listed = crate::captions::list(&conn, &Default::default()).unwrap();
+        assert_eq!(listed["total"], 1, "the image-only page lands in Unplaced images");
+
+        // An untargeted caption sits on the image's own page and cites it.
+        let uid = listed["items"][0]["asset_id"].as_str().unwrap().to_string();
+        let patch: crate::captions::Patch = serde_json::from_value(serde_json::json!({"caption": "Example caption"})).unwrap();
+        crate::captions::apply_patch(&conn, &uid, &patch).unwrap();
+        let path: String = conn.query_row("SELECT path FROM chunks WHERE kind='caption'", [], |r| r.get(0)).unwrap();
+        assert!(path.contains("p. 2") && path.ends_with("caption by a person"), "{path}");
+        let cleared: crate::captions::Patch = serde_json::from_value(serde_json::json!({"caption": ""})).unwrap();
+        assert_eq!(crate::captions::apply_patch(&conn, &uid, &cleared).unwrap()["attribution"], "none", "clearing hands back the derived split");
+
+        // Many image-only pages span overlapping prose chunks: each image is
+        // still one asset on its own page, with no marker fragments in context.
+        std::fs::write(folder_tmp.path().join("deck.pdf"), crate::pdf_images::tests::image_pages(80)).unwrap();
+        run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        let (n, pages, chunks): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COUNT(DISTINCT a.context), (SELECT COUNT(DISTINCT chunk_id) FROM assets x WHERE x.item_id = a.item_id) FROM assets a \
+                 JOIN ingested_items i ON i.id = a.item_id WHERE i.external_id = 'deck.pdf'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert!(chunks > 1, "the fixture must span several chunks to pin the overlap");
+        assert_eq!((n, pages), (80, 80), "one asset per image, each on its own page");
+        let junk: i64 = conn.query_row("SELECT COUNT(*) FROM assets WHERE context LIKE '%embedded:%' OR context LIKE '%](%'", [], |r| r.get(0)).unwrap();
+        assert_eq!(junk, 0);
+    }
+
+    #[tokio::test]
     async fn drive_office_images_store_from_the_downloaded_package() {
         // R46.15: a Drive docx's image resolves from the bytes the sync
         // already downloaded (no file on disk, no second download).
