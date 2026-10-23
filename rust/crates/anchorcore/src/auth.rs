@@ -571,6 +571,7 @@ mod tests {
             ("GET", "/decisions"), ("GET", "/actions"),
             ("GET", "/items"), ("GET", "/items/1"), ("PATCH", "/items/1"),
             ("GET", "/items/1/outline"),
+            ("GET", "/media/abc"),
             ("GET", "/entities/1/context"),
             ("GET", "/review/low-confidence"),
             ("GET", "/review/duplicates"),

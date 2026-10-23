@@ -468,6 +468,8 @@ fn fetch_item(conn: &rusqlite::Connection, item_id: i64) -> Option<Value> {
         let pdf_quality = pdf_quality_for(conn, sid, &title, &path, &text);
         let mut v = item_json(id, sid, title, path, text, is_pii, pdf_quality);
         v["is_glossary"] = json!(is_glossary);
+        // R46.9: the item's images (embeds + its own file), bytes via /media.
+        v["assets"] = json!(crate::assets::refs_for_item(conn, id));
         v
     })
 }
