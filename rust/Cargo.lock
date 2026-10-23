@@ -74,6 +74,7 @@ dependencies = [
  "clap",
  "dotenvy",
  "ed25519-dalek",
+ "flate2",
  "hex",
  "hmac",
  "ignore",
