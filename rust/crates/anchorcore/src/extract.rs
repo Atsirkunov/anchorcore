@@ -60,7 +60,7 @@ const CONFIG_EXTS: &[&str] = &["yaml", "yml", "json", "jsonc", "toml"];
 /// Extensions that need a real extractor (not plain text).
 const FORMAT_EXTS: &[&str] = &[
     "html", "htm", "pdf", "docx", "docm", "pptx", "pptm", "xlsx", "xlsm", "xlsb", "xls", "ods", "odt", "odp", "rtf",
-    "eml", "drawio", "dio", "excalidraw", "svg",
+    "eml", "drawio", "dio", "excalidraw", "svg", "vsdx", "vsdm",
 ];
 
 /// Cap for a single decompressed archive part (docx/pptx/odt content XML).
@@ -126,6 +126,12 @@ pub fn diagram_kind(name: &str) -> Option<&'static str> {
         Some("drawio")
     } else if base.ends_with(".svg") {
         Some("svg")
+    } else if base.ends_with(".vsdx") || base.ends_with(".vsdm") {
+        Some("vsdx")
+    } else if base.starts_with("miro:") {
+        // R46.5: Miro boards (external id `miro:<board>`) render through
+        // the normal form, so they chunk as markdown like diagram files.
+        Some("miro")
     } else {
         None
     }
@@ -191,6 +197,7 @@ pub fn extract_bytes(kind: &str, bytes: &[u8]) -> Result<String, String> {
         "drawio" | "dio" => crate::diagram_formats::drawio_to_text(&decode_text(bytes)?),
         "excalidraw" => crate::diagram_formats::excalidraw_to_text(&decode_text(bytes)?),
         "svg" => crate::diagram_formats::svg_to_text(&decode_text(bytes)?),
+        "vsdx" | "vsdm" => crate::diagram_formats::vsdx_to_text(bytes),
         other => Err(format!("unsupported file type: {other:?}")),
     }
 }
@@ -224,6 +231,8 @@ const MIME_KINDS: &[(&str, &str)] = &[
     ("application/vnd.oasis.opendocument.text", "odt"),
     ("application/vnd.oasis.opendocument.spreadsheet", "ods"),
     ("application/vnd.oasis.opendocument.presentation", "odp"),
+    ("application/vnd.ms-visio.drawing", "vsdx"),
+    ("application/vnd.ms-visio.drawing.main+xml", "vsdx"),
     ("application/rtf", "rtf"),
     ("text/rtf", "rtf"),
     ("message/rfc822", "eml"),
@@ -1006,11 +1015,11 @@ pub(crate) fn resolve_ref(name: &str) -> Option<char> {
 
 // ----- zip-backed formats (docx/pptx/odf) -----
 
-fn open_zip(bytes: &[u8]) -> Result<zip::ZipArchive<Cursor<&[u8]>>, String> {
+pub(crate) fn open_zip(bytes: &[u8]) -> Result<zip::ZipArchive<Cursor<&[u8]>>, String> {
     zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("not a zip archive: {e}"))
 }
 
-fn read_zip_entry(
+pub(crate) fn read_zip_entry(
     archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
     name: &str,
 ) -> Result<String, String> {
@@ -1032,7 +1041,7 @@ fn read_zip_entry(
     String::from_utf8(buf).map_err(|e| format!("{name} is not utf-8: {e}"))
 }
 
-fn zip_names(archive: &zip::ZipArchive<Cursor<&[u8]>>, prefix: &str, suffix: &str) -> Vec<String> {
+pub(crate) fn zip_names(archive: &zip::ZipArchive<Cursor<&[u8]>>, prefix: &str, suffix: &str) -> Vec<String> {
     archive
         .file_names()
         .filter_map(|n| n.ok())
@@ -2166,6 +2175,9 @@ Hello \b bold\b0  and \'93quoted\'94.\par Second \u8364? paragraph.\par}";
             ("arch.drawio.svg", Some("svg")),
             ("sketch.excalidraw.svg", Some("svg")),
             ("logo.svg", Some("svg")),
+            ("flows/Process.VSDX", Some("vsdx")),
+            ("macro.vsdm", Some("vsdx")),
+            ("miro:uXjVOabc=", Some("miro")),
             ("data.json", None),
             ("notes.md", None),
         ] {
@@ -2174,6 +2186,9 @@ Hello \b bold\b0  and \'93quoted\'94.\par Second \u8364? paragraph.\par}";
         assert!(!is_config_filename("board.excalidraw.json"));
         assert!(is_config_filename("board.json"));
         assert!(crate::markdown::is_markdown_filename("flows/order.drawio"));
+        assert!(crate::markdown::is_markdown_filename("miro:uXjVOabc="), "R46.5 boards chunk as markdown");
+        assert!(is_supported_path(Path::new("a/process.vsdx")));
+        assert_eq!(kind_for("application/vnd.ms-visio.drawing", "process").as_deref(), Some("vsdx"));
         assert!(is_supported_path(Path::new("a/order.drawio")));
         assert!(is_supported_path(Path::new("a/logo.svg")));
         assert_eq!(kind_for("application/json", "board.excalidraw.json").as_deref(), Some("excalidraw"));

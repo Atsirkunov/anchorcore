@@ -499,6 +499,267 @@ fn svg_push(w: &mut SvgWalk, s: &str) {
     }
 }
 
+// ----- Visio (.vsdx) -----
+
+/// One Visio shape as parsed: page-local cells, its own text, its master,
+/// and its group parent (child pins are relative to the group's origin).
+#[derive(Debug, Default, Clone)]
+struct VShape {
+    id: String,
+    master: Option<String>,
+    text: Option<String>,
+    cells: HashMap<String, f64>,
+    one_d: bool,
+    parent: Option<usize>,
+}
+
+impl VShape {
+    fn cell(&self, n: &str) -> f64 {
+        self.cells.get(n).copied().unwrap_or(0.0)
+    }
+}
+
+/// `(connector id) → (begin shape, end shape)` from `<Connects>`.
+type Connects = HashMap<String, (Option<String>, Option<String>)>;
+
+#[derive(Default)]
+struct VsdxWalk {
+    shapes: Vec<VShape>,
+    /// Open `<Shape>` elements: (index into `shapes`, element depth).
+    stack: Vec<(usize, usize)>,
+    depth: usize,
+    /// Depth of the open `<Text>` of the innermost shape.
+    text_depth: Option<usize>,
+    connects: Connects,
+}
+
+/// Parse a Visio `.vsdx` package: pages in `pages.xml` order (background
+/// pages skipped) → frames when there are several, shapes → nodes (own text,
+/// else the master's default text), 1-D shapes → edges resolved through
+/// `<Connects>` (`BeginX`/`EndX`), connector text → edge label.
+pub fn vsdx_to_text(bytes: &[u8]) -> Result<String, String> {
+    let mut zip = crate::extract::open_zip(bytes)?;
+    let masters = vsdx_master_texts(&mut zip);
+    let pages = vsdx_page_index(&mut zip, "visio/pages/pages.xml", "visio/pages/_rels/pages.xml.rels")?;
+    let multi = pages.len() > 1;
+    let mut d = Diagram::default();
+    for (pi, (name, part)) in pages.iter().enumerate() {
+        let xml = crate::extract::read_zip_entry(&mut zip, &format!("visio/pages/{part}"))?;
+        let walk = vsdx_walk(&xml)?;
+        let frame = multi.then(|| {
+            let id = format!("page:{pi}");
+            let title = if name.trim().is_empty() { format!("Page {}", pi + 1) } else { name.clone() };
+            d.frames.push(Frame { id: id.clone(), title, parent: None, x: 0.0, y: pi as f64 * PAGE_STRIDE });
+            id
+        });
+        let prefix = if multi { format!("{pi}:") } else { String::new() };
+        vsdx_emit(&walk, &masters, &prefix, frame, pi as f64 * PAGE_STRIDE, &mut d);
+    }
+    Ok(render(&d))
+}
+
+/// Relationship id → target part name, from one `_rels/*.rels` part.
+fn vsdx_rels(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, rels: &str) -> HashMap<String, String> {
+    let Ok(xml) = crate::extract::read_zip_entry(zip, rels) else { return HashMap::new() };
+    let mut out = HashMap::new();
+    let mut reader = quick_xml::Reader::from_str(&xml);
+    while let Ok(ev) = reader.read_event() {
+        match ev {
+            Event::Empty(e) | Event::Start(e) if local_name(&e) == "Relationship" => {
+                if let (Some(id), Some(target)) = (attr(&e, "Id"), attr(&e, "Target")) {
+                    out.insert(id, target.rsplit('/').next().unwrap_or(&target).to_string());
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `(name, part file)` per foreground page (or master) in index order.
+fn vsdx_page_index(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, index: &str, rels: &str) -> Result<Vec<(String, String)>, String> {
+    let targets = vsdx_rels(zip, rels);
+    let xml = crate::extract::read_zip_entry(zip, index).map_err(|e| format!("not a Visio package: {e}"))?;
+    let mut reader = quick_xml::Reader::from_str(&xml);
+    let mut out = Vec::new();
+    let mut current: Option<(String, bool)> = None;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match local_name(&e).as_str() {
+                "Page" | "Master" => {
+                    let name = attr(&e, "Name").or_else(|| attr(&e, "NameU")).unwrap_or_default();
+                    current = Some((name, attr(&e, "Background").as_deref() == Some("1")));
+                }
+                "Rel" => {
+                    let target = attr(&e, "r:id").and_then(|id| targets.get(&id).cloned());
+                    if let (Some((name, false)), Some(t)) = (current.take(), target) {
+                        out.push((name, t));
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) => return Ok(out),
+            Err(e) => return Err(format!("visio index: {e}")),
+            _ => {}
+        }
+    }
+}
+
+/// Master id → its default text (first shape text in the master part).
+fn vsdx_master_texts(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>) -> HashMap<String, String> {
+    let ids = vsdx_master_ids(zip);
+    let mut out = HashMap::new();
+    for (id, part) in ids {
+        let Ok(xml) = crate::extract::read_zip_entry(zip, &format!("visio/masters/{part}")) else { continue };
+        let Ok(walk) = vsdx_walk(&xml) else { continue };
+        if let Some(t) = walk.shapes.iter().filter_map(|s| s.text.clone()).find(|t| !t.trim().is_empty()) {
+            out.insert(id, t);
+        }
+    }
+    out
+}
+
+fn vsdx_master_ids(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>) -> Vec<(String, String)> {
+    let targets = vsdx_rels(zip, "visio/masters/_rels/masters.xml.rels");
+    let Ok(xml) = crate::extract::read_zip_entry(zip, "visio/masters/masters.xml") else { return Vec::new() };
+    let mut reader = quick_xml::Reader::from_str(&xml);
+    let (mut out, mut current) = (Vec::new(), None);
+    while let Ok(ev) = reader.read_event() {
+        match ev {
+            Event::Start(e) | Event::Empty(e) => match local_name(&e).as_str() {
+                "Master" => current = attr(&e, "ID"),
+                "Rel" => {
+                    if let (Some(id), Some(t)) = (current.take(), attr(&e, "r:id").and_then(|r| targets.get(&r).cloned())) {
+                        out.push((id, t));
+                    }
+                }
+                _ => {}
+            },
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    out
+}
+
+fn vsdx_walk(xml: &str) -> Result<VsdxWalk, String> {
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut w = VsdxWalk::default();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => {
+                w.depth += 1;
+                vsdx_open(&mut w, &e, false);
+            }
+            Ok(Event::Empty(e)) => vsdx_open(&mut w, &e, true),
+            Ok(Event::End(e)) => {
+                vsdx_close(&mut w, e.local_name().as_ref());
+                w.depth = w.depth.saturating_sub(1);
+            }
+            Ok(Event::Text(t)) => vsdx_text(&mut w, &quick_xml::escape::unescape(&t.into_inner()).map(|c| c.into_owned()).unwrap_or_default()),
+            Ok(Event::GeneralRef(r)) => {
+                if let Some(c) = crate::extract::resolve_ref(&r.into_inner()) {
+                    vsdx_text(&mut w, &c.to_string());
+                }
+            }
+            Ok(Event::Eof) => return Ok(w),
+            Err(e) => return Err(format!("visio page: {e}")),
+            _ => {}
+        }
+    }
+}
+
+fn vsdx_open(w: &mut VsdxWalk, e: &BytesStart, empty: bool) {
+    // A shape's own cells/text are its direct children (depth + 1);
+    // Section rows hold geometry cells that must not override the pin.
+    let own = w.stack.last().filter(|(_, d)| w.depth == d + usize::from(!empty)).map(|(i, _)| *i);
+    match local_name(e).as_str() {
+        "Shape" if !empty => {
+            let parent = w.stack.last().map(|(i, _)| *i);
+            w.shapes.push(VShape { id: attr(e, "ID").unwrap_or_default(), master: attr(e, "Master"), parent, ..Default::default() });
+            w.stack.push((w.shapes.len() - 1, w.depth));
+        }
+        "Cell" => {
+            let (Some(i), Some(n)) = (own, attr(e, "N")) else { return };
+            let v = attr(e, "V").and_then(|v| v.parse::<f64>().ok());
+            if n == "BeginX" {
+                w.shapes[i].one_d = true;
+            }
+            if let Some(v) = v {
+                w.shapes[i].cells.insert(n, v);
+            }
+        }
+        "Text" if !empty && own.is_some() => {
+            w.text_depth = Some(w.depth);
+            if let Some(i) = own {
+                w.shapes[i].text.get_or_insert_with(String::new);
+            }
+        }
+        "Connect" => {
+            let (Some(from), Some(cell)) = (attr(e, "FromSheet"), attr(e, "FromCell")) else { return };
+            let ends = w.connects.entry(from).or_default();
+            match cell.as_str() {
+                "BeginX" => ends.0 = attr(e, "ToSheet"),
+                "EndX" => ends.1 = attr(e, "ToSheet"),
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+fn vsdx_close(w: &mut VsdxWalk, name: &str) {
+    match name {
+        "Text" if w.text_depth == Some(w.depth) => w.text_depth = None,
+        "Shape" if w.stack.last().is_some_and(|(_, d)| *d == w.depth) => {
+            w.stack.pop();
+        }
+        _ => {}
+    }
+}
+
+fn vsdx_text(w: &mut VsdxWalk, s: &str) {
+    if w.text_depth.is_none() {
+        return;
+    }
+    if let Some(text) = w.stack.last().and_then(|(i, _)| w.shapes[*i].text.as_mut()) {
+        text.push_str(s);
+    }
+}
+
+/// Page coordinates: a child's pin is relative to its group's lower-left
+/// corner; Visio's y axis points up, the normal form's down.
+fn vsdx_abs(shapes: &[VShape], i: usize) -> (f64, f64) {
+    let (mut x, mut y) = (shapes[i].cell("PinX"), shapes[i].cell("PinY"));
+    let mut parent = shapes[i].parent;
+    for _ in 0..shapes.len() {
+        let Some(p) = parent else { break };
+        let g = &shapes[p];
+        let loc = |n: &str, size: &str| g.cells.get(n).copied().unwrap_or(g.cell(size) / 2.0);
+        x += g.cell("PinX") - loc("LocPinX", "Width");
+        y += g.cell("PinY") - loc("LocPinY", "Height");
+        parent = g.parent;
+    }
+    (x, -y)
+}
+
+fn vsdx_emit(w: &VsdxWalk, masters: &HashMap<String, String>, prefix: &str, frame: Option<String>, y_offset: f64, d: &mut Diagram) {
+    let key = |id: &str| format!("{prefix}{id}");
+    for (i, s) in w.shapes.iter().enumerate() {
+        let text = s.text.clone().filter(|t| !t.trim().is_empty()).or_else(|| s.master.as_ref().and_then(|m| masters.get(m).cloned())).unwrap_or_default();
+        if s.one_d || w.connects.contains_key(&s.id) {
+            let (from, to) = w.connects.get(&s.id).cloned().unwrap_or_default();
+            // A connector's master text ("Dynamic connector") is not a label.
+            let label = s.text.clone().unwrap_or_default();
+            d.edges.push(Edge { from: from.map(|f| key(&f)), to: to.map(|t| key(&t)), label });
+            continue;
+        }
+        let (x, y) = vsdx_abs(&w.shapes, i);
+        d.nodes.push(Node { id: key(&s.id), text, frame: frame.clone(), x, y: y + y_offset, h: s.cell("Height") });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,6 +860,62 @@ mod tests {
         // A corrupt payload falls back to the drawn text, never fails the file.
         let broken = "<svg><!-- payload-start -->@@@<!-- payload-end --><text>Draft</text></svg>";
         assert_eq!(svg_to_text(broken).expect("fallback"), "- Draft\n");
+    }
+
+    fn vsdx(parts: &[(&str, &str)]) -> Vec<u8> {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default();
+        for (name, body) in parts {
+            zip.start_file(*name, opts).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    const NS: &str = "xmlns='http://schemas.microsoft.com/office/visio/2012/main' xmlns:r='http://schemas.openxmlformats.org/officeDocument/2006/relationships'";
+
+    fn rels(targets: &[(&str, &str)]) -> String {
+        let rows: String = targets.iter().map(|(id, t)| format!("<Relationship Id='{id}' Type='x' Target='{t}'/>")).collect();
+        format!("<Relationships xmlns='http://schemas.openxmlformats.org/package/2006/relationships'>{rows}</Relationships>")
+    }
+
+    #[test]
+    fn vsdx_pages_masters_groups_and_connects() {
+        let pages = format!("<Pages {NS}><Page ID='0' Name='Flow'><PageSheet/><Rel r:id='rId1'/></Page><Page ID='1' Name='Bg' Background='1'><Rel r:id='rId2'/></Page><Page ID='2' NameU='Notes'><Rel r:id='rId3'/></Page></Pages>");
+        let page1 = format!("<PageContents {NS}><Shapes>\
+            <Shape ID='1' Type='Shape' Master='2'><Cell N='PinX' V='1'/><Cell N='PinY' V='9'/><Cell N='Height' V='0.5'/><Text>Order &amp; received</Text></Shape>\
+            <Shape ID='2' Type='Shape' Master='3'><Cell N='PinX' V='4'/><Cell N='PinY' V='9'/><Cell N='Height' V='0.5'/></Shape>\
+            <Shape ID='3' Type='Shape'><Cell N='BeginX' V='1.5'/><Cell N='PinX' V='2.5'/><Cell N='PinY' V='9'/><Text>check stock</Text></Shape>\
+            <Shape ID='4' Type='Group'><Cell N='PinX' V='2'/><Cell N='PinY' V='5'/><Cell N='Width' V='4'/><Cell N='Height' V='2'/>\
+              <Section N='Geometry'><Row T='MoveTo'><Cell N='PinX' V='77'/><Cell N='PinY' V='77'/></Row></Section>\
+              <Shapes><Shape ID='5'><Cell N='PinX' V='1'/><Cell N='PinY' V='1'/><Cell N='Height' V='0.5'/><Text>Pack<cp IX='0'/>ing</Text></Shape></Shapes>\
+            </Shape></Shapes>\
+            <Connects><Connect FromSheet='3' FromCell='BeginX' ToSheet='1' ToCell='PinX'/><Connect FromSheet='3' FromCell='EndX' ToSheet='2' ToCell='PinX'/></Connects></PageContents>");
+        let page3 = format!("<PageContents {NS}><Shapes>\
+            <Shape ID='1'><Cell N='PinX' V='1'/><Cell N='PinY' V='2'/><Text>Ship it</Text></Shape>\
+            <Shape ID='2'><Cell N='BeginX' V='0'/><Text>loose</Text></Shape>\
+            </Shapes><Connects><Connect FromSheet='2' FromCell='BeginX' ToSheet='1'/></Connects></PageContents>");
+        let bg = format!("<PageContents {NS}><Shapes><Shape ID='1'><Text>Confidential watermark</Text></Shape></Shapes></PageContents>");
+        let masters = format!("<Masters {NS}><Master ID='3' NameU='Decision'><Rel r:id='rId1'/></Master></Masters>");
+        let master1 = format!("<MasterContents {NS}><Shapes><Shape ID='5'><Text>Decision</Text></Shape></Shapes></MasterContents>");
+        let bytes = vsdx(&[
+            ("visio/pages/pages.xml", &pages),
+            ("visio/pages/_rels/pages.xml.rels", &rels(&[("rId1", "page1.xml"), ("rId2", "page2.xml"), ("rId3", "page3.xml")])),
+            ("visio/pages/page1.xml", &page1),
+            ("visio/pages/page2.xml", &bg),
+            ("visio/pages/page3.xml", &page3),
+            ("visio/masters/masters.xml", &masters),
+            ("visio/masters/_rels/masters.xml.rels", &rels(&[("rId1", "master1.xml")])),
+            ("visio/masters/master1.xml", &master1),
+        ]);
+        assert_eq!(
+            vsdx_to_text(&bytes).expect("parse"),
+            "## Flow\n\n- Order & received\n- Decision\n- Packing\n\n- Order & received → Decision: check stock\n\n## Notes\n\n- Ship it\n\n- Ship it → ?: loose\n"
+        );
+        assert_eq!(crate::extract::extract_bytes("vsdx", &bytes).unwrap(), vsdx_to_text(&bytes).unwrap());
+        assert!(vsdx_to_text(b"not a zip").is_err());
+        assert!(vsdx_to_text(&vsdx(&[("word/document.xml", "<w/>")])).is_err(), "no pages.xml → not Visio");
     }
 
     #[test]
