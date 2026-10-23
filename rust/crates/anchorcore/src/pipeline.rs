@@ -1127,7 +1127,19 @@ fn create_summaries_inner(
 async fn create_tags(ctx: &ClassifyCtx) -> Result<(), String> {
     let item_id = ctx.item_id;
     let full_text = ctx.full_text.clone();
-    run_db(&ctx.data_dir, move |conn| create_tags_inner(conn, item_id, &full_text)).await
+    run_db(&ctx.data_dir, move |conn| {
+        // R30.7: one transaction for the whole tag pass — a big doc issues
+        // tens of thousands of ensure/update/link writes, and autocommit per
+        // statement was most of the 20.8 s tags phase. On `Err` this fresh
+        // per-call connection rolls back on drop (F-03 pattern).
+        conn.execute("BEGIN IMMEDIATE", []).map_err(|e| e.to_string())?;
+        let out = create_tags_inner(conn, item_id, &full_text);
+        if out.is_ok() {
+            conn.execute("COMMIT", []).map_err(|e| e.to_string())?;
+        }
+        out
+    })
+    .await
 }
 
 fn create_tags_inner(conn: &Connection, item_id: i64, full_text: &str) -> Result<(), String> {

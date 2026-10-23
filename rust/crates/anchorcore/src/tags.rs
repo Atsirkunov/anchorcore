@@ -29,9 +29,16 @@ pub fn normalize_tag(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
+/// R30.7: compiled once — `propose_tags` runs per section (2801 compiles
+/// for one 2MB file) and the compile dwarfed the tokenize.
+fn tag_token_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"[\p{L}\p{N}]{4,}").unwrap())
+}
+
 pub fn propose_tags(section_text: &str, title: &str) -> Vec<String> {
     let combined = format!("{} {}", title, section_text);
-    let re = Regex::new(r"[\p{L}\p{N}]{4,}").unwrap();
+    let re = tag_token_re();
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for m in re.find_iter(&combined.to_lowercase()) {
         let tok = m.as_str().to_string();
