@@ -18,6 +18,7 @@ mod common;
 mod connectors;
 mod db;
 mod diagram;
+mod diagram_formats;
 mod embed_fp;
 mod embedder;
 mod entities;

@@ -65,9 +65,13 @@ struct Fence {
     len: usize,
 }
 
-/// True for the extensions the folder/Drive connectors ingest as markdown.
+/// True for the extensions the folder/Drive connectors ingest as markdown —
+/// including diagram files, whose extracted text is rendered markdown (R46.2).
 pub fn is_markdown_filename(name: &str) -> bool {
     let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    if crate::extract::diagram_kind(base).is_some() {
+        return true;
+    }
     match base.rsplit('.').next() {
         Some(ext) if ext.len() < base.len() => {
             matches!(ext.to_ascii_lowercase().as_str(), "md" | "markdown" | "mdx")

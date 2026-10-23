@@ -60,7 +60,7 @@ const CONFIG_EXTS: &[&str] = &["yaml", "yml", "json", "jsonc", "toml"];
 /// Extensions that need a real extractor (not plain text).
 const FORMAT_EXTS: &[&str] = &[
     "html", "htm", "pdf", "docx", "docm", "pptx", "pptm", "xlsx", "xlsm", "xlsb", "xls", "ods", "odt", "odp", "rtf",
-    "eml",
+    "eml", "drawio", "dio", "excalidraw", "svg",
 ];
 
 /// Cap for a single decompressed archive part (docx/pptx/odt content XML).
@@ -105,9 +105,29 @@ pub fn is_code_path(path: &Path) -> bool {
 /// key/table chunking family and the pipeline extraction skip (R33.4).
 pub fn is_config_filename(name: &str) -> bool {
     let base = name.rsplit(['/', '\\']).next().unwrap_or(name).to_ascii_lowercase();
+    if diagram_kind(&base).is_some() {
+        return false;
+    }
     match base.rsplit('.').next() {
         Some(ext) if ext != base.as_str() => CONFIG_EXTS.contains(&ext),
         _ => false,
+    }
+}
+
+/// Diagram files (R46.2) by full name, so double extensions resolve before
+/// the last one does: `x.excalidraw.json` is a scene, not a config, and
+/// `x.drawio.svg` / `x.excalidraw.svg` take the SVG path, which reads the
+/// embedded scene. The text renders as markdown (`diagram::render`).
+pub fn diagram_kind(name: &str) -> Option<&'static str> {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name).to_ascii_lowercase();
+    if base.ends_with(".excalidraw") || base.ends_with(".excalidraw.json") {
+        Some("excalidraw")
+    } else if base.ends_with(".drawio") || base.ends_with(".dio") {
+        Some("drawio")
+    } else if base.ends_with(".svg") {
+        Some("svg")
+    } else {
+        None
     }
 }
 
@@ -120,11 +140,13 @@ pub fn extract_file(path: &Path) -> Result<String, String> {
 /// tripped the split-word detector (repaired or not). The pipeline turns
 /// improved notes into `system_events` rows.
 pub fn extract_file_noted(path: &Path) -> (Result<String, String>, Option<PdfQualityNote>) {
-    let kind = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .unwrap_or_else(|| path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase());
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let kind = diagram_kind(name).map(str::to_string).unwrap_or_else(|| {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_else(|| name.to_ascii_lowercase())
+    });
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => return (Err(format!("read {}: {}", path.display(), e)), None),
@@ -166,6 +188,9 @@ pub fn extract_bytes(kind: &str, bytes: &[u8]) -> Result<String, String> {
         "odt" | "odp" => extract_odf(bytes),
         "rtf" => extract_rtf(bytes),
         "eml" => extract_eml(bytes),
+        "drawio" | "dio" => crate::diagram_formats::drawio_to_text(&decode_text(bytes)?),
+        "excalidraw" => crate::diagram_formats::excalidraw_to_text(&decode_text(bytes)?),
+        "svg" => crate::diagram_formats::svg_to_text(&decode_text(bytes)?),
         other => Err(format!("unsupported file type: {other:?}")),
     }
 }
@@ -219,6 +244,11 @@ pub fn kind_for(mime: &str, name: &str) -> Option<String> {
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
+    // Diagram names beat the MIME table: Drive reports `.excalidraw.json`
+    // as application/json and `.drawio.svg` as image/svg+xml.
+    if let Some(kind) = diagram_kind(name) {
+        return Some(kind.to_string());
+    }
     if let Some((_, kind)) = MIME_KINDS.iter().find(|(known, _)| *known == m.as_str()) {
         return Some((*kind).to_string());
     }
@@ -330,7 +360,7 @@ fn decode_cp1252(bytes: &[u8]) -> String {
 /// Strip tags/scripts/styles, keeping block structure (R36.7): `h1`–`h6`
 /// become `#` markers, blocks break lines, table cells separate with tabs
 /// (same shape as docx/odt tables, for the chunker's row-group splitter).
-fn strip_html(s: &str) -> String {
+pub(crate) fn strip_html(s: &str) -> String {
     use std::sync::OnceLock;
     static RE_SCRIPT: OnceLock<regex::Regex> = OnceLock::new();
     static RE_STYLE: OnceLock<regex::Regex> = OnceLock::new();
@@ -905,7 +935,7 @@ fn starts_lower_alnum(s: &str) -> bool {
 }
 
 /// Resolve an XML general reference name (`amp`, `#169`, `#x20`) to a char.
-fn resolve_ref(name: &str) -> Option<char> {
+pub(crate) fn resolve_ref(name: &str) -> Option<char> {
     match name {
         "amp" => Some('&'),
         "lt" => Some('<'),
@@ -2058,6 +2088,35 @@ Hello \b bold\b0  and \'93quoted\'94.\par Second \u8364? paragraph.\par}";
         }
         assert!(is_code_path(Path::new("a/b/main.go")));
         assert!(!is_code_path(Path::new("a/b/notes.md")));
+    }
+
+    #[test]
+    fn diagram_kind_dispatch() {
+        // R46.2: full-name match so double extensions beat the last one.
+        for (name, kind) in [
+            ("flows/order.drawio", Some("drawio")),
+            ("Order.DIO", Some("drawio")),
+            ("board.excalidraw", Some("excalidraw")),
+            ("C:\\x\\board.excalidraw.json", Some("excalidraw")),
+            ("arch.drawio.svg", Some("svg")),
+            ("sketch.excalidraw.svg", Some("svg")),
+            ("logo.svg", Some("svg")),
+            ("data.json", None),
+            ("notes.md", None),
+        ] {
+            assert_eq!(diagram_kind(name), kind, "{name}");
+        }
+        assert!(!is_config_filename("board.excalidraw.json"));
+        assert!(is_config_filename("board.json"));
+        assert!(crate::markdown::is_markdown_filename("flows/order.drawio"));
+        assert!(is_supported_path(Path::new("a/order.drawio")));
+        assert!(is_supported_path(Path::new("a/logo.svg")));
+        assert_eq!(kind_for("application/json", "board.excalidraw.json").as_deref(), Some("excalidraw"));
+        assert_eq!(kind_for("image/svg+xml", "arch.drawio.svg").as_deref(), Some("svg"));
+        assert_eq!(kind_for("application/vnd.jgraph.mxfile", "order.drawio").as_deref(), Some("drawio"));
+        let scene = br#"{"type":"excalidraw","elements":[{"id":"a","type":"text","text":"Kickoff","x":0,"y":0}]}"#;
+        assert_eq!(extract_bytes("excalidraw", scene).unwrap(), "- Kickoff\n");
+        assert!(extract_bytes("drawio", b"\x00\x01binary").is_err());
     }
 
     #[test]

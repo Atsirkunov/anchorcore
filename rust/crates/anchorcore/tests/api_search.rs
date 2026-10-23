@@ -321,3 +321,45 @@ async fn secret_placeholder_semantics() {
     assert_eq!(masked["client_secret"], "***set***", "{masked}");
     assert!(!masked.to_string().contains("shh-secret"), "{masked}");
 }
+
+#[tokio::test]
+async fn diagram_files_index_as_flow_text() {
+    // R46.2 end to end: folder sync extracts draw.io + Excalidraw files to
+    // rendered markdown, and a "what happens after" question finds the edge.
+    let drawio = r#"<mxfile><diagram name="Fulfilment"><mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/>
+<mxCell id="a" value="Warehouse picks parcel" vertex="1" parent="1"><mxGeometry x="0" y="0" width="120" height="60" as="geometry"/></mxCell>
+<mxCell id="b" value="Courier collects parcel" vertex="1" parent="1"><mxGeometry x="200" y="0" width="120" height="60" as="geometry"/></mxCell>
+<mxCell id="e" value="before noon" edge="1" parent="1" source="a" target="b"><mxGeometry relative="1" as="geometry"/></mxCell>
+</root></mxGraphModel></diagram></mxfile>"#;
+    let scene = r#"{"type":"excalidraw","elements":[
+{"id":"r","type":"rectangle","x":0,"y":0,"height":40},{"id":"rt","type":"text","text":"Quarterly roadmap review","containerId":"r","x":0,"y":0},
+{"id":"s","type":"rectangle","x":300,"y":0,"height":40},{"id":"st","type":"text","text":"Publish roadmap","containerId":"s","x":0,"y":0},
+{"id":"arr","type":"arrow","x":0,"y":0,"startBinding":{"elementId":"r"},"endBinding":{"elementId":"s"}}]}"#;
+    let srv = TestServer::start().await;
+    let source = srv
+        .mk_folder_source(
+            "flows",
+            &[("fulfilment.drawio", drawio), ("roadmap.excalidraw.json", scene), ("icon.svg", "<svg><path d=\"M0 0\"/></svg>")],
+            None,
+        )
+        .await;
+    let job = srv.sync_and_wait(source["id"].as_i64().unwrap(), "sync").await;
+    assert_eq!(job["status"], "done", "{job}");
+
+    let cases = [
+        ("what happens after the warehouse picks the parcel", "fulfilment.drawio", "Warehouse picks parcel → Courier collects parcel: before noon"),
+        ("what follows the quarterly roadmap review", "roadmap.excalidraw.json", "Quarterly roadmap review → Publish roadmap"),
+    ];
+    for (query, file, edge) in cases {
+        let resp = srv.post("/qa/search", &json!({"query": query, "include_content": true})).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: Value = resp.json().await.expect("search");
+        let hits = body["hits"].as_array().expect("hits");
+        let hit = hits
+            .iter()
+            .find(|h| h["content"].as_str().is_some_and(|c| c.contains(edge)))
+            .unwrap_or_else(|| panic!("no hit carries {edge:?} for {query:?}: {body}"));
+        assert!(hit.to_string().contains(file), "hit should cite {file}: {hit}");
+    }
+}
