@@ -356,6 +356,8 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ is_pii: isPii }),
     }),
+  /** R46.11: one item with its `assets` (image refs; bytes via /media). */
+  item: (itemId: number) => request<import("./types").ItemDetail>(`/items/${itemId}`),
   listItems: (params?: { path_prefix?: string; source_id?: number; limit?: number; offset?: number }) => {
     const q = new URLSearchParams();
     if (params?.path_prefix) q.set("path_prefix", params.path_prefix);

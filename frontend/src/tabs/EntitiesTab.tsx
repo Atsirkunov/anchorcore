@@ -5,6 +5,7 @@ import { basename, docTypeLabel, kindLabel, needsLook, shortRef, statusLabel } f
 import { ActionsView, DecisionsView } from "./RecordsViews";
 import type { ConflictLink, Dispute, Entity, MergeProposal, Section } from "../types";
 import { GlossaryPanel } from "./GlossaryPanel";
+import { ItemImages } from "../ImageStrip";
 
 type RowContext = {
   source_name: string | null;
@@ -906,6 +907,7 @@ export function AllEntitiesView() {
                 {isOpen && docCtx[itemId]?.full_text && (
                   <div style={{ marginTop: 8, padding: "0.6rem 0.75rem", background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: radius, maxHeight: 320, overflowY: "auto" }}>
                     <div style={{ fontSize: 11, color: theme.textDim, textTransform: "uppercase", marginBottom: 4 }}>Whole doc — {docTitle}</div>
+                    <ItemImages itemId={itemId} />
                     {sectionsByItem[itemId] && sectionsByItem[itemId].length > 1 && (
                       <div style={{ marginBottom: 8, display: "grid", gap: 3, padding: "0.4rem 0.5rem", background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: radius }}>
                         <div style={{ fontSize: 10, color: theme.textDim, textTransform: "uppercase" }}>Sections</div>
