@@ -39,7 +39,7 @@ Verify a download against `SHA256SUMS` on the release page.
 
 Tip: install [Ollama](https://ollama.com) and pull `nomic-embed-text` for full
 hybrid search — without it, keyword search still works. Indexing needs no chat
-model: entities are extracted by rules unless you opt into `extract_entities=llm`.
+model: decisions and actions are read from record structure by rules.
 
 ## Editions
 
@@ -100,7 +100,7 @@ root; pushing a `v*` tag builds all platform zips automatically (see `docs/relea
 
 ```bash
 ollama pull nomic-embed-text  # embeddings
-ollama pull llama3.2:3b       # optional: local answers, or extract_entities=llm
+ollama pull llama3.2:3b       # optional: local answers
 ```
 
 **Tests — Rust is source:** `cargo test -p anchorcore` (all green, `cargo check` clean) + `cargo build --release` embeds `frontend/dist` (`9.8M`). Conformance vs Python: `PYTHONPATH=backend ANCHOR_TEST_RUST_URL=http://127.0.0.1:8123 pytest -q --ignore=backend/tests/test_mcp.py` (honest accounting). Legacy Python unit: `python -m pytest backend/tests -q` (`backend/tests/README.md`).
@@ -113,7 +113,6 @@ never in the DB):
 
 | Section | Local | Cloud |
 |---|---|---|
-| Classification (opt-in: `extract_entities=llm` / `distill_enabled`; default is rules, no model) | Ollama (`llama3.2:3b`) | any OpenAI-compatible + key |
 | Embeddings | Ollama (`nomic-embed-text`) | any OpenAI-compatible + key |
 | Answer (Q&A) | Ollama | any OpenAI-compatible + key, reasoning effort (none/low/medium/high) |
 
@@ -137,19 +136,15 @@ Sources (folder, Drive, Jira, Linear, REST) -> extract text -> clean -> chunk ->
   "decision"/"action" labels. The rule fallback is type-aware too: note-only
   types emit no entities without the LLM (no keyword guessing), and only
   explicitly recorded choices ("we decided…", "Decision: …") count as decisions.
-- **Reviewable entities**: every entity stores the exact classifier input
-  window (`window_text`) — the Entities tab shows "what the classifier saw"
-  behind each low-confidence item.
+- **Model-free extraction**: decisions and actions come from record
+  structure only (`Decision:` headings, `Status:`/`Owner:` fields, ADR front
+  matter, action-item bullets — `records.rs`); every entity keeps its source
+  window (`window_text`) and stays `unverified` until a person confirms it.
 - **Cheap reclassification**: 16k-char windows + per-window content hashes —
-  unchanged windows are skipped (a reclassify of unchanged content makes ~0
-  classifier calls). Jobs are cancellable via **Stop** in the Sources tab.
-- **Parallel throughput (B11)**: classifier windows run concurrently
-  (`ANCHOR_CLASSIFIER_CONCURRENCY`, default 4); throughput stats in System tab.
-- **Distillation (B18)**: chat-like sources (meetings, Slack exports) are
-  normalized into searchable Q&A units (`Q: … A: …`) that embed well — so
-  "how long does the idempotency key last?" is answered even when the raw
-  thread phrased it as "what's the timeout?". An IDF gate (`0.15` signal) skips low-signal
-  filler from vector search (it stays keyword-findable in FTS5).
+  unchanged windows are skipped. Jobs are cancellable via **Stop** in the
+  Sources tab.
+- **IDF gate**: low-signal filler (`0.15` signal) skips vector embedding and
+  stays keyword-findable in FTS5.
 
 **Retrieval:** Q&A fuses vector search (embedding scan) with FTS5 keyword search via **RRF**, then age decay, per-item diversity cap, context expansion, and near-duplicate dedupe. A planner picks `hybrid` + `who_knows` per query, and a graph walk adds 1–2 hop related entities. Full detail: [architecture.md §4](./docs/architecture.md#4-data-flow--qa) + [hierarchical-toc.md](./docs/guides/hierarchical-toc.md).
 
@@ -207,11 +202,11 @@ resets the thread.
 
 | Table | Notes |
 |---|---|
-| `sources` / `ingested_items` | connectors; items carry `doc_type` + `window_hashes` (cheap reclassify) + `distill_hashes` (B18); `sources.label` B39 (internal|public|sensitive) |
+| `sources` / `ingested_items` | connectors; items carry `doc_type` + `window_hashes` (cheap reclassify) + legacy `distill_hashes` (unwritten since R45.18); `sources.label` B39 (internal|public|sensitive) |
 | `projects` / `project_sources` | source bundles for scoped search (B15) |
 | `entities` | kinds decision/document/action/note; `window_text`/`window_index` = classifier input; status verified/disputed/stale |
 | `relationships` | typed links (supersedes/depends_on/owns/blocks) |
-| `chunks` | `kind` = document/entity/distilled (+ section_summary/doc_summary Phase 14); `section_id`/`level`/`path` (Phase 14); legacy `is_pii`/`pii_categories` columns (unwritten since R35.1 — auto-flagging removed); embeddings (float32 blobs); FTS5 `chunks_fts` + `vec_chunks` table (B33; no vec0 module is linked — retrieval is an in-code cosine scan) kept in sync by triggers |
+| `chunks` | `kind` = document/entity (+ section_summary/doc_summary Phase 14; `distilled` dropped in R45.18); `section_id`/`level`/`path` (Phase 14); legacy `is_pii`/`pii_categories` columns (unwritten since R35.1 — auto-flagging removed); embeddings (float32 blobs); FTS5 `chunks_fts` + `vec_chunks` table (B33; no vec0 module is linked — retrieval is an in-code cosine scan) kept in sync by triggers |
 | `sections` / `tags` / `chunk_tags` | Phase 14: hierarchical TOC (`sections` parent/level/path/summary + `summary_embedding`) + dynamic taxonomy (`tags` embedding + count, many:many via `chunk_tags`; reuse if `cosine>0.82` else create) |
 | `chunks_fts` / `vec_chunks` | FTS5 keyword index / plain embeddings table (SQLite), triggers sync; vector search is an in-code cosine scan (no vec0 module linked) |
 | `merge_actions` | duplicate proposals + decisions |

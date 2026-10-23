@@ -1,5 +1,6 @@
-//! Classification orchestration — port of `backend/app/classifier.py:1`.
-//! Ollama/cloud via `reqwest`, `cloud_trusted` gate (B39), rule fallback.
+//! Entity extraction — deterministic, no model (R45.18 deleted the LLM
+//! extraction opt-in and distillation; R45.1 had already made rules the
+//! default). Record structure is read by `records.rs`.
 //!
 //! R33.6: prose collapses to two deterministic buckets — `record`
 //! (meeting/decision content, the only bucket that may emit decision/action)
@@ -21,14 +22,6 @@ use crate::settings::SettingsService;
 pub const KINDS: &[&str] = &["decision", "action", "note"];
 /// Prose buckets. `code` is not a bucket — it skips extraction (R33.2).
 pub const BUCKETS: &[&str] = &["record", "reference"];
-
-// R33.6: one strict prompt per bucket. The record prompt may emit
-// decision/action but demands an explicitly recorded choice — a bare
-// approval pointer ("Approved in decisions/d2") with no choice or
-// reasoning is not a decision.
-const RECORD_PROMPT: &str = "You extract knowledge items from a MEETING or DECISION RECORD.\n\nClassify each item into exactly one of these kinds:\n- decision: ONLY a choice explicitly recorded as made (we decided / we agreed / chose / approved), with its reasoning. A bare approval pointer (\"Approved in decisions/d2\") with no recorded choice or reasoning is NOT a decision — skip it.\n- action: something explicitly assigned to a person, or a tracked follow-up with an owner\n- note: a fact, status update, constraint, revisit trigger, or anything else worth remembering\nDo NOT emit kind \"document\" — status updates and descriptions are notes.\nDo NOT extract the document itself as an item.\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": str, \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": str}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n";
-const REFERENCE_PROMPT: &str = "You extract knowledge items from a REFERENCE document (spec, runbook, policy, people, docs).\n\nThis document describes how things work — it does not record organizational decisions. Extract ONLY factual statements worth remembering:\n- note: a rule, requirement, step, definition, responsibility, or operational fact\nDo NOT extract:\n- decision (reference docs describe; they do not decide)\n- action (procedural steps are notes, not assigned to-dos)\n- document (status updates and descriptions are notes)\n\nRespond ONLY with a JSON object:\n{{\"items\": [{{\"kind\": \"note\", \"summary\": str, \"reasoning\": str, \"confidence\": float, \"author\": \"\"}}]}}\nKeep summaries to one sentence. confidence must be between 0 and 1. If no items exist, return {{\"items\": []}}.\n";
-const DISTILL_PROMPT: &str = "You distill a conversation / chat-log excerpt into searchable Q&A units.\n\nA unit is a question someone asked AND its substantive answer. Normalize the\nexchange into a consistent format so it can be found later by either side.\n\nFor each distinct Q&A exchange in the text, output exactly one unit with:\n- question: the question, normalized to a standalone one-liner\n- answer: the substantive answer, normalized (no filler, greetings, or chit-chat)\n- terms: 1-5 searchable key terms / acronyms the unit is about\n- systems: any systems, teams, or components mentioned (empty if none)\n\nIgnore filler: greetings, small talk, acknowledgements (\"got it\", \"thanks\"),\nand messages with no information. If the text contains no real Q&A exchange,\nreturn {{\"units\": []}}.\n\nRespond ONLY with a JSON object:\n{{\"units\": [{{\"question\": str, \"answer\": str, \"terms\": [str], \"systems\": [str]}}]}}\n";
 
 /// R33.6 record markers (owner Q1(a) broadened set): the old detect_rules
 /// markers plus agreed/decided/approved, `**Status:**` verdict lines,
@@ -73,47 +66,21 @@ pub fn is_record_bucket(doc_type: &str) -> bool {
     doc_type == "record"
 }
 
-/// R33.6: distill gating folded into the bucket definition (replaces both
-/// DISTILL_DOC_TYPES copies). Conversation-like records distill; reference
-/// docs never did as a class (only the old `general` catch-all did) and
-/// don't start now.
-pub fn bucket_distills(doc_type: &str) -> bool {
-    doc_type == "record"
-}
-
-/// R45.1: how ingest extracts entities (`extract_entities` setting).
-/// `rules` (default) is deterministic; `llm` is the opt-in and the only mode
-/// that calls the chat model; `off` stores no entities. Unknown values read
-/// as the default so a typo never silently starts model calls.
+/// R45.1/R45.18: how ingest extracts entities (`extract_entities` setting).
+/// `rules` (default) reads record structure; `off` stores no entities.
+/// Anything else — including the retired `llm` — reads as `rules`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtractMode {
     Off,
     Rules,
-    Llm,
 }
 
 pub fn extract_mode(settings: &SettingsService) -> ExtractMode {
     let raw = settings.get("extract_entities", None).unwrap_or_default();
     match raw.trim().to_ascii_lowercase().as_str() {
         "off" => ExtractMode::Off,
-        "llm" => ExtractMode::Llm,
         _ => ExtractMode::Rules,
     }
-}
-
-/// R45.1: LLM distillation is opt-in (default off) — retrieval excludes
-/// `distilled` chunks from the leaf pool, so the calls bought nothing.
-pub fn distill_enabled(settings: &SettingsService) -> bool {
-    settings
-        .get("distill_enabled", None)
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1"))
-        .unwrap_or(false)
-}
-
-/// R45.1: whether ingest needs the classifier chat model at all. Readiness
-/// and the Ollama probe only ask for the model when this is true.
-pub fn chat_model_needed(settings: &SettingsService) -> bool {
-    extract_mode(settings) == ExtractMode::Llm || distill_enabled(settings)
 }
 
 /// One classify call's output. R45.13: the R40.7 `defined_terms`
@@ -121,12 +88,6 @@ pub fn chat_model_needed(settings: &SettingsService) -> bool {
 #[derive(Debug, Clone)]
 pub struct ClassifyOutput {
     pub items: Vec<ClassifiedItem>,
-}
-
-/// Bucket prompt (crate-visible for the prompt test).
-pub(crate) fn classify_prompt(doc_type: &str) -> String {
-    let base = if is_record_bucket(doc_type) { RECORD_PROMPT } else { REFERENCE_PROMPT };
-    base.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,19 +102,11 @@ pub struct ClassifiedItem {
     pub window_text: String,
     #[serde(default)]
     pub window_index: Option<i64>,
-    /// R45.8: parser-filled owner + record fields (empty for LLM rows).
+    /// R45.8: parser-filled owner + record fields.
     #[serde(default)]
     pub owner: String,
     #[serde(default)]
     pub record: crate::records::RecordFields,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DistilledUnit {
-    pub question: String,
-    pub answer: String,
-    pub terms: Vec<String>,
-    pub systems: Vec<String>,
 }
 
 pub struct Classifier {
@@ -165,207 +118,26 @@ impl Classifier {
         Self { settings }
     }
 
-    fn base_url(&self) -> String {
-        self.settings
-            .get("classifier_base_url", None)
-            .or_else(|| self.settings.get("ollama_base_url", None))
-            .unwrap_or_else(|| "http://localhost:11434".to_string())
-    }
-
-    fn provider_is_local(&self) -> bool {
-        crate::common::provider_is_local(&self.base_url())
-    }
-
     /// R33.6: `doc_type` is the deterministic bucket (`record`/`reference`,
     /// `code`) or a legacy 8-way value (treated as notes-only — see
     /// `is_record_bucket`). Newly extracted prose always stores the bucket.
-    pub async fn classify(
-        &self,
-        text: &str,
-        source_ref: &str,
-        doc_type: &str,
-        cloud_trusted: bool,
-    ) -> ClassifyOutput {
+    pub fn classify(&self, text: &str, source_ref: &str, doc_type: &str) -> ClassifyOutput {
         // R33.2: code is code — no entity extraction from source files. The
-        // code itself is the retrievable unit; paraphrases only added ranking
-        // noise and review-queue filler. No LLM call is attempted either.
+        // code itself is the retrievable unit.
         if doc_type == "code" {
             return ClassifyOutput { items: Vec::new() };
         }
-        // R45.1: no chat model unless `extract_entities=llm` opts in.
-        match extract_mode(&self.settings) {
-            ExtractMode::Off => return ClassifyOutput { items: Vec::new() },
-            ExtractMode::Rules => {
-                return ClassifyOutput {
-                    items: classify_rules_typed(text, source_ref, doc_type) ,
-                }
-            }
-            ExtractMode::Llm => {}
-        }
-        if !cloud_trusted && !self.provider_is_local() {
-            tracing::info!("classification gate: remote provider unconfirmed; using rules");
-            return ClassifyOutput {
-                items: classify_rules_typed(text, source_ref, doc_type) ,
-            };
-        }
-        match self.classify_llm(text, source_ref, doc_type).await {
-            Ok(out) => out,
-            Err(e) => {
-                tracing::warn!("LLM classification failed ({}); falling back to rules", e);
-                ClassifyOutput {
-                    items: classify_rules_typed(text, source_ref, doc_type) ,
-                }
-            }
-        }
-    }
-
-    pub async fn distill(&self, text: &str, source_ref: &str, cloud_trusted: bool) -> Vec<DistilledUnit> {
-        if !cloud_trusted && !self.provider_is_local() {
-            tracing::info!("distillation gate: remote provider unconfirmed; using rules");
-            return distill_rules(text);
-        }
-        match self.distill_llm(text, source_ref).await {
-            Ok(u) => u,
-            Err(e) => {
-                tracing::warn!("LLM distillation failed ({}); falling back to rules", e);
-                distill_rules(text)
-            }
-        }
-    }
-
-    async fn classify_llm(&self, text: &str, source_ref: &str, doc_type: &str) -> Result<ClassifyOutput, String> {
-        let prompt = classify_prompt(doc_type);
-        let payload = serde_json::json!({
-            "model": self.settings.get("classifier_model", None).unwrap_or_else(|| "llama3.2:3b".to_string()),
-            "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": format!("Source: {}\n\nContent:\n{}", source_ref, text)}
-            ],
-            "temperature": 0.1,
-            "response_format": {"type": "json_object"}
-        });
-        let base = self.base_url();
-        let api_key = self.settings.get("classifier_api_key", None).unwrap_or_default();
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(self.settings.get_float("classifier_timeout", 60.0) as u64))
-            .build().map_err(|e| e.to_string())?;
-        let url = format!("{}/v1/chat/completions", base.trim_end_matches('/'));
-        let mut req = client.post(&url).json(&payload);
-        if !api_key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", api_key));
-        }
-        let resp = req.send().await.map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            return Err(format!("status {}", resp.status()));
-        }
-        let j: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-        let raw = j.pointer("/choices/0/message/content").and_then(|v| v.as_str()).ok_or("missing content")?;
-        let data: serde_json::Value = serde_json::from_str(raw).map_err(|e| e.to_string())?;
-        let items = data.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        Ok(ClassifyOutput {
-            items: normalize_items(items, source_ref, doc_type),
-        })
-    }
-
-    async fn distill_llm(&self, text: &str, source_ref: &str) -> Result<Vec<DistilledUnit>, String> {
-        let payload = serde_json::json!({
-            "model": self.settings.get("classifier_model", None).unwrap_or_else(|| "llama3.2:3b".to_string()),
-            "messages": [
-                {"role": "system", "content": DISTILL_PROMPT},
-                {"role": "user", "content": format!("Source: {}\n\nContent:\n{}", source_ref, text)}
-            ],
-            "temperature": 0.0,
-            "response_format": {"type": "json_object"}
-        });
-        let base = self.base_url();
-        let api_key = self.settings.get("classifier_api_key", None).unwrap_or_default();
-        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(60)).build().map_err(|e| e.to_string())?;
-        let url = format!("{}/v1/chat/completions", base.trim_end_matches('/'));
-        let mut req = client.post(&url).json(&payload);
-        if !api_key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", api_key));
-        }
-        let resp = req.send().await.map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            return Err(format!("status {}", resp.status()));
-        }
-        let j: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-        let raw = j.pointer("/choices/0/message/content").and_then(|v| v.as_str()).ok_or("missing content")?;
-        let data: serde_json::Value = serde_json::from_str(raw).map_err(|e| e.to_string())?;
-        let units = data.get("units").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        let mut out = Vec::new();
-        for u in units {
-            if let Some(obj) = u.as_object() {
-                let q = obj.get("question").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-                let a = obj.get("answer").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-                if q.is_empty() || a.is_empty() { continue; }
-                let terms = obj.get("terms").and_then(|v| v.as_array()).map(|arr| arr.iter().filter_map(|x| x.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).take(5).collect()).unwrap_or_default();
-                let systems = obj.get("systems").and_then(|v| v.as_array()).map(|arr| arr.iter().filter_map(|x| x.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).take(5).collect()).unwrap_or_default();
-                out.push(DistilledUnit { question: q.chars().take(500).collect(), answer: a.chars().take(1200).collect(), terms, systems });
-            }
-        }
-        Ok(out)
+        let items = match extract_mode(&self.settings) {
+            ExtractMode::Off => Vec::new(),
+            ExtractMode::Rules => classify_rules_typed(text, source_ref, doc_type),
+        };
+        ClassifyOutput { items }
     }
 }
 
-fn normalize_items(items: Vec<serde_json::Value>, source_ref: &str, bucket: &str) -> Vec<ClassifiedItem> {
-    let mut out = Vec::new();
-    for item in items {
-        if let Some(obj) = item.as_object() {
-            let raw_kind = obj.get("kind").and_then(|v| v.as_str()).unwrap_or("note").to_lowercase();
-            // R33.6: new extraction emits decision/action/note only — a stray
-            // "document" (legacy kind, disobedient model) degrades to note.
-            let mut kind = if KINDS.contains(&raw_kind.as_str()) { raw_kind } else { "note".to_string() };
-            // R33.6: reference (and any legacy/non-record value) is
-            // notes-only, enforced here — the prompt asks, this guarantees.
-            if !is_record_bucket(bucket) && kind != "note" {
-                kind = "note".to_string();
-            }
-            let summary = obj.get("summary").and_then(|v| v.as_str()).unwrap_or("").trim().chars().take(1000).collect::<String>();
-            if summary.is_empty() { continue; }
-            let reasoning = obj.get("reasoning").and_then(|v| v.as_str()).unwrap_or("").trim().chars().take(1000).collect();
-            let confidence = obj.get("confidence").and_then(|v| v.as_f64()).map(|f| f.clamp(0.0,1.0)).unwrap_or(0.5);
-            let author = obj.get("author").and_then(|v| v.as_str()).unwrap_or("").trim().chars().take(300).collect();
-            out.push(ClassifiedItem { kind, summary, reasoning, confidence, author, source_ref: source_ref.to_string(), window_text: String::new(), window_index: None, owner: String::new(), record: Default::default() });
-        }
-    }
-    out
-}
-
-fn split_sentences(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let chars: Vec<char> = text.chars().collect();
-    let mut start = 0usize;
-    for i in 0..chars.len() {
-        if ".!?".contains(chars[i]) {
-            let next_is_ws = i + 1 >= chars.len() || chars[i + 1].is_whitespace();
-            if next_is_ws {
-                let s: String = chars[start..=i].iter().collect();
-                let trimmed = s.trim().to_string();
-                if !trimmed.is_empty() {
-                    out.push(trimmed);
-                }
-                let mut j = i + 1;
-                while j < chars.len() && chars[j].is_whitespace() {
-                    j += 1;
-                }
-                start = j;
-            }
-        }
-    }
-    if start < chars.len() {
-        let s: String = chars[start..].iter().collect();
-        let trimmed = s.trim().to_string();
-        if !trimmed.is_empty() {
-            out.push(trimmed);
-        }
-    }
-    out
-}
-
-/// Rules extraction, bucket-aware: only `record` extracts without the LLM.
+/// Rules extraction, bucket-aware: only `record` extracts.
 /// `reference` (+ legacy types, + `code`) emit nothing — chunks still make
-/// them findable, and the LLM reference prompt extracts notes when online.
+/// them findable.
 /// R45.8: records are read by the deterministic parser (`records.rs`), not
 /// sentence regexes — those turned code tables and field paths into
 /// decisions/actions.
@@ -374,24 +146,6 @@ pub fn classify_rules_typed(text: &str, source_ref: &str, doc_type: &str) -> Vec
         return Vec::new();
     }
     crate::records::record_items(&crate::records::parse_record(text), source_ref)
-}
-
-pub fn distill_rules(text: &str) -> Vec<DistilledUnit> {
-    static RE_FILLER: OnceLock<Regex> = OnceLock::new();
-    static RE_TERMS: OnceLock<Regex> = OnceLock::new();
-    let sentences: Vec<String> = split_sentences(text);
-    let mut units = Vec::new();
-    for i in 0..sentences.len() {
-        let sentence = &sentences[i];
-        if !sentence.ends_with('?') || i+1 >= sentences.len() { continue; }
-        let answer = &sentences[i+1];
-        if answer.len() < 5 || RE_FILLER.get_or_init(|| Regex::new(r"(?i)^(got it|ok|thanks|thx|yes|no|sure)[.!]*$").unwrap()).is_match(answer) {
-            continue;
-        }
-        let terms: Vec<String> = RE_TERMS.get_or_init(|| Regex::new(r"[A-Za-z][A-Za-z0-9_\-]{2,}").unwrap()).find_iter(&format!("{} {}", sentence, answer)).map(|m| m.as_str().to_lowercase()).take(5).collect();
-        units.push(DistilledUnit { question: sentence.chars().take(500).collect(), answer: answer.chars().take(1200).collect(), terms, systems: vec![] });
-    }
-    units
 }
 
 #[cfg(test)]
@@ -409,22 +163,6 @@ mod tests {
         assert_eq!((items[1].owner.as_str(), items[1].record.due.as_str()), ("Bob", "Friday"));
         assert!(classify_rules_typed(text, "ref", "reference").is_empty(), "reference never extracts");
     }
-    #[test]
-    fn distill_rules_pairs() {
-        let text = "What is the deadline? The deadline is next Friday. Got it. Another question? Answer here.";
-        let units = distill_rules(text);
-        assert!(!units.is_empty());
-        assert_eq!(units[0].question, "What is the deadline?");
-    }
-    #[test]
-    fn provider_local_gate() {
-        let dir = tempdir().unwrap();
-        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
-        let svc = Arc::new(crate::settings::SettingsService::new(store));
-        // default ollama is local -> trusted
-        let c = Classifier::new(svc);
-        assert!(c.provider_is_local());
-    }
 
     #[test]
     fn code_type_extracts_nothing() {
@@ -436,35 +174,24 @@ mod tests {
         assert!(items.is_empty());
     }
 
-    #[tokio::test]
-    async fn classify_short_circuits_code_without_llm_call() {
-        // R33.2: the choke point — no LLM call is attempted for code, so this
-        // is deterministic with or without a provider running.
+    #[test]
+    fn classify_short_circuits_code() {
+        // R33.2: the choke point — code yields nothing, whatever it reads like.
         let dir = tempdir().unwrap();
         let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
         let svc = Arc::new(crate::settings::SettingsService::new(store));
         let c = Classifier::new(svc);
-        let out = c.classify("We decided to use sqlite-vec for vectors.", "main.rs", "code", true).await;
+        let out = c.classify("We decided to use sqlite-vec for vectors.", "main.rs", "code");
         assert!(out.items.is_empty());
     }
 
     #[test]
-    fn prompts_ask_for_no_vocabulary() {
-        // R45.13: the Tier-2 `defined_terms` instruction is deleted — the
-        // model is never asked to propose vocabulary.
-        for bucket in ["record", "reference"] {
-            assert!(!classify_prompt(bucket).contains("defined_terms"), "{bucket}");
-        }
-    }
-
-    #[test]
-    fn reference_and_legacy_emit_nothing_without_llm() {
-        // No LLM → only the record bucket extracts; reference, code, and
-        // every legacy 8-way value yield nothing (chunks keep them
-        // findable; the LLM reference prompt extracts notes when online).
+    fn reference_and_legacy_emit_nothing() {
+        // Only the record bucket extracts; reference, code, and every
+        // legacy 8-way value yield nothing (chunks keep them findable).
         let text = "We decided to approve the budget. Next step: Alice will draft the plan.";
         for t in ["reference", "code", "meeting", "decision_log", "documentation", "standards", "runbook", "prd", "general", ""] {
-            assert!(classify_rules_typed(text, "ref", t).is_empty(), "{t:?} must emit nothing without the LLM");
+            assert!(classify_rules_typed(text, "ref", t).is_empty(), "{t:?} must emit nothing");
         }
     }
 
@@ -477,38 +204,6 @@ mod tests {
             "The decision-making process is described below. What was decided about the transfer?",
         ] {
             assert!(classify_rules_typed(text, "ref", "record").is_empty(), "{text}");
-        }
-    }
-
-    fn items_of(kinds: &[&str]) -> Vec<serde_json::Value> {
-        kinds.iter().map(|k| serde_json::json!({"kind": k, "summary": "s", "reasoning": "r", "confidence": 0.9, "author": "a"})).collect()
-    }
-
-    #[test]
-    fn normalize_reference_coerces_everything_to_note() {
-        // A disobedient model emitting decision/action/document for a
-        // reference doc still stores notes — the bucket line is enforced
-        // in code, not just in the prompt.
-        let out = normalize_items(items_of(&["decision", "action", "document", "note", "bogus"]), "ref", "reference");
-        assert_eq!(out.len(), 5);
-        assert!(out.iter().all(|i| i.kind == "note"));
-    }
-
-    #[test]
-    fn normalize_record_keeps_decision_action_maps_document() {
-        let out = normalize_items(items_of(&["decision", "action", "document", "note"]), "ref", "record");
-        let kinds: Vec<&str> = out.iter().map(|i| i.kind.as_str()).collect();
-        assert_eq!(kinds, vec!["decision", "action", "note", "note"]);
-    }
-
-    #[test]
-    fn normalize_legacy_types_are_notes_only() {
-        // No grandfathering: only the literal `record` bucket may emit
-        // decision/action; legacy values coerce to note until a force
-        // reclassify re-buckets them.
-        for legacy in ["meeting", "decision_log", "documentation", "general", "prd", "standards", "runbook", ""] {
-            let out = normalize_items(items_of(&["decision"]), "ref", legacy);
-            assert_eq!(out[0].kind, "note", "legacy {legacy:?} must be notes-only");
         }
     }
 

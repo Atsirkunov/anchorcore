@@ -1,14 +1,12 @@
-//! Distillation signal gating — port of `backend/app/distill.py:96` `signal`.
-//!
-//! R33.6: the duplicated DISTILL_DOC_TYPES lists are deleted — distill
-//! gating lives in the bucket definition (`classifier::bucket_distills`).
+//! IDF signal score for the embedding gate (`Embedder::embed_gated`).
+//! R45.18: was `distill.rs` — distillation is deleted, the score stays.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use regex::Regex;
 
-/// B18 IDF-gated signal score — mirrors `backend/app/distill.py:96` `signal`.
+/// B18 IDF-gated signal score (archived `distill.py` `signal` parity).
 ///
 /// `content` is one chunk's text; `corpus` is all pending chunks' texts for the item.
 /// Tokens are `[a-z0-9_]{3,}` lowercased. Mean IDF = avg log((n+1)/(df+1)).

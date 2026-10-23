@@ -297,7 +297,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
             )}
             {state?.ollama.reachable && missing.length > 0 && (
               <div style={styles.note}>
-                <div>These models aren&apos;t installed yet — answers and classification stay basic until they are:</div>
+                <div>These models aren&apos;t installed yet — answers and search stay basic until they are:</div>
                 <div style={{ ...styles.code, whiteSpace: "normal" }}>{missing.join(", ")}</div>
                 {!pull.pulling ? (
                   <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent, marginTop: 6 }} onClick={installModels}>

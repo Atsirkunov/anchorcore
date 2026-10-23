@@ -1,5 +1,5 @@
 //! Embedder + IDF gate — port of `backend/app/embedder.py:1`.
-//! `pack_f32`, cloud-trust gate for labeled sources, `vec0` sync triggers, `signal()` gating via `distill::signal`.
+//! `pack_f32`, cloud-trust gate for labeled sources, `vec0` sync triggers, `signal()` gating via `idf::signal`.
 
 use std::sync::Arc;
 
@@ -173,7 +173,7 @@ impl Embedder {
         let model = self.embed_model_name();
         let base = self.base_url();
         let api_key = self.settings.get("embed_api_key", None).unwrap_or_default();
-        let timeout = self.settings.get_float("classifier_timeout", 60.0) as u64;
+        let timeout = self.settings.get_float("embed_timeout", 60.0) as u64;
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(timeout))
             .build()
@@ -268,7 +268,7 @@ impl Embedder {
         let corpus: Vec<String> = contents.clone();
         let mut embeddable_idx: Vec<usize> = Vec::new();
         for (i, c) in contents.iter().enumerate() {
-            let s = crate::distill::signal(c, &corpus);
+            let s = crate::idf::signal(c, &corpus);
             if s < embed_min_signal {
                 continue;
             }

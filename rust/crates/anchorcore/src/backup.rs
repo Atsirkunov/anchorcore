@@ -1443,6 +1443,11 @@ fn chunk_refs(ctx: &mut ImportCtx, rec: &Value) -> Result<ChunkRefs, String> {
 }
 
 fn apply_chunk(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
+    let kind = str_field(rec, "kind");
+    // R45.18: distillation is deleted — old archives' distilled rows stay out.
+    if kind == "distilled" {
+        return Ok(());
+    }
     let uid = str_field(rec, "uid");
     let (item_id, entity_id, section_id) = chunk_refs(ctx, rec)?;
     let existing = ctx.lookup("chunks", &uid)?;
@@ -1452,7 +1457,6 @@ fn apply_chunk(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     if !ctx.write || action == Action::Skip {
         return Ok(());
     }
-    let kind = str_field(rec, "kind");
     let source_ref = str_field(rec, "source_ref");
     let content = str_field(rec, "content");
     let level = i64_field(rec, "level").unwrap_or(0);

@@ -5,7 +5,6 @@ describe("stripPlaceholders", () => {
   it("removes the ***set*** masked placeholder so it never overwrites a stored secret", () => {
     const payload = {
       answer_api_key: "***set***",
-      classifier_api_key: "",
       embed_api_key: "***set***",
       answer_model: "gpt-4o-mini",
     };

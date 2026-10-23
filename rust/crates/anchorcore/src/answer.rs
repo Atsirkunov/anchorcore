@@ -110,7 +110,7 @@ pub struct SearchRequest {
     /// else (or absent) means unfiltered; live-first still orders the mix.
     pub env: Option<String>,
     /// R36.6: chunk-kind filter — comma list from
-    /// `document,entity,distilled,section_summary,doc_summary`
+    /// `document,entity,section_summary,doc_summary`
     /// (case-insensitive; unknown or empty means unfiltered, like `env`).
     pub kind: Option<String>,
     /// R36.6: item-path prefix filter — relative like the items listing, or
@@ -998,7 +998,7 @@ fn normalize_kind_filter(kind: Option<String>) -> Option<Vec<String>> {
     let kinds: Vec<String> = raw
         .split(',')
         .map(|t| t.trim().to_lowercase())
-        .filter(|t| matches!(t.as_str(), "document" | "entity" | "distilled" | "section_summary" | "doc_summary"))
+        .filter(|t| matches!(t.as_str(), "document" | "entity" | "section_summary" | "doc_summary"))
         .collect();
     if kinds.is_empty() { None } else { Some(kinds) }
 }
