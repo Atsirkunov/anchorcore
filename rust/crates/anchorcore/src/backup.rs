@@ -1093,6 +1093,10 @@ struct ImportCtx<'a> {
     warnings: Vec<String>,
     remap: BTreeMap<String, String>,
     remapped: Vec<Value>,
+    /// (chunk uid, section uid) links whose section record comes later in
+    /// the stream (archives write chunks before sections); resolved by
+    /// `link_deferred_sections` once every record is in.
+    deferred_sections: Vec<(String, String)>,
 }
 
 impl<'a> ImportCtx<'a> {
@@ -1107,6 +1111,7 @@ impl<'a> ImportCtx<'a> {
             warnings: Vec::new(),
             remap,
             remapped: Vec::new(),
+            deferred_sections: Vec::new(),
         }
     }
 
@@ -1552,6 +1557,24 @@ fn apply_entity_record(ctx: &mut ImportCtx, rec: &Value, id: i64) -> Result<(), 
 
 type ChunkRefs = (Option<i64>, Option<i64>, Option<i64>);
 
+/// A chunk's section is written after the chunk itself: remember the link
+/// instead of dropping it (every restored chunk used to lose its section,
+/// which unfenced TOC leaf search after a restore).
+fn defer_section_link(ctx: &mut ImportCtx, rec: &Value, chunk_uid: &str, section_id: Option<i64>) {
+    let section_uid = str_field(rec, "section_uid");
+    if ctx.write && section_id.is_none() && !section_uid.is_empty() {
+        ctx.deferred_sections.push((chunk_uid.to_string(), section_uid));
+    }
+}
+
+fn link_deferred_sections(ctx: &mut ImportCtx) -> Result<(), String> {
+    for (chunk_uid, section_uid) in std::mem::take(&mut ctx.deferred_sections) {
+        let (Some(chunk), Some(section)) = (ctx.lookup("chunks", &chunk_uid)?, ctx.lookup("sections", &section_uid)?) else { continue };
+        ctx.conn.execute("UPDATE chunks SET section_id=?1 WHERE id=?2", rusqlite::params![section, chunk]).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn chunk_refs(ctx: &mut ImportCtx, rec: &Value) -> Result<ChunkRefs, String> {
     let item_uid = str_field(rec, "item_uid");
     let entity_uid = str_field(rec, "entity_uid");
@@ -1570,6 +1593,7 @@ fn apply_chunk(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     }
     let uid = str_field(rec, "uid");
     let (item_id, entity_id, section_id) = chunk_refs(ctx, rec)?;
+    defer_section_link(ctx, rec, &uid, section_id);
     let existing = ctx.lookup("chunks", &uid)?;
     let existing_stamp = existing.and_then(|id| ctx.stamp_of("SELECT created_at FROM chunks WHERE id=?1", id));
     let action = decide(existing.is_some(), opt_str_field(rec, "created_at").as_deref(), existing_stamp.as_deref());
@@ -2126,7 +2150,8 @@ fn import_data(
     // R46.7: blobs first — asset records in data.jsonl reference them.
     import_asset_blobs(zip, ctx, counts)?;
     let mut entry = zip.by_name("data.jsonl").map_err(|_| "archive has no data.jsonl".to_string())?;
-    import_stream(&mut entry, ctx, counts)
+    import_stream(&mut entry, ctx, counts)?;
+    link_deferred_sections(ctx)
 }
 
 /// R46.7: `assets/<sha256>` entries → `asset_blobs`. The name must be the
@@ -2810,6 +2835,11 @@ mod tests {
         assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM chunk_tags"), 1);
         assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM project_sources"), 1);
         assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM relationships"), 0);
+        // chunks precede sections in data.jsonl: the link is deferred, not lost
+        assert_eq!(
+            one::<i64>(&conn, "SELECT COUNT(*) FROM chunks c JOIN sections s ON s.id = c.section_id WHERE c.kind='section_summary' AND s.path='Payments'"),
+            1
+        );
         // non-secret settings land on a fresh machine; secret ones never travel
         assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM app_settings WHERE key='answer_model'"), 1);
         assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM app_settings WHERE key='answer_api_key'"), 0);
