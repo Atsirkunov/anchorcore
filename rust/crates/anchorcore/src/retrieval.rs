@@ -1951,7 +1951,9 @@ pub fn env_for_item(path: &str, text_head: &str) -> &'static str {
 }
 
 /// Batched env classes for chunk ids (entity chunks resolve via their entity).
-pub(crate) fn envs_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> HashMap<i64, String> {
+/// Test-env classifier for chunks — `pub` so the golden eval (an integration
+/// test) can drive the production leg the same way the unit tests do.
+pub fn envs_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> HashMap<i64, String> {
     chunk_item_env(conn, chunk_ids).into_iter().map(|(id, (p, head))| (id, env_for_item(&p, &head).to_string())).collect()
 }
 
