@@ -229,6 +229,31 @@ export type Dispute = {
   created_at: string;
 };
 
+/** R46.9: an image reference (search hits, citations, item detail). `url`
+ *  is `GET /media/:uid`; null when the bytes are not stored (over the cap). */
+export type AssetRef = {
+  asset_id: string;
+  alt: string;
+  caption: string;
+  mime: string;
+  w: number | null;
+  h: number | null;
+  url: string | null;
+};
+
+/** R46.9: GET /items/:id `assets` rows carry where the image came from. */
+export type ItemAsset = AssetRef & {
+  origin: "embed" | "file";
+  attribution: string;
+  src: string;
+};
+
+/** GET /items/:id (only the fields the UI reads). */
+export type ItemDetail = ItemMeta & {
+  content?: string;
+  assets?: ItemAsset[];
+};
+
 export type Citation = {
   entity_id: number;
   item_id: number | null;
@@ -247,6 +272,8 @@ export type Citation = {
   content_truncated: boolean;
   line_start?: number;
   line_end?: number;
+  /** R46.11: images on the cited passage (absent on older servers). */
+  images?: AssetRef[];
 };
 
 export type Section = {

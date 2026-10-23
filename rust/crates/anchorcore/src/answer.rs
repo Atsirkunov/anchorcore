@@ -86,7 +86,8 @@ pub struct Citation {
     pub decay: f64,
     /// R39.1: surfaced by filename boost above the ranked list.
     pub boosted: bool,
-    /// R46.9: images on the cited chunk/section — agent_compose only.
+    /// R46.9/R46.11: images on the cited chunk/section — every ask mode
+    /// (agent_compose for the agent, local for the UI's source cards).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<crate::assets::AssetRef>>,
 }
@@ -570,7 +571,7 @@ fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content:
             provenance: h.provenance.clone(),
             decay: rounded_score(h.decay),
             boosted: h.boosted,
-            images: None,
+            images: Some(crate::assets::refs_for_hit(&conn, h.chunk_id, h.section_id)),
         }
     }).collect()
 }
@@ -670,12 +671,8 @@ pub(crate) const AGENT_COMPOSE_INSTRUCTION: &str = "Compose the answer yourself 
 /// fusion and label gate as `composed`; citations always carry content
 /// (as with `include_content`) and there is no warning: nothing degraded.
 fn agent_compose_response(hits: &[crate::retrieval::Hit], data_dir: &str, question: &str, retrieval: &str) -> AskResponse {
-    let mut citations = build_citations(hits, data_dir, true, citations_limit(), question);
     // R46.9: the agent sees images at question time — refs ride on citations.
-    let conn = crate::common::open_data_db(data_dir);
-    for c in citations.iter_mut() {
-        c.images = c.chunk_id.map(|id| crate::assets::refs_for_hit(&conn, id, c.section_id));
-    }
+    let citations = build_citations(hits, data_dir, true, citations_limit(), question);
     AskResponse {
         answer: AGENT_COMPOSE_INSTRUCTION.to_string(),
         citations,

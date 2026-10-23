@@ -3,6 +3,7 @@ import { theme, radius } from "../theme";
 import { AGENT_COMPOSE_HINT, isAgentCompose, modeBannerNotes } from "../answerMode";
 import { excerpt, parseAnswer, relativeTo, splitSourceRef, type Inline } from "../answerText";
 import type { Citation } from "../types";
+import { ImageStrip } from "../ImageStrip";
 
 /** One asked question and what came back: a written answer (local model) or
  *  the cited passages an agent composes from (R45.2 agent mode). */
@@ -103,6 +104,7 @@ function SourceCard({ c, n, roots, agent, active }: { c: Citation; n: number; ro
           <div style={{ color: theme.amber, fontSize: 12, marginTop: 4 }}>contradicts {c.conflicts_with.map((id) => `#${id}`).join(", ")}</div>
         )}
         {c.tags && c.tags.length > 0 && <div style={styles.tags}>{c.tags.slice(0, 4).join(" · ")}</div>}
+        {c.images && c.images.length > 0 && <ImageStrip images={c.images} />}
       </div>
     </li>
   );
