@@ -135,6 +135,11 @@ impl Scheduler {
                 };
                 let job_id = match jobs.create_job(&conn, sid, "sync") {
                     Ok(id) => id,
+                    // R30.1: background ticks coalesce silently onto the active job
+                    Err(crate::jobs::CreateJobError::Conflict(active)) => {
+                        tracing::info!("scheduler tick source {}: job {} already active, skipping", sid, active);
+                        continue;
+                    }
                     Err(_) => continue,
                 };
                 // R11.1: mirror watcher/service.rs:202 trigger_sync — actually execute the pipeline

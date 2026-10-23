@@ -315,6 +315,17 @@ pub async fn reclassify_handler(State(state): State<AppState>, Path(source_id): 
     sync_inner(state, source_id, true).await
 }
 
+/// R30.1: 409 detail naming the live job (`GET /sources/jobs/{id}` polls it).
+fn conflicting_job_detail(conn: &rusqlite::Connection, active: i64, kind: &str) -> String {
+    let (active_kind, status): (String, String) = conn
+        .query_row("SELECT kind, status FROM jobs WHERE id = ?1", [active], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap_or_else(|_| ("sync".to_string(), "active".to_string()));
+    format!(
+        "a {} job (#{}, {}) is already active for this source; {} not started",
+        active_kind, active, status, kind
+    )
+}
+
 async fn sync_inner(state: AppState, source_id: i64, force: bool) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let jobs = state.jobs.clone();
@@ -327,9 +338,15 @@ async fn sync_inner(state: AppState, source_id: i64, force: bool) -> Result<(Sta
             let conn = crate::common::open_data_db(&data_dir);
             crate::common::require_row(&conn, "sources", source_id, "Source not found")?;
             let kind = if force { "reclassify" } else { "sync" };
-            let id = jobs.create_job(&conn, source_id, kind).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": e.to_string()}))))?;
-            // fetch job json to return
-            Ok::<i64, (StatusCode, Json<Value>)>(id)
+            match jobs.create_job(&conn, source_id, kind) {
+                Ok(id) => Ok::<i64, (StatusCode, Json<Value>)>(id),
+                // R30.1: explicit trigger while one is active → 409 naming it, no new row
+                Err(crate::jobs::CreateJobError::Conflict(active)) => Err((
+                    StatusCode::CONFLICT,
+                    Json(json!({"detail": conflicting_job_detail(&conn, active, kind), "job_id": active})),
+                )),
+                Err(crate::jobs::CreateJobError::Db(e)) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": e.to_string()})))),
+            }
         }
     }).await.unwrap()?;
     // spawn background pipeline

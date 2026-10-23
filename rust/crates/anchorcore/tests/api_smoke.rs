@@ -368,6 +368,111 @@ async fn orphaned_running_job_cancelled_via_endpoint_and_restart() {
 }
 
 #[tokio::test]
+async fn second_sync_while_running_returns_409_with_live_job_id() {
+    // R30.1: at most one active sync/reclassify per source. A planted
+    // `running` row stands in for a live job (deterministic — no timing).
+    let srv = TestServer::start().await;
+    let doc = decision_doc("Seed", "We decided to seed the dedup test", "Otto");
+    let source = srv.mk_folder_source("dedup", &[("s.md", &doc)], None).await;
+    let sid = source["id"].as_i64().unwrap();
+
+    srv.db()
+        .execute(
+            "INSERT INTO jobs (source_id, kind, status) VALUES (?1, 'sync', 'running')",
+            [sid],
+        )
+        .expect("plant running");
+    let live: i64 = srv
+        .db()
+        .query_row("SELECT id FROM jobs WHERE source_id = ?1 ORDER BY id DESC LIMIT 1", [sid], |r| {
+            r.get(0)
+        })
+        .expect("live id");
+
+    // sync+sync → 409 naming the live job, no new row
+    let resp = srv.post_empty(&format!("/sources/{sid}/sync")).await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body: Value = resp.json().await.expect("409 json");
+    assert_eq!(body["job_id"], live, "{body}");
+    assert!(
+        body["detail"].as_str().unwrap_or_default().contains(&format!("#{live}")),
+        "{body}"
+    );
+    let n: i64 = srv
+        .db()
+        .query_row("SELECT COUNT(*) FROM jobs WHERE source_id = ?1", [sid], |r| r.get(0))
+        .expect("count");
+    assert_eq!(n, 1, "a 409 must not add a row");
+
+    // sync+reclassify (cross-kind) → same 409, same live job
+    let resp = srv.post_empty(&format!("/sources/{sid}/reclassify")).await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body: Value = resp.json().await.expect("409 json");
+    assert_eq!(body["job_id"], live, "{body}");
+
+    // cancelling the live job frees the slot: the next sync starts clean
+    let cancel = srv.post_empty(&format!("/sources/jobs/{live}/cancel")).await;
+    assert_eq!(cancel.status(), StatusCode::OK);
+    let job = srv.sync_and_wait(sid, "sync").await;
+    assert_eq!(job["status"], "done", "{job}");
+}
+
+#[tokio::test]
+async fn duplicate_sync_while_pending_returns_409() {
+    // R30.1: pending counts as active. Both global slots are parked with
+    // orphan running rows for other sources, so the new sync stays pending
+    // instead of racing to done.
+    let srv = TestServer::start().await;
+    let doc = decision_doc("Seed", "We decided to seed the pending test", "Otto");
+    let a = srv.mk_folder_source("pa", &[("a.md", &doc)], None).await;
+    let b = srv.mk_folder_source("pb", &[("b.md", &doc)], None).await;
+    let c = srv.mk_folder_source("pc", &[("c.md", &doc)], None).await;
+    let (sa, sb, sc) = (
+        a["id"].as_i64().unwrap(),
+        b["id"].as_i64().unwrap(),
+        c["id"].as_i64().unwrap(),
+    );
+    for sid in [sa, sb] {
+        srv.db()
+            .execute(
+                "INSERT INTO jobs (source_id, kind, status) VALUES (?1, 'sync', 'running')",
+                [sid],
+            )
+            .expect("park a slot");
+    }
+    let parked: Vec<i64> = srv
+        .db()
+        .prepare("SELECT id FROM jobs WHERE status = 'running'")
+        .expect("prepare")
+        .query_map([], |r| r.get(0))
+        .expect("query")
+        .filter_map(|r| r.ok())
+        .collect();
+    assert_eq!(parked.len(), 2);
+
+    // slots full → the new sync is accepted but stays pending
+    let resp = srv.post_empty(&format!("/sources/{sc}/sync")).await;
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let first: Value = resp.json().await.expect("job");
+    assert_eq!(first["status"], "pending", "{first}");
+    let jid = first["id"].as_i64().unwrap();
+
+    // a duplicate while pending → 409 naming it, no new row
+    let resp = srv.post_empty(&format!("/sources/{sc}/sync")).await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body: Value = resp.json().await.expect("409 json");
+    assert_eq!(body["job_id"], jid, "{body}");
+
+    // freeing the slots promotes the pending job and it finishes
+    for pid in parked {
+        let cancel = srv.post_empty(&format!("/sources/jobs/{pid}/cancel")).await;
+        assert_eq!(cancel.status(), StatusCode::OK);
+    }
+    let done = srv.wait_job(jid).await;
+    assert_eq!(done["status"], "done", "{done}");
+}
+
+#[tokio::test]
 async fn merge_cleans_references() {
     let srv = TestServer::start().await;
     let d0 = decision_doc("Adopt stack zero", "We decided to adopt stack number zero", "Zed");

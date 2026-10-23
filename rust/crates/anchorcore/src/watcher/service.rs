@@ -256,6 +256,11 @@ async fn trigger_sync(state: AppState, sid: i64) {
             .unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
         let job_id = match jobs.create_job(&conn, sid, "sync") {
             Ok(id) => id,
+            // R30.1: background triggers coalesce silently onto the active job
+            Err(crate::jobs::CreateJobError::Conflict(active)) => {
+                tracing::debug!("watcher source {}: job {} already active, coalescing", sid, active);
+                return;
+            }
             Err(_) => return,
         };
         let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
