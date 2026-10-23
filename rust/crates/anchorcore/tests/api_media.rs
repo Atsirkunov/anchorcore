@@ -168,3 +168,103 @@ async fn agent_compose_citations_carry_images() {
         .collect();
     assert!(images.iter().any(|i| i["alt"] == "Ingress topology" && i["url"].is_string()), "{body}");
 }
+
+// --- R46.12: Unplaced images ---
+
+const GUIDE: &str = "# Ledger guide\n\n## Payout\n\nThe ledger closes every night.\n";
+
+/// Folder source with one doc and one image file nothing links: the image
+/// is unplaced (attribution `none`). Returns (source id, doc item id, asset).
+async fn unplaced_source(srv: &TestServer, name: &str, label: Option<&str>) -> (i64, i64, Value) {
+    let source = srv.mk_folder_source(name, &[("guide.md", GUIDE)], label).await;
+    std::fs::write(srv.work.path().join(name).join("flow.png"), PNG).expect("png");
+    let sid = source["id"].as_i64().unwrap();
+    assert_eq!(srv.sync_and_wait(sid, "sync").await["status"], "done");
+    let listed = srv.get_json(&format!("/media?attribution=none&source_id={sid}")).await;
+    assert_eq!(listed["total"], 1, "{listed}");
+    let asset = listed["items"][0].clone();
+    assert_eq!((asset["path"].as_str(), asset["origin"].as_str()), (Some("flow.png"), Some("file")), "{asset}");
+    let items = srv.get_json(&format!("/items?source_id={sid}")).await;
+    let doc = items["items"].as_array().unwrap().iter().find(|i| i["path"] == "guide.md").expect("doc item")["id"].as_i64().unwrap();
+    (sid, doc, asset)
+}
+
+/// Counts every connection: no route under test may reach a model.
+async fn chat_counter() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = calls.clone();
+    tokio::spawn(async move {
+        while let Ok((_sock, _)) = listener.accept().await {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+    (base, calls)
+}
+
+#[tokio::test]
+async fn unplaced_image_caption_answers_and_survives_resync() {
+    let srv = TestServer::start().await;
+    let (base, calls) = chat_counter().await;
+    assert_eq!(srv.put("/settings", &json!({"answer_base_url": base})).await.status(), StatusCode::OK);
+    let (sid, doc, asset) = unplaced_source(&srv, "ledger", None).await;
+    let uid = asset["asset_id"].as_str().unwrap().to_string();
+
+    // Validation happens before any write; unknown uid is a 404.
+    let bad = srv.patch(&format!("/media/{uid}"), &json!({"target": {"item_id": doc, "entity_id": 1}})).await;
+    assert_eq!(bad.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let missing = srv.patch("/media/nope", &json!({"caption": "x"})).await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    assert_eq!(srv.get("/media?attribution=bogus").await.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let resp = srv.patch(&format!("/media/{uid}"), &json!({"caption": "Quorvane payout flow: batches clear at midnight", "target": {"item_id": doc}})).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let row: Value = resp.json().await.unwrap();
+    assert_eq!((row["attribution"].as_str(), row["target"]["item_id"].as_i64()), (Some("manual"), Some(doc)), "{row}");
+    assert_eq!(srv.get_json("/media").await["total"], 0, "placed images leave the unplaced list");
+
+    async fn search_caption(srv: &TestServer) -> Value {
+        search(srv, json!({"query": "quorvane payout flow", "fields": "summary,images"})).await
+    }
+    let body = search_caption(&srv).await;
+    let hit = body["hits"].as_array().unwrap().iter().find(|h| h["kind"] == "caption").unwrap_or_else(|| panic!("no caption hit: {body}")).clone();
+    assert!(hit["path"].as_str().unwrap().ends_with("caption by a person"), "{hit}");
+    assert_eq!(hit["item_id"].as_i64(), Some(doc), "caption sits on its target");
+    assert!(hit["images"].as_array().unwrap().iter().any(|i| i["asset_id"] == uid.as_str()), "{hit}");
+
+    // Edit the target doc and re-sync: caption + target survive.
+    std::fs::write(srv.work.path().join("ledger").join("guide.md"), format!("{GUIDE}\n## Audit\n\nAuditors read the ledger.\n")).unwrap();
+    assert_eq!(srv.sync_and_wait(sid, "sync").await["status"], "done");
+    let again = search_caption(&srv).await;
+    assert_eq!(again["hits"].as_array().unwrap().iter().filter(|h| h["kind"] == "caption").count(), 1, "{again}");
+    let kept = srv.get_json("/media?attribution=manual").await;
+    assert_eq!(kept["items"][0]["manual_caption"], "Quorvane payout flow: batches clear at midnight", "{kept}");
+
+    // Ignore hides it from answers without deleting it; un-ignore + clear
+    // hands it back to the unplaced list.
+    let ignored: Value = srv.patch(&format!("/media/{uid}"), &json!({"ignore": true})).await.json().await.unwrap();
+    assert_eq!(ignored["attribution"], "ignored");
+    assert!(search_caption(&srv).await["hits"].as_array().unwrap().iter().all(|h| h["kind"] != "caption"));
+    assert_eq!(srv.get_json("/media?attribution=ignored").await["total"], 1);
+    let cleared: Value = srv.patch(&format!("/media/{uid}"), &json!({"ignore": false, "caption": "", "target": null})).await.json().await.unwrap();
+    assert_eq!((cleared["attribution"].as_str(), cleared["target"].is_null()), (Some("none"), true), "{cleared}");
+    assert_eq!(srv.get_json("/media").await["total"], 1);
+
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0, "no chat call anywhere in the unplaced flow");
+}
+
+#[tokio::test]
+async fn caption_in_sensitive_source_is_gated_like_its_source() {
+    let srv = TestServer::start().await;
+    let (_, _, asset) = unplaced_source(&srv, "secret-ledger", Some("sensitive")).await;
+    let uid = asset["asset_id"].as_str().unwrap();
+    let resp = srv.patch(&format!("/media/{uid}"), &json!({"caption": "Brennick vault rotation diagram"})).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    for (k, v) in [("answer_base_url", "https://192.0.2.1"), ("answer_api_key", "sk-test")] {
+        assert_eq!(srv.put("/settings", &json!({ k: v })).await.status(), StatusCode::OK, "set {k}");
+    }
+    let body = search(&srv, json!({"query": "brennick vault rotation"})).await;
+    assert!(body["hits"].as_array().unwrap().is_empty(), "{body}");
+    assert_eq!((body["blocked"].as_u64(), body["refusal"].as_str()), (Some(1), Some("gated_provider")), "{body}");
+}

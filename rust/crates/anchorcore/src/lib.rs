@@ -11,6 +11,7 @@ pub mod assets;
 pub mod assets_api;
 pub mod auth;
 pub mod backup;
+pub mod captions;
 pub mod chunking;
 pub mod classifier;
 pub mod cli;

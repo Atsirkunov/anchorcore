@@ -68,7 +68,10 @@ JSON form refuses images over 1.5 MB with 413 + `size` + the raw `url`;
 sensitive sources answer 403 `refusal: "gated_provider"` under an untrusted
 provider, like search. `url: null` means the bytes were not stored (over the
 size cap) — say so instead of guessing. MCP clients get the same call as the
-`get_asset` tool.
+`get_asset` tool. A hit with `kind: "caption"` (path ending `caption by a
+person`) is a person's description of an image no document links: cite it
+as a caption by a person, with the image from its `images`. Captions are
+written by people in the app — never write or suggest one yourself.
 
 For "what did we decide about X, is it still current?", "who owns X?" or
 "what's open/overdue for Alex?", call /decisions or /actions before search:

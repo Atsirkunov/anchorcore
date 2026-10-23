@@ -161,7 +161,8 @@ impl Scheduler {
     /// A failed pass retries at 60 s (Ollama often starts after us) instead
     /// of leaving chunks pending for the full interval. R45.5: a query
     /// vector from a new embedding family wakes it immediately — that pass
-    /// is the re-embed job for the now-stale vectors.
+    /// is the re-embed job for the now-stale vectors. R46.12: so does a
+    /// person's new caption chunk (`chunks_pending`).
     pub fn spawn_backfill(self: &Arc<Self>) {
         let sched = self.clone();
         tokio::spawn(async move {
@@ -169,10 +170,12 @@ impl Scheduler {
             let mut tick = tokio::time::interval(Duration::from_secs(BACKFILL_INTERVAL_SECS));
             tick.tick().await; // consume the immediate tick
             let changed = sched.embedder.family_changed.clone();
+            let pending = sched.embedder.chunks_pending.clone();
             loop {
                 tokio::select! {
                     _ = tick.tick() => {}
                     _ = changed.notified() => tracing::info!("embedding family changed: re-embedding stale vectors"),
+                    _ = pending.notified() => tracing::debug!("new chunks outside a sync: embedding them"),
                 }
                 sched.backfill_with_retry().await;
             }

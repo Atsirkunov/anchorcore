@@ -263,8 +263,16 @@ fn display_source_ref(h: &crate::retrieval::Hit) -> String {
     if h.source_ref.is_empty() { format!("chunk:{}", h.chunk_id) } else { h.source_ref.clone() }
 }
 
-fn hit_kind(h: &crate::retrieval::Hit) -> String {
-    if h.entity_id.is_some() { "entity".to_string() } else { "document".to_string() }
+/// R46.12: a person's image caption cites as `caption` (its path ends in
+/// `captions::CAPTION_CRUMB`), never as document text.
+fn hit_kind(h: &crate::retrieval::Hit, kinds: &std::collections::HashMap<i64, String>) -> String {
+    if h.entity_id.is_some() {
+        "entity".to_string()
+    } else if kinds.get(&h.chunk_id).is_some_and(|k| k == crate::captions::CAPTION_KIND) {
+        crate::captions::CAPTION_KIND.to_string()
+    } else {
+        "document".to_string()
+    }
 }
 
 fn rounded_score(score: f64) -> f64 {
@@ -540,6 +548,7 @@ fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content:
     let range_map = line_ranges_for_chunks(&conn, &ids);
     let section_ids: Vec<i64> = hits.iter().take(limit).filter_map(|h| h.section_id).collect();
     let crumb_map = section_breadcrumbs(&conn, &section_ids);
+    let kind_map = kinds_for_chunks(&conn, &ids);
     hits.iter().take(limit).map(|h| {
         // Path rule mirrors search hits: section breadcrumb when the chunk
         // lives in one, else the item's file path — entity citations must
@@ -551,7 +560,7 @@ fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content:
             item_id: h.item_id,
             chunk_id: Some(h.chunk_id),
             section_id: h.section_id,
-            kind: hit_kind(h),
+            kind: hit_kind(h, &kind_map),
             summary: hit_preview(&h.content, query, h.chunk_id, 200),
             source_ref: display_source_ref(h),
             path: if h.path.is_empty() { item_path } else { h.path.clone() },
@@ -928,6 +937,7 @@ pub async fn search(
     let range_map = line_ranges_for_chunks(&conn, &ids);
     let section_ids: Vec<i64> = page.iter().filter_map(|h| h.section_id).collect();
     let crumb_map = section_breadcrumbs(&conn, &section_ids);
+    let kind_map = kinds_for_chunks(&conn, &ids);
     let hits = page.into_iter().map(|h| {
         // path = section breadcrumb when the chunk lives in one; flat
         // documents (no sections) fall back to the item's path within its
@@ -938,7 +948,7 @@ pub async fn search(
             chunk_id: Some(h.chunk_id),
             entity_id: h.entity_id,
             section_id: h.section_id,
-            kind: hit_kind(&h),
+            kind: hit_kind(&h, &kind_map),
             summary: hit_preview(&h.content, &query_text, h.chunk_id, 500),
             content: if want_content { h.content.clone() } else { String::new() },
             content_truncated: h.content_truncated,
@@ -1015,7 +1025,7 @@ fn normalize_kind_filter(kind: Option<String>) -> Option<Vec<String>> {
     let kinds: Vec<String> = raw
         .split(',')
         .map(|t| t.trim().to_lowercase())
-        .filter(|t| matches!(t.as_str(), "document" | "entity" | "section_summary" | "doc_summary"))
+        .filter(|t| matches!(t.as_str(), "document" | "entity" | "section_summary" | "doc_summary" | "caption"))
         .collect();
     if kinds.is_empty() { None } else { Some(kinds) }
 }

@@ -426,3 +426,16 @@ ADR log. Append newest first.
   - *Extract the referenced parts in the connector* — rejected: the connector has no settings, so it can't apply `asset_max_bytes` and would read every image in full anyway. It would also duplicate `resolve_embedded`'s zip handling. Images are most of a deck's bytes, so the memory saved is small.
   - *Re-download at the asset pass* — rejected: a second network round-trip per document and a second token use, for bytes the sync already had.
 * **Consequences:** A Drive fetch holds image-bearing Office packages in memory until their docs are stored (the fetch collects all docs before classifying). Fine at Drive folder sizes today. If R46.14's measurements show large decks, stream fetch → store per file instead of trimming the package.
+
+---
+
+## 2026-10-23 — R46.12: a person's caption is a derived chunk; targets stay in the image's source
+
+* **Decision:** `PATCH /media/:uid` stores the caption and target on the asset (`manual_caption`, `manual_target`) and derives one `kind='caption'` chunk from them (uid `caption:<asset uid>`), placed on the target (an item, a section of one, or an entity's item) or on the image's own item. Targets must be in the image's own source. They are stored as item uid + section path / entity uid. Caption chunks join the retrieval leaf pool and cite as `kind: "caption"` with path `… > caption by a person`.
+* **Context:** Owner decision (b) makes captions people-only. The row asks that a caption answer questions, survive re-sync and backup, and take its target's label. A document re-sync deletes and rebuilds the item's chunks and sections with new ids.
+* **Alternatives considered:**
+  - *Caption as an asset field only, matched at query time* — rejected: no FTS/vector leg reads `assets`, so the caption could not answer a question without a fourth retrieval leg.
+  - *Store target ids* — rejected: section ids change on every re-sync and on import. Uids + section path re-resolve after both.
+  - *Allow cross-source targets* — rejected for now: the caption would take the target's label while the bytes keep the image source's label. One gate would then say "sensitive" and the other "public" for the same picture. Same-source keeps one label. Widening it needs a rule for which label wins.
+  - *Rebuild caption chunks on every store (delete them with the document's chunks)* — rejected: an unchanged caption would lose its vector on every sync. The chunk is kept and only re-pointed. Content or path changes clear the vector.
+* **Consequences:** `ignore` deletes the chunk but keeps the asset and the person's text, and un-ignoring restores both. Clearing caption and target hands attribution back to sync (`embedded`, or `none`/`referenced` for files). Deleting a target item cascades its caption chunk away; the people fields stay on the asset, and the next PATCH re-materializes it on the image's own item.
