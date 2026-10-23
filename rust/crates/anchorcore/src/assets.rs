@@ -32,6 +32,11 @@ use sha2::{Digest, Sha256};
 pub const DEFAULT_MAX_BYTES: u64 = 20 * 1024 * 1024;
 /// Image files a folder source lists. `svg` is also a text kind (R46.2).
 pub const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"];
+/// R46.8: Office images smaller than this on either side are decorative
+/// (bullets, rules, spacer pixels) and never become assets.
+const MIN_EMBEDDED_PX: u32 = 32;
+/// R46.8: marker scheme the Office extractors write for package images.
+pub const EMBEDDED_SCHEME: &str = "embedded:";
 /// Context window around an image in its hosting chunk.
 const CONTEXT_CHARS: usize = 240;
 
@@ -168,7 +173,7 @@ pub struct ImageRef {
 fn md_image_re() -> &'static regex::Regex {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| {
-        regex::Regex::new(r#"!\[(?P<alt>[^\]\n]*)\]\(\s*(?:<(?P<src2>[^>\n]+)>|(?P<src>[^\s)]+))(?:\s+["'](?P<title>[^"'\n]*)["'])?\s*\)"#)
+        regex::Regex::new(r#"!\[(?P<alt>[^\]\n]*)\]\(\s*(?:<(?P<src2>[^>\n]+)>|(?P<src>[^\s)]+))(?:\s+(?:"(?P<title>[^"\n]*)"|'(?P<title2>[^'\n]*)'))?\s*\)"#)
             .expect("static regex")
     })
 }
@@ -216,7 +221,7 @@ fn scan_line(line: &str, offset: usize, out: &mut Vec<ImageRef>) {
         out.push(ImageRef {
             src: src.to_string(),
             alt: c.name("alt").map(|s| s.as_str().trim().to_string()).unwrap_or_default(),
-            caption: c.name("title").map(|s| s.as_str().trim().to_string()).unwrap_or_default(),
+            caption: c.name("title").or_else(|| c.name("title2")).map(|s| s.as_str().trim().to_string()).unwrap_or_default(),
             span: (offset + m.start(), offset + m.end()),
         });
     }
@@ -343,6 +348,30 @@ fn resolve_file(src: &str, place: &DocPlace, cap: u64) -> Option<Resolved> {
     Some(Resolved { bytes: Some(bytes), size, ref_path: rel, info })
 }
 
+/// R46.8: one image part inside the document's own zip package (docx
+/// `word/media`, pptx `ppt/media`, ODF `Pictures/`). EMF/WMF and other
+/// unsniffable parts, and decorative images under `MIN_EMBEDDED_PX`, are
+/// skipped. Folder sources only today: other connectors don't keep the
+/// package bytes past extraction.
+pub fn resolve_embedded(part: &str, package: &[u8], cap: u64) -> Option<Resolved> {
+    use std::io::Read;
+    let part = percent_decode(part);
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(package)).ok()?;
+    let mut entry = zip.by_name(&part).ok()?;
+    let size = entry.size();
+    if size > cap {
+        let info = ImageInfo { mime: mime_for_ext(Path::new(&part)), w: None, h: None };
+        return Some(Resolved { bytes: None, size, ref_path: String::new(), info });
+    }
+    let mut bytes = Vec::new();
+    entry.by_ref().take(cap + 1).read_to_end(&mut bytes).ok()?;
+    let info = sniff(&bytes)?;
+    if info.w.is_some_and(|w| w < MIN_EMBEDDED_PX) || info.h.is_some_and(|h| h < MIN_EMBEDDED_PX) {
+        return None;
+    }
+    Some(Resolved { size: bytes.len() as u64, bytes: Some(bytes), ref_path: String::new(), info })
+}
+
 fn mime_for_ext(path: &Path) -> &'static str {
     match ext_of(path).as_str() {
         "png" => "image/png",
@@ -456,11 +485,20 @@ pub fn store_embedded(conn: &Connection, source_id: i64, item_id: i64, place: Op
         .map_err(|e| e.to_string())?;
     let mut rows = Vec::new();
     let mut ordinals: HashMap<String, usize> = HashMap::new();
+    // R46.8: the document's own package, read once for all its images.
+    let mut package: Option<Option<Vec<u8>>> = None;
     for (chunk_id, section_id, path, content) in host_chunks(conn, item_id)? {
         for r in scan_refs(&content) {
             let n = ordinals.entry(r.src.clone()).or_default();
             *n += 1;
-            let Some(resolved) = resolve(&r.src, place, cap) else { continue };
+            let resolved = match r.src.strip_prefix(EMBEDDED_SCHEME) {
+                Some(part) => {
+                    let pkg = package.get_or_insert_with(|| place.and_then(|p| std::fs::read(&p.doc).ok()));
+                    pkg.as_deref().and_then(|bytes| resolve_embedded(part, bytes, cap))
+                }
+                None => resolve(&r.src, place, cap),
+            };
+            let Some(resolved) = resolved else { continue };
             rows.push(AssetRow {
                 uid: asset_uid(&item_uid, &r.src, *n),
                 item_id,
@@ -630,11 +668,13 @@ pub fn load_media(conn: &Connection, uid: &str) -> Result<Option<Media>, String>
 }
 
 /// Documents whose chunks can carry image references: markdown (not the
-/// rendered diagram kinds) and HTML.
+/// rendered diagram kinds), HTML, and Office/ODF packages (R46.8).
 pub fn hosts_images(name: &str) -> bool {
     let base = name.rsplit(['/', '\\']).next().unwrap_or(name).to_ascii_lowercase();
     let html = base.ends_with(".html") || base.ends_with(".htm");
-    html || (crate::markdown::is_markdown_filename(&base) && crate::extract::diagram_kind(&base).is_none())
+    // R46.8: Office/ODF documents carry `embedded:` markers.
+    let office = [".docx", ".docm", ".pptx", ".pptm", ".odt", ".odp"].iter().any(|e| base.ends_with(e));
+    html || office || (crate::markdown::is_markdown_filename(&base) && crate::extract::diagram_kind(&base).is_none())
 }
 
 /// 1×1 transparent PNG (shared by the pipeline and backup tests).
@@ -669,6 +709,8 @@ mod tests {
 
     #[test]
     fn scan_refs_markdown_html_and_fences() {
+        let quoted = scan_refs("![a](x.png \"Bob's screen\") ![b](y.png 'say \"hi\"')");
+        assert_eq!(quoted.iter().map(|r| r.caption.as_str()).collect::<Vec<_>>(), vec!["Bob's screen", "say \"hi\""]);
         let text = "Intro ![Login screen](img/login.png \"The login\") and <img src='a b.png' alt=\"Chart\">\n```\n![not](code.png)\n```\n![x](<with space.png>)\n";
         let refs = scan_refs(text);
         let got: Vec<(&str, &str, &str)> = refs.iter().map(|r| (r.src.as_str(), r.alt.as_str(), r.caption.as_str())).collect();
@@ -722,7 +764,7 @@ mod tests {
 
     #[test]
     fn hosts_images_is_markdown_and_html_only() {
-        for yes in ["a.md", "docs/b.MARKDOWN", "c.html", "d.htm"] {
+        for yes in ["a.md", "docs/b.MARKDOWN", "c.html", "d.htm", "e.docx", "f.PPTX", "g.odt"] {
             assert!(hosts_images(yes), "{yes}");
         }
         for no in ["a.drawio", "b.excalidraw.json", "c.svg", "d.txt", "e.py", "gdrive:abc"] {
