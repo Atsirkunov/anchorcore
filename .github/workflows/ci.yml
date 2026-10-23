@@ -1,6 +1,17 @@
 name: CI
 
-on: push
+# Docs-only pushes skip CI: the run is skipped only when EVERY changed file
+# matches. Tag pushes ignore path filters, so a release tag always runs the
+# full suite. Never add markdown that the build or tests read (.agents/skills/
+# SKILL.md is compiled in; sample/, sample-ai/ and tests/eval_data are test
+# fixtures; website/ prerenders docs/guides — checked on every tag push).
+on:
+  push:
+    paths-ignore:
+      - "*.md" # root only: README, AGENTS, LICENSE
+      - "docs/**"
+      - "rust/*.md" # BACKLOG, BACKLOG-archive, AGENTS, README
+      - "rust/docs/**"
 
 jobs:
   version-drift:

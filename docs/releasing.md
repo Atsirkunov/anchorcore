@@ -15,6 +15,10 @@
 3. Attaches the three zips to the GitHub Release for that tag (website Download buttons link straight at the windows/macos ones — keep those file names stable)
 4. Deploys `website/` to `anchorcore.dev` via wrangler — but only when `website/` changed since the previous tag (`deploy-website` job diffs `$PREV_TAG..$TAG`). Uses repo secrets `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` (set 2026-10-11; token = Account → Workers Scripts: Edit + Zone `anchorcore.dev` → Workers Routes: Edit — no Client IP filtering, GitHub runners have no stable IPs). If the job fails: rotate the token, re-set the secret, then `gh run rerun <run-id> --failed --repo Atsirkunov/anchorcore` — no re-tag needed
 
+## Docs-only pushes skip CI
+
+`ci.yml` ignores pushes whose changed files are all docs: root `*.md`, `docs/**`, `rust/*.md` (backlog, agent guides), `rust/docs/**`. A push that touches anything else, even one code file, runs the full suite. Tag pushes ignore path filters, so a `v*` tag always runs full CI + `release.yml` — release-notes commits are covered there. For a one-off docs change outside those paths, put `[skip ci]` in the commit message. Markdown that the build or tests read is deliberately **not** ignored: `.agents/skills/*/SKILL.md` (compiled in), `sample/`, `sample-ai/`, `tests/eval_data/` (fixtures). `docs/guides/` feeds the website build, so a broken guide only fails CI on the next tag.
+
 ## Release checklist (Rust — shipped)
 
 1. **Verify locally:**
