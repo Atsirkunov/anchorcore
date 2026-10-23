@@ -347,3 +347,16 @@ ADR log. Append newest first.
   - Migration 25 drops `kind='distilled'` chunks; `ingested_items.distill_hashes` stays as an unwritten column. Old archives' distilled rows are skipped on import (their embedding records warn "no local row" and skip).
   - `classifier_api_key` is wiped from the secret store at startup; `PUT /settings` ignores the retired keys (warn-logged). `/system/status` replaces `classifier` with `extraction.mode`; `ollama.classifier_model` and `/health` `components.classifier` are gone.
   - The embedder timeout moved from `classifier_timeout` to `embed_timeout` (default 60s) — a deployment that set `ANCHOR_CLASSIFIER_TIMEOUT` for slow embeds must rename it.
+
+---
+
+## 2026-10-23 — Phase 46: flows and images stay model-free; unplaced images are attributed by people (owner decision)
+
+* **Decision:** Visual content is indexed without any model on the ingest path (R45.18 holds). Flows/diagrams are structured data and are converted deterministically to text (`diagram.rs` normal form: frames → headings, edges → `A → B: label`). Images are stored as assets found through their context (alt, caption, hosting section, documents that link them) and are *seen* by the agent at question time (MCP image content block / REST `GET /assets/:uid`). An image with no context goes to a people-owned "Unplaced images" view where a person writes a caption and/or attaches it to an item, section or entity; that caption is the only text the image ever gets.
+* **Context:** Owner question 2026-10-23: the engine cannot surface pictures or whiteboard flows (Miro). Most flow tools already expose a node/edge graph, so the gap is parsers, not understanding. For bare images the only model-free signal is context; where there is none, a person is the attribution source — the same rule as the glossary, the PII mark and `verified`.
+* **Alternatives considered:**
+  - *OCR at ingest (Tesseract)* — rejected for now (owner): a model on the ingest path in all but name, adds a native dependency, and mostly helps scanned PDFs, which are a separate problem.
+  - *Vision captioning at ingest (local VLM)* — rejected: stores model-written text as evidence, the fabrication class R45.8/R45.18 removed.
+  - *Agent-suggested captions in the Unplaced view* — rejected (owner, 2026-10-23): reintroduces a proposal/review queue (R45.13 rule). Reopening needs a new owner decision.
+* **Storage (owner, 2026-10-23):** asset bytes are always stored in the DB, for every source kind including folders — never path references or fetch-on-demand. Export/backup must restore every citable image even when the original source is gone or offline. Assets dedupe by content hash. Size limits are set from measurement (R46.14): a configurable per-asset cap (`asset_max_bytes`, provisional default 20 MB) keeps over-cap assets as metadata-only rows with a warning instead of failing the sync.
+* **Consequences:** Unattributed images are not searchable until a person places them (a deliberate gap, visible as a count). PDF images are out of scope. DB and backup size grow with image-heavy sources — surfaced in System status and before export (R46.14).
