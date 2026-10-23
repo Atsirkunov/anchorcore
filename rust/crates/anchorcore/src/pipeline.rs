@@ -309,6 +309,70 @@ fn purge_item(conn: &Connection, item_id: i64) -> Result<(), String> {
     Ok(())
 }
 
+/// R46.7: insert/refresh the item of an image file. `None` = touched but
+/// identical (hash + completion marker match): only the stat fingerprint
+/// refreshes, like `upsert_doc`.
+fn upsert_image_item(conn: &Connection, source_id: i64, rel: &str, title: &str, digest: &str, fp: Option<(u64, u64)>) -> Result<Option<i64>, String> {
+    let existing: Option<(i64, String, Option<String>)> = conn
+        .query_row(
+            "SELECT id, content_hash, processed_hash FROM ingested_items WHERE source_id=?1 AND external_id=?2",
+            rusqlite::params![source_id, rel],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .ok();
+    match existing {
+        Some((id, hash, processed)) if hash == digest && processed.as_deref() == Some(digest) => {
+            store_fingerprint(conn, id, fp);
+            Ok(None)
+        }
+        Some((id, ..)) => {
+            conn.execute(
+                "UPDATE ingested_items SET content_hash=?1, title=?2, text='', doc_type='image', stale=0 WHERE id=?3",
+                rusqlite::params![digest, title, id],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(Some(id))
+        }
+        None => {
+            conn.execute(
+                "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, doc_type, stale, created_at, uid) VALUES (?1,?2,?3,'',?4,'image',0,datetime('now'),?5)",
+                rusqlite::params![source_id, rel, title, digest, crate::db::new_uid()],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(Some(conn.last_insert_rowid()))
+        }
+    }
+}
+
+/// R46.7: where a folder doc's relative image links resolve (`None` for
+/// other connectors — only `data:` URIs resolve there).
+fn folder_place(conn: &Connection, source_id: i64, doc_path: &str) -> Option<crate::assets::DocPlace> {
+    let (connector, config): (String, String) = conn
+        .query_row("SELECT connector, config FROM sources WHERE id=?1", [source_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .ok()?;
+    if connector != "folder" {
+        return None;
+    }
+    let config: serde_json::Value = serde_json::from_str(&config).ok()?;
+    let root = FolderConnector::new(&config).ok()?.root().canonicalize().ok()?;
+    Some(crate::assets::DocPlace { root, doc: std::path::PathBuf::from(doc_path) })
+}
+
+/// R46.7: embedded images of a markdown/HTML doc, rebuilt after its chunks
+/// (the hosting chunk ids are new on every store).
+async fn store_doc_assets(ctx: &ClassifyCtx) -> Result<(), String> {
+    if !crate::assets::hosts_images(&ctx.external_id) && !crate::assets::hosts_images(&ctx.base_ref) {
+        return Ok(());
+    }
+    let (source_id, item_id, doc_path, settings) = (ctx.source_id, ctx.item_id, ctx.base_ref.clone(), ctx.settings.clone());
+    run_db(&ctx.data_dir, move |conn| {
+        let place = folder_place(conn, source_id, &doc_path);
+        let cap = crate::assets::max_bytes(&settings, conn);
+        crate::assets::store_embedded(conn, source_id, item_id, place.as_ref(), cap).map(|_| ())
+    })
+    .await
+}
+
 /// What one folder file cost the sync. Only `Skipped` proves the fingerprint
 /// tier worked (the file was never extracted); `NoChange` covers both
 /// extracted-but-identical and unreadable files.
@@ -590,6 +654,8 @@ impl Pipeline {
             }
             update_sync_progress(data_dir, job_id, (idx + 1) as i64, created_items, new_entities, purged_items, unchanged).await;
         }
+        // R46.7: image files are `referenced` once any synced doc links them.
+        run_db(data_dir, move |conn| crate::assets::refresh_file_attribution(conn, source_id)).await?;
         Ok((created_items, new_entities, purged_items, unchanged))
     }
 
@@ -609,6 +675,21 @@ impl Pipeline {
         if !force && unchanged {
             return Ok(FileOutcome::Skipped);
         }
+        // R46.7: raster images are asset items (no text); SVG keeps its
+        // R46.2 text item and also stores its own bytes.
+        if crate::assets::is_raster_image_path(&f.path) {
+            return self.sync_image_file(data_dir, source_id, f).await;
+        }
+        let outcome = Box::pin(self.sync_text_file(data_dir, source_id, job_id, force, f)).await?;
+        if crate::assets::is_image_path(&f.path) {
+            self.store_file_asset(data_dir, source_id, f).await?;
+        }
+        Ok(outcome)
+    }
+
+    /// Extract one listed text file (unreadable counts as processed, never
+    /// purged) and run the shared upsert → classify tail.
+    async fn sync_text_file(&self, data_dir: &str, source_id: i64, job_id: i64, force: bool, f: &ListedFile) -> Result<FileOutcome, String> {
         let (extracted, pdf_note) = FolderConnector::extract_listed(f);
         let text = match extracted {
             Ok(t) => t,
@@ -636,6 +717,60 @@ impl Pipeline {
         }
         // Touched-but-identical: extracted, hash unchanged — processed, no counts.
         Ok(FileOutcome::NoChange)
+    }
+
+    /// R46.7: a raster image file is an item with no text and one `file`
+    /// asset. The content hash is the bytes' hash (size+mtime when over the
+    /// cap, so the bytes are never read), and the item is processed in one
+    /// write — there is nothing to classify.
+    async fn sync_image_file(&self, data_dir: &str, source_id: i64, f: &ListedFile) -> Result<FileOutcome, String> {
+        let settings = self.settings.clone();
+        let f = f.clone();
+        run_db(data_dir, move |conn| {
+            let cap = crate::assets::max_bytes(&settings, conn);
+            let Some(resolved) = crate::assets::read_file(&f.path, &f.rel, cap) else {
+                tracing::warn!("folder image skipped ({}): unreadable or not an image", f.rel);
+                return Ok(FileOutcome::NoChange);
+            };
+            let digest = resolved
+                .bytes
+                .as_deref()
+                .map(crate::assets::sha256_hex)
+                .unwrap_or_else(|| format!("oversize:{}:{}", f.len, f.mtime_ms));
+            let title = f.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| f.rel.clone());
+            let fp = Some((f.mtime_ms, f.len));
+            let Some(item_id) = upsert_image_item(conn, source_id, &f.rel, &title, &digest, fp)? else {
+                return Ok(FileOutcome::NoChange);
+            };
+            conn.execute("BEGIN IMMEDIATE", []).map_err(|e| e.to_string())?;
+            let res = crate::assets::store_file(conn, source_id, item_id, resolved, cap).and_then(|_| {
+                conn.execute("UPDATE ingested_items SET processed_hash=?1 WHERE id=?2", rusqlite::params![digest, item_id])
+                    .map_err(|e| e.to_string())?;
+                store_fingerprint(conn, item_id, fp);
+                Ok(())
+            });
+            conn.execute(if res.is_ok() { "COMMIT" } else { "ROLLBACK" }, []).map_err(|e| e.to_string())?;
+            res.map(|_| FileOutcome::Classified(0))
+        })
+        .await
+    }
+
+    /// R46.7: the bytes of an SVG text item, as its `file` asset. A file
+    /// that never became an item (unreadable) has nothing to attach to.
+    async fn store_file_asset(&self, data_dir: &str, source_id: i64, f: &ListedFile) -> Result<(), String> {
+        let settings = self.settings.clone();
+        let f = f.clone();
+        run_db(data_dir, move |conn| {
+            let item: Option<i64> = conn
+                .query_row("SELECT id FROM ingested_items WHERE source_id=?1 AND external_id=?2", rusqlite::params![source_id, f.rel], |r| r.get(0))
+                .ok();
+            let cap = crate::assets::max_bytes(&settings, conn);
+            let (Some(item_id), Some(resolved)) = (item, crate::assets::read_file(&f.path, &f.rel, cap)) else {
+                return Ok(());
+            };
+            crate::assets::store_file(conn, source_id, item_id, resolved, cap)
+        })
+        .await
     }
 
     async fn upsert_doc(&self, data_dir: &str, source_id: i64, doc: &IngestionDoc, _force: bool, fp: Option<(u64, u64)>) -> Result<bool, String> {
@@ -942,6 +1077,8 @@ impl ClassifyCtx {
         self.check_cancelled().await?;
         store_doc_chunks(self).await?;
         perf.mark("chunks");
+        store_doc_assets(self).await?;
+        perf.mark("assets");
         self.check_cancelled().await?;
         create_summaries(self).await?;
         perf.mark("summaries");
@@ -2680,5 +2817,163 @@ mod tests {
         assert_eq!(entities, 0, "off mode stores no entities");
         let chunks: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE kind='document'", [], |r| r.get(0)).unwrap();
         assert!(chunks >= 1, "document chunks are still stored");
+    }
+
+    fn asset_rows(data_dir: &str) -> Vec<(String, String, String, Option<String>, String, Option<i64>)> {
+        let conn = crate::db::init_db(&crate::db::resolve_db_path(data_dir)).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT origin, src, attribution, bytes_hash, manual_caption, chunk_id FROM assets ORDER BY origin, src")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn folder_sync_stores_image_assets_in_the_db() {
+        // R46.7 DoD on a real folder walk: embedded + file assets, dedupe by
+        // hash, attribution, root containment, no network, no rewrite of an
+        // unchanged blob, manual fields + uid survive re-sync, the size cap
+        // keeps metadata, and deleting the source drops rows and blobs.
+        let data_tmp = tempdir().unwrap();
+        let outer = tempdir().unwrap();
+        let data_dir = data_tmp.path().to_string_lossy().to_string();
+        let folder = outer.path().join("root");
+        std::fs::create_dir_all(folder.join("docs")).unwrap();
+        std::fs::create_dir_all(folder.join("img")).unwrap();
+        let png = crate::assets::TEST_PNG;
+        let mut other = png.to_vec();
+        other.push(0);
+        std::fs::write(folder.join("img/login.png"), png).unwrap();
+        std::fs::write(folder.join("img/copy.png"), png).unwrap();
+        std::fs::write(folder.join("img/unused.png"), &other).unwrap();
+        std::fs::write(outer.path().join("outside.png"), png).unwrap();
+        let guide = "# Guide\n\n## Login\n\nOpen the app. ![Login screen](../img/login.png \"The login\")\n\nAlso ![copy](../img/copy.png), ![escape](../../outside.png) and ![remote](https://x.test/a.png).\n";
+        write_doc(&folder.join("docs"), "guide.md", guide);
+        let (settings, sid) = seed_folder_source(&data_dir, &folder);
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings.clone(), data_dir.clone());
+        let cfg = serde_json::json!({"path": folder.to_string_lossy()});
+        let sep = std::path::MAIN_SEPARATOR;
+        let rel = |p: &str| p.replace('/', &sep.to_string());
+
+        run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        let rows = asset_rows(&data_dir);
+        let embeds: Vec<_> = rows.iter().filter(|r| r.0 == "embed").collect();
+        let files: Vec<_> = rows.iter().filter(|r| r.0 == "file").collect();
+        assert_eq!(embeds.iter().map(|r| r.1.as_str()).collect::<Vec<_>>(), vec!["../img/copy.png", "../img/login.png"], "outside + remote never resolve");
+        assert!(embeds.iter().all(|r| r.2 == "embedded" && r.3.is_some() && r.5.is_some()), "{embeds:?}");
+        let attr: Vec<(String, String)> = files.iter().map(|r| (r.1.clone(), r.2.clone())).collect();
+        assert_eq!(
+            attr,
+            vec![(rel("img/copy.png"), "referenced".into()), (rel("img/login.png"), "referenced".into()), (rel("img/unused.png"), "none".into())]
+        );
+        assert_eq!(table_count(&data_dir, "asset_blobs"), 2, "identical bytes share one blob");
+        let conn = crate::db::init_db(&crate::db::resolve_db_path(&data_dir)).unwrap();
+        let (alt, caption, context, w): (String, String, String, i64) = conn
+            .query_row("SELECT alt, caption, context, w FROM assets WHERE src='../img/login.png'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap();
+        assert_eq!((alt.as_str(), caption.as_str(), w), ("Login screen", "The login", 1));
+        assert!(context.contains("Login") && context.contains("Open the app."), "{context}");
+        let image_chunks: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chunks c JOIN ingested_items i ON i.id = c.item_id WHERE i.doc_type = 'image'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(image_chunks, 0, "image items get no text chunk");
+        let blob_stamp = || -> Vec<(i64, String)> {
+            let c = crate::db::init_db(&crate::db::resolve_db_path(&data_dir)).unwrap();
+            let mut s = c.prepare("SELECT rowid, created_at FROM asset_blobs ORDER BY rowid").unwrap();
+            s.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect()
+        };
+        let stamps = blob_stamp();
+
+        // A person's caption + the uid survive an edit of the hosting doc.
+        let uid: String = conn.query_row("SELECT uid FROM assets WHERE src='../img/login.png'", [], |r| r.get(0)).unwrap();
+        conn.execute("UPDATE assets SET manual_caption='Sign-in page' WHERE uid=?1", [&uid]).unwrap();
+        write_doc(&folder.join("docs"), "guide.md", &guide.replace("Also ![copy](../img/copy.png), ", "Also "));
+        run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        let (manual, chunk): (String, Option<i64>) = conn
+            .query_row("SELECT manual_caption, chunk_id FROM assets WHERE uid=?1", [&uid], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(manual, "Sign-in page");
+        assert!(chunk.is_some(), "re-pointed at the new hosting chunk");
+        let rows = asset_rows(&data_dir);
+        assert!(!rows.iter().any(|r| r.0 == "embed" && r.1 == "../img/copy.png"), "dropped reference removes its row");
+        assert!(rows.iter().any(|r| r.0 == "file" && r.1 == rel("img/copy.png") && r.2 == "none"), "{rows:?}");
+        assert_eq!(blob_stamp(), stamps, "unchanged images never rewrite their blob");
+
+        // Over the cap: metadata kept, bytes NULL, one warning, sync succeeds.
+        settings.set("asset_max_bytes", "10", &conn).unwrap();
+        std::fs::write(folder.join("img/big.png"), &other).unwrap();
+        run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        std::fs::write(folder.join("img/big.png"), [other.as_slice(), &[1]].concat()).unwrap();
+        run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        let (hash, size): (Option<String>, i64) = conn
+            .query_row("SELECT bytes_hash, size FROM assets WHERE origin='file' AND src=?1", [rel("img/big.png")], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((hash, size), (None, other.len() as i64 + 1));
+        let warnings: i64 = conn
+            .query_row("SELECT COUNT(*) FROM system_events WHERE message='asset over size cap'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(warnings, 1, "warned once, not per sync");
+
+        // Source delete cascades to assets, and the GC triggers drop blobs.
+        conn.execute("DELETE FROM sources WHERE id=?1", [sid]).unwrap();
+        assert_eq!(table_count(&data_dir, "assets"), 0);
+        assert_eq!(table_count(&data_dir, "asset_blobs"), 0);
+    }
+
+    #[tokio::test]
+    async fn image_bytes_survive_export_after_the_folder_is_gone() {
+        // R46.7 DoD: the archive restores every image from the DB alone —
+        // the source folder is deleted before the export even starts.
+        let data_tmp = tempdir().unwrap();
+        let folder_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().to_string_lossy().to_string();
+        let folder = folder_tmp.path().join("notes");
+        std::fs::create_dir_all(folder.join("img")).unwrap();
+        std::fs::write(folder.join("img/arch.png"), crate::assets::TEST_PNG).unwrap();
+        write_doc(&folder, "design.md", "# Design\n\nThe service map: ![Service map](img/arch.png)\n");
+        let (settings, sid) = seed_folder_source(&data_dir, &folder);
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
+        run_folder_once(&pipe, &data_dir, sid, &serde_json::json!({"path": folder.to_string_lossy()}), false).await;
+        let uids = |dir: &str| -> Vec<(String, String, Option<String>)> {
+            let c = crate::db::init_db(&crate::db::resolve_db_path(dir)).unwrap();
+            let mut st = c.prepare("SELECT uid, attribution, bytes_hash FROM assets ORDER BY uid").unwrap();
+            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().map(|r| r.unwrap()).collect()
+        };
+        let before = uids(&data_dir);
+        assert_eq!(before.len(), 2, "one embed + one file asset: {before:?}");
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        let (export, report, dry) = {
+            let _lock = crate::secrets::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", "1");
+            let export = crate::backup::export_to_file(data_tmp.path(), &Default::default()).unwrap();
+            let dst = tempdir().unwrap();
+            let report = crate::backup::import_archive(dst.path(), &export.path, &Default::default()).unwrap();
+            let dry_dst = tempdir().unwrap();
+            let dry_opts = crate::backup::ImportOptions { dry_run: true, ..Default::default() };
+            let dry = crate::backup::import_archive(dry_dst.path(), &export.path, &dry_opts).unwrap();
+            assert_eq!(table_count(&dry_dst.path().to_string_lossy(), "asset_blobs"), 0, "dry run writes nothing");
+            (export, (report, dst), dry)
+        };
+        assert_eq!((export.counts.assets, export.counts.asset_blobs), (2, 1));
+        let (report, dst) = report;
+        assert_eq!(report.imported.get("asset_blob"), Some(&1));
+        assert_eq!(report.imported.get("asset"), Some(&2));
+        assert_eq!(dry.imported.get("asset_blob"), Some(&1));
+        let dst_dir = dst.path().to_string_lossy().to_string();
+        assert_eq!(uids(&dst_dir), before, "uids, attribution and hashes round-trip");
+        let conn = crate::db::init_db(&crate::db::resolve_db_path(&dst_dir)).unwrap();
+        let bytes: Vec<u8> = conn.query_row("SELECT bytes FROM asset_blobs", [], |r| r.get(0)).unwrap();
+        assert_eq!(bytes, crate::assets::TEST_PNG);
+        let linked: i64 = conn
+            .query_row("SELECT COUNT(*) FROM assets a JOIN chunks c ON c.id = a.chunk_id WHERE a.origin='embed'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(linked, 1, "embed asset re-links to its imported chunk");
     }
 }

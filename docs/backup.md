@@ -173,6 +173,11 @@ manifest.json     format_version, app_version, platform, created_at, device,
                   counts, embed_model/embed_dim, options used, needs_secret,
                   folder_paths
 data.jsonl        one typed JSON record per line (deflate-compressed in the zip)
+assets/<sha256>   image bytes, one stored (not deflated) entry per distinct
+                  image the exported assets reference (R46.7). Always
+                  written: restoring never needs the source folder. On
+                  import the name must equal the bytes' hash or the import
+                  aborts; entries are read before data.jsonl.
 secrets.bundle    optional; only with include_secrets + passphrase
 README.txt        what this is, how to restore, keep-your-passphrase warning
 ```
@@ -199,6 +204,7 @@ Record types (`data.jsonl`):
 | `dispute` / `merge_action` | `entity_uid`(s), reason/status/user, timestamps |
 | `setting` | key, value — **secret keys and empty values are never exported** |
 | `ops_jobs` / `ops_system_events` / `ops_users` | raw rows, only with `include_ops` |
+| `asset` | `uid` (deterministic: item uid + src + ordinal), `item_uid`, `section_uid`/`chunk_uid` (optional), origin, src, ref_path, mime, w, h, `bytes_hash` (→ `assets/<sha256>`), size, alt, caption, context, attribution, manual_caption, manual_target, timestamps. A record whose blob is missing imports as metadata only, with a warning |
 
 `secrets.bundle` layout:
 

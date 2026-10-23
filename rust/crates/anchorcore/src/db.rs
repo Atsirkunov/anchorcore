@@ -426,6 +426,8 @@ fn migrations() -> Migrations<'static> {
         M::up_with_hook(include_str!("../migrations/24_glossary.sql"), prune_vocabulary),
         // R45.18: drop distilled chunks (distillation deleted)
         M::up_with_hook(include_str!("../migrations/25_drop_distilled.sql"), drop_distilled_chunks),
+        // R46.7: image assets — deduped blobs + per-reference rows
+        M::up(include_str!("../migrations/26_assets.sql")),
     ])
 }
 
@@ -589,6 +591,10 @@ mod tests {
                 .unwrap();
             drop_entity_record_columns(&conn);
             drop_glossary_artifacts(&conn);
+            // A real v10 DB also predates R46.7 — drop the asset tables (their
+            // triggers go with them) so migration 26 has real work to do.
+            conn.execute("DROP TABLE assets", []).unwrap();
+            conn.execute("DROP TABLE asset_blobs", []).unwrap();
             conn.execute("DROP TABLE vec_chunks", []).unwrap();
             conn.pragma_update(None, "writable_schema", "ON").unwrap();
             conn.execute(
@@ -610,7 +616,15 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         run_migrations(&mut conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 25);
+        assert_eq!(v, 26);
+        let asset_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('assets','asset_blobs','assets_blob_gc_delete','assets_blob_gc_update')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(asset_tables, 4, "migration 26 (R46.7) must create the asset tables + GC triggers");
         let distilled: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE kind = 'distilled'", [], |r| r.get(0)).unwrap();
         assert_eq!(distilled, 0, "migration 25 (R45.18) must drop distilled chunks");
         let glossary_col: i64 = conn

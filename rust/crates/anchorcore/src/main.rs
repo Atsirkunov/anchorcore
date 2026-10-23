@@ -9,6 +9,7 @@
 //! Mirrors `backend/app/main.py:130` health shape + `backend/app/db.py:44` PRAGMAs.
 
 mod answer;
+mod assets;
 mod auth;
 mod backup;
 mod chunking;

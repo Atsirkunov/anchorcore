@@ -375,3 +375,19 @@ ADR log. Append newest first.
   - `create_job` returns `Result<i64, CreateJobError>` (`Conflict(active_id)` vs `Db`); `embed` jobs are outside the sync family and unguarded. Pre-existing duplicate rows (created before this change) drain naturally; the guard only blocks new ones.
   - A job stuck `running` with no live task (a pipeline panic — the R43.11 guard is sequenced after this) now blocks that source's syncs until it is cancelled or the process restarts (both paths already handle orphans). Cancel stays the escape hatch.
   - The `folder_scan_minutes` Settings exposure the row allowed as scope was skipped: with duplicates impossible, a long first ingest no longer needs the interval workaround.
+
+---
+
+## 2026-10-23 — R46.7: how image assets are stored, linked and archived
+
+* **Decision:** Image bytes live in `asset_blobs` (sha256 primary key); `assets` rows reference a blob by hash, so identical images are one blob by construction and two triggers delete a blob once nothing references it (FK cascades included). Two origins: `embed` (a reference in a markdown/HTML document, on its hosting chunk) and `file` (an image file item of a folder source). Embeds resolve folder-relative paths inside the canonical source root only, plus `data:` URIs for any source; remote URLs are not fetched. Backups carry blobs as stored `assets/<sha256>` zip entries, verified against their name on import and read before `data.jsonl`.
+* **Context:** Owner storage decision (Phase 46 entry above): bytes always in the DB, export restores every image without the source. R46.7 had to choose the blob layout, the archive encoding and the resolution boundary.
+* **Alternatives considered:**
+  - *Bytes inline on each asset row* — rejected: the DoD's dedupe ("one blob, many asset rows") would need app-side reference counting; a hash-keyed table plus GC triggers makes it structural and survives cascades.
+  - *Base64 blob records inside `data.jsonl`* — rejected: +33% size, counts against the 4 GB `data.jsonl` cap, and makes every image a multi-MB JSON line; separate stored entries add no compression cost (images are already compressed) and let R46.14 size an export from the blob table alone.
+  - *Fetch remote image URLs at sync* — rejected: network calls to arbitrary hosts on the ingest path (SSRF surface, offline-first breakage); their alt text is already searchable chunk text. Revisit per connector (Drive/Miro rows fetch through their own authenticated APIs).
+  - *Separate `title` and `caption` columns* — merged into `caption`: markdown has one quoted slot, and HTML `title`/`<figcaption>` would otherwise need an out-of-band channel through tag stripping.
+* **Consequences:**
+  - HTML `<img>` now survives extraction as `![alt](src "caption")` text (the figcaption text also stays in the prose); HTML `data:` images contribute only their alt text, so inlined base64 never enters chunks — they get no asset until an HTML path that sees raw markup exists.
+  - A file over `asset_max_bytes` keeps its row (`bytes_hash` NULL, real `size`) and warns once per transition to over-cap; image file items over the cap hash as `oversize:<len>:<mtime>` so their bytes are never read.
+  - `.svg` files are both a text item (R46.2) and a `file` asset. Repos with icon sets therefore add blobs (small) and empty-text items; R46.14 reports the cost.
