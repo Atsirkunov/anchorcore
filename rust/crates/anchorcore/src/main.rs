@@ -17,6 +17,7 @@ mod cli;
 mod common;
 mod connectors;
 mod db;
+mod diagram;
 mod embed_fp;
 mod embedder;
 mod entities;
