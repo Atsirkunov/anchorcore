@@ -584,7 +584,7 @@ mod tests {
         // unmarking removes them. No proposals, no re-sync.
         let (dir, conn, _) = seed_db();
         conn.execute(
-            "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (1,'terms.csv','terms.csv','term,expansion\nKYC,know your customer\nCA,direct debit\n','h2')",
+            "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (1,'terms.csv','terms.csv','term,expansion\nKYC,know your customer\nDD,direct debit\n','h2')",
             [],
         )
         .unwrap();

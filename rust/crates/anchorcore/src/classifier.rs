@@ -201,7 +201,7 @@ mod tests {
         // longer mint entities — only record structure does.
         for text in [
             "We decided to approve the budget. Next step: Alice will draft the plan.",
-            "The decision-making process is described below. What was decided about the transfer?",
+            "The decision-making process is described below. What was decided about the payment?",
         ] {
             assert!(classify_rules_typed(text, "ref", "record").is_empty(), "{text}");
         }
@@ -286,7 +286,7 @@ mod tests {
             ("m2", "# Q3 planning\n\nAttendees: all leads.\n\nAgenda: scope, billing, wallet.", "record"),
             ("people", "# People\n\nSarah is the final approver for payout changes.\n\nPriya owns the definition of done.", "reference"),
             ("runbook", "# Billing migration runbook\n\nApproved in decisions/d2. Owner: Sarah.\n\nStep 1: provision sandbox.", "record"),
-            ("spec", "# Instant payments spec\n\nAn outgoing payment is composed of six movements.", "reference"),
+            ("spec", "# Instant payments spec\n\nAn outgoing payment is composed of six steps.", "reference"),
             ("sprint12", "# Sprint 12\n\n## Decision log\n\nWe decided to postpone the wallet integration.", "record"),
         ];
         let sample_ai = [

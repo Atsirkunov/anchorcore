@@ -188,7 +188,7 @@ all parents `doc_type=documentation`).
 1 | meetings/m2-q3-planning.md | note | Billing parallel run may surface reconciliation mismatches.
 1 | meetings/m2-q3-planning.md | note | If Mike's payment fraud controls slip, the spec review date moves.
 1 | people.md | note | Mike must sign off before merge for security-sensitive changes.
-1 | people.md | note | Sarah is the final approver for anything touching payout or money movement.
+1 | people.md | note | Sarah is the final approver for anything touching payouts or money movement.
 1 | people.md | note | Priya owns the definition of done for release (coverage gate, smoke suite).
 1 | people.md | note | Aisha is the point of contact for external partners.
 1 | specs/billing-migration-runbook.md | note | Provision sandbox: create new provider tenant and import current plan catalog.

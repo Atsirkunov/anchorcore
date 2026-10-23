@@ -2,7 +2,7 @@
 
 The payments service is now running on the new infrastructure.
 
-**Reasoning:** The old hosts hit scaling limits during peak payout and the
+**Reasoning:** The old hosts hit scaling limits during peak payment volume and the
 deploy pipeline was a manual chore. Dev proposed the migration, Sarah approved
 it after a dry-run showed zero-downtime deploys. The move was completed during
 the last maintenance window.

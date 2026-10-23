@@ -1752,7 +1752,7 @@ mod tests {
     }
     #[test]
     fn chunk_doc_heading() {
-        let doc = "§434 Refund\ncontent\n\n§437 Dates\njan";
+        let doc = "§434 Refunds\ncontent\n\n§437 Dates\njan";
         let c = chunk_document(doc);
         assert_eq!(c.len(), 2);
     }
@@ -2257,7 +2257,7 @@ mod tests {
 
     #[test]
     fn chunk_with_sections_hierarchy() {
-        let doc = "§434 Refund\ncontent a\n\n§437 Dates\njan\n\n4.2.1 Sub\nsub content";
+        let doc = "§434 Refunds\ncontent a\n\n§437 Dates\njan\n\n4.2.1 Sub\nsub content";
         let (secs, chunks) = chunk_document_with_sections(doc);
         // 3 sections: §434, §437, 4.2.1 (child of §437)
         assert_eq!(secs.len(), 3);
@@ -2272,7 +2272,7 @@ mod tests {
     }
     #[test]
     fn chunk_with_sections_root() {
-        let doc = "plain intro\nno heading\n\n§434 Refund\ncontent";
+        let doc = "plain intro\nno heading\n\n§434 Refunds\ncontent";
         let (secs, chunks) = chunk_document_with_sections(doc);
         assert!(secs.iter().any(|s| s.level == 0));
         assert_eq!(chunks.len(), 2);
@@ -2395,21 +2395,21 @@ mod tests {
         // No `#` markers, no tables, under the fallback threshold: exact
         // legacy outputs, byte for byte (blank lines fold into sections).
         let (secs, chunks) =
-            chunk_document_with_sections("§434 Refund\ncontent a\n\n§437 Dates\njan");
+            chunk_document_with_sections("§434 Refunds\ncontent a\n\n§437 Dates\njan");
         assert_eq!(secs.len(), 2);
         let bodies: Vec<_> = chunks.iter().map(|c| c.content.as_str()).collect();
-        assert_eq!(bodies, vec!["§434 Refund\ncontent a\n", "§437 Dates\njan"]);
+        assert_eq!(bodies, vec!["§434 Refunds\ncontent a\n", "§437 Dates\njan"]);
         let (secs_caps, chunks_caps) = chunk_document_with_sections("QUARTERLY PLAN\nbody here");
         assert_eq!(secs_caps[0].title, "QUARTERLY PLAN");
         assert_eq!(chunks_caps[0].content, "QUARTERLY PLAN\nbody here");
         let (secs_root, chunks_root) =
-            chunk_document_with_sections("plain intro\nno heading\n\n§434 Refund\ncontent");
+            chunk_document_with_sections("plain intro\nno heading\n\n§434 Refunds\ncontent");
         assert_eq!(secs_root.len(), 2);
         assert_eq!(secs_root[0].level, 0);
         let root_bodies: Vec<_> = chunks_root.iter().map(|c| c.content.as_str()).collect();
         assert_eq!(
             root_bodies,
-            vec!["plain intro\nno heading\n", "§434 Refund\ncontent"]
+            vec!["plain intro\nno heading\n", "§434 Refunds\ncontent"]
         );
         // small heading-less docs keep their single root
         let small = "just a note\nsecond line\n";

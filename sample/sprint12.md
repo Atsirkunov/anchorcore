@@ -2,7 +2,7 @@
 
 We decided to postpone the mobile wallet integration to Q3 because the API
 contracts are not stable yet. Approval was given for the new billing provider
-after the security review.
+after the vendor risk review.
 
 Action items:
 - Sarah owns the migration to the new billing provider, due end of next week.

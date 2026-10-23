@@ -4,7 +4,7 @@ Quick map of who owns what — decisions and actions reference these people.
 
 | Person | Role | Owns |
 |---|---|---|
-| Sarah | Payments platform lead | Billing provider migration, payments service, payout |
+| Sarah | Payments platform lead | Billing provider migration, payments service, payouts |
 | Mike | Risk engineer | Vendor reviews, fraud controls, access controls |
 | Elena | Product designer | Payments UX, empty states, mobile wallet flows |
 | Priya | QA lead | Test coverage, release sign-off, regression suites |
@@ -13,7 +13,7 @@ Quick map of who owns what — decisions and actions reference these people.
 
 ## Notes
 
-- Escalation for security-sensitive changes: Mike must sign off before merge.
-- Sarah is the final approver for anything touching payout or money movement.
+- Escalation for risk-sensitive changes: Mike must sign off before merge.
+- Sarah is the final approver for anything touching payouts or money movement.
 - Priya owns the definition of done for release (coverage gate, smoke suite).
 - Aisha is the point of contact for external partners (e.g. the wallet vendor).

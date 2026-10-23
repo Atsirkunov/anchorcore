@@ -191,7 +191,7 @@
       "id": "glossary-01",
       "query": "what is a remittance advice",
       "expected": ["glossary"],
-      "notes": "Two-term query; payout/confirmation appear in no other doc."
+      "notes": "Two-term query; remittance/advice appear in no other doc."
     },
     {
       "id": "sync-01",
@@ -201,9 +201,9 @@
     },
     {
       "id": "rfp-reversal-01",
-      "query": "how does the CA cancellation process differ from the implemented code",
+      "query": "how does the DD cancellation process differ from the implemented code",
       "expected": ["rfp-direct-debits"],
-      "notes": "R40.6 (1.0.29 field case): vocabulary mismatch — the RFP says 'reversal'/'Direct Debit', the query says 'cancellation'/'CA'. Misses every leg before synonym expansion; the keyword leg hits after and keyword slots carry it to fused."
+      "notes": "R40.6 (1.0.29 field case): vocabulary mismatch — the RFP says 'reversal'/'Direct Debit', the query says 'cancellation'/'DD'. Misses every leg before synonym expansion; the keyword leg hits after and keyword slots carry it to fused."
     },
     {
       "id": "rfp-escrow-01",

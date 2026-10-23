@@ -89,7 +89,7 @@
       "breadcrumb": "Payments service moves to new infrastructure",
       "chunk_id": 43,
       "conflicts_with": [],
-      "content": "[match 43]\n# Payments service moves to new infrastructure\n\nThe payments service is now running on the new infrastructure.\n\n**Reasoning:** The old hosts hit scaling limits during peak payout and the\ndeploy pipeline was a manual chore. Dev proposed the migration, Sarah approved\nit after a dry-run showed zero-downtime deploys. The move was completed during\nthe last maintenance window.\n\n**Trade-offs:**\n\n- Deploy time dropped from ~45 minutes to ~5 minutes.\n- Two transient alerting gaps occurred during the move; both closed.\n- The queue provider stayed the same to reduce risk (see retro note about the\n  alternative queue provider).\n\n**Status:** Done. Source: sprint 12 status update. Owner: Sarah.\n\n**Open item:** test coverage was reported at 98% before the move; Priya is\nre-running the full suite on the new hosts and will confirm the number.\n[/match 43]",
+      "content": "[match 43]\n# Payments service moves to new infrastructure\n\nThe payments service is now running on the new infrastructure.\n\n**Reasoning:** The old hosts hit scaling limits during peak payment volume and the\ndeploy pipeline was a manual chore. Dev proposed the migration, Sarah approved\nit after a dry-run showed zero-downtime deploys. The move was completed during\nthe last maintenance window.\n\n**Trade-offs:**\n\n- Deploy time dropped from ~45 minutes to ~5 minutes.\n- Two transient alerting gaps occurred during the move; both closed.\n- The queue provider stayed the same to reduce risk (see retro note about the\n  alternative queue provider).\n\n**Status:** Done. Source: sprint 12 status update. Owner: Sarah.\n\n**Open item:** test coverage was reported at 98% before the move; Priya is\nre-running the full suite on the new hosts and will confirm the number.\n[/match 43]",
       "content_truncated": false,
       "doc_type": "record",
       "entity_id": null,
@@ -104,13 +104,13 @@
       "section_id": 4,
       "source_id": 1,
       "source_ref": "/private/tmp/ac-demo/sample/decisions/d4-payments-infra-migration.md",
-      "summary": "[match 43]\n# Payments service moves to new infrastructure\n\nThe payments service is now running on the new infrastructure.\n\n**Reasoning:** The old hosts hit scaling limits during peak payout and the\ndeploy pipeline was a manual chore. Dev proposed the migration, Sarah approved\nit after a dry-run showed zero-downtime deploys. The move was completed during\nthe last maintenance window.\n\n**Trade-offs:**\n\n- Deploy time dropped from ~45 minutes to ~5 minutes.\n- Two transient alerting gaps occurred "
+      "summary": "[match 43]\n# Payments service moves to new infrastructure\n\nThe payments service is now running on the new infrastructure.\n\n**Reasoning:** The old hosts hit scaling limits during peak payment volume and the\ndeploy pipeline was a manual chore. Dev proposed the migration, Sarah approved\nit after a dry-run showed zero-downtime deploys. The move was completed during\nthe last maintenance window.\n\n**Trade-offs:**\n\n- Deploy time dropped from ~45 minutes to ~5 minutes.\n- Two transient alerting gaps occurred "
     },
     {
-      "breadcrumb": "Spec: Instant Payments — outgoing payment movements > Key attributes",
+      "breadcrumb": "Spec: Instant Payments — outgoing payment steps > Key attributes",
       "chunk_id": 141,
       "conflicts_with": [],
-      "content": "[match 141]\n## Key attributes\n\n- Identifiers: IBAN + internal payment id.\n- Amounts: always whole cents for MVP (no split payments).\n- Limits: per-account daily outgoing cap, enforced at validation step 2.\n- Rollback: a failed delivery returns the reservation (reverse of steps 3-4).\n[/match 141]",
+      "content": "[match 141]\n## Key attributes\n\n- Identifiers: IBAN + internal payment id.\n- Amounts: always whole cents for MVP (no split payments).\n- Limits: per-account daily outgoing cap, enforced at validation step 2.\n- Rollback: a failed submission releases the hold (reverse of steps 3-4).\n[/match 141]",
       "content_truncated": false,
       "doc_type": "reference",
       "entity_id": null,
@@ -120,12 +120,12 @@
       "kind": "document",
       "line_end": 30,
       "line_start": 25,
-      "path": "Spec: Instant Payments — outgoing payment movements > Key attributes",
+      "path": "Spec: Instant Payments — outgoing payment steps > Key attributes",
       "score": 0.013,
       "section_id": 23,
       "source_id": 1,
       "source_ref": "/private/tmp/ac-demo/sample/specs/instant-payments-spec.md §4",
-      "summary": "[match 141]\n## Key attributes\n\n- Identifiers: IBAN + internal payment id.\n- Amounts: always whole cents for MVP (no split payments).\n- Limits: per-account daily outgoing cap, enforced at validation step 2.\n- Rollback: a failed delivery returns the reservation (reverse of steps 3-4).\n[/match 141]"
+      "summary": "[match 141]\n## Key attributes\n\n- Identifiers: IBAN + internal payment id.\n- Amounts: always whole cents for MVP (no split payments).\n- Limits: per-account daily outgoing cap, enforced at validation step 2.\n- Rollback: a failed submission releases the hold (reverse of steps 3-4).\n[/match 141]"
     },
     {
       "breadcrumb": "Sprint 12 Retro — payments team > Action items",

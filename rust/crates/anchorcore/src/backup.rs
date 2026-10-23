@@ -2543,7 +2543,7 @@ mod tests {
         .unwrap();
         let iid = conn.last_insert_rowid();
         conn.execute(
-            "INSERT INTO entities (item_id, kind, summary, status, owner) VALUES (?1,'decision','Nightly ledger payout','verified','ops')",
+            "INSERT INTO entities (item_id, kind, summary, status, owner) VALUES (?1,'decision','Nightly ledger close','verified','ops')",
             [iid],
         )
         .unwrap();
@@ -3125,7 +3125,7 @@ mod tests {
             let (iid, sid): (i64, i64) = conn.query_row("SELECT id, source_id FROM ingested_items", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
             conn.execute("UPDATE ingested_items SET is_glossary = 1 WHERE id = ?1", [iid]).unwrap();
             crate::vocab::add_manual(&conn, "kyc", "know your customer").unwrap();
-            let ca = crate::vocab::normalize_pair("ca", "direct debit").unwrap();
+            let ca = crate::vocab::normalize_pair("dd", "direct debit").unwrap();
             let sla = crate::vocab::normalize_pair("sla", "service level agreement").unwrap();
             crate::vocab::store_vocab(&conn, iid, sid, &[sla], &[ca]).unwrap();
         }
@@ -3143,7 +3143,7 @@ mod tests {
             .collect();
         assert_eq!(
             rows,
-            [("ca".into(), "glossary".into(), true), ("kyc".into(), "manual".into(), false), ("sla".into(), "rule".into(), true)]
+            [("dd".into(), "glossary".into(), true), ("kyc".into(), "manual".into(), false), ("sla".into(), "rule".into(), true)]
         );
         assert_eq!(one::<i64>(&conn, "SELECT is_glossary FROM ingested_items"), 1, "the mark round-trips");
         let again = import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();

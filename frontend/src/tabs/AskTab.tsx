@@ -103,7 +103,7 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
         )}
         {turns.length > 0 && (
           <span style={{ fontSize: 12, color: theme.textDim }}>
-            {turns.length / 2} question{turns.length / 2 === 1 ? "" : "s"} in context — follow-ups like "and what about its movements?" work
+            {turns.length / 2} question{turns.length / 2 === 1 ? "" : "s"} in context — follow-ups like "and what about its steps?" work
           </span>
         )}
       </div>

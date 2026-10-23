@@ -2,7 +2,7 @@
 
 **Decision:** We approved moving to the new billing provider.
 
-**Reasoning:** The security review by Mike passed with no blocking findings
+**Reasoning:** The vendor risk review by Mike passed with no blocking findings
 after the data-retention gap was closed. The new provider gives us usage-based
 pricing, idempotent webhooks, and a proper sandbox, which the legacy provider
 lacked. Migration cost is estimated at two sprints and is owned by Sarah.

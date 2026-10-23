@@ -601,7 +601,7 @@ mod tests {
     #[test]
     fn reference_docs_produce_nothing() {
         // Code tables and field paths used to become "decisions"/"actions".
-        let text = "# Direct debit codes\n\n| Code | Owner | Meaning |\n|---|---|---|\n| RFND | Agent | Refund |\n\n\
+        let text = "# Refund reason codes\n\n| Code | Owner | Meaning |\n|---|---|---|\n| RFND | Agent | Refund |\n\n\
                     The account owner field maps to `Document/Owner/Id`.\n\n```\n- [ ] Owner: not a task\n**Status:** Approved\n```\n\
                     - Owner: the issuer that holds the account\n";
         assert_eq!(parse_record(text), ParsedRecord::default());
