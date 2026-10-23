@@ -171,7 +171,7 @@ async fn agent_compose_citations_carry_images() {
 
 // --- R46.12: Unplaced images ---
 
-const GUIDE: &str = "# Ledger guide\n\n## Payout\n\nThe ledger closes every night.\n";
+const GUIDE: &str = "# Ledger guide\n\n## Payouts\n\nThe ledger closes every night.\n";
 
 /// Folder source with one doc and one image file nothing links: the image
 /// is unplaced (attribution `none`). Returns (source id, doc item id, asset).

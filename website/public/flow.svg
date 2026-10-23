@@ -28,7 +28,7 @@
     <rect x="484" y="76" width="8" height="28" rx="3" fill="#4A5A52"/>
     <text x="500" y="97" font-size="15" fill="#1a1d1a">§3 · Billing</text>
     <rect x="484" y="110" width="8" height="28" rx="3" fill="#4A5A52"/>
-    <text x="500" y="131" font-size="15" fill="#1a1d1a">§4 · Transfers</text>
+    <text x="500" y="131" font-size="15" fill="#1a1d1a">§4 · Payments</text>
     <text x="484" y="158" font-size="13" fill="#9A8B7A" textLength="172" lengthAdjust="spacingAndGlyphs">4.2 · 1.2k entities</text>
     <text x="470" y="198" font-size="14" fill="#F2F0EB">filed · cited · yours</text>
   </g>

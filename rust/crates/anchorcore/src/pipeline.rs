@@ -1783,7 +1783,7 @@ mod tests {
         let conn = crate::db::init_db(&path).unwrap();
         conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('s','folder','{}',1,'',0)", []).unwrap();
         let sid = conn.last_insert_rowid();
-        let full_text = "§434 Refund\ncontent a refund details\n\n§437 Dates\ncontent b dates details\n\n4.2.1 Sub\ncontent c sub details";
+        let full_text = "§434 Refunds\ncontent a refund details\n\n§437 Dates\ncontent b dates details\n\n4.2.1 Sub\ncontent c sub details";
         let hash = crate::hashing::content_hash(full_text);
         conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale) VALUES (?1,?2,'doc',?3,?4,'',0)", rusqlite::params![sid, "ext1", full_text, hash]).unwrap();
         let iid = conn.last_insert_rowid();
@@ -2138,7 +2138,7 @@ mod tests {
         settings.set_data_dir(dir.path());
         let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
         let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
-        let text = "Each Service Level Agreement (SLA) row carries a reason. Long Form (CODE) is not one.\n\n## Glossary\nCA - Direct Debit record\n".to_string();
+        let text = "Each Service Level Agreement (SLA) row carries a reason. Long Form (CODE) is not one.\n\n## Glossary\nDD - Direct Debit record\n".to_string();
         let doc = IngestionDoc {
             external_id: "terms.md".to_string(),
             title: "terms.md".to_string(),
@@ -2168,7 +2168,7 @@ mod tests {
         ctx.classify_windows().await.unwrap();
         assert_eq!(
             vocab_rows(iid),
-            [row("ca", "direct debit record", "glossary"), row("sla", "service level agreement", "rule")],
+            [row("dd", "direct debit record", "glossary"), row("sla", "service level agreement", "rule")],
             "marked: glossary lines join"
         );
         let ydoc = IngestionDoc {
@@ -3019,7 +3019,7 @@ mod tests {
         let folder_tmp = tempdir().unwrap();
         let data_dir = data_tmp.path().to_string_lossy().to_string();
         let folder = folder_tmp.path();
-        write_doc(folder, "guide.md", "# Ledger guide\n\n## Intro\n\nRead first.\n\n## Payout\n\nThe ledger closes every night.\n");
+        write_doc(folder, "guide.md", "# Ledger guide\n\n## Intro\n\nRead first.\n\n## Payouts\n\nThe ledger closes every night.\n");
         std::fs::write(folder.join("flow.png"), crate::assets::TEST_PNG).unwrap();
         let (settings, sid) = seed_folder_source(&data_dir, folder);
         let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
@@ -3029,7 +3029,7 @@ mod tests {
         run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
         let conn = crate::db::init_db(&crate::db::resolve_db_path(&data_dir)).unwrap();
         let section = |conn: &Connection| -> i64 {
-            conn.query_row("SELECT id FROM sections WHERE path LIKE '%Payout'", [], |r| r.get(0)).unwrap()
+            conn.query_row("SELECT id FROM sections WHERE path LIKE '%Payouts'", [], |r| r.get(0)).unwrap()
         };
         let uid: String = conn.query_row("SELECT uid FROM assets WHERE attribution='none'", [], |r| r.get(0)).unwrap();
         let patch: crate::captions::Patch =
@@ -3040,13 +3040,13 @@ mod tests {
         };
         let (sec, path, _) = chunk_at(&conn);
         assert_eq!(sec, Some(section(&conn)));
-        assert!(path.ends_with("Payout > caption by a person"), "{path}");
+        assert!(path.ends_with("Payouts > caption by a person"), "{path}");
         let refs = crate::assets::refs_for_hit(&conn, 0, sec);
         assert_eq!(refs.iter().map(|r| r.asset_id.as_str()).collect::<Vec<_>>(), vec![uid.as_str()], "section hits show the captioned image");
         conn.execute("UPDATE chunks SET embedding=X'01020304' WHERE kind='caption'", []).unwrap();
 
         let section_uid = |conn: &Connection| -> Option<String> {
-            conn.query_row("SELECT uid FROM sections WHERE path LIKE '%Payout'", [], |r| r.get(0)).unwrap()
+            conn.query_row("SELECT uid FROM sections WHERE path LIKE '%Payouts'", [], |r| r.get(0)).unwrap()
         };
         let old_uid = section_uid(&conn);
         run_folder_once(&pipe, &data_dir, sid, &cfg, true).await;

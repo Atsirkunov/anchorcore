@@ -131,7 +131,7 @@ pub fn initialism_start(acronym: &str, words: &[&str]) -> Option<usize> {
     if letters.len() < 2 {
         return None;
     }
-    // A phrase never starts on a glue word (`The Direct Debit (CA)`).
+    // A phrase never starts on a glue word (`The Direct Debit (DD)`).
     (0..words.len())
         .filter(|&start| !GLUE_WORDS.contains(&words[start].to_lowercase().as_str()))
         .find(|&start| initials_match(&letters, &words[start..]))
@@ -143,7 +143,7 @@ pub fn is_initialism_pair(term: &str, expansion: &str) -> bool {
     initialism_start(term, &words) == Some(0)
 }
 
-/// `Direct Debit (CA)` — capitalized phrase (1–5 words) + an all-caps
+/// `Direct Debit (DD)` — capitalized phrase (1–5 words) + an all-caps
 /// acronym (2–10) in parens whose letters are the phrase initials.
 fn parenthetical_pairs(text: &str) -> Vec<DefinedTerm> {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -267,7 +267,7 @@ fn is_header_row(term: &str, expansion: &str) -> bool {
     HEADER_TERMS.contains(&t.as_str()) && HEADER_EXPANSIONS.contains(&e.as_str())
 }
 
-/// Bold/code/bullet markup around a cell (`**CA**`, `` `CA` ``, `- CA`).
+/// Bold/code/bullet markup around a cell (`**DD**`, `` `DD` ``, `- DD`).
 fn strip_markup(s: &str) -> &str {
     s.trim().trim_start_matches(['-', '*', '+']).trim().trim_matches(['*', '`', '_', '"']).trim()
 }
@@ -452,8 +452,8 @@ pub fn vocab_expansion_terms(
         } else if term_set.contains(pair.expansion.as_str()) {
             push_unique(&mut out, pair.term.clone());
         } else {
-            // Multiword long form spelled out across query terms ("corporate"
-            // + "action" → "ca"): content words via the shared tokenizer so
+            // Multiword long form spelled out across query terms ("direct"
+            // + "debit" → "dd"): content words via the shared tokenizer so
             // glue words (`of`) can never block the match.
             let words = crate::retrieval::query_terms(&pair.expansion);
             if !words.is_empty() && words.iter().all(|w| term_set.contains(w.as_str())) {
@@ -514,11 +514,11 @@ mod tests {
     #[test]
     fn rules_catch_initialism_parentheticals() {
         let pairs = extract_vocab_rules(
-            "Each Service Level Agreement (SLA) row carries a reason. The Direct Debit (CA) record follows. \
+            "Each Service Level Agreement (SLA) row carries a reason. The Direct Debit (DD) record follows. \
              Bank of England (BOE) rates apply. JavaScript Object Notation (JSON) payloads.",
         );
         assert!(pairs.contains(&pair("sla", "service level agreement")), "leading word trimmed: {pairs:?}");
-        assert!(pairs.contains(&pair("ca", "direct debit")), "{pairs:?}");
+        assert!(pairs.contains(&pair("dd", "direct debit")), "{pairs:?}");
         assert!(pairs.contains(&pair("boe", "bank of england")), "glue word kept in phrase: {pairs:?}");
         assert!(pairs.contains(&pair("json", "javascript object notation")), "inner capitals: {pairs:?}");
     }
@@ -539,24 +539,24 @@ mod tests {
 
     #[test]
     fn code_tables_are_never_auto_extracted() {
-        let doc = "## Glossary\nCODE - Long Form of the event\nValue Date: the date value settles\n\
+        let doc = "## Glossary\nCODE - Long Form of the event\nValue Date: the date funds become available\n\
                    | Code | Meaning |\n|---|---|\n| RFND | Refund |\n";
         assert!(extract_vocab_rules(doc).is_empty(), "glossary-shaped lines need a marked file");
     }
 
     #[test]
     fn glossary_file_parses_tables_csv_and_lines() {
-        let doc = "# Glossary\n\n| Term | Meaning |\n|---|---|\n| **CA** | Direct debit |\n| RFND | Refund | extra |\n\n\
+        let doc = "# Glossary\n\n| Term | Meaning |\n|---|---|\n| **DD** | Direct debit |\n| RFND | Refund | extra |\n\n\
                    term,expansion\ndunning,\"payment reminder, before pause\"\nKYC\tknow your customer\n\
-                   SLA - service level agreement\nValue Date: the date value settles\n";
+                   SLA - service level agreement\nValue Date: the date funds become available\n";
         let pairs = parse_glossary_file(doc);
         for want in [
-            pair("ca", "direct debit"),
+            pair("dd", "direct debit"),
             pair("rfnd", "refund"),
             pair("dunning", "payment reminder, before pause"),
             pair("kyc", "know your customer"),
             pair("sla", "service level agreement"),
-            pair("value date", "the date value settles"),
+            pair("value date", "the date funds become available"),
         ] {
             assert!(pairs.contains(&want), "missing {want:?} in {pairs:?}");
         }
@@ -569,8 +569,8 @@ mod tests {
         let (_dir, conn) = vocab_db();
         let a = add_item(&conn, 1, "a.md");
         add_manual(&conn, "dunning", "payment reminder").unwrap();
-        store_vocab(&conn, a, 1, &[pair("ca", "direct debit")], &[pair("kyc", "know your customer")]).unwrap();
-        store_vocab(&conn, a, 1, &[pair("ca", "direct debit")], &[]).unwrap();
+        store_vocab(&conn, a, 1, &[pair("dd", "direct debit")], &[pair("kyc", "know your customer")]).unwrap();
+        store_vocab(&conn, a, 1, &[pair("dd", "direct debit")], &[]).unwrap();
         let rows: Vec<(String, String)> = conn
             .prepare("SELECT term, origin FROM vocabulary ORDER BY term")
             .unwrap()
@@ -578,7 +578,7 @@ mod tests {
             .unwrap()
             .map(|r| r.unwrap())
             .collect();
-        assert_eq!(rows, [("ca".into(), "rule".into()), ("dunning".into(), "manual".into())]);
+        assert_eq!(rows, [("dd".into(), "rule".into()), ("dunning".into(), "manual".into())]);
         let statuses: i64 = conn.query_row("SELECT COUNT(*) FROM vocabulary WHERE status != 'active'", [], |r| r.get(0)).unwrap();
         assert_eq!(statuses, 0, "no proposals exist");
     }
@@ -595,7 +595,7 @@ mod tests {
         assert!(!delete_manual(&conn, e.id).unwrap(), "second delete finds nothing");
         // Marked-file rows are not deletable as manual entries.
         let a = add_item(&conn, 1, "g.csv");
-        store_glossary_file(&conn, a, 1, &[pair("ca", "direct debit")]).unwrap();
+        store_glossary_file(&conn, a, 1, &[pair("dd", "direct debit")]).unwrap();
         let gid = list_glossary(&conn)[0].id;
         assert!(!delete_manual(&conn, gid).unwrap());
         assert_eq!(list_glossary(&conn)[0].path.as_deref(), Some("g.csv"));
@@ -620,8 +620,8 @@ mod tests {
     fn agent_mode_skips_rule_rows_but_keeps_glossary() {
         let (_dir, conn) = vocab_db();
         let a = add_item(&conn, 1, "a.md");
-        store_vocab(&conn, a, 1, &[pair("ca", "direct debit")], &[pair("dunning", "payment reminder")]).unwrap();
-        let terms = vec!["ca".to_string(), "dunning".to_string()];
+        store_vocab(&conn, a, 1, &[pair("dd", "direct debit")], &[pair("dunning", "payment reminder")]).unwrap();
+        let terms = vec!["dd".to_string(), "dunning".to_string()];
         assert_eq!(vocab_expansion_terms(&conn, &terms, None).len(), 2);
         conn.execute("UPDATE app_settings SET value = 'agent' WHERE key = 'llm_mode'", []).unwrap();
         assert_eq!(vocab_expansion_terms(&conn, &terms, None), ["payment reminder"]);
@@ -631,11 +631,11 @@ mod tests {
     fn multiword_expansion_fires_on_word_subset() {
         let (_dir, conn) = vocab_db();
         let a = add_item(&conn, 1, "a.md");
-        store_vocab(&conn, a, 1, &[pair("ca", "direct debit")], &[]).unwrap();
-        let both = vec!["corporate".to_string(), "action".to_string()];
-        assert_eq!(vocab_expansion_terms(&conn, &both, None), vec!["ca".to_string()]);
-        assert!(vocab_expansion_terms(&conn, &["corporate".to_string()], None).is_empty());
-        assert_eq!(vocab_expansion_terms(&conn, &["ca".to_string()], None), vec!["direct debit".to_string()]);
+        store_vocab(&conn, a, 1, &[pair("dd", "direct debit")], &[]).unwrap();
+        let both = vec!["direct".to_string(), "debit".to_string()];
+        assert_eq!(vocab_expansion_terms(&conn, &both, None), vec!["dd".to_string()]);
+        assert!(vocab_expansion_terms(&conn, &["direct".to_string()], None).is_empty());
+        assert_eq!(vocab_expansion_terms(&conn, &["dd".to_string()], None), vec!["direct debit".to_string()]);
     }
 
     #[test]

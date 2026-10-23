@@ -6,7 +6,7 @@ Attendees: Sarah, Mike, Priya, Dev, Elena, Aisha.
 
 - The new infrastructure migration landed with zero downtime — Dev and Sarah
   ran a textbook dry-run first.
-- Billing provider security review completed; findings were minor and are
+- Billing provider risk review completed; findings were minor and are
   resolved.
 
 ## What didn't

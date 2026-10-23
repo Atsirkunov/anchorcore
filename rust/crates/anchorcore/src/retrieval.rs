@@ -60,10 +60,10 @@ pub const SYNONYM_CLUSTERS: &[&[&str]] = &[
         "cancel", "cancelled", "cancelling", "cancellation", "cancellations", "reverse",
         "reversed", "reversing", "reversal", "reversals", "withdraw", "withdrawal", "withdrawals",
     ],
-    // Pair `rfp-reversal-01`: the query's "CA" is the doc's "Corporate
-    // Action". Phrased as one unit so a loose "action" never matches —
-    // that would be over-expansion (`action` is everywhere).
-    &["ca", "direct-debit"],
+    // Pair `rfp-reversal-01`: the query's "DD" is the doc's "Direct
+    // Debit". Phrased as one unit so a loose "direct" never matches —
+    // that would be over-expansion (`direct` is everywhere).
+    &["dd", "direct-debit"],
 ];
 
 /// Expand FTS terms with curated synonyms (R40.6). Original terms keep
@@ -2746,12 +2746,12 @@ mod tests {
 
     #[test]
     fn synonym_expansion_acronym_stays_phrased() {
-        // R40.6: "CA" expands to the "direct-debit" phrase — a loose
-        // "action" term would over-match (it is everywhere).
-        let q = fts_match_query("the CA process").expect("terms");
+        // R40.6: "DD" expands to the "direct-debit" phrase — a loose
+        // "direct" term would over-match (it is everywhere).
+        let q = fts_match_query("the DD process").expect("terms");
         assert!(q.contains("\"direct-debit\""), "phrased acronym: {q}");
-        assert!(!q.split(" OR ").any(|t| t == "\"action\""), "no loose action: {q}");
-        assert!(!q.split(" OR ").any(|t| t == "\"corporate\""), "no loose corporate: {q}");
+        assert!(!q.split(" OR ").any(|t| t == "\"direct\""), "no loose direct: {q}");
+        assert!(!q.split(" OR ").any(|t| t == "\"debit\""), "no loose debit: {q}");
     }
 
     #[test]

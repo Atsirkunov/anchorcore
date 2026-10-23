@@ -28,5 +28,5 @@ Attendees: Aisha, Sarah, Mike, Priya, Dev.
 
 ## Cross-references
 
-- Instant payment movements: specs/instant-payments-spec.md
+- Instant payment steps: specs/instant-payments-spec.md
 - Billing migration steps: specs/billing-migration-runbook.md

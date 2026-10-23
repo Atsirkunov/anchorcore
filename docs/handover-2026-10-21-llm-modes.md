@@ -282,7 +282,7 @@ of the feature, not one regex:
 
 | Origin | Rows | Quality |
 |---|---|---|
-| `llm`, `proposed` | 12 | **mostly right** (`ach → automated clearing house`, `ca → direct debit`), yet they sit in a human queue |
+| `llm`, `proposed` | 12 | **mostly right** (`ach → automated clearing house`, `dd → direct debit`), yet they sit in a human queue |
 | `rule`, `active` | 50 | live in query expansion **with no review**. Some are right (`rfnd → refund`, `sla → service level agreement`); some are junk from payment-scheme code tables parsed as definitions: `psa → "card account issuer payment agent"` (×6), `cncl → update`, `p2p → payments`, `with → withdrawal` (inert only because `with` is a query stopword) |
 
 Index-time guessing produces the junk, and the review queue hands the

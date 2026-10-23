@@ -31,8 +31,8 @@ OWNERS = ["Aisha","Sarah","Dev","Maya","Ken","Priya","Alex","Jordan","Sam","Rile
 TEAMS = ["Payments","Risk","Platform","AI Infra","Finance","Compliance"]
 SYSTEMS = ["ledger","payout-engine","risk-engine","idempotency-service","billing-migration","kyc-service","feature-flag","vector-store","reconciliation-tooling"]
 FIN_TECH_TOPICS = [
-    ("ACME movement rules","payout-only, reconciliation complexity"),
-    ("RFND refund movements","direct debit, deterministic steps"),
+    ("ACME payout rules","verified-accounts-only, reconciliation complexity"),
+    ("RFND refund steps","chargeback, deterministic steps"),
     ("Idempotency key TTL","24h expiry, exactly-once semantics"),
     ("Billing migration","Stripe provider, cutover steps"),
     ("KYC refresh","90-day re-verification, document checks"),
@@ -100,7 +100,7 @@ def synth_runbook(idx: int, topic):
     steps = RND.randint(4,8)
     lines = [f"# Runbook: {topic} — RB{idx:03d}", "", f"Owner: {RND.choice(OWNERS)} · System: {RND.choice(SYSTEMS)}", "", "## Steps"]
     for s in range(1, steps+1):
-        lines.append(f"{s}. **Step {s}** — {RND.choice(['Validate input','Reserve position','Deliver to payee','Confirm payout','Write audit row','Reconcile external statement','Rollback on failure','Notify owner'])} — status: `{RND.choice(['pending','validated','reserved','delivered','confirmed'])}`")
+        lines.append(f"{s}. **Step {s}** — {RND.choice(['Validate input','Hold funds','Submit to scheme','Confirm payment','Write audit row','Reconcile external statement','Rollback on failure','Notify owner'])} — status: `{RND.choice(['pending','validated','reserved','delivered','confirmed'])}`")
     lines += ["", "## Rollback", "Failed delivery reverses reservation (steps 3-4). Reconciliation tooling attaches external state to step 4.", "", "## Limits", "- Daily cap per account, enforced at validation.", "- Idempotency key TTL 24h."]
     return "\n".join(lines)
 
@@ -109,7 +109,7 @@ def synth_filing(idx: int):
     fy = RND.choice(["FY2023","FY2024"])
     sections = []
     for sec in ["1. Business","1A. Risk Factors","7. MD&A","8. Financial Statements","9A. Controls"]:
-        para = " ".join(RND.choice(["Revenue growth","Credit risk","Payout exposure","Capital adequacy","Liquidity","Operational resilience"]) for _ in range(30))
+        para = " ".join(RND.choice(["Revenue growth","Credit risk","FX exposure","Capital adequacy","Liquidity","Operational resilience"]) for _ in range(30))
         sections.append(f"## Section {sec}\n{para}\n\n| Metric | {fy} | Prior |\n|---|---|---|\n| Revenue ($m) | {RND.randint(80,400)} | {RND.randint(60,350)} |\n| Cost ($m) | {RND.randint(40,200)} | {RND.randint(30,180)} |\n| Page {RND.randint(1,250)} of 250 | | |")
     return f"# {company} — Form 10-K {fy} — Filing {idx:03d}\n\nCompany: {company}\nFiled: 2024-{RND.randint(1,12):02d}-{RND.randint(1,28):02d}\nAuditor: {RND.choice(['EY','PwC','Deloitte'])}\n\n" + "\n\n".join(sections)
 
@@ -169,7 +169,7 @@ def synth_meeting(idx: int):
 - [ ] {RND.choice(OWNERS)}: verify {RND.choice(SYSTEMS)} delivery — 87% coverage (was 98%, disputed)
 
 ## Q&A (for distillation B18)
-Q: How long does the idempotency key last? A: 24 hours, exactly-once. Terms: idempotency, TTL, payout.
+Q: How long does the idempotency key last? A: 24 hours, exactly-once. Terms: idempotency, TTL, payouts.
 Q: Who owns {topic}? A: {owner}, owns {RND.choice(SYSTEMS)}.
 """
     return body

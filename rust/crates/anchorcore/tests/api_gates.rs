@@ -321,7 +321,7 @@ async fn disputed_decision_drops_from_listings() {
 async fn ask_accepts_history_payload() {
     let srv = TestServer::start().await;
     let source = srv
-        .mk_folder_source("fup", &[("f.md", "§1 Refund details: RFND is an exchange of payments.\n")], None)
+        .mk_folder_source("fup", &[("f.md", "§1 Refund details: RFND is a return of a card payment.\n")], None)
         .await;
     srv.sync_and_wait(source["id"].as_i64().unwrap(), "sync").await;
 

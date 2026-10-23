@@ -185,7 +185,7 @@
     },
     {
       "id": "own-05",
-      "question": "What direct debits are described and what are their key dates and terms?",
+      "question": "What payment schemes are described and what are their key dates and terms?",
       "corpus": "owner-pdfs",
       "target": {
         "file": null,
@@ -194,7 +194,7 @@
       "required_docs": [],
       "grep_baseline": null,
       "owner_run": true,
-      "notes": "OWNER-RUN against the private direct-debits PDFs. Target + required docs blank for the owner to fill (PDF filenames). Exercises PDF extraction + long-document sectioning; owner confirms breadcrumbs on first run."
+      "notes": "OWNER-RUN against the owner's private PDFs. Target + required docs blank for the owner to fill (PDF filenames). Exercises PDF extraction + long-document sectioning; owner confirms breadcrumbs on first run."
     }
   ]
 }

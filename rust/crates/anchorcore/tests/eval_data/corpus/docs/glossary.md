@@ -3,7 +3,7 @@
 ## Remittance advice
 
 A remittance advice is the receipt the ledger writes after money
-moves. The confirmation names the amount, the destination account, and
+moves. The advice names the amount, the destination account, and
 the payout batch. Support treats a missing remittance advice
 as a failed payout and opens an incident.
 
