@@ -20,10 +20,10 @@ export function UnplacedImages({ sources }: { sources: Source[] }) {
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    setError(null);
     api
       .media({ attribution: view, limit: PAGE })
       .then((list) => {
+        setError(null);
         setRows(list.items);
         setTotal(list.total);
       })
