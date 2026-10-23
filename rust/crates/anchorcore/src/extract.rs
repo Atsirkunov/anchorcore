@@ -1050,10 +1050,52 @@ pub(crate) fn zip_names(archive: &zip::ZipArchive<Cursor<&[u8]>>, prefix: &str, 
         .collect()
 }
 
+/// R46.8: package relationships of one part — `rId` → part path inside the
+/// zip, resolved against `base` (`../media/x.png` from `ppt/slides` is
+/// `ppt/media/x.png`). External (linked) targets are dropped: no network.
+fn package_rels(archive: &mut zip::ZipArchive<Cursor<&[u8]>>, rels: &str, base: &str) -> std::collections::HashMap<String, String> {
+    use quick_xml::events::Event;
+    let mut out = std::collections::HashMap::new();
+    let Ok(xml) = read_zip_entry(archive, rels) else { return out };
+    let mut reader = quick_xml::Reader::from_str(&xml);
+    while let Ok(ev) = reader.read_event() {
+        match ev {
+            Event::Empty(e) | Event::Start(e) if e.local_name().as_ref() == "Relationship" => {
+                let external = xml_attr(&e, "TargetMode").is_some_and(|m| m.eq_ignore_ascii_case("external"));
+                if let (Some(id), Some(target), false) = (xml_attr(&e, "Id"), xml_attr(&e, "Target"), external) {
+                    out.insert(id, join_part(base, &target));
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Resolve a relationship target against the folder of its part (`..` pops).
+fn join_part(base: &str, target: &str) -> String {
+    if let Some(abs) = target.strip_prefix('/') {
+        return abs.to_string();
+    }
+    let mut parts: Vec<&str> = base.split('/').filter(|p| !p.is_empty()).collect();
+    for seg in target.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    parts.join("/")
+}
+
 fn extract_docx(bytes: &[u8]) -> Result<String, String> {
     let mut archive = open_zip(bytes)?;
     let xml = read_zip_entry(&mut archive, "word/document.xml")?;
-    let text = xml_text(&xml, Profile::Word).map_err(|e| format!("docx: {e}"))?;
+    let rels = package_rels(&mut archive, "word/_rels/document.xml.rels", "word");
+    let text = xml_text_media(&xml, Profile::Word, rels).map_err(|e| format!("docx: {e}"))?;
     Ok(strip_toc(&normalize_lines(&text)))
 }
 
@@ -1064,12 +1106,16 @@ fn extract_pptx(bytes: &[u8]) -> Result<String, String> {
     let mut out = String::new();
     for (i, name) in slides.iter().enumerate() {
         let xml = read_zip_entry(&mut archive, name)?;
-        let text = xml_text(&xml, Profile::Slides).map_err(|e| format!("{name}: {e}"))?;
+        let (dir, file) = name.rsplit_once('/').unwrap_or(("", name));
+        let rels = package_rels(&mut archive, &format!("{dir}/_rels/{file}.rels"), dir);
+        let text = xml_text_media(&xml, Profile::Slides, rels).map_err(|e| format!("{name}: {e}"))?;
         let text = normalize_lines(&text);
         if text.trim().is_empty() {
             continue;
         }
-        out.push_str(&format!("Slide {}\n", i + 1));
+        // R46.8: a marker heading, so each slide is a section (breadcrumbs,
+        // and slide images attach to their slide).
+        out.push_str(&format!("# Slide {}\n", i + 1));
         out.push_str(&text);
         out.push_str("\n\n");
     }
@@ -1088,7 +1134,7 @@ fn slide_number(name: &str) -> Option<u32> {
 fn extract_odf(bytes: &[u8]) -> Result<String, String> {
     let mut archive = open_zip(bytes)?;
     let xml = read_zip_entry(&mut archive, "content.xml")?;
-    let text = xml_text(&xml, Profile::Odf).map_err(|e| format!("odf: {e}"))?;
+    let text = xml_text_media(&xml, Profile::Odf, std::collections::HashMap::new()).map_err(|e| format!("odf: {e}"))?;
     Ok(strip_toc(&normalize_lines(&text)))
 }
 
@@ -1153,6 +1199,8 @@ enum ParaKind {
     Body,
     Heading(u8),
     Toc,
+    /// R46.8: Word `Caption` style — rides into the preceding image marker.
+    Caption,
 }
 
 /// Walker state for `xml_text` — paragraph tracking drives R36.7 structure:
@@ -1164,6 +1212,12 @@ struct WalkState {
     para_start: Option<usize>,
     para_kind: ParaKind,
     toc_depth: u32,
+    /// R46.8: `rId` → zip part for this XML part's images.
+    rels: std::collections::HashMap<String, String>,
+    /// Alt text of the drawing being read (`wp:docPr`/`p:cNvPr` descr).
+    pending_alt: Option<String>,
+    /// Byte offset of the last image marker's closing `)` (caption target).
+    last_marker: Option<usize>,
 }
 
 impl WalkState {
@@ -1175,7 +1229,46 @@ impl WalkState {
             para_start: None,
             para_kind: ParaKind::Body,
             toc_depth: 0,
+            rels: std::collections::HashMap::new(),
+            pending_alt: None,
+            last_marker: None,
         }
+    }
+
+    /// R46.8: images become `![alt](embedded:<zip part>)` markers at their
+    /// position, so the asset pass attaches each to its paragraph/slide
+    /// chunk and reads the bytes from the package (`assets::resolve`).
+    fn track_media(&mut self, e: &quick_xml::events::BytesStart, n: &str) {
+        let attr = |k: &str| xml_attr(e, k).map(|v| unescape_html(&v));
+        match n {
+            "wp:docPr" | "p:cNvPr" => self.pending_alt = attr("descr").filter(|d| !d.trim().is_empty()).or_else(|| attr("title")),
+            "a:blip" => {
+                let part = attr("r:embed").and_then(|id| self.rels.get(&id).cloned());
+                self.push_marker(part);
+            }
+            "v:imagedata" => {
+                self.pending_alt = attr("o:title");
+                let part = attr("r:id").and_then(|id| self.rels.get(&id).cloned());
+                self.push_marker(part);
+            }
+            "draw:image" => {
+                let href = attr("xlink:href").filter(|h| !h.contains("://"));
+                self.push_marker(href.map(|h| h.trim_start_matches("./").to_string()));
+            }
+            _ => {}
+        }
+    }
+
+    fn push_marker(&mut self, part: Option<String>) {
+        let alt = self.pending_alt.take().unwrap_or_default();
+        let Some(part) = part else { return };
+        if !self.in_body || self.toc_depth > 0 {
+            return;
+        }
+        let alt = alt.replace(|c: char| "[]\n\r".contains(c), " ");
+        let part = part.replace(' ', "%20").replace('(', "%28").replace(')', "%29");
+        self.out.push_str(&format!(" ![{}](embedded:{part}) ", alt.trim()));
+        self.last_marker = Some(self.out.len() - 2);
     }
 
     fn wants_text(&self) -> bool {
@@ -1193,6 +1286,7 @@ impl WalkState {
         }
         if self.toc_depth == 0 {
             self.track_para_start(e, n, profile);
+            self.track_media(e, n);
         }
         if profile.text_elem(n) {
             self.in_text = true;
@@ -1256,6 +1350,7 @@ impl WalkState {
         if self.toc_depth > 0 {
             return;
         }
+        self.track_media(e, n);
         if matches!(profile, Profile::Word) && n == "w:pStyle" && self.para_start.is_some() {
             if let Some(val) = xml_attr(e, "w:val") {
                 self.para_kind = docx_para_kind(&val);
@@ -1276,7 +1371,17 @@ impl WalkState {
         };
         let kind = std::mem::replace(&mut self.para_kind, ParaKind::Body);
         match kind {
-            ParaKind::Body => true,
+            ParaKind::Body => {
+                // Text after the image paragraph means no caption follows.
+                if self.last_marker.is_some_and(|m| m < start) && !self.out[start..].trim().is_empty() {
+                    self.last_marker = None;
+                }
+                true
+            }
+            ParaKind::Caption => {
+                self.attach_caption(start);
+                true
+            }
             ParaKind::Toc => {
                 self.out.truncate(start);
                 false
@@ -1288,6 +1393,17 @@ impl WalkState {
                 }
                 true
             }
+        }
+    }
+}
+
+impl WalkState {
+    /// R46.8: a `Caption` paragraph right after an image marker becomes the
+    /// marker's caption slot; the caption text also stays in the prose.
+    fn attach_caption(&mut self, start: usize) {
+        let caption = self.out[start..].split_whitespace().collect::<Vec<_>>().join(" ").replace('\u{22}', "'");
+        if let Some(pos) = self.last_marker.take().filter(|m| *m < start && !caption.is_empty()) {
+            self.out.insert_str(pos, &format!(" \"{caption}\""));
         }
     }
 }
@@ -1329,6 +1445,9 @@ fn docx_para_kind(style: &str) -> ParaKind {
     if style_num(&lower, "toc").is_some() {
         return ParaKind::Toc;
     }
+    if lower == "caption" {
+        return ParaKind::Caption;
+    }
     ParaKind::Body
 }
 
@@ -1353,10 +1472,11 @@ fn odf_heading_level(e: &quick_xml::events::BytesStart) -> u8 {
 }
 
 /// Walk XML and pull text out of one of the three document shapes.
-fn xml_text(xml: &str, profile: Profile) -> Result<String, String> {
+fn xml_text_media(xml: &str, profile: Profile, rels: std::collections::HashMap<String, String>) -> Result<String, String> {
     use quick_xml::events::Event;
     let mut reader = quick_xml::Reader::from_str(xml);
     let mut st = WalkState::new(profile);
+    st.rels = rels;
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => st.on_start(&e, profile),
@@ -1998,9 +2118,9 @@ mod tests {
             ),
         ]);
         let text = extract_bytes("pptx", &ppt).unwrap();
-        let two = text.find("Slide 2\nTwo").expect("slide 2");
-        let ten = text.find("Slide 3\nTen").expect("slide 3");
-        assert!(text.contains("Slide 1\nOne"));
+        let two = text.find("# Slide 2\nTwo").expect("slide 2");
+        let ten = text.find("# Slide 3\nTen").expect("slide 3");
+        assert!(text.contains("# Slide 1\nOne"));
         assert!(two < ten, "slide2 before slide10: {text}");
     }
 
@@ -2147,6 +2267,41 @@ Hello \b bold\b0  and \'93quoted\'94.\par Second \u8364? paragraph.\par}";
         }
         assert!(is_code_path(Path::new("a/b/main.go")));
         assert!(!is_code_path(Path::new("a/b/notes.md")));
+    }
+
+    #[test]
+    fn office_images_become_embedded_markers() {
+        // R46.8: docx drawing → marker at its paragraph, alt from docPr,
+        // a following Caption paragraph rides into the caption slot (and
+        // stays prose); external (linked) images never resolve.
+        let rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId5" Type="image" Target="media/image1.png"/><Relationship Id="rId6" Type="image" Target="https://x.test/a.png" TargetMode="External"/></Relationships>"#;
+        let doc = r#"<w:document xmlns:w="w" xmlns:wp="wp" xmlns:a="a" xmlns:r="r"><w:body>
+<w:p><w:r><w:t>Quarterly results.</w:t></w:r></w:p>
+<w:p><w:r><w:drawing><wp:inline><wp:docPr id="1" name="Picture 1" descr="Revenue [chart] &amp; trend"/><a:graphic><a:blip r:embed="rId5"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Caption"/></w:pPr><w:r><w:t>Figure 1: Revenue "by" quarter</w:t></w:r></w:p>
+<w:p><w:r><w:drawing><wp:docPr id="2" descr="linked"/><a:blip r:embed="rId6"/></w:drawing></w:r></w:p>
+</w:body></w:document>"#;
+        let docx = zip_bytes(&[("word/document.xml", doc), ("word/_rels/document.xml.rels", rels)]);
+        let text = extract_bytes("docx", &docx).unwrap();
+        assert!(text.contains("![Revenue chart & trend](embedded:word/media/image1.png \"Figure 1: Revenue 'by' quarter\")"), "{text}");
+        assert!(text.contains("Figure 1: Revenue \"by\" quarter"), "caption stays prose: {text}");
+        assert!(!text.contains("x.test") && !text.contains("linked]"), "{text}");
+        let refs = crate::assets::scan_refs(&text);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].caption, "Figure 1: Revenue 'by' quarter");
+
+        let slide_rels = r#"<Relationships><Relationship Id="rId2" Target="../media/image7.jpeg"/></Relationships>"#;
+        let slide = r#"<p:sld xmlns:p="p" xmlns:a="a" xmlns:r="r"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Architecture</a:t></a:r></a:p></p:txBody></p:sp><p:pic><p:nvPicPr><p:cNvPr id="4" name="Picture 3" descr="Service map"/></p:nvPicPr><p:blipFill><a:blip r:embed="rId2"/></p:blipFill></p:pic></p:spTree></p:cSld></p:sld>"#;
+        let pptx = zip_bytes(&[("ppt/slides/slide1.xml", slide), ("ppt/slides/_rels/slide1.xml.rels", slide_rels)]);
+        let text = extract_bytes("pptx", &pptx).unwrap();
+        assert!(text.starts_with("# Slide 1\n"), "{text}");
+        assert!(text.contains("![Service map](embedded:ppt/media/image7.jpeg)"), "{text}");
+
+        let content = r#"<office:document-content xmlns:office="o" xmlns:text="t" xmlns:draw="d" xmlns:xlink="x"><office:body><office:text><text:p>Floor plan<draw:frame><draw:image xlink:href="Pictures/plan.png"/></draw:frame></text:p></office:text></office:body></office:document-content>"#;
+        let text = extract_bytes("odt", &zip_bytes(&[("content.xml", content)])).unwrap();
+        assert!(text.contains("![](embedded:Pictures/plan.png)"), "{text}");
+        assert_eq!(join_part("ppt/slides", "../media/a.png"), "ppt/media/a.png");
+        assert_eq!(join_part("word", "/word/media/b.png"), "word/media/b.png");
     }
 
     #[test]

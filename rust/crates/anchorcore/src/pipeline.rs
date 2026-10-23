@@ -2976,4 +2976,59 @@ mod tests {
             .unwrap();
         assert_eq!(linked, 1, "embed asset re-links to its imported chunk");
     }
+
+    #[tokio::test]
+    async fn office_images_attach_to_their_paragraph_or_slide() {
+        // R46.8 on a real folder sync: package images become embed assets on
+        // the hosting chunk/section (pptx: the slide), with alt + caption;
+        // tiny decorative images and EMF parts are skipped.
+        use std::io::Write;
+        fn package(entries: &[(&str, &[u8])]) -> Vec<u8> {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            for (name, body) in entries {
+                zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+                zip.write_all(body).unwrap();
+            }
+            zip.finish().unwrap().into_inner()
+        }
+        let mut big = crate::assets::TEST_PNG.to_vec();
+        big[16..24].copy_from_slice(&[0, 0, 0, 64, 0, 0, 0, 48]);
+        let rels = br#"<Relationships><Relationship Id="r1" Target="media/big.png"/><Relationship Id="r2" Target="media/dot.png"/><Relationship Id="r3" Target="media/logo.emf"/></Relationships>"#;
+        let doc = br#"<w:document xmlns:w="w" xmlns:wp="wp" xmlns:a="a" xmlns:r="r"><w:body>
+<w:p><w:r><w:t>Billing pipeline overview.</w:t></w:r></w:p>
+<w:p><w:r><w:drawing><wp:docPr id="1" descr="Billing pipeline"/><a:blip r:embed="r1"/></w:drawing></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Caption"/></w:pPr><w:r><w:t>Figure 2: Billing stages</w:t></w:r></w:p>
+<w:p><w:r><w:drawing><wp:docPr id="2" descr="bullet"/><a:blip r:embed="r2"/></w:drawing><w:drawing><wp:docPr id="3" descr="logo"/><a:blip r:embed="r3"/></w:drawing></w:r></w:p>
+</w:body></w:document>"#;
+        let docx = package(&[("word/document.xml", doc), ("word/_rels/document.xml.rels", rels), ("word/media/big.png", &big), ("word/media/dot.png", crate::assets::TEST_PNG), ("word/media/logo.emf", b"\x01\x00\x00\x00EMF")]);
+        let slide1 = br#"<p:sld xmlns:p="p" xmlns:a="a"><a:p><a:r><a:t>Agenda</a:t></a:r></a:p></p:sld>"#;
+        let slide2 = br#"<p:sld xmlns:p="p" xmlns:a="a" xmlns:r="r"><a:p><a:r><a:t>Target architecture</a:t></a:r></a:p><p:pic><p:cNvPr id="4" descr="Service map"/><a:blip r:embed="rId2"/></p:pic></p:sld>"#;
+        let srels = br#"<Relationships><Relationship Id="rId2" Target="../media/map.png"/></Relationships>"#;
+        let pptx = package(&[("ppt/slides/slide1.xml", slide1), ("ppt/slides/slide2.xml", slide2), ("ppt/slides/_rels/slide2.xml.rels", srels), ("ppt/media/map.png", &big)]);
+        let data_tmp = tempdir().unwrap();
+        let folder_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().to_string_lossy().to_string();
+        std::fs::write(folder_tmp.path().join("billing.docx"), &docx).unwrap();
+        std::fs::write(folder_tmp.path().join("deck.pptx"), &pptx).unwrap();
+        let (settings, sid) = seed_folder_source(&data_dir, folder_tmp.path());
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
+        run_folder_once(&pipe, &data_dir, sid, &serde_json::json!({"path": folder_tmp.path().to_string_lossy()}), false).await;
+        let conn = crate::db::init_db(&crate::db::resolve_db_path(&data_dir)).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT a.src, a.alt, a.caption, a.w, a.attribution, COALESCE(s.path, '') FROM assets a LEFT JOIN sections s ON s.id = a.section_id WHERE a.chunk_id IS NOT NULL ORDER BY a.src")
+            .unwrap();
+        let rows: Vec<(String, String, String, i64, String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(rows.len(), 2, "tiny + EMF skipped: {rows:?}");
+        assert_eq!(&rows[0].0, "embedded:ppt/media/map.png");
+        assert_eq!((rows[0].1.as_str(), rows[0].4.as_str()), ("Service map", "embedded"));
+        assert!(rows[0].5.contains("Slide 2"), "slide image attributed to its slide section: {rows:?}");
+        assert_eq!(&rows[1].0, "embedded:word/media/big.png");
+        assert_eq!((rows[1].1.as_str(), rows[1].2.as_str(), rows[1].3), ("Billing pipeline", "Figure 2: Billing stages", 64));
+    }
 }
