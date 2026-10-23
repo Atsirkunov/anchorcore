@@ -6,7 +6,7 @@ use std::sync::Arc;
 use rusqlite::Connection;
 
 use crate::classifier::Classifier;
-use crate::connectors::{folder::{FolderConnector, ListedFile}, gdrive::GDriveConnector, jira::JiraConnector, linear::LinearConnector, rest::RestConnector, IngestionDoc};
+use crate::connectors::{folder::{FolderConnector, ListedFile}, gdrive::GDriveConnector, jira::JiraConnector, linear::LinearConnector, miro::MiroConnector, rest::RestConnector, IngestionDoc};
 use crate::embedder::Embedder;
 use crate::secrets::SecretStore;
 use crate::settings::SettingsService;
@@ -115,7 +115,7 @@ async fn job_cancelled(data_dir: &str, job_id: i64) -> Result<bool, String> {
 
 /// Returns `(docs, skipped)` — `skipped` are files present at the source but
 /// unreadable (folder connector), kept out of purge (B57 safety).
-async fn fetch_docs(connector_type: &str, config: &serde_json::Value, source_id: i64) -> Result<(Vec<IngestionDoc>, Vec<String>), String> {
+async fn fetch_docs(connector_type: &str, config: &serde_json::Value, source_id: i64, data_dir: &str) -> Result<(Vec<IngestionDoc>, Vec<String>), String> {
     // R10.2: Jira/GDrive/Linear must not silently succeed with 0 items
     let (docs, skipped) = match connector_type {
         "folder" => {
@@ -123,36 +123,103 @@ async fn fetch_docs(connector_type: &str, config: &serde_json::Value, source_id:
             let (docs, skipped, _cursor) = fc.fetch_with_skipped().map_err(|e| e.to_string())?;
             (docs, skipped)
         }
-        "jira" => {
-            let jc = JiraConnector::new(config).map_err(|e| e.to_string())?;
-            let (docs, _cursor) = jc.fetch("").await.map_err(|e| e.to_string())?;
-            if docs.is_empty() {
-                // treat empty as not error for now, but log
-                tracing::warn!("Jira fetch returned 0 docs for source {}", source_id);
-            }
-            (docs, Vec::new())
-        }
         "gdrive" => {
             let gc = GDriveConnector::new(config).map_err(|e| e.to_string())?;
             let (docs, skipped, _cursor) = gc.fetch_with_skipped("").await.map_err(|e| e.to_string())?;
             (docs, skipped)
         }
-        "linear" => {
-            let lc = LinearConnector::new(config).map_err(|e| e.to_string())?;
-            let (docs, _cursor) = lc.fetch("").await.map_err(|e| e.to_string())?;
-            (docs, Vec::new())
+        "miro" => {
+            let mc = MiroConnector::new(config).map_err(|e| e.to_string())?;
+            (fetch_miro(&mc, data_dir, source_id).await?, Vec::new())
         }
-        "rest" => {
-            let rc = RestConnector::new(config).map_err(|e| e.to_string())?;
-            let (docs, _cursor) = rc.fetch("").await.map_err(|e| e.to_string())?;
-            if docs.is_empty() {
-                tracing::warn!("REST fetch returned 0 docs for source {}", source_id);
-            }
-            (docs, Vec::new())
-        }
-        _ => return Err(format!("unknown connector '{}'", connector_type)),
+        _ => (fetch_api_docs(connector_type, config, source_id).await?, Vec::new()),
     };
     Ok((docs, skipped))
+}
+
+/// Full-fetch API connectors with no skipped set (Jira, Linear, REST).
+async fn fetch_api_docs(connector_type: &str, config: &serde_json::Value, source_id: i64) -> Result<Vec<IngestionDoc>, String> {
+    let docs = match connector_type {
+        "jira" => JiraConnector::new(config).map_err(|e| e.to_string())?.fetch("").await.map_err(|e| e.to_string())?.0,
+        "linear" => LinearConnector::new(config).map_err(|e| e.to_string())?.fetch("").await.map_err(|e| e.to_string())?.0,
+        "rest" => RestConnector::new(config).map_err(|e| e.to_string())?.fetch("").await.map_err(|e| e.to_string())?.0,
+        _ => return Err(format!("unknown connector '{}'", connector_type)),
+    };
+    if docs.is_empty() && connector_type != "linear" {
+        // treat empty as not error for now, but log
+        tracing::warn!("{} fetch returned 0 docs for source {}", connector_type, source_id);
+    }
+    Ok(docs)
+}
+
+/// R46.5: per-board stamps in `sources.last_sync_cursor`
+/// (`{"miro": {board_id: {"modified_at", "hash"}}}`). A board counts as
+/// unchanged only when its `modifiedAt` matches the stamp AND the stored item
+/// is fully processed with the stamped hash — so a sync that failed after
+/// fetching a board can never be mistaken for one that stored it.
+type MiroKnown = std::collections::HashMap<String, (String, IngestionDoc)>;
+
+fn miro_known(conn: &Connection, source_id: i64) -> MiroKnown {
+    let cursor: String = conn
+        .query_row("SELECT COALESCE(last_sync_cursor, '') FROM sources WHERE id=?1", [source_id], |r| r.get(0))
+        .unwrap_or_default();
+    let stamps: serde_json::Value = serde_json::from_str(&cursor).unwrap_or_default();
+    let Some(boards) = stamps.get("miro").and_then(|m| m.as_object()) else {
+        return MiroKnown::new();
+    };
+    let mut known = MiroKnown::new();
+    for (board_id, stamp) in boards {
+        let (Some(modified), Some(hash)) = (stamp["modified_at"].as_str(), stamp["hash"].as_str()) else { continue };
+        let row: Option<(String, String, String)> = conn
+            .query_row(
+                "SELECT title, text, COALESCE(author, '') FROM ingested_items WHERE source_id=?1 AND external_id=?2 AND content_hash=?3 AND processed_hash=?3",
+                rusqlite::params![source_id, crate::connectors::miro::external_id(board_id), hash],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok();
+        if let Some((title, text, author)) = row {
+            let doc = IngestionDoc {
+                external_id: crate::connectors::miro::external_id(board_id),
+                title,
+                text,
+                author,
+                updated_at: crate::connectors::parse_dt(modified),
+                source_ref: crate::connectors::miro::board_url(board_id),
+            };
+            known.insert(board_id.clone(), (modified.to_string(), doc));
+        }
+    }
+    known
+}
+
+/// R46.5: Miro fetch with board-level skipping. Unchanged boards come back
+/// as their stored doc (hash-equal → upsert skips them, purge keeps them).
+async fn fetch_miro(mc: &MiroConnector, data_dir: &str, source_id: i64) -> Result<Vec<IngestionDoc>, String> {
+    let known = run_db(data_dir, move |conn| Ok::<_, String>(miro_known(conn, source_id))).await?;
+    let stamps: std::collections::HashMap<String, String> = known.iter().map(|(id, (m, _))| (id.clone(), m.clone())).collect();
+    let fetched = mc.fetch(&stamps).await.map_err(|e| e.to_string())?;
+    let mut docs = Vec::new();
+    let mut next = serde_json::Map::new();
+    for b in fetched {
+        let (board_id, modified_at, doc) = match b {
+            crate::connectors::miro::BoardFetch::Fresh { doc, modified_at } => {
+                (doc.external_id.trim_start_matches("miro:").to_string(), modified_at, doc)
+            }
+            crate::connectors::miro::BoardFetch::Unchanged { board_id, modified_at } => {
+                let Some((_, doc)) = known.get(&board_id).cloned() else { continue };
+                (board_id, modified_at, doc)
+            }
+        };
+        next.insert(board_id, serde_json::json!({"modified_at": modified_at, "hash": content_hash(&doc.text)}));
+        docs.push(doc);
+    }
+    let cursor = serde_json::json!({"miro": next}).to_string();
+    run_db(data_dir, move |conn| {
+        conn.execute("UPDATE sources SET last_sync_cursor=?1 WHERE id=?2", rusqlite::params![cursor, source_id]).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await?;
+    Ok(docs)
 }
 
 /// B57: connectors whose fetch returns the complete current set, so a stored
@@ -160,7 +227,7 @@ async fn fetch_docs(connector_type: &str, config: &serde_json::Value, source_id:
 /// `max_pages` can truncate the list, and purging on a partial fetch would
 /// delete live items.
 fn connector_supports_purge(connector_type: &str) -> bool {
-    matches!(connector_type, "folder" | "jira" | "gdrive" | "linear")
+    matches!(connector_type, "folder" | "jira" | "gdrive" | "linear" | "miro")
 }
 
 /// B57: hard-delete stored items absent from `fetched`. The source is the
@@ -572,7 +639,7 @@ impl Pipeline {
         }
         // fetch docs — R10.2: Jira/GDrive/Linear must not silently succeed with 0 items
         let t_fetch = std::time::Instant::now();
-        let (docs, skipped) = fetch_docs(&connector_type, &config, source_id).await?;
+        let (docs, skipped) = fetch_docs(&connector_type, &config, source_id, data_dir).await?;
         tracing::debug!(target: "anchorcore::perf", docs = docs.len(), ms = t_fetch.elapsed().as_millis(), "fetch");
         // B57: purge stored items that disappeared remotely (hard-delete).
         let purged_items =
@@ -1826,7 +1893,7 @@ mod tests {
 
     #[test]
     fn connector_supports_purge_matrix() {
-        for c in ["folder", "jira", "gdrive", "linear"] {
+        for c in ["folder", "jira", "gdrive", "linear", "miro"] {
             assert!(connector_supports_purge(c), "{} must purge", c);
         }
         for c in ["rest", "slack", ""] {
@@ -3030,5 +3097,75 @@ mod tests {
         assert!(rows[0].5.contains("Slide 2"), "slide image attributed to its slide section: {rows:?}");
         assert_eq!(&rows[1].0, "embedded:word/media/big.png");
         assert_eq!((rows[1].1.as_str(), rows[1].2.as_str(), rows[1].3), ("Billing pipeline", "Figure 2: Billing stages", 64));
+    }
+
+    #[tokio::test]
+    async fn miro_sync_skips_unchanged_boards_and_purges_deleted_ones() {
+        // R46.5: token only in the SecretStore (stripped config), board-level
+        // modifiedAt skip, refetch on change, purge when the board is gone.
+        let _lock = crate::secrets::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("ANCHOR_SECRETS_NO_KEYRING").ok();
+        std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", "1");
+        let mock = crate::connectors::miro::tests::spawn_mock(
+            serde_json::json!([
+                crate::connectors::miro::tests::board("b1", "2026-10-20T10:00:00Z"),
+                crate::connectors::miro::tests::board("b2", "2026-10-20T10:00:00Z")
+            ]),
+            0,
+        )
+        .await;
+        let data_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().to_string_lossy().to_string();
+        let empty = tempdir().unwrap();
+        let (settings, _) = seed_folder_source(&data_dir, empty.path());
+        let conn = crate::db::init_db(&crate::db::resolve_db_path(&data_dir)).unwrap();
+        let cfg = serde_json::json!({"boards": "b1,b2", "base_url": mock.base}).to_string();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('m','miro',?1,1,'',0)", [cfg]).unwrap();
+        let sid = conn.last_insert_rowid();
+        SecretStore::new(data_tmp.path().join("secrets.enc")).set(&format!("source:{sid}:token"), "tok");
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
+        async fn once(pipe: &Pipeline, data_dir: &str, sid: i64) -> (i64, i64, i64, i64) {
+            let conn = crate::db::init_db(&crate::db::resolve_db_path(data_dir)).unwrap();
+            conn.execute("INSERT INTO jobs (source_id, kind, status, total, processed, result, created_at) VALUES (?1,'sync','running',0,0,'{}',datetime('now'))", [sid]).unwrap();
+            let jid = conn.last_insert_rowid();
+            drop(conn);
+            pipe.run_sync_inner(sid, jid, false, data_dir).await.expect("miro sync")
+        }
+
+        let (items, _, _, unchanged) = once(&pipe, &data_dir, sid).await;
+        assert_eq!((items, unchanged), (2, 0));
+        let text: String = conn.query_row("SELECT text FROM ingested_items WHERE external_id='miro:b1'", [], |r| r.get(0)).unwrap();
+        assert!(text.contains("## Discovery") && text.contains("Interview users → Write brief — one page: then"), "{text}");
+        let item_fetches = mock.hits_for("/items");
+
+        let (items, _, _, unchanged) = once(&pipe, &data_dir, sid).await;
+        assert_eq!((items, unchanged), (0, 2), "unchanged boards: no reclassify");
+        assert_eq!(mock.hits_for("/items"), item_fetches, "unchanged board: items never fetched");
+
+        *mock.boards.lock().unwrap() = serde_json::json!([
+            crate::connectors::miro::tests::board("b1", "2026-10-21T09:00:00Z"),
+            crate::connectors::miro::tests::board("b2", "2026-10-20T10:00:00Z")
+        ]);
+        let (_, _, _, unchanged) = once(&pipe, &data_dir, sid).await;
+        assert_eq!(mock.hits_for("/items"), item_fetches + 2, "only the moved board refetches (2 item pages)");
+        assert_eq!(unchanged, 2, "same rendered text still hash-skips");
+
+        *mock.boards.lock().unwrap() = serde_json::json!([crate::connectors::miro::tests::board("b2", "2026-10-20T10:00:00Z")]);
+        let (_, _, purged, _) = once(&pipe, &data_dir, sid).await;
+        assert_eq!(purged, 1, "deleted board purges its item");
+        let left: Vec<String> = conn
+            .prepare("SELECT external_id FROM ingested_items WHERE source_id=?1")
+            .unwrap()
+            .query_map([sid], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(left, vec!["miro:b2".to_string()]);
+        match prev {
+            Some(v) => std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", v),
+            None => std::env::remove_var("ANCHOR_SECRETS_NO_KEYRING"),
+        }
     }
 }

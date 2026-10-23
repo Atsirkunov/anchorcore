@@ -257,7 +257,7 @@ function RestFields({
   );
 }
 
-/** B37: the "add source" form (folder, Jira, Linear, Drive or generic REST), extracted from SourcesTab. */
+/** B37: the "add source" form (folder, Jira, Linear, Miro, Drive or generic REST), extracted from SourcesTab. */
 export function SourceForm({ onAdded }: { onAdded: () => void }) {
   const [connector, setConnector] = useState("folder");
   const [name, setName] = useState("");
@@ -267,6 +267,7 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
   const [jira, setJira] = useState({ base_url: "", email: "", token: "", project: "" });
   const [gdrive, setGdrive] = useState({ folder_id: "", token: "" });
   const [linear, setLinear] = useState({ api_key: "", team: "" });
+  const [miro, setMiro] = useState({ token: "", boards: "", team_id: "" });
   const [rest, setRest] = useState<Record<string, string>>({ ...REST_DEFAULTS });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -282,6 +283,8 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
             ? { folder_id: gdrive.folder_id, token: gdrive.token }
             : connector === "linear"
               ? { api_key: linear.api_key, team: linear.team }
+              : connector === "miro"
+                ? { token: miro.token, boards: miro.boards, team_id: miro.team_id }
               : connector === "rest"
                 ? { ...rest }
                 : { base_url: jira.base_url, email: jira.email, token: jira.token, project: jira.project };
@@ -291,6 +294,7 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
       setJira({ base_url: "", email: "", token: "", project: "" });
       setGdrive({ folder_id: "", token: "" });
       setLinear({ api_key: "", team: "" });
+      setMiro({ token: "", boards: "", team_id: "" });
       setRest({ ...REST_DEFAULTS });
       setLabel("internal");
       onAdded();
@@ -308,6 +312,7 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
           <option value="folder">Local folder</option>
           <option value="jira">Jira</option>
           <option value="linear">Linear</option>
+          <option value="miro">Miro</option>
           <option value="gdrive">Google Drive</option>
           <option value="rest">Generic REST API</option>
         </select>
@@ -342,6 +347,13 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
             <input style={commonStyles.input} type="password" placeholder="Linear API key (lin_api_...)" value={linear.api_key} onChange={(e) => setLinear({ ...linear, api_key: e.target.value })} />
             <input style={commonStyles.input} placeholder="Team key, e.g. ENG or ENG,PM" value={linear.team} onChange={(e) => setLinear({ ...linear, team: e.target.value })} />
             <div style={{ fontSize: 12, color: theme.textDim }}>Find API key at linear.app/settings/api · Team key is the 2–3 letter prefix (e.g. ENG). Token stored in OS keychain.</div>
+          </>
+        ) : connector === "miro" ? (
+          <>
+            <input style={commonStyles.input} type="password" placeholder="Miro access token" value={miro.token} onChange={(e) => setMiro({ ...miro, token: e.target.value })} />
+            <input style={commonStyles.input} placeholder="Board IDs, comma-separated (from …/app/board/<id>/)" value={miro.boards} onChange={(e) => setMiro({ ...miro, boards: e.target.value })} />
+            <input style={commonStyles.input} placeholder="or Team ID (every board of the team)" value={miro.team_id} onChange={(e) => setMiro({ ...miro, team_id: e.target.value })} />
+            <div style={{ fontSize: 12, color: theme.textDim }}>Create a token in a Miro app with boards:read · Each board becomes one document (frames → sections, connectors → steps). Token stored in OS keychain.</div>
           </>
         ) : connector === "rest" ? (
           <RestFields value={rest} onChange={setRest} />
@@ -395,6 +407,11 @@ export function SourceEditForm({
     api_key: config.api_key ?? config.token ?? "",
     team: config.team ?? config.project ?? "",
   });
+  const [editMiro, setEditMiro] = useState({
+    token: config.token ?? "",
+    boards: config.boards ?? "",
+    team_id: config.team_id ?? "",
+  });
   const [editRest, setEditRest] = useState<Record<string, string>>({ ...REST_DEFAULTS, ...config });
   const [error, setError] = useState<string | null>(null);
 
@@ -412,6 +429,8 @@ export function SourceEditForm({
         payload.config = stripPlaceholders({ folder_id: editGdrive.folder_id, token: editGdrive.token }) as Record<string, string>;
       } else if (source.connector === "linear") {
         payload.config = stripPlaceholders({ api_key: editLinear.api_key, team: editLinear.team }) as Record<string, string>;
+      } else if (source.connector === "miro") {
+        payload.config = stripPlaceholders({ ...editMiro }) as Record<string, string>;
       } else if (source.connector === "rest") {
         payload.config = stripPlaceholders({ ...editRest }) as Record<string, string>;
       } else {
@@ -469,6 +488,18 @@ export function SourceEditForm({
             onChange={(e) => setEditLinear({ ...editLinear, api_key: e.target.value })}
           />
           <input style={commonStyles.input} placeholder="Team key, e.g. ENG or ENG,PM" value={editLinear.team} onChange={(e) => setEditLinear({ ...editLinear, team: e.target.value })} />
+        </>
+      ) : source.connector === "miro" ? (
+        <>
+          <input
+            style={commonStyles.input}
+            type="password"
+            placeholder={editMiro.token === "***set***" ? "•••••••• (stored — type to replace)" : "Miro access token"}
+            value={editMiro.token}
+            onChange={(e) => setEditMiro({ ...editMiro, token: e.target.value })}
+          />
+          <input style={commonStyles.input} placeholder="Board IDs, comma-separated" value={editMiro.boards} onChange={(e) => setEditMiro({ ...editMiro, boards: e.target.value })} />
+          <input style={commonStyles.input} placeholder="Team ID (optional)" value={editMiro.team_id} onChange={(e) => setEditMiro({ ...editMiro, team_id: e.target.value })} />
         </>
       ) : source.connector === "rest" ? (
         <RestFields value={editRest} onChange={setEditRest} />

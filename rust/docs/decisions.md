@@ -402,3 +402,16 @@ ADR log. Append newest first.
   - *Keep `/assets/:uid` and special-case the auth allowlist* — rejected: the route would also match the UI's own `/assets/index-*.js` requests (explicit routes beat the frontend fallback), breaking the app, and the allowlist would need hash-shape heuristics to tell the two apart.
   - *Rename Vite's output dir* — rejected: touches the build, the embedded-UI serving and every cached client for a naming preference.
 * **Consequences:** Image responses are inert even for user SVG (CSP `sandbox`, `default-src 'none'`). Over-cap assets answer 404 with a distinct detail; their metadata stays visible on `GET /items/:id` and in hit `images` (with `url: null`).
+
+---
+
+## 2026-10-23 — R46.5: Miro skips unchanged boards via stamps in `last_sync_cursor`
+
+* **Decision:** The Miro connector compares each board's `modifiedAt` with a stamp `{modified_at, hash}` stored per board in `sources.last_sync_cursor` (`{"miro": {...}}`). A board is skipped (items + connectors never fetched) only when the stamp matches and the stored item has `content_hash = processed_hash = stamp.hash`; the pipeline then hands the stored doc back so upsert hash-skips and purge keeps it.
+* **Context:** API connectors fetch everything and hash-skip; for boards with thousands of items the item fetch is the cost (and the rate limit). `last_sync_cursor` was written at create and never read by any sync path.
+* **Alternatives considered:**
+  - *Hash-skip only (fetch every board every sync)* — rejected: burns Miro's rate-limit budget on unchanged boards, which is the common case.
+  - *Stamp on `ingested_items.updated_at`* — rejected: `upsert_doc` is shared by every connector and owns those columns; a connector-private cursor keeps the change local.
+  - *Stamp by `modifiedAt` alone* — rejected: a sync that fetched a board but failed before storing it would leave a matching stamp over stale text forever; binding the stamp to the processed content hash makes that case refetch.
+* **Consequences:** Deleting a board purges its item only when at least one other board survives (the shared empty-fetch guard purges nothing on an empty result). Citations name the board; per-item deep links wait for a chunk→item map.
+

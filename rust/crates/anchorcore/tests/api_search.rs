@@ -363,3 +363,25 @@ async fn diagram_files_index_as_flow_text() {
         assert!(hit.to_string().contains(file), "hit should cite {file}: {hit}");
     }
 }
+
+#[tokio::test]
+async fn miro_source_is_config_only_and_masks_its_token() {
+    // R46.5: create never calls Miro (config-only, like Jira); the access
+    // token lives in the secret store and reads back masked.
+    let srv = TestServer::start().await;
+    let created: Value = srv
+        .post(
+            "/sources",
+            &json!({"connector": "miro", "name": "whiteboards", "config": {"token": "miro-secret-token", "boards": "uXjVO1abc="}}),
+        )
+        .await
+        .json()
+        .await
+        .expect("source");
+    let sid = created["id"].as_i64().expect("created");
+    let config = source_config(&srv, sid).await;
+    assert_eq!(config["token"], "***set***", "{config}");
+    assert_eq!(config["boards"], "uXjVO1abc=", "{config}");
+    assert!(!config.to_string().contains("miro-secret-token"), "{config}");
+    assert!(!created.to_string().contains("miro-secret-token"), "{created}");
+}
