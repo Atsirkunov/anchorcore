@@ -264,11 +264,13 @@ impl Embedder {
             return Ok(vec![]);
         }
         let embed_texts = if embed_texts.len() == contents.len() { embed_texts } else { contents.clone() };
-        // IDF gate: signal(content, corpus) >= threshold
-        let corpus: Vec<String> = contents.clone();
+        // IDF gate: signal(content, corpus) >= threshold. R30.7: one
+        // frequency map per doc — per-chunk `signal` was O(n²) and an
+        // 8401-chunk file never finished.
+        let freq = crate::idf::DocFreq::build(&contents);
         let mut embeddable_idx: Vec<usize> = Vec::new();
         for (i, c) in contents.iter().enumerate() {
-            let s = crate::idf::signal(c, &corpus);
+            let s = freq.signal(c);
             if s < embed_min_signal {
                 continue;
             }
