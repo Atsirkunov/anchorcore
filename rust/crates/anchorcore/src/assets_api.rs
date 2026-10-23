@@ -13,6 +13,12 @@
 //! size, data_base64}`, capped at `AGENT_MAX_BYTES` — over it, 413 with the
 //! size and the raw `url`, so MCP and REST refuse the same images. The raw
 //! form stays uncapped (a plain download).
+//!
+//! R46.12: `GET /media?attribution=none` lists the images sync could not
+//! place (the Sources "Unplaced images" grid, `total` = its badge) and
+//! `PATCH /media/:uid {caption?, target?, ignore?}` records a person's
+//! attribution (`captions.rs`). People only: no handler here suggests a
+//! caption, and MCP exposes neither route.
 
 use axum::extract::{Path, Query, State};
 use base64::Engine;
@@ -95,5 +101,44 @@ pub async fn media_handler(State(state): State<AppState>, Path(uid): Path<String
         Some(bytes) if want_json => agent_json(&uid, &mime, dims, &bytes),
         Some(bytes) => image_response(&mime, bytes),
         None => error(StatusCode::NOT_FOUND, "Image bytes not stored (over the size cap)"),
+    }
+}
+
+type ApiError = (StatusCode, Json<serde_json::Value>);
+
+pub async fn list_handler(State(state): State<AppState>, Query(q): Query<crate::captions::ListQuery>) -> Result<Json<serde_json::Value>, ApiError> {
+    let data_dir = state.data_dir.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        let conn = crate::common::open_data_db(&data_dir);
+        crate::captions::list(&conn, &q)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": e.to_string()}))))?;
+    res.map(Json).map_err(|msg| (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": msg}))))
+}
+
+pub async fn patch_handler(
+    State(state): State<AppState>,
+    Path(uid): Path<String>,
+    Json(patch): Json<crate::captions::Patch>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use crate::captions::PatchError;
+    let data_dir = state.data_dir.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        let conn = crate::common::open_data_db(&data_dir);
+        crate::captions::apply_patch(&conn, &uid, &patch)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": e.to_string()}))))?;
+    match res {
+        Ok(row) => {
+            // A new caption chunk has no vector yet: wake the backfill
+            // instead of waiting out its interval.
+            state.embedder.chunks_pending.notify_one();
+            Ok(Json(row))
+        }
+        Err(PatchError::NotFound) => Err((StatusCode::NOT_FOUND, Json(json!({"detail": "Asset not found"})))),
+        Err(PatchError::Invalid(msg)) => Err((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": msg})))),
+        Err(PatchError::Db(msg)) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": msg})))),
     }
 }

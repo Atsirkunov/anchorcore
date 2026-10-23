@@ -133,6 +133,11 @@ struct EvalDoc {
     /// matches a seeded term (but appears in no body) measure the
     /// query-time vocab expansion end to end.
     vocab: Vec<(String, String)>,
+    /// R46.12: a person's caption on an unplaced image. The doc is then an
+    /// image item with no text, no section and no summary — one
+    /// `kind='caption'` chunk (production `captions::materialize` with no
+    /// target), so only the flat legs can find it.
+    caption: Option<String>,
 }
 
 struct EvalPair {
@@ -178,11 +183,13 @@ fn load_manifest() -> (Vec<EvalDoc>, Vec<EvalPair>) {
         .iter()
         .map(|d| {
             let ctx = format!("doc {}", d.get("id").and_then(|v| v.as_str()).unwrap_or("?"));
+            let caption = d.get("caption").and_then(|v| v.as_str()).map(|s| s.to_string());
             EvalDoc {
                 id: str_field(d, "id", &ctx),
                 file: str_field(d, "file", &ctx),
                 title: str_field(d, "title", &ctx),
-                summary: str_field(d, "summary", &ctx),
+                summary: if caption.is_some() { String::new() } else { str_field(d, "summary", &ctx) },
+                caption,
                 heading: d.get("heading").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 vocab: d
                     .get("vocab")
@@ -249,7 +256,27 @@ fn insert_chunk(
     conn.last_insert_rowid()
 }
 
+/// R46.12: an image item carrying only a person's caption chunk.
+fn insert_captioned_image(conn: &Connection, source_id: i64, doc: &EvalDoc, caption: &str) {
+    conn.execute(
+        "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, doc_type, stale, created_at) VALUES (?1, ?2, ?3, '', ?4, '', 'image', 0, datetime('now'))",
+        params![source_id, doc.file, doc.title, format!("eval-{:016x}", fnv1a64(caption))],
+    )
+    .expect("insert image item");
+    let item_id = conn.last_insert_rowid();
+    let path = anchorcore::captions::CAPTION_CRUMB;
+    let embedding = embedder::pack_single(&hash_embed(&format!("{path}\n{caption}")));
+    conn.execute(
+        "INSERT INTO chunks (item_id, source_ref, content, embedding, kind, section_id, level, path, is_pii, created_at) VALUES (?1, ?2, ?3, ?4, 'caption', NULL, 0, ?5, 0, datetime('now'))",
+        params![item_id, doc.file, caption, embedding, path],
+    )
+    .expect("insert caption chunk");
+}
+
 fn insert_doc(conn: &Connection, source_id: i64, doc: &EvalDoc) {
+    if let Some(caption) = &doc.caption {
+        return insert_captioned_image(conn, source_id, doc, caption);
+    }
     let content = corpus_text(doc);
     conn.execute(
         "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale, created_at) VALUES (?1, ?2, ?3, ?4, ?5, '', 0, datetime('now'))",
@@ -477,8 +504,14 @@ fn eval_manifest_is_consistent() {
         }
     }
     for doc in &docs {
-        assert!(!doc.summary.trim().is_empty(), "doc {} has an empty summary", doc.id);
-        let content = corpus_text(doc);
+        let content = match &doc.caption {
+            // R46.12: a captioned image has no file text and no summary.
+            Some(caption) => caption.clone(),
+            None => {
+                assert!(!doc.summary.trim().is_empty(), "doc {} has an empty summary", doc.id);
+                corpus_text(doc)
+            }
+        };
         assert!(!content.trim().is_empty(), "doc {} has an empty corpus file", doc.id);
         assert!(covered.contains(doc.id.as_str()), "doc {} is covered by no pair", doc.id);
     }

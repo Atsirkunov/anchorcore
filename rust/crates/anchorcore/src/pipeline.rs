@@ -1634,8 +1634,10 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
         // Early `?` returns skip COMMIT and this fresh per-call connection
         // rolls back on drop; only the fall-through path commits.
         conn.execute("BEGIN IMMEDIATE", []).map_err(|e| e.to_string())?;
+        // R46.12: a person's caption chunk is not the document's to drop;
+        // `captions::refresh_for_item` re-points it after the rebuild.
         let _ = conn.execute(
-            "DELETE FROM chunks WHERE item_id=?1 AND entity_id IS NULL",
+            "DELETE FROM chunks WHERE item_id=?1 AND entity_id IS NULL AND kind <> 'caption'",
             [item_id],
         );
         let _ = conn.execute("DELETE FROM sections WHERE item_id=?1", [item_id]);
@@ -1677,7 +1679,8 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         }
         conn.execute("COMMIT", []).map_err(|e| e.to_string())?;
-        Ok(())
+        // New sections: captions targeting one re-resolve by path.
+        crate::captions::refresh_for_item(conn, item_id)
     })
     .await
 }
@@ -3005,6 +3008,72 @@ mod tests {
         conn.execute("DELETE FROM sources WHERE id=?1", [sid]).unwrap();
         assert_eq!(table_count(&data_dir, "assets"), 0);
         assert_eq!(table_count(&data_dir, "asset_blobs"), 0);
+    }
+
+    #[tokio::test]
+    async fn person_caption_keeps_section_target_vector_and_backup() {
+        // R46.12: a section target re-resolves by path after a forced
+        // re-sync rebuilds the sections; an unchanged caption keeps its
+        // vector; caption chunk + people fields round-trip a backup.
+        let data_tmp = tempdir().unwrap();
+        let folder_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().to_string_lossy().to_string();
+        let folder = folder_tmp.path();
+        write_doc(folder, "guide.md", "# Ledger guide\n\n## Intro\n\nRead first.\n\n## Payout\n\nThe ledger closes every night.\n");
+        std::fs::write(folder.join("flow.png"), crate::assets::TEST_PNG).unwrap();
+        let (settings, sid) = seed_folder_source(&data_dir, folder);
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
+        let cfg = serde_json::json!({"path": folder.to_string_lossy()});
+        run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        let conn = crate::db::init_db(&crate::db::resolve_db_path(&data_dir)).unwrap();
+        let section = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT id FROM sections WHERE path LIKE '%Payout'", [], |r| r.get(0)).unwrap()
+        };
+        let uid: String = conn.query_row("SELECT uid FROM assets WHERE attribution='none'", [], |r| r.get(0)).unwrap();
+        let patch: crate::captions::Patch =
+            serde_json::from_value(serde_json::json!({"caption": "Nightly payout batches", "target": {"section_id": section(&conn)}})).unwrap();
+        crate::captions::apply_patch(&conn, &uid, &patch).unwrap();
+        let chunk_at = |conn: &Connection| -> (Option<i64>, String, Option<Vec<u8>>) {
+            conn.query_row("SELECT section_id, path, embedding FROM chunks WHERE kind='caption'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
+        };
+        let (sec, path, _) = chunk_at(&conn);
+        assert_eq!(sec, Some(section(&conn)));
+        assert!(path.ends_with("Payout > caption by a person"), "{path}");
+        let refs = crate::assets::refs_for_hit(&conn, 0, sec);
+        assert_eq!(refs.iter().map(|r| r.asset_id.as_str()).collect::<Vec<_>>(), vec![uid.as_str()], "section hits show the captioned image");
+        conn.execute("UPDATE chunks SET embedding=X'01020304' WHERE kind='caption'", []).unwrap();
+
+        let section_uid = |conn: &Connection| -> Option<String> {
+            conn.query_row("SELECT uid FROM sections WHERE path LIKE '%Payout'", [], |r| r.get(0)).unwrap()
+        };
+        let old_uid = section_uid(&conn);
+        run_folder_once(&pipe, &data_dir, sid, &cfg, true).await;
+        assert_ne!(section_uid(&conn), old_uid, "force re-sync rebuilt the sections");
+        let (sec, path2, emb) = chunk_at(&conn);
+        assert_eq!((sec, path2), (Some(section(&conn)), path.clone()), "target re-resolved by path");
+        assert_eq!(emb, Some(vec![1, 2, 3, 4]), "unchanged caption keeps its vector");
+
+        let changed: crate::captions::Patch = serde_json::from_value(serde_json::json!({"caption": "Nightly payout batches (v2)"})).unwrap();
+        crate::captions::apply_patch(&conn, &uid, &changed).unwrap();
+        assert_eq!(chunk_at(&conn).2, None, "an edited caption re-embeds");
+
+        let (export, dst) = {
+            let _lock = crate::secrets::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", "1");
+            let export = crate::backup::export_to_file(data_tmp.path(), &Default::default()).unwrap();
+            let dst = tempdir().unwrap();
+            crate::backup::import_archive(dst.path(), &export.path, &Default::default()).unwrap();
+            (export, dst)
+        };
+        assert!(export.counts.assets >= 1);
+        let dconn = crate::db::init_db(&crate::db::resolve_db_path(&dst.path().to_string_lossy())).unwrap();
+        let (sec, path3, _) = chunk_at(&dconn);
+        assert_eq!((sec, path3), (Some(section(&dconn)), path), "caption chunk round-trips on its section");
+        let row = crate::captions::get(&dconn, &uid).unwrap().unwrap();
+        assert_eq!((row["manual_caption"].as_str(), row["attribution"].as_str()), (Some("Nightly payout batches (v2)"), Some("manual")));
+        assert_eq!(row["target"]["section_id"].as_i64(), Some(section(&dconn)), "{row}");
     }
 
     #[tokio::test]

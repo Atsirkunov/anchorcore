@@ -6,6 +6,7 @@ import type { Source } from "../types";
 import { ProjectSection } from "./sources/ProjectSection";
 import { SourceForm } from "./sources/SourceForm";
 import { SourceRow } from "./sources/SourceRow";
+import { UnplacedImages } from "./sources/UnplacedImages";
 
 /** B37: slim composition — sources list, configs, project section and the
  * shared jobs poll. The god component's state/logic moved into SourceForm /
@@ -59,6 +60,7 @@ export function SourcesTab() {
       <ProjectSection sources={sources} onChanged={refresh} />
       <SourceForm onAdded={refresh} />
       {error && <p style={{ color: theme.red }}>{error}</p>}
+      <UnplacedImages sources={sources} />
       <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 8 }}>
         {sources.map((s) => (
           <SourceRow

@@ -30,7 +30,7 @@ function LockGlyph() {
 /** One thumbnail. Bytes come from `GET /media/:uid` (DB only); a null url
  *  (not stored — over the size cap) or a failed load (403 gated_provider,
  *  missing) renders a labelled lock tile, never a broken image. */
-function Thumb({ a }: { a: AssetRef }) {
+export function Thumb({ a }: { a: AssetRef }) {
   const [failed, setFailed] = useState(false);
   const width = thumbWidth(a);
   const blocked = !a.url || failed;

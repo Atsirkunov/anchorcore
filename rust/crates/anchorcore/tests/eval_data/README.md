@@ -57,7 +57,12 @@ signature, manifest consistency, all-live fixture) gate CI.
    term matches a seeded term but appears in no body); the keyword leg
    must miss with the key removed. The initialism rule and agent-mode
    filtering are unit-tested in `vocab.rs`, not golden.
-6. Run the table command and check the new row: fused must hit (it is
+6. Optional `caption` on a docs entry (R46.12): the doc becomes an image
+   item (`file` is the image path, no corpus file, no `summary`) carrying
+   one person-written `kind='caption'` chunk with no section — production
+   `captions::materialize` for an untargeted unplaced image. TOC cannot
+   see it; the flat legs must.
+7. Run the table command and check the new row: fused must hit (it is
    asserted), and each leg should behave as the pair intends.
 
 ## Term discipline (read before writing docs)

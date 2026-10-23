@@ -356,6 +356,23 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ is_pii: isPii }),
     }),
+  /** R46.12: images by attribution (`none` = unplaced; `total` is the badge). */
+  media: (params?: { attribution?: string; source_id?: number; limit?: number; offset?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.attribution) q.set("attribution", params.attribution);
+    if (params?.source_id) q.set("source_id", String(params.source_id));
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.offset) q.set("offset", String(params.offset));
+    const qs = q.toString();
+    return request<import("./types").MediaList>(`/media${qs ? `?${qs}` : ""}`);
+  },
+  /** R46.12: a person's caption / target / ignore for one image. */
+  patchMedia: (assetId: string, patch: import("./types").MediaPatch) =>
+    request<import("./types").MediaRow>(`/media/${encodeURIComponent(assetId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
   /** R46.11: one item with its `assets` (image refs; bytes via /media). */
   item: (itemId: number) => request<import("./types").ItemDetail>(`/items/${itemId}`),
   listItems: (params?: { path_prefix?: string; source_id?: number; limit?: number; offset?: number }) => {

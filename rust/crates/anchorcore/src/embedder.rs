@@ -45,6 +45,9 @@ pub struct Embedder {
     /// one (model switch) — the scheduler re-embeds stale vectors right away
     /// instead of waiting for the 15-minute backfill tick.
     pub family_changed: Arc<tokio::sync::Notify>,
+    /// R46.12: fired when chunks were written outside a sync (a person's
+    /// caption) — wakes the backfill so they don't wait for the tick.
+    pub chunks_pending: Arc<tokio::sync::Notify>,
 }
 
 /// R43.6: nomic-embed models expect task prefixes (`search_query: ` on
@@ -92,7 +95,7 @@ fn place_vectors(len: usize, embeddable_idx: &[usize], vectors: Vec<Vec<f32>>) -
 
 impl Embedder {
     pub fn new(settings: Arc<SettingsService>) -> Self {
-        Self { settings, family_changed: Arc::new(tokio::sync::Notify::new()) }
+        Self { settings, family_changed: Arc::new(tokio::sync::Notify::new()), chunks_pending: Arc::new(tokio::sync::Notify::new()) }
     }
 
     fn embed_model_name(&self) -> String {

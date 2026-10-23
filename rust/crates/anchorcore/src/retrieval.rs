@@ -391,6 +391,8 @@ fn vec_chunk_count(conn: &Connection) -> i64 {
 /// R33.3: the leaf pool is document chunks only — entity/distilled paraphrase
 /// rows no longer compete with content in RRF (D2 option (a): entities never
 /// enter retrieval; lookup/related/conflicts/review are unchanged).
+/// R46.12: a person's image caption (`kind='caption'`, `captions.rs`) is
+/// leaf content too — every leaf filter lists both kinds.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KindScope {
     Summary,
@@ -401,7 +403,7 @@ impl KindScope {
     fn kind_clause(&self) -> Option<&'static str> {
         match self {
             KindScope::Summary => Some(" AND c.kind IN ('section_summary','doc_summary')"),
-            KindScope::Leaf => Some(" AND c.kind IN ('document')"),
+            KindScope::Leaf => Some(" AND c.kind IN ('document','caption')"),
         }
     }
 
@@ -788,7 +790,7 @@ fn load_chunks_with_embedding_filtered(
          FROM chunks c \
          LEFT JOIN entities e ON e.id = c.entity_id \
          LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
-         WHERE c.embedding IS NOT NULL AND c.kind IN ('document')",
+         WHERE c.embedding IS NOT NULL AND c.kind IN ('document','caption')",
     );
     let mut params: Vec<rusqlite::types::Value> = Vec::new();
     append_vector_family_filter(conn, &mut sql, &mut params);
@@ -1564,7 +1566,7 @@ const SUBTREE_CTE: &str = "WITH RECURSIVE sub(id) AS (SELECT ?1 UNION ALL SELECT
 /// (R32.5) or entity paraphrase (R33.3).
 fn subtree_leaf_chunks(conn: &Connection, section_id: i64) -> Vec<(i64, String)> {
     let mut stmt = match conn.prepare(&format!(
-        "{SUBTREE_CTE} SELECT c.id, c.content FROM chunks c WHERE c.section_id IN (SELECT id FROM sub) AND c.kind IN ('document') ORDER BY c.id"
+        "{SUBTREE_CTE} SELECT c.id, c.content FROM chunks c WHERE c.section_id IN (SELECT id FROM sub) AND c.kind IN ('document','caption') ORDER BY c.id"
     )) {
         Ok(s) => s,
         Err(_) => return vec![],
@@ -1581,7 +1583,7 @@ fn subtree_leaf_size(conn: &Connection, section_id: i64) -> usize {
     let (sum, n): (i64, i64) = conn
         .query_row(
             &format!(
-                "{SUBTREE_CTE} SELECT COALESCE(SUM(LENGTH(c.content)), 0), COUNT(*) FROM chunks c WHERE c.section_id IN (SELECT id FROM sub) AND c.kind IN ('document')"
+                "{SUBTREE_CTE} SELECT COALESCE(SUM(LENGTH(c.content)), 0), COUNT(*) FROM chunks c WHERE c.section_id IN (SELECT id FROM sub) AND c.kind IN ('document','caption')"
             ),
             [section_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
@@ -1606,7 +1608,7 @@ fn smallest_fitting_scope(conn: &Connection, section_id: i64, chunk_id: i64, cap
 fn subtree_contains_chunk(conn: &Connection, section_id: i64, chunk_id: i64) -> bool {
     conn.query_row(
         &format!(
-            "{SUBTREE_CTE} SELECT 1 FROM chunks c WHERE c.section_id IN (SELECT id FROM sub) AND c.id = ?2 AND c.kind IN ('document') LIMIT 1"
+            "{SUBTREE_CTE} SELECT 1 FROM chunks c WHERE c.section_id IN (SELECT id FROM sub) AND c.id = ?2 AND c.kind IN ('document','caption') LIMIT 1"
         ),
         rusqlite::params![section_id, chunk_id],
         |_| Ok(()),
@@ -2248,7 +2250,7 @@ fn best_item_for_name(conn: &Connection, name: &str, scope: Option<&HashSet<i64>
 fn best_chunk_for_item(conn: &Connection, item_id: i64, match_q: &str) -> Option<i64> {
     let mut stmt = conn
         .prepare(
-            "SELECT c.id FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid WHERE chunks_fts MATCH ? AND c.item_id = ? AND c.kind IN ('document') ORDER BY bm25(chunks_fts) LIMIT 1",
+            "SELECT c.id FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid WHERE chunks_fts MATCH ? AND c.item_id = ? AND c.kind IN ('document','caption') ORDER BY bm25(chunks_fts) LIMIT 1",
         )
         .ok()?;
     let rows: Vec<i64> = stmt
@@ -2261,7 +2263,7 @@ fn best_chunk_for_item(conn: &Connection, item_id: i64, match_q: &str) -> Option
 
 fn first_chunk_for_item(conn: &Connection, item_id: i64) -> Option<i64> {
     conn.query_row(
-        "SELECT id FROM chunks WHERE item_id = ?1 AND kind IN ('document') ORDER BY id LIMIT 1",
+        "SELECT id FROM chunks WHERE item_id = ?1 AND kind IN ('document','caption') ORDER BY id LIMIT 1",
         [item_id],
         |r| r.get(0),
     )

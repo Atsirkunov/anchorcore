@@ -92,6 +92,12 @@
       "title": "Dunning notices",
       "summary": "Dunning: payment reminder schedule before orders pause.",
       "vocab": [["dunning", "payment reminder"]]
+    },
+    {
+      "id": "cold-aisle-photo",
+      "file": "images/cold-aisle-route.png",
+      "title": "cold-aisle-route.png",
+      "caption": "Forklift pick route through the freezer aisle: pallets leave the freezer dock, pass the scanning arch, and load at bay nine."
     }
   ],
   "pairs": [
@@ -210,6 +216,12 @@
       "query": "what is dunning",
       "expected": ["dunning-notices"],
       "notes": "R40.7: corpus vocabulary end to end — 'dunning' appears in no body; the seeded active pair expands the keyword leg to the 'payment reminder' phrase (3x in the doc). Misses every leg with no vocab row; keyword + TOC-leaf hit with it (the merge rides the shared FTS query builder, so both keyword paths expand)."
+    },
+    {
+      "id": "caption-01",
+      "query": "which route do forklifts take through the freezer aisle",
+      "expected": ["cold-aisle-photo"],
+      "notes": "R46.12: an unplaced image found only through a person's caption (kind='caption' chunk, no section, no summary) — TOC cannot see it, so the vector + keyword floors carry it; fused must still rank it."
     }
   ]
 }

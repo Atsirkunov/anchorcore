@@ -248,6 +248,46 @@ export type ItemAsset = AssetRef & {
   src: string;
 };
 
+/** R46.12: where a person attached an image (current ids, resolved). */
+export type MediaTarget = {
+  item_id: number;
+  section_id: number | null;
+  section_path: string;
+  item_title: string;
+};
+
+/** R46.12: one row of GET /media (the "Unplaced images" grid). */
+export type MediaRow = {
+  asset_id: string;
+  item_id: number;
+  source_id: number;
+  source_name: string;
+  origin: "embed" | "file";
+  src: string;
+  path: string;
+  mime: string;
+  w: number | null;
+  h: number | null;
+  size: number;
+  url: string | null;
+  alt: string;
+  caption: string;
+  context: string;
+  attribution: string;
+  manual_caption: string;
+  target: MediaTarget | null;
+  updated_at: string;
+};
+
+export type MediaList = { items: MediaRow[]; total: number; limit: number; offset: number };
+
+/** PATCH /media/:uid — absent fields stay; `target: null` / `caption: ""` clear. */
+export type MediaPatch = {
+  caption?: string;
+  target?: { item_id: number } | { section_id: number } | { entity_id: number } | null;
+  ignore?: boolean;
+};
+
 /** GET /items/:id (only the fields the UI reads). */
 export type ItemDetail = ItemMeta & {
   content?: string;

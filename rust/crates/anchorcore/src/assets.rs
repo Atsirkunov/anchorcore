@@ -628,12 +628,15 @@ fn ref_row(r: &rusqlite::Row) -> rusqlite::Result<AssetRef> {
 }
 
 /// Images shown with a hit: those on its chunk, plus those elsewhere in
-/// its returned section (merged parent hits span several chunks).
+/// its returned section (merged parent hits span several chunks), plus
+/// the image a person's caption chunk there describes (R46.12).
 /// People-`ignored` assets never surface.
 pub fn refs_for_hit(conn: &Connection, chunk_id: i64, section_id: Option<i64>) -> Vec<AssetRef> {
     let sql = format!(
         "SELECT {REF_COLUMNS} FROM assets WHERE attribution <> 'ignored' \
-         AND (chunk_id = ?1 OR (?2 IS NOT NULL AND section_id = ?2)) ORDER BY id"
+         AND (chunk_id = ?1 OR (?2 IS NOT NULL AND section_id = ?2) \
+           OR 'caption:' || uid IN (SELECT c.uid FROM chunks c WHERE c.kind = 'caption' AND (c.id = ?1 OR (?2 IS NOT NULL AND c.section_id = ?2)))) \
+         ORDER BY id"
     );
     let Ok(mut stmt) = conn.prepare(&sql) else { return Vec::new() };
     stmt.query_map(params![chunk_id, section_id], ref_row)
