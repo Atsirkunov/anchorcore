@@ -415,3 +415,14 @@ ADR log. Append newest first.
   - *Stamp by `modifiedAt` alone* — rejected: a sync that fetched a board but failed before storing it would leave a matching stamp over stale text forever; binding the stamp to the processed content hash makes that case refetch.
 * **Consequences:** Deleting a board purges its item only when at least one other board survives (the shared empty-fetch guard purges nothing on an empty result). Citations name the board; per-item deep links wait for a chunk→item map.
 
+
+---
+
+## 2026-10-23 — R46.15: Drive Office images resolve from the whole downloaded package
+
+* **Decision:** `gdrive.rs` keeps the downloaded docx/pptx/ODF bytes on `IngestionDoc.package` (an `Arc<Vec<u8>>`) only when the extracted text carries `embedded:` markers; `assets::store_embedded` reads parts from it, falling back to the file on disk for folder sources. `resolve_embedded` is unchanged, so both sources apply the same size cap, sniffing and decorative-image skip.
+* **Context:** Drive had no file to re-read after extraction, so Drive Office image markers stayed alt-only text. The backlog row allowed either the package or the pre-extracted parts.
+* **Alternatives considered:**
+  - *Extract the referenced parts in the connector* — rejected: the connector has no settings, so it can't apply `asset_max_bytes` and would read every image in full anyway. It would also duplicate `resolve_embedded`'s zip handling. Images are most of a deck's bytes, so the memory saved is small.
+  - *Re-download at the asset pass* — rejected: a second network round-trip per document and a second token use, for bytes the sync already had.
+* **Consequences:** A Drive fetch holds image-bearing Office packages in memory until their docs are stored (the fetch collects all docs before classifying). Fine at Drive folder sizes today. If R46.14's measurements show large decks, stream fetch → store per file instead of trimming the package.

@@ -185,6 +185,7 @@ fn miro_known(conn: &Connection, source_id: i64) -> MiroKnown {
                 author,
                 updated_at: crate::connectors::parse_dt(modified),
                 source_ref: crate::connectors::miro::board_url(board_id),
+                package: None,
             };
             known.insert(board_id.clone(), (modified.to_string(), doc));
         }
@@ -426,16 +427,18 @@ fn folder_place(conn: &Connection, source_id: i64, doc_path: &str) -> Option<cra
 }
 
 /// R46.7: embedded images of a markdown/HTML doc, rebuilt after its chunks
-/// (the hosting chunk ids are new on every store).
+/// (the hosting chunk ids are new on every store). R46.15: a doc that
+/// carries its package (Drive) hosts images whatever its external id says.
 async fn store_doc_assets(ctx: &ClassifyCtx) -> Result<(), String> {
-    if !crate::assets::hosts_images(&ctx.external_id) && !crate::assets::hosts_images(&ctx.base_ref) {
+    if ctx.package.is_none() && !crate::assets::hosts_images(&ctx.external_id) && !crate::assets::hosts_images(&ctx.base_ref) {
         return Ok(());
     }
     let (source_id, item_id, doc_path, settings) = (ctx.source_id, ctx.item_id, ctx.base_ref.clone(), ctx.settings.clone());
+    let package = ctx.package.clone();
     run_db(&ctx.data_dir, move |conn| {
         let place = folder_place(conn, source_id, &doc_path);
         let cap = crate::assets::max_bytes(&settings, conn);
-        crate::assets::store_embedded(conn, source_id, item_id, place.as_ref(), cap).map(|_| ())
+        crate::assets::store_embedded(conn, source_id, item_id, place.as_ref(), package.as_deref().map(Vec::as_slice), cap).map(|_| ())
     })
     .await
 }
@@ -775,6 +778,7 @@ impl Pipeline {
             author: String::new(),
             updated_at: None,
             source_ref: f.path.to_string_lossy().to_string(),
+            package: None,
         };
         let upserted = Box::pin(self.upsert_doc(data_dir, source_id, &doc, force, Some((f.mtime_ms, f.len)))).await?;
         if upserted || force {
@@ -967,6 +971,8 @@ struct ClassifyCtx {
     label: String,
     prev_hashes: std::collections::HashMap<String, String>,
     new_hashes: std::collections::HashMap<String, String>,
+    /// R46.15: in-memory Office package (Drive) for `embedded:` markers.
+    package: Option<Arc<Vec<u8>>>,
 }
 
 impl ClassifyCtx {
@@ -991,6 +997,7 @@ impl ClassifyCtx {
             label: String::new(),
             prev_hashes: std::collections::HashMap::new(),
             new_hashes: std::collections::HashMap::new(),
+            package: doc.package.clone(),
         }
     }
 
@@ -1855,6 +1862,7 @@ mod tests {
             author: String::new(),
             updated_at: None,
             source_ref: "adr-005.md".to_string(),
+            package: None,
         };
         let mut ctx = ClassifyCtx::new(&data_dir, sid, 0, &doc, false, settings, classifier, embedder);
         ctx.item_id = iid;
@@ -2070,6 +2078,7 @@ mod tests {
             author: String::new(),
             updated_at: None,
             source_ref: "terms.pdf".to_string(),
+            package: None,
         };
         let mut ctx = ClassifyCtx::new(&data_dir, sid, 0, &doc, false, settings, classifier, embedder);
         ctx.item_id = iid;
@@ -2134,6 +2143,7 @@ mod tests {
             author: String::new(),
             updated_at: None,
             source_ref: "terms.md".to_string(),
+            package: None,
         };
         let mut ctx = ClassifyCtx::new(&data_dir, sid, jid, &doc, false, settings.clone(), classifier.clone(), embedder.clone());
         ctx.item_id = iid;
@@ -2165,6 +2175,7 @@ mod tests {
             author: String::new(),
             updated_at: None,
             source_ref: "values.yaml".to_string(),
+            package: None,
         };
         let mut yctx = ClassifyCtx::new(&data_dir, sid, jid, &ydoc, false, settings, classifier, embedder);
         yctx.item_id = yid;
@@ -2227,6 +2238,7 @@ mod tests {
             author: String::new(),
             updated_at: None,
             source_ref: "lib.rs".to_string(),
+            package: None,
         };
         let mut ctx = ClassifyCtx::new(&data_dir, sid, 0, &doc, false, settings, classifier, embedder);
         ctx.item_id = iid;
@@ -2276,6 +2288,7 @@ mod tests {
             author: String::new(),
             updated_at: None,
             source_ref: "lib.rs".to_string(),
+            package: None,
         };
         let n = pipe.classify_and_store(&data_dir, sid, jid, &doc, false).await.unwrap();
         assert_eq!(n, 0);
@@ -2321,6 +2334,7 @@ mod tests {
             author: String::new(),
             updated_at: None,
             source_ref: "values.yaml".to_string(),
+            package: None,
         };
         let n = pipe.classify_and_store(&data_dir, sid, jid, &doc, false).await.unwrap();
         assert_eq!(n, 0);
@@ -2349,6 +2363,7 @@ mod tests {
             author: String::new(),
             updated_at: None,
             source_ref: String::new(),
+            package: None,
         };
         // rest connector never purges, even when the item is absent
         let n = purge_missing_for_sync(&data_dir, sid, "rest", std::slice::from_ref(&doc), &[]).await;
@@ -2607,7 +2622,7 @@ mod tests {
         settings.set_data_dir(dir.path());
         let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
         let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
-        let doc = IngestionDoc { external_id: "a.md".to_string(), title: "a.md".to_string(), text: "body text here".to_string(), author: String::new(), updated_at: None, source_ref: "a.md".to_string() };
+        let doc = IngestionDoc { external_id: "a.md".to_string(), title: "a.md".to_string(), text: "body text here".to_string(), author: String::new(), updated_at: None, source_ref: "a.md".to_string(), package: None };
         let mut ctx = ClassifyCtx::new(&data_dir, sid, jid, &doc, false, settings, classifier, embedder);
         ctx.item_id = iid;
         ctx.doc_type = "reference".to_string();
@@ -2876,6 +2891,7 @@ mod tests {
             author: String::new(),
             updated_at: None,
             source_ref: "meeting.md".to_string(),
+            package: None,
         };
         let n = pipe.classify_and_store(&data_dir, sid, jid, &doc, false).await.unwrap();
         assert_eq!(n, 0);
@@ -3097,6 +3113,60 @@ mod tests {
         assert!(rows[0].5.contains("Slide 2"), "slide image attributed to its slide section: {rows:?}");
         assert_eq!(&rows[1].0, "embedded:word/media/big.png");
         assert_eq!((rows[1].1.as_str(), rows[1].2.as_str(), rows[1].3), ("Billing pipeline", "Figure 2: Billing stages", 64));
+    }
+
+    #[tokio::test]
+    async fn drive_office_images_store_from_the_downloaded_package() {
+        // R46.15: a Drive docx's image resolves from the bytes the sync
+        // already downloaded (no file on disk, no second download).
+        use std::io::Write;
+        let _lock = crate::secrets::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("ANCHOR_SECRETS_NO_KEYRING").ok();
+        std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", "1");
+        let mut big = crate::assets::TEST_PNG.to_vec();
+        big[16..24].copy_from_slice(&[0, 0, 0, 64, 0, 0, 0, 48]);
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let doc = br#"<w:document xmlns:w="w" xmlns:wp="wp" xmlns:a="a" xmlns:r="r"><w:body>
+<w:p><w:r><w:t>Billing pipeline overview.</w:t></w:r></w:p>
+<w:p><w:r><w:drawing><wp:docPr id="1" descr="Billing pipeline"/><a:blip r:embed="r1"/></w:drawing></w:r></w:p>
+</w:body></w:document>"#;
+        let rels = br#"<Relationships><Relationship Id="r1" Target="media/big.png"/></Relationships>"#;
+        for (name, body) in [("word/document.xml", &doc[..]), ("word/_rels/document.xml.rels", rels), ("word/media/big.png", &big)] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(body).unwrap();
+        }
+        let docx = zip.finish().unwrap().into_inner();
+        let mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        let mock = crate::connectors::gdrive::tests::spawn_mock(vec![("d1", "billing.docx", mime, docx)]).await;
+        let data_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().to_string_lossy().to_string();
+        let empty = tempdir().unwrap();
+        let (settings, _) = seed_folder_source(&data_dir, empty.path());
+        let conn = crate::db::init_db(&crate::db::resolve_db_path(&data_dir)).unwrap();
+        let cfg = serde_json::json!({"folder_id": "f1", "base_url": mock.base}).to_string();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('g','gdrive',?1,1,'',0)", [cfg]).unwrap();
+        let sid = conn.last_insert_rowid();
+        SecretStore::new(data_tmp.path().join("secrets.enc")).set(&format!("source:{sid}:token"), "tok");
+        conn.execute("INSERT INTO jobs (source_id, kind, status, total, processed, result, created_at) VALUES (?1,'sync','running',0,0,'{}',datetime('now'))", [sid]).unwrap();
+        let jid = conn.last_insert_rowid();
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
+        pipe.run_sync_inner(sid, jid, false, &data_dir).await.expect("drive sync");
+        let (src, alt, w, stored): (String, String, i64, i64) = conn
+            .query_row(
+                "SELECT a.src, a.alt, a.w, b.bytes IS NOT NULL FROM assets a JOIN ingested_items i ON i.id = a.item_id \
+                 LEFT JOIN asset_blobs b ON b.hash = a.bytes_hash WHERE i.source_id = ?1 AND a.chunk_id IS NOT NULL",
+                [sid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!((src.as_str(), alt.as_str(), w, stored), ("embedded:word/media/big.png", "Billing pipeline", 64, 1));
+        assert_eq!(mock.hits_for("alt=media"), 1, "no second download");
+        match prev {
+            Some(v) => std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", v),
+            None => std::env::remove_var("ANCHOR_SECRETS_NO_KEYRING"),
+        }
     }
 
     #[tokio::test]
