@@ -18,6 +18,72 @@ pub const MAX_CONCURRENT: usize = 2;
 
 static PROMOTE_LOCK: Mutex<()> = Mutex::new(());
 
+/// R30.1: why `create_job` can fail without a DB error.
+#[derive(Debug)]
+pub enum CreateJobError {
+    /// A sync-family job is already pending/running for this source — carries its id.
+    Conflict(i64),
+    Db(rusqlite::Error),
+}
+
+impl From<rusqlite::Error> for CreateJobError {
+    fn from(e: rusqlite::Error) -> Self {
+        CreateJobError::Db(e)
+    }
+}
+
+impl std::fmt::Display for CreateJobError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CreateJobError::Conflict(id) => write!(f, "a sync job is already active for this source (job {})", id),
+            CreateJobError::Db(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+/// Sync-family kinds share the ingest write path: at most one may be
+/// pending/running per source (R30.1). `embed` jobs only fill vectors and
+/// are not guarded.
+fn is_sync_family(kind: &str) -> bool {
+    matches!(kind, "sync" | "reclassify")
+}
+
+/// Id of the active (pending/running) sync-family job for a source, if any.
+fn active_sync_job(conn: &Connection, source_id: i64) -> Option<i64> {
+    conn.query_row(
+        "SELECT id FROM jobs WHERE source_id = ?1 AND kind IN ('sync','reclassify') AND status IN ('pending','running') ORDER BY created_at LIMIT 1",
+        [source_id],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+/// Promote pending → running up to MAX_CONCURRENT. Runs inside the caller's
+/// `BEGIN IMMEDIATE` (see `maybe_promote` / `create_job`) and returns the
+/// promoted ids.
+fn promote_pending_inner(conn: &Connection) -> Vec<i64> {
+    let running: i64 = conn
+        .query_row("SELECT COUNT(*) FROM jobs WHERE status = 'running'", [], |r| r.get(0))
+        .unwrap_or(0);
+    let slots = (MAX_CONCURRENT as i64) - running;
+    if slots <= 0 {
+        return vec![];
+    }
+    let mut stmt = match conn.prepare("SELECT id FROM jobs WHERE status = 'pending' ORDER BY created_at LIMIT ?1") {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    let pending: Vec<i64> = stmt
+        .query_map([slots], |r| r.get(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    for id in &pending {
+        let _ = conn.execute("UPDATE jobs SET status = 'running', started_at = datetime('now') WHERE id = ?1 AND status='pending'", [*id]);
+    }
+    pending
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {
@@ -84,14 +150,34 @@ impl JobManager {
     }
 
     /// Create a job row and enqueue. Returns job id. Mirrors `backend/app/routers/sources.py: POST /sync`.
-    pub fn create_job(&self, conn: &Connection, source_id: i64, kind: &str) -> rusqlite::Result<i64> {
-        conn.execute(
+    /// R30.1: sync-family kinds (`sync`/`reclassify`) allow at most one
+    /// pending/running job per source — the check runs in the same
+    /// transaction as the insert, so racing triggers can't both slip
+    /// through. A duplicate fails with `Conflict(active_id)`, no new row.
+    pub fn create_job(&self, conn: &Connection, source_id: i64, kind: &str) -> Result<i64, CreateJobError> {
+        let _guard = PROMOTE_LOCK.lock().unwrap();
+        let _ = conn.execute("BEGIN IMMEDIATE", []);
+        if is_sync_family(kind) {
+            if let Some(active) = active_sync_job(conn, source_id) {
+                let _ = conn.execute("ROLLBACK", []);
+                return Err(CreateJobError::Conflict(active));
+            }
+        }
+        if let Err(e) = conn.execute(
             "INSERT INTO jobs (source_id, kind, status, total, processed, result, created_at) VALUES (?1, ?2, 'pending', 0, 0, '{}', datetime('now'))",
             rusqlite::params![source_id, kind],
-        )?;
+        ) {
+            let _ = conn.execute("ROLLBACK", []);
+            return Err(CreateJobError::Db(e));
+        }
         let id = conn.last_insert_rowid();
-        // enforce MAX_CONCURRENT immediately
-        self.maybe_promote(conn);
+        // enforce MAX_CONCURRENT immediately, in the same transaction
+        let promoted = promote_pending_inner(conn);
+        let _ = conn.execute("COMMIT", []);
+        let mut running = self.running.lock().unwrap();
+        for pid in promoted {
+            running.insert(pid, Instant::now());
+        }
         Ok(id)
     }
 
@@ -100,36 +186,11 @@ impl JobManager {
     pub fn maybe_promote(&self, conn: &Connection) {
         let _guard = PROMOTE_LOCK.lock().unwrap();
         let _ = conn.execute("BEGIN IMMEDIATE", []);
-        let running: i64 = conn
-            .query_row("SELECT COUNT(*) FROM jobs WHERE status = 'running'", [], |r| r.get(0))
-            .unwrap_or(0);
-        let slots = (MAX_CONCURRENT as i64) - running;
-        if slots <= 0 {
-            let _ = conn.execute("COMMIT", []);
-            return;
-        }
-        let mut stmt = match conn.prepare("SELECT id FROM jobs WHERE status = 'pending' ORDER BY created_at LIMIT ?1") {
-            Ok(s) => s,
-            Err(_) => {
-                let _ = conn.execute("ROLLBACK", []);
-                return;
-            }
-        };
-        let pending: Vec<i64> = stmt
-            .query_map([slots], |r| r.get(0))
-            .unwrap()
-            .filter_map(|r| r.ok())
-            .collect();
-        if pending.is_empty() {
-            let _ = conn.execute("COMMIT", []);
-            return;
-        }
-        for id in &pending {
-            let _ = conn.execute("UPDATE jobs SET status = 'running', started_at = datetime('now') WHERE id = ?1 AND status='pending'", [*id]);
-        }
+        let promoted = promote_pending_inner(conn);
         let _ = conn.execute("COMMIT", []);
-        for id in pending {
-            self.running.lock().unwrap().insert(id, Instant::now());
+        let mut running = self.running.lock().unwrap();
+        for id in promoted {
+            running.insert(id, Instant::now());
         }
     }
 
@@ -317,16 +378,21 @@ pub async fn cancel_handler(State(state): State<AppState>, Path(job_id): Path<i6
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    fn mk_source(conn: &Connection, name: &str) -> i64 {
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count, created_at) VALUES (?1,'folder','{}',1,'',0,datetime('now'))", [name]).unwrap();
+        conn.last_insert_rowid()
+    }
+
     #[test]
     fn bounded_concurrency() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.db");
         let conn = crate::db::init_db(&path).unwrap();
         let mgr = JobManager::new();
-        // need a source for FK
-        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count, created_at) VALUES ('s','folder','{}',1,'',0,datetime('now'))", []).unwrap();
-        let sid = conn.last_insert_rowid();
-        for _ in 0..4 {
+        // R30.1: one active sync per source, so the global window needs distinct sources
+        for i in 0..4 {
+            let sid = mk_source(&conn, &format!("s{i}"));
             mgr.create_job(&conn, sid, "sync").unwrap();
         }
         let running: i64 = conn.query_row("SELECT COUNT(*) FROM jobs WHERE status='running'", [], |r| r.get(0)).unwrap();
@@ -340,12 +406,10 @@ mod tests {
         let path = dir.path().join("test2.db");
         let conn = crate::db::init_db(&path).unwrap();
         let mgr = JobManager::new();
-        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count, created_at) VALUES ('s','folder','{}',1,'',0,datetime('now'))", []).unwrap();
-        let sid = conn.last_insert_rowid();
-        // fill running
-        mgr.create_job(&conn, sid, "sync").unwrap();
-        mgr.create_job(&conn, sid, "sync").unwrap();
-        let pend = mgr.create_job(&conn, sid, "sync").unwrap();
+        // fill running with two sources, third stays pending
+        mgr.create_job(&conn, mk_source(&conn, "a"), "sync").unwrap();
+        mgr.create_job(&conn, mk_source(&conn, "b"), "sync").unwrap();
+        let pend = mgr.create_job(&conn, mk_source(&conn, "c"), "sync").unwrap();
         assert!(mgr.cancel(&conn, pend));
         let status: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [pend], |r| r.get(0)).unwrap();
         assert_eq!(status, "cancelled");
@@ -355,23 +419,24 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test3.db");
         let conn = crate::db::init_db(&path).unwrap();
-        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count, created_at) VALUES ('s','folder','{}',1,'',0,datetime('now'))", []).unwrap();
-        let sid = conn.last_insert_rowid();
+        // distinct sources per create (R30.1 forbids same-source duplicates)
+        let sids: Vec<i64> = (0..4).map(|i| mk_source(&conn, &format!("s{i}"))).collect();
         let mgr = JobManager::new();
         let mgr2 = mgr.clone();
         let path2 = path.clone();
         let path3 = path.clone();
         // concurrent create from 2 threads (each with own connection, same file)
+        let (s1, s2) = (sids[0..2].to_vec(), sids[2..4].to_vec());
         let h1 = std::thread::spawn(move || {
             let c = crate::db::open_db(&path2).unwrap();
-            for _ in 0..2 {
-                let _ = mgr2.create_job(&c, sid, "sync");
+            for sid in &s1 {
+                let _ = mgr2.create_job(&c, *sid, "sync");
             }
         });
         let h2 = std::thread::spawn(move || {
             let c = crate::db::open_db(&path3).unwrap();
-            for _ in 0..2 {
-                let _ = mgr.create_job(&c, sid, "sync");
+            for sid in &s2 {
+                let _ = mgr.create_job(&c, *sid, "sync");
             }
         });
         h1.join().unwrap();
@@ -382,5 +447,94 @@ mod tests {
         // MAX 2 running, rest pending — never exceeds
         assert!(running <= MAX_CONCURRENT as i64);
         assert_eq!(running + pending, 4);
+    }
+
+    /// R30.1: sync+sync on one source — the second create conflicts, no new row.
+    #[test]
+    fn sync_dedup_same_source() {
+        let dir = tempdir().unwrap();
+        let conn = crate::db::init_db(&dir.path().join("dedup.db")).unwrap();
+        let mgr = JobManager::new();
+        let sid = mk_source(&conn, "s");
+        let first = mgr.create_job(&conn, sid, "sync").unwrap();
+        match mgr.create_job(&conn, sid, "sync") {
+            Err(CreateJobError::Conflict(active)) => assert_eq!(active, first),
+            other => panic!("expected Conflict({}), got {:?}", first, other.map(|_| ())),
+        }
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM jobs WHERE source_id=?1", [sid], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "a duplicate sync must not add a row");
+        // other sources are unaffected
+        mgr.create_job(&conn, mk_source(&conn, "t"), "sync").unwrap();
+    }
+
+    /// R30.1: sync and reclassify share the one slot (either order).
+    #[test]
+    fn sync_reclassify_share_one_slot() {
+        let dir = tempdir().unwrap();
+        let conn = crate::db::init_db(&dir.path().join("xkind.db")).unwrap();
+        let mgr = JobManager::new();
+        let sid = mk_source(&conn, "s");
+        let sync = mgr.create_job(&conn, sid, "sync").unwrap();
+        assert!(matches!(mgr.create_job(&conn, sid, "reclassify"), Err(CreateJobError::Conflict(id)) if id == sync));
+        mgr.cancel(&conn, sync);
+        let recl = mgr.create_job(&conn, sid, "reclassify").unwrap();
+        assert!(matches!(mgr.create_job(&conn, sid, "sync"), Err(CreateJobError::Conflict(id)) if id == recl));
+    }
+
+    /// R30.1: the slot frees when the job finishes or is cancelled.
+    #[test]
+    fn dedup_clears_on_complete_and_cancel() {
+        let dir = tempdir().unwrap();
+        let conn = crate::db::init_db(&dir.path().join("free.db")).unwrap();
+        let mgr = JobManager::new();
+        let sid = mk_source(&conn, "s");
+        let a = mgr.create_job(&conn, sid, "sync").unwrap();
+        mgr.complete(&conn, a, true, None);
+        let b = mgr.create_job(&conn, sid, "sync").unwrap();
+        assert_ne!(a, b);
+        mgr.cancel(&conn, b);
+        let c = mgr.create_job(&conn, sid, "reclassify").unwrap();
+        assert_ne!(b, c);
+    }
+
+    /// R30.1: `embed` jobs only fill vectors — never guarded, never block sync.
+    #[test]
+    fn embed_jobs_not_guarded() {
+        let dir = tempdir().unwrap();
+        let conn = crate::db::init_db(&dir.path().join("embed.db")).unwrap();
+        let mgr = JobManager::new();
+        let sid = mk_source(&conn, "s");
+        mgr.create_job(&conn, sid, "embed").unwrap();
+        mgr.create_job(&conn, sid, "embed").unwrap();
+        mgr.create_job(&conn, sid, "sync").unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM jobs WHERE source_id=?1", [sid], |r| r.get(0)).unwrap();
+        assert_eq!(n, 3);
+    }
+
+    /// R30.1: racing same-source triggers (watcher + scheduler + manual) —
+    /// exactly one row wins, the rest conflict.
+    #[test]
+    fn concurrent_same_source_single_winner() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("race.db");
+        let conn = crate::db::init_db(&path).unwrap();
+        let sid = mk_source(&conn, "s");
+        drop(conn);
+        let mgr = JobManager::new();
+        let mgr2 = mgr.clone();
+        let (p1, p2) = (path.clone(), path.clone());
+        let h1 = std::thread::spawn(move || {
+            let c = crate::db::open_db(&p1).unwrap();
+            mgr2.create_job(&c, sid, "sync").map(|_| ()).map_err(|e| format!("{e:?}"))
+        });
+        let h2 = std::thread::spawn(move || {
+            let c = crate::db::open_db(&p2).unwrap();
+            mgr.create_job(&c, sid, "reclassify").map(|_| ()).map_err(|e| format!("{e:?}"))
+        });
+        let (r1, r2) = (h1.join().unwrap(), h2.join().unwrap());
+        assert!(r1.is_ok() ^ r2.is_ok(), "exactly one racer must win: {r1:?} vs {r2:?}");
+        let c = crate::db::open_db(&path).unwrap();
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM jobs WHERE source_id=?1", [sid], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
     }
 }

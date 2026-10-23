@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api";
 import { theme, commonStyles, radius } from "../../theme";
 import type { Job, Source } from "../../types";
@@ -37,6 +38,11 @@ export function SourceRow({
 }) {
   const [editing, setEditing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // R30.1: disable both triggers while the POST is in flight — the jobs poll
+  // lags the click by up to one interval, so without this a second click
+  // slips through (the backend 409s it, but the button should never be live).
+  const [busy, setBusy] = useState(false);
+  const queryClient = useQueryClient();
 
   function configSummary(): string {
     if (source.connector === "folder") return config.path ? config.path : "folder source";
@@ -47,13 +53,21 @@ export function SourceRow({
   }
 
   async function startJob(id: number, kind: "sync" | "reclassify") {
+    if (busy || job) return;
     try {
+      setBusy(true);
       setActionError(null);
       if (kind === "sync") await api.syncSource(id);
       else await api.reclassifySource(id);
       onChanged();
+      // Refetch jobs immediately instead of waiting for the next poll tick,
+      // so the row flips to Syncing… before a second click can land.
+      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
     } catch (e) {
+      // R30.1: a 409 here names the live job ("…already active…(job N)").
       setActionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -149,10 +163,10 @@ export function SourceRow({
           <button onClick={() => setEditing((v) => !v)} style={commonStyles.button}>
             {editing ? "Editing…" : "Edit"}
           </button>
-          <button onClick={() => startJob(source.id, "sync")} disabled={!!job} style={commonStyles.button}>
+          <button onClick={() => startJob(source.id, "sync")} disabled={!!job || busy} style={commonStyles.button}>
             {job?.kind === "sync" ? "Syncing…" : "Sync now"}
           </button>
-          <button onClick={() => startJob(source.id, "reclassify")} disabled={!!job} style={commonStyles.button}>
+          <button onClick={() => startJob(source.id, "reclassify")} disabled={!!job || busy} style={commonStyles.button}>
             {job?.kind === "reclassify" ? "Reclassifying…" : "Reclassify"}
           </button>
           {job && (

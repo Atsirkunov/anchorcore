@@ -360,3 +360,18 @@ ADR log. Append newest first.
   - *Agent-suggested captions in the Unplaced view* — rejected (owner, 2026-10-23): reintroduces a proposal/review queue (R45.13 rule). Reopening needs a new owner decision.
 * **Storage (owner, 2026-10-23):** asset bytes are always stored in the DB, for every source kind including folders — never path references or fetch-on-demand. Export/backup must restore every citable image even when the original source is gone or offline. Assets dedupe by content hash. Size limits are set from measurement (R46.14): a configurable per-asset cap (`asset_max_bytes`, provisional default 20 MB) keeps over-cap assets as metadata-only rows with a warning instead of failing the sync.
 * **Consequences:** Unattributed images are not searchable until a person places them (a deliberate gap, visible as a count). PDF images are out of scope. DB and backup size grow with image-heavy sources — surfaced in System status and before export (R46.14).
+
+---
+
+## 2026-10-23 — R30.1: one active sync/reclassify per source; explicit duplicates 409, background coalesces
+
+* **Decision:** Sync and reclassify share one active slot per source. An explicit `POST /sources/{id}/sync` or `/reclassify` while a sync-family job is pending/running returns 409 `{"detail": "…already active…(job N)", "job_id": N}` with no new row; watcher and scheduler triggers coalesce silently onto the live job. The guard lives in `JobManager::create_job`, checked in the same `BEGIN IMMEDIATE` transaction as the insert under `PROMOTE_LOCK`. A reclassify requested while a sync runs 409s like any other duplicate — it is not queued behind the sync.
+* **Context:** Owner screenshot 2026-10-23: jobs #73/#74 both `running` at 3649/4833 with #75 `pending`, created 3 s after #74 — two syncs duplicating work on the same data plus a queued third. Same class as the R30.1 repro (sync+reclassify 4 s apart via the poll-lagged UI badge) and the M4 repro (scheduler's 60-minute folder scan auto-creating #7 over running #6). Audit H4 files the same gap.
+* **Alternatives considered:**
+  - *Queue the reclassify to start after the sync (the row's recommendation)* — rejected: a queued-behind row violates the at-most-one-pending/running invariant the 409 pins, and needs source-aware promotion (today `maybe_promote` takes the oldest pending globally, so the queued reclassify could start on another slot while the sync still runs). The UI already serializes the two buttons; a direct API caller gets the live `job_id` and retries after it finishes.
+  - *Coalesce explicit POSTs too (202 with the live job)* — rejected: the caller asked for a new run (possibly `force`), and a 202 would lie about starting one; 409 with the live id is honest and the UI already renders `detail`.
+  - *Guard in each caller instead of `create_job`* — rejected: three trigger paths (manual, scheduler, watcher) would each need the check-then-insert race closed; one guarded constructor closes it once.
+* **Consequences:**
+  - `create_job` returns `Result<i64, CreateJobError>` (`Conflict(active_id)` vs `Db`); `embed` jobs are outside the sync family and unguarded. Pre-existing duplicate rows (created before this change) drain naturally; the guard only blocks new ones.
+  - A job stuck `running` with no live task (a pipeline panic — the R43.11 guard is sequenced after this) now blocks that source's syncs until it is cancelled or the process restarts (both paths already handle orphans). Cancel stays the escape hatch.
+  - The `folder_scan_minutes` Settings exposure the row allowed as scope was skipped: with duplicates impossible, a long first ingest no longer needs the interval workaround.
