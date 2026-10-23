@@ -77,12 +77,51 @@ async fn media_served_from_db_after_folder_is_deleted() {
     assert_eq!(resp.bytes().await.unwrap().as_ref(), PNG);
 
     std::fs::remove_dir_all(srv.work.path().join("topo")).expect("delete folder");
-    let again = fetch(&srv, url).await;
+    let again = fetch(&srv, url.clone()).await;
     assert_eq!(again.status(), StatusCode::OK, "served from the DB, not the disk");
     assert_eq!(again.bytes().await.unwrap().as_ref(), PNG);
 
     let missing = fetch(&srv, "/media/0123456789abcdef0123456789abcdef".to_string()).await;
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    // R46.10 agent form: JSON + base64 for harnesses that can only read JSON.
+    let agent: Value = fetch(&srv, format!("{url}?format=json")).await.json().await.expect("agent json");
+    assert_eq!(agent["mime"], "image/png");
+    assert_eq!((agent["w"].as_i64(), agent["size"].as_u64()), (Some(1), Some(PNG.len() as u64)));
+    assert_eq!(agent["data_base64"], b64(PNG), "{agent}");
+}
+
+fn b64(bytes: &[u8]) -> String {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for c in bytes.chunks(3) {
+        let n = (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+        for i in 0..4 {
+            out.push(if i <= c.len() { T[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn agent_form_refuses_images_over_its_cap_with_the_raw_url() {
+    // Stored (under asset_max_bytes) but over the 1.5 MB agent cap: the JSON
+    // form says so with size + url; the raw download still works.
+    let srv = TestServer::start().await;
+    let source = srv.mk_folder_source("big", &[("big.md", "# Big\n\nA wide panorama: ![Panorama](pano.png)\n")], None).await;
+    let mut pano = PNG.to_vec();
+    pano.resize(1_700_000, 0);
+    std::fs::write(srv.work.path().join("big").join("pano.png"), &pano).expect("png");
+    srv.sync_and_wait(source["id"].as_i64().unwrap(), "sync").await;
+    let body = search(&srv, json!({"query": "wide panorama", "fields": "images"})).await;
+    let url = body["hits"][0]["images"][0]["url"].as_str().unwrap_or_else(|| panic!("{body}")).to_string();
+    let resp = srv.client.get(srv.url(&format!("{url}?format=json"))).send().await.expect("agent form");
+    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let refusal: Value = resp.json().await.expect("413 json");
+    assert_eq!((refusal["size"].as_u64(), refusal["url"].as_str()), (Some(1_700_000), Some(url.as_str())), "{refusal}");
+    let raw = srv.client.get(srv.url(&url)).send().await.expect("raw");
+    assert_eq!(raw.status(), StatusCode::OK);
+    assert_eq!(raw.bytes().await.unwrap().len(), 1_700_000);
 }
 
 #[tokio::test]
@@ -103,10 +142,12 @@ async fn media_gated_for_sensitive_source_under_untrusted_provider() {
     for (k, v) in [("answer_base_url", "https://192.0.2.1"), ("answer_api_key", "sk-test")] {
         assert_eq!(srv.put("/settings", &json!({ k: v })).await.status(), StatusCode::OK, "set {k}");
     }
-    let resp = srv.client.get(srv.url(&url)).send().await.expect("media");
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    let body: Value = resp.json().await.expect("refusal json");
-    assert_eq!(body["refusal"], "gated_provider", "{body}");
+    for target in [url.clone(), format!("{url}?format=json")] {
+        let resp = srv.client.get(srv.url(&target)).send().await.expect("media");
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{target}");
+        let body: Value = resp.json().await.expect("refusal json");
+        assert_eq!(body["refusal"], "gated_provider", "{body}");
+    }
 }
 
 #[tokio::test]

@@ -153,7 +153,9 @@ fn citation_json(c: &Value) -> Value {
     "score": c.get("score"),
     "line_start": c.get("line_start").and_then(|v| v.as_i64()).unwrap_or(0),
     "line_end": c.get("line_end").and_then(|v| v.as_i64()).unwrap_or(0),
-    "snippet": c.get("snippet").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>()
+    "snippet": c.get("snippet").and_then(|v| v.as_str()).unwrap_or("").chars().take(500).collect::<String>(),
+    // R46.9/R46.10: image refs (agent_compose); fetch bytes with get_asset
+    "images": c.get("images").cloned().unwrap_or_else(|| json!([]))
     })
 }
 
@@ -183,7 +185,9 @@ fn search_hit_json(h: &Value) -> Value {
     "item_title": h.get("item_title").and_then(|v| v.as_str()).unwrap_or(""),
     "line_start": h.get("line_start").and_then(|v| v.as_i64()).unwrap_or(0),
     "line_end": h.get("line_end").and_then(|v| v.as_i64()).unwrap_or(0),
-    "score": h.get("score")
+    "score": h.get("score"),
+    // R46.10: `fields: all` carries image refs; fetch bytes with get_asset
+    "images": h.get("images").cloned().unwrap_or_else(|| json!([]))
     })
 }
 
@@ -294,6 +298,38 @@ async fn tool_search(query: &str, k: usize, project_id: Option<i64>, public_only
     let blocked = result.get("blocked").and_then(|v| v.as_u64()).unwrap_or(0);
     let retrieval = result.get("retrieval").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
     Ok(json!({"query": query, "hits": hits, "blocked": blocked, "refusal": refusal, "retrieval": retrieval}))
+}
+
+/// R46.10: one image through the REST agent form (`/media/:uid?format=json`)
+/// — same gate and size cap as a direct REST caller.
+async fn tool_get_asset(asset_id: &str) -> Result<Value, String> {
+    let id = asset_id.trim();
+    if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("asset_id must be the hex asset_id from a search hit's images".to_string());
+    }
+    let v = http_call("GET", &format!("/media/{id}?format=json"), None).await?;
+    audit_mcp("get_asset", &format!("asset={id} size={}", v.get("size").and_then(|s| s.as_u64()).unwrap_or(0)));
+    Ok(v)
+}
+
+/// MCP result content for `get_asset`: an image block the model can see,
+/// plus the metadata as text. SVG is not an MCP image type — its markup
+/// goes back as text (it is text). The base64 never repeats in the text.
+fn asset_content(v: &Value) -> Value {
+    let mime = v.get("mime").and_then(|m| m.as_str()).unwrap_or("");
+    let data = v.get("data_base64").and_then(|d| d.as_str()).unwrap_or("");
+    let mut meta = v.clone();
+    if let Some(obj) = meta.as_object_mut() {
+        obj.remove("data_base64");
+    }
+    let meta_text = json!({"type": "text", "text": serde_json::to_string_pretty(&meta).unwrap_or_default()});
+    if mime == "image/svg+xml" {
+        let markup = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default();
+        return json!([meta_text, {"type": "text", "text": markup}]);
+    }
+    json!([{"type": "image", "data": data, "mimeType": mime}, meta_text])
 }
 
 async fn tool_get_entity(entity_id: i64) -> Result<Value, String> {
@@ -445,6 +481,17 @@ fn tool_defs() -> Value {
             }
         },
         {
+            "name": "get_asset",
+            "description": "Fetch one image the memory stores (asset_id from a search hit's or citation's `images`) so you can look at it. Returns the image plus its metadata (mime, w, h, size). SVG comes back as markup text. Same provider gate as search (refusal gated_provider); images over 1.5 MB are refused with their size and raw url. REST equivalent: GET /media/{asset_id}?format=json.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "asset_id": {"type": "string", "description": "asset_id from a hit's images[]"}
+                },
+                "required": ["asset_id"]
+            }
+        },
+        {
             "name": "get_entity",
             "description": "Fetch one entity with provenance (summary, confidence, status, window_text, source_ref, parent item's manual PII mark).",
             "inputSchema": {
@@ -567,6 +614,7 @@ async fn handle_request(req: Request) -> Option<Response> {
                     let eid = args.get("entity_id").and_then(|v| v.as_i64()).unwrap_or(0);
                     tool_get_entity(eid).await
                 }
+                "get_asset" => tool_get_asset(args.get("asset_id").and_then(|v| v.as_str()).unwrap_or("")).await,
                 "get_source" => {
                     let sid = args.get("source_id").and_then(|v| v.as_i64()).unwrap_or(0);
                     tool_get_source(sid).await
@@ -579,7 +627,12 @@ async fn handle_request(req: Request) -> Option<Response> {
             };
             match res {
                 Ok(val) => {
-                    let result = json!({"content": [{"type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default()}], "isError": false});
+                    let content = if name == "get_asset" {
+                        asset_content(&val)
+                    } else {
+                        json!([{"type": "text", "text": serde_json::to_string_pretty(&val).unwrap_or_default()}])
+                    };
+                    let result = json!({"content": content, "isError": false});
                     Some(Response { jsonrpc: "2.0".to_string(), id, result: Some(result), error: None })
                 }
                 Err(e) => {
@@ -945,5 +998,73 @@ mod tests {
         let v = v.expect("actions ok");
         assert_eq!(v["path"], "/actions?owner=Alex&state=open", "MCP must call the REST endpoint");
         assert_eq!(v["actions"][0]["task"], "draft spec");
+    }
+
+    /// Mock backend answering every request with one fixed status + JSON body
+    /// (and echoing nothing) — enough for a single REST round trip.
+    async fn spawn_fixed_mock(status: &'static str, body: String) -> MockGuard {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind mock");
+        let addr = listener.local_addr().expect("mock addr");
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = listener.accept().await else { break };
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf).await;
+                let _ = s
+                    .write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes())
+                    .await;
+            }
+        });
+        MockGuard { base: format!("http://{}", addr), task }
+    }
+
+    async fn get_asset_against(status: &'static str, body: Value, id: &str) -> Result<Value, String> {
+        let mock = spawn_fixed_mock(status, body.to_string()).await;
+        let saved_url = std::env::var("ANCHOR_BACKEND_URL").ok();
+        std::env::set_var("ANCHOR_BACKEND_URL", &mock.base);
+        let v = tool_get_asset(id).await;
+        match saved_url {
+            Some(u) => std::env::set_var("ANCHOR_BACKEND_URL", u),
+            None => std::env::remove_var("ANCHOR_BACKEND_URL"),
+        }
+        v
+    }
+
+    #[tokio::test]
+    async fn get_asset_returns_an_image_block_and_forwards_the_gate() {
+        // R46.10: MCP rides the REST agent form, so its gate and cap are the
+        // server's — a 403 gated_provider reaches the agent as a tool error.
+        let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
+        let ok = json!({"asset_id": "ab12", "mime": "image/png", "w": 1, "h": 1, "size": 3, "url": "/media/ab12", "data_base64": "AAAA"});
+        let v = get_asset_against("200 OK", ok, "ab12").await.expect("asset ok");
+        let content = asset_content(&v);
+        assert_eq!(content[0], json!({"type": "image", "data": "AAAA", "mimeType": "image/png"}));
+        assert!(!content[1]["text"].as_str().unwrap().contains("AAAA"), "base64 must not repeat as text");
+
+        let gated = json!({"detail": "Asset withheld from an untrusted answer provider", "refusal": "gated_provider"});
+        let err = get_asset_against("403 Forbidden", gated, "ab12").await.unwrap_err();
+        assert!(err.contains("gated_provider"), "{err}");
+        let err = get_asset_against("200 OK", json!({}), "../etc").await.unwrap_err();
+        assert!(err.contains("asset_id"), "{err}");
+    }
+
+    #[test]
+    fn svg_assets_come_back_as_markup_text() {
+        let svg = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, "<svg><text>Hi</text></svg>");
+        let content = asset_content(&json!({"mime": "image/svg+xml", "data_base64": svg}));
+        assert!(content.as_array().unwrap().iter().all(|c| c["type"] == "text"));
+        assert_eq!(content[1]["text"], "<svg><text>Hi</text></svg>");
+    }
+
+    #[test]
+    fn hits_and_citations_pass_images_through_and_schema_has_get_asset() {
+        let img = json!([{"asset_id": "ab12", "alt": "Map", "url": "/media/ab12"}]);
+        assert_eq!(search_hit_json(&json!({"chunk_id": 1, "images": img}))["images"], img);
+        assert_eq!(search_hit_json(&json!({"chunk_id": 1}))["images"], json!([]));
+        assert_eq!(citation_json(&json!({"chunk_id": 1, "images": img}))["images"], img);
+        let defs = tool_defs();
+        let tool = defs.as_array().unwrap().iter().find(|t| t["name"] == "get_asset").expect("get_asset tool");
+        assert_eq!(tool.pointer("/inputSchema/required/0"), Some(&json!("asset_id")));
     }
 }
