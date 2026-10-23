@@ -548,7 +548,7 @@ mod tests {
         let _g = env_lock();
         std::env::set_var("ANCHOR_AUTH_SECRET", "test-secret-12345");
         let (_dir, state) = route_table_state();
-        let app = crate::build_router(state);
+        let app = crate::routes::build_router(state);
         // Every registered route × its methods (`:id` params as `1`).
         let protected = [
             ("GET", "/sources"), ("POST", "/sources"),

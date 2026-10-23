@@ -15,11 +15,11 @@ fn provider_is_local(base: &str) -> bool {
     crate::common::provider_is_local(base)
 }
 
-pub(crate) fn ollama_probe_disabled(base: &str) -> bool {
+pub fn ollama_probe_disabled(base: &str) -> bool {
     base == "http://localhost:1" || base == "http://127.0.0.1:1" || base == "http://localhost:1/" || base == "http://127.0.0.1:1/"
 }
 
-pub(crate) async fn probe_ollama(base: &str, timeout_secs: u64) -> bool {
+pub async fn probe_ollama(base: &str, timeout_secs: u64) -> bool {
     // real probe like health.rs (was heuristic localhost:1 and always false)
     let url = format!("{}/api/tags", base.trim_end_matches('/'));
     match reqwest::Client::builder().timeout(std::time::Duration::from_secs(timeout_secs)).build() {
@@ -369,7 +369,7 @@ pub async fn log_download_handler(
     Ok(resp)
 }
 
-pub(crate) fn find_ollama_binary() -> Option<std::path::PathBuf> {    // find binary
+pub fn find_ollama_binary() -> Option<std::path::PathBuf> {    // find binary
     let candidates = [
         "/opt/homebrew/bin/ollama",
         "/usr/local/bin/ollama",
@@ -395,7 +395,7 @@ pub(crate) fn find_ollama_binary() -> Option<std::path::PathBuf> {    // find bi
     None
 }
 
-pub(crate) async fn poll_ollama_up(probe_url: &str, attempts: u32) -> bool {
+pub async fn poll_ollama_up(probe_url: &str, attempts: u32) -> bool {
     // poll in 500ms steps
     for _ in 0..attempts {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;

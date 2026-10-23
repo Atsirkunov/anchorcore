@@ -7,10 +7,8 @@
 //!
 //! Harness idiom: this mirrors the repo's Rust-only retrieval harness
 //! (`retrieval.rs` P0 3.1 `harness_db`: tempdir + real `db::init_db`, seed
-//! rows with rusqlite, call the leg functions directly). The crate is
-//! binary-only (no `lib` target, and Wave-1 forbids touching `src/`), so
-//! the real `db` / `common` / `retrieval` modules are compiled into this
-//! test target via `#[path]` — every leg call below is the production code,
+//! rows with rusqlite, call the leg functions directly). The legs come from
+//! the crate's `lib` target — every leg call below is the production code,
 //! not a reimplementation. (The R36.1 `bench_parent_child.py` idiom drives
 //! the live `POST /qa/search` API instead; that surface only exposes fused
 //! hits, so it cannot measure legs independently.)
@@ -47,47 +45,12 @@
 //! - Corpus + pairs live in `tests/eval_data/` (`eval.json` manifest,
 //!   `corpus/` docs). See `tests/eval_data/README.md` for how to add pairs.
 
-// The eval uses a subset of each production module (answer.rs owns the rest
-// in the real binary); silence dead-code for the includes only — the eval's
-// own code below stays strict so `-D warnings` still guards it.
-#[allow(dead_code)]
-#[path = "../src/db.rs"]
-mod db;
-
-#[allow(dead_code)]
-#[path = "../src/common.rs"]
-mod common;
-
-#[allow(dead_code)]
-#[path = "../src/retrieval.rs"]
-mod retrieval;
-
-#[allow(dead_code)]
-#[path = "../src/vocab.rs"]
-mod vocab;
-
-// R45.5: the vector legs filter by provenance family. The eval never records
-// a query fingerprint, so the filter is a no-op here (hash vectors compare
-// with hash vectors), but the production code path is the one compiled.
-#[allow(dead_code)]
-#[path = "../src/embed_fp.rs"]
-mod embed_fp;
-
-/// Minimal `embedder` shim: `retrieval.rs`'s inner unit-test module is
-/// compiled into this target (`cfg(test)` is set for test builds) and calls
-/// `crate::embedder::pack_single`. This is byte-identical to
-/// `src/embedder.rs::pack_single` (little-endian f32 packing); including the
-/// real file would drag the embedder→settings→secrets cascade into the eval
-/// target for no benefit. Fixture embeddings are packed here too.
-mod embedder {
-    pub fn pack_single(vector: &[f32]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(vector.len() * 4);
-        for v in vector {
-            out.extend_from_slice(&v.to_le_bytes());
-        }
-        out
-    }
-}
+// Production legs + packing from the lib target (no `#[path]` second
+// compilation — that used to run 100 unit tests twice). R45.5 note: the
+// vector legs filter by provenance family; the eval never records a query
+// fingerprint, so the filter is a no-op here (hash vectors compare with
+// hash vectors).
+use anchorcore::{db, embedder, retrieval};
 
 use rusqlite::{params, Connection};
 use std::collections::{HashMap, HashSet};
