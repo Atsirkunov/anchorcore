@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -29,7 +30,12 @@ async function renderRow(label: Source["label"]) {
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () => {
-    root!.render(<SourceRow source={mkSource(label)} config={{ path: "/tmp/docs" }} job={undefined} onChanged={() => {}} />);
+    // R30.1: SourceRow refreshes the jobs query after a sync/stop, so it needs a client.
+    root!.render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SourceRow source={mkSource(label)} config={{ path: "/tmp/docs" }} job={undefined} onChanged={() => {}} />
+      </QueryClientProvider>,
+    );
   });
   await act(async () => {});
   return container;
