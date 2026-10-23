@@ -82,7 +82,6 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
                 {status.ollama.reachable ? "up" : "offline"}
               </span>
             </div>
-            <div style={{ fontSize: 12 }}>classifier: {status.ollama.classifier_model}</div>
             <div style={{ fontSize: 12 }}>embeddings: {status.ollama.embed_model}</div>
             {status.ollama.missing_models.length > 0 && (
               <div style={{ fontSize: 12, color: theme.red }}>
@@ -181,23 +180,13 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
             </div>
           </div>
           <div style={styles.card}>
-            <div style={styles.cardTitle}>Classifier throughput</div>
+            <div style={styles.cardTitle}>Entity extraction</div>
             <div style={{ fontSize: 12 }}>
-              {status.classifier.windows > 0 ? (
-                <>
-                  {status.classifier.windows} windows · avg {status.classifier.avg_latency_ms} ms
-                  <div style={{ color: theme.textMuted }}>concurrency {status.classifier.concurrency}</div>
-                </>
+              {status.extraction?.mode === "off" ? (
+                <span style={{ color: theme.textDim }}>off — no entities are stored</span>
               ) : (
-                <span style={{ color: theme.textDim }}>no windows classified yet</span>
+                <>rules — decisions and actions read from record structure, no model</>
               )}
-            </div>
-            <div style={{ fontSize: 12, marginTop: 4 }}>
-              provider:{" "}
-              <span style={{ color: status.classifier.provider === "cloud" ? theme.amber : theme.green }}>
-                {status.classifier.provider}
-              </span>{" "}
-              · {status.classifier.model}
             </div>
           </div>
           <div style={styles.card}>

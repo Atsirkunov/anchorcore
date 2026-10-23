@@ -53,7 +53,6 @@ pub async fn health(State(state): State<AppState>) -> Json<Value> {
             "embedder": { "provider": embedder_provider },
             "pending_embeddings": pending_embeddings,
             "tasks": {},
-            "classifier": { "concurrency": 4 },
             "failing_sources": failing_sources
         }
     }))

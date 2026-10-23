@@ -39,14 +39,9 @@ export function SettingsTab() {
   const keySet = (key: string) => (settings?.[key as keyof AppSettings] ?? "") === "***set***";
 
   // each provider block is self-contained: provider select + key + base url + model
-  const classifierProvider: ProviderId = isLocalUrl(form?.classifier_base_url ?? "") ? "local" : "cloud";
   const embedderProvider: ProviderId = isLocalUrl(form?.embed_base_url ?? "") ? "local" : "cloud";
   const answerProvider: ProviderId = isLocalUrl(form?.answer_base_url ?? "") ? "local" : "cloud";
 
-  function setClassifierProvider(p: ProviderId) {
-    if (!form) return;
-    setForm({ ...form, classifier_base_url: p === "local" ? "" : "https://api.openai.com/v1" });
-  }
   function setEmbedderProvider(p: ProviderId) {
     if (!form) return;
     setForm({ ...form, embed_base_url: p === "local" ? "" : "https://api.openai.com/v1" });
@@ -69,7 +64,7 @@ export function SettingsTab() {
       const payload: Partial<AppSettings> = stripPlaceholders({ ...form });
       // API keys already masked (or blank) are dropped so they never overwrite
       // the stored secret with the literal placeholder.
-      for (const k of ["answer_api_key", "classifier_api_key", "embed_api_key"] as const) {
+      for (const k of ["answer_api_key", "embed_api_key"] as const) {
         if (!payload[k]) delete payload[k];
       }
       const updated = await api.updateSettings(payload);
@@ -83,7 +78,7 @@ export function SettingsTab() {
     }
   }
 
-  async function testConnection(providerId: "ollama" | "classifier" | "embedder" | "answer") {
+  async function testConnection(providerId: "ollama" | "embedder" | "answer") {
     setTestBusy(providerId);
     setTestResult(null);
     setError(null);
@@ -141,7 +136,7 @@ export function SettingsTab() {
     </select>
   );
 
-  const keyInput = (key: "answer_api_key" | "classifier_api_key" | "embed_api_key", provider: ProviderId, label: string) => (
+  const keyInput = (key: "answer_api_key" | "embed_api_key", provider: ProviderId, label: string) => (
     <>
       <label style={styles.label}>{label}</label>
       <input
@@ -171,29 +166,6 @@ export function SettingsTab() {
     <div>
       <h2>Model settings</h2>
       <div style={{ display: "grid", gap: 8, maxWidth: 560 }}>
-        <div style={styles.section}>
-          <div style={styles.sectionTitle}>Classification (extracts entities)</div>
-          {providerSelect(classifierProvider, setClassifierProvider, "Local Ollama (free, private)", "Cloud OpenAI-compatible")}
-          {keyInput("classifier_api_key", classifierProvider, "API key")}
-          <label style={styles.label}>Base URL</label>
-          <input
-            style={styles.input}
-            value={form.classifier_base_url || (classifierProvider === "local" ? form.ollama_base_url : "")}
-            onChange={set("classifier_base_url")}
-            placeholder={classifierProvider === "local" ? "http://localhost:11434 (uses Ollama)" : "https://api.openai.com/v1"}
-          />
-          <label style={styles.label}>Model</label>
-          <input style={styles.input} value={form.classifier_model} onChange={set("classifier_model")} placeholder="llama3.2:3b / gpt-4o-mini" />
-          {classifierProvider === "cloud" && (
-            <div style={{ fontSize: 12, color: theme.amber, marginTop: 6 }}>
-              Cost note: classification calls the model once per document window (a 274-page doc ≈ 160 calls). Cloud classification is token-heavy — reclassify a big source with a cloud model only when needed.
-            </div>
-          )}
-          <button style={styles.button} disabled={testBusy === "classifier"} onClick={() => testConnection("classifier")}>
-            {testBusy === "classifier" ? "Testing…" : "Test classifier"}
-          </button>
-        </div>
-
         <div style={styles.section}>
           <div style={styles.sectionTitle}>Embeddings (retrieval)</div>
           {providerSelect(embedderProvider, setEmbedderProvider, "Local Ollama (free, private)", "Cloud OpenAI-compatible")}
@@ -308,7 +280,7 @@ export function SettingsTab() {
             Cloud (o-series, gpt-5): sends <code>reasoning_effort</code>. Local Ollama: enables thinking on reasoning models (deepseek-r1, qwen3, llama3.3-thinking).
           </div>
           <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
-            Local-only? Set the Ollama URL explicitly here — answers never fall back to Ollama on their own (classifier/embeddings do).
+            Local-only? Set the Ollama URL explicitly here — answers never fall back to Ollama on their own (embeddings do).
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <button style={styles.button} disabled={testBusy === "answer"} onClick={() => testConnection("answer")}>

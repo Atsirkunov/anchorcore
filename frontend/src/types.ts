@@ -1,16 +1,13 @@
 export type AppSettings = {
   ollama_base_url: string;
-  classifier_model: string;
   embed_model: string;
-  classifier_timeout: string;
-  classifier_base_url: string;
+  embed_timeout?: string;
   embed_base_url: string;
   answer_model: string;
   answer_base_url: string;
   answer_timeout: string;
   answer_reasoning_effort: string; // none | low | medium | high
   answer_api_key: string; // masked as "***set***" when stored
-  classifier_api_key: string; // masked as "***set***" when stored
   embed_api_key: string; // masked as "***set***" when stored
   tag_reuse_threshold?: string;
   update_check_enabled?: string; // "1" on, "0"/"" off (startup update check)
@@ -48,12 +45,6 @@ export type Project = {
   source_ids: number[];
 };
 
-export type ClassifierStats = {
-  windows: number;
-  avg_latency_ms: number;
-  concurrency: number;
-};
-
 export type Health = {
   status: string;
   data_dir: string;
@@ -65,15 +56,8 @@ export type Health = {
     embedder?: { provider: string };
     pending_embeddings: number;
     tasks: Record<string, string>;
-    classifier: ClassifierStats;
     failing_sources: { id: number; name: string; error: string | null; count: number }[];
   };
-};
-
-export type ClassifierStatus = ClassifierStats & {
-  provider: "local" | "cloud";
-  base_url: string;
-  model: string;
 };
 
 export type RetrievalStatus = {
@@ -112,11 +96,11 @@ export type SystemStatus = {
   ollama: {
     reachable: boolean;
     base_url: string;
-    classifier_model: string;
     embed_model: string;
     missing_models: string[];
   };
-  classifier: ClassifierStatus;
+  /** R45.18: entity extraction is model-free — record-structure rules, or off. */
+  extraction: { mode: "rules" | "off" };
   retrieval: RetrievalStatus;
   embedder: EmbedderStatus;
   llm_mode?: LlmMode;

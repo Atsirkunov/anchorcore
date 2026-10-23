@@ -1,0 +1,6 @@
+-- R45.18: distillation is deleted. Its chunks never reached retrieval
+-- (R33.3 leaf pool is document chunks only), so the Rust hook
+-- (`drop_distilled_chunks`, db.rs) drops them — in Rust because on a fresh
+-- DB `chunks.kind` and `chunk_tags` only appear after migrations run
+-- (`ensure_columns`). FTS + vector index rows follow via the chunks delete
+-- triggers. `ingested_items.distill_hashes` stays as an unwritten column.

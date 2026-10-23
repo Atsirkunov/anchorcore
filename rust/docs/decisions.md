@@ -334,3 +334,16 @@ ADR log. Append newest first.
   - `Health.components.embedder` is optional in the UI types (old backends omit it; absent counts as local — the narrow note is the safe side).
   - Adjacent wart left alone: the onboarding wizard's missing-models note ("answers and classification stay basic") is not mode-aware either — first-run only, flagged for the R45.6 wizard finish.
 
+---
+
+## 2026-10-23 — R45.18: ingest is model-free (owner decision)
+
+* **Decision:** Delete LLM entity extraction (`extract_entities=llm`), Q&A distillation (`distill_enabled`) and every classifier-model setting and UI surface. Extraction is the R45.8 record parser only; `extract_entities` keeps `rules` | `off`. Reassess later and add *different* functionality if a need shows up — not resurrect these.
+* **Context:** R45.1 made both opt-in, but the Settings tab still showed a full "Classification (extracts entities)" section with a cost note that no longer applied, and neither opt-in had a UI toggle. Value audit: distilled chunks are excluded from the retrieval leaf pool since R33.3, so distillation bought nothing; LLM rows carry no owner/status/due/record id/supersedes, so they fall outside the R45.8/R45.9 record model, while costing one call per 16k window and reintroducing the model-dependent fabrication R45.8 was built to stop.
+* **Alternatives considered:**
+  - *Hide the classifier fields behind an extraction selector* — rejected: keeps a mode whose output the record listings can't use.
+  - *Keep `llm` as an API/env-only opt-in* — rejected: an invisible, untested-in-practice path is noise; decisions in prose are better served by agent mode at question time (no ingest calls, no stale rows).
+* **Consequences:**
+  - Migration 25 drops `kind='distilled'` chunks; `ingested_items.distill_hashes` stays as an unwritten column. Old archives' distilled rows are skipped on import (their embedding records warn "no local row" and skip).
+  - `classifier_api_key` is wiped from the secret store at startup; `PUT /settings` ignores the retired keys (warn-logged). `/system/status` replaces `classifier` with `extraction.mode`; `ollama.classifier_model` and `/health` `components.classifier` are gone.
+  - The embedder timeout moved from `classifier_timeout` to `embed_timeout` (default 60s) — a deployment that set `ANCHOR_CLASSIFIER_TIMEOUT` for slow embeds must rename it.

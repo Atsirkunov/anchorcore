@@ -1,5 +1,5 @@
 //! Ingestion pipeline — port of `backend/app/pipeline.py:1`.
-//! Folder → chunk → classify (LLM + per-doc-type prompt, rules fallback) → distill → embed.
+//! Folder → chunk → extract (record-structure rules, no model) → embed.
 
 use std::sync::Arc;
 
@@ -55,7 +55,6 @@ fn window_hash(text: &str) -> String {
 
 fn cloud_trusted(settings: &SettingsService, kind: &str) -> bool {
     let base = match kind {
-        "classifier" => settings.get("classifier_base_url", None).or_else(|| settings.get("ollama_base_url", None)).unwrap_or_else(|| "http://localhost:11434".to_string()),
         "embed" => settings.get("embed_base_url", None).or_else(|| settings.get("ollama_base_url", None)).unwrap_or_else(|| "http://localhost:11434".to_string()),
         _ => settings.get("ollama_base_url", None).unwrap_or_else(|| "http://localhost:11434".to_string()),
     };
@@ -761,7 +760,6 @@ struct ClassifyCtx {
     full_text: String,
     external_id: String,
     item_id: i64,
-    classify_trusted: bool,
     embed_trusted: bool,
     doc_type: String,
     label: String,
@@ -786,7 +784,6 @@ impl ClassifyCtx {
             full_text: doc.text.clone(),
             external_id: doc.external_id.clone(),
             item_id: 0,
-            classify_trusted: false,
             embed_trusted: false,
             doc_type: String::new(),
             label: String::new(),
@@ -822,7 +819,6 @@ impl ClassifyCtx {
     // trust gate, no boxing. Cached on the item; force reclassify
     // re-buckets (recovers legacy 8-way labels deterministically).
     async fn detect_doc_type(&mut self) -> Result<(), String> {
-        self.classify_trusted = cloud_trusted(&*self.settings, "classifier");
         self.embed_trusted = cloud_trusted(&*self.settings, "embed");
         if !self.doc_type.is_empty() && !self.force {
             return Ok(());
@@ -877,8 +873,8 @@ impl ClassifyCtx {
     }
 
     async fn classify_windows(&mut self) -> Result<usize, String> {
-        // B26/R22.1: per-window LLM extraction (rules fallback inside
-        // `Classifier::classify`), hash-skipped and bounded-concurrency.
+        // B26/R22.1: per-window extraction through `Classifier::classify`,
+        // hash-skipped.
         let jobs = self.plan_window_jobs();
         if jobs.is_empty() {
             return Ok(0);
@@ -886,9 +882,8 @@ impl ClassifyCtx {
         if job_cancelled(&self.data_dir, self.job_id).await? {
             return Err("job cancelled".to_string());
         }
-        let classified = classify_all(&self.classifier, &jobs, &self.doc_type, self.classify_trusted, &self.data_dir, self.job_id).await?;
         let mut total = 0usize;
-        for ((index, source_ref, window), output) in jobs.iter().zip(classified) {
+        for (index, source_ref, window) in &jobs {
             if job_cancelled(&self.data_dir, self.job_id).await? {
                 return Err("job cancelled".to_string());
             }
@@ -896,6 +891,7 @@ impl ClassifyCtx {
             if !self.force {
                 delete_stale_entities(self, Some(*index)).await?;
             }
+            let output = self.classifier.classify(window, source_ref, &self.doc_type);
             total += store_batch(self, prepare_items(output.items, window, source_ref, *index)).await?;
         }
         self.store_vocab().await?;
@@ -952,9 +948,6 @@ impl ClassifyCtx {
         self.check_cancelled().await?;
         create_tags(self).await?;
         perf.mark("tags");
-        self.check_cancelled().await?;
-        distill_item(self).await?;
-        perf.mark("distill");
         self.check_cancelled().await?;
         embed_chunks(self).await?;
         perf.mark("embed");
@@ -1234,50 +1227,6 @@ async fn delete_stale_entities(ctx: &ClassifyCtx, window_index: Option<i64>) -> 
     }).await
 }
 
-fn classify_concurrency() -> usize {
-    std::env::var("ANCHOR_CLASSIFIER_CONCURRENCY").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(4)
-}
-
-/// Bounded-concurrency LLM classification for all changed windows; results keep
-/// window order. Batches keep cancellation latency at one model call.
-/// `Classifier::classify` falls back to type-aware rules on failure.
-async fn classify_all(
-    classifier: &Arc<Classifier>,
-    jobs: &[(i64, String, String)],
-    doc_type: &str,
-    trusted: bool,
-    data_dir: &str,
-    job_id: i64,
-) -> Result<Vec<crate::classifier::ClassifyOutput>, String> {
-    let empty = || crate::classifier::ClassifyOutput { items: Vec::new() };
-    let mut out: Vec<crate::classifier::ClassifyOutput> = (0..jobs.len()).map(|_| empty()).collect();
-    let mut start = 0usize;
-    for batch in jobs.chunks(classify_concurrency()) {
-        if job_cancelled(data_dir, job_id).await? {
-            return Err("job cancelled".to_string());
-        }
-        let mut set = tokio::task::JoinSet::new();
-        for (offset, (_index, source_ref, window)) in batch.iter().enumerate() {
-            let classifier = classifier.clone();
-            let doc_type = doc_type.to_string();
-            let source_ref = source_ref.clone();
-            let window = window.clone();
-            set.spawn(async move {
-                let output = classifier.classify(&window, &source_ref, &doc_type, trusted).await;
-                (offset, output)
-            });
-        }
-        while let Some(joined) = set.join_next().await {
-            match joined {
-                Ok((offset, output)) => out[start + offset] = output,
-                Err(e) => tracing::warn!("classification task failed: {}", e),
-            }
-        }
-        start += batch.len();
-    }
-    Ok(out)
-}
-
 /// Attach the source window + index and dedupe by summary (per window).
 fn prepare_items(items: Vec<crate::classifier::ClassifiedItem>, window: &str, source_ref: &str, index: i64) -> Vec<crate::classifier::ClassifiedItem> {
     let mut seen = std::collections::HashSet::new();
@@ -1451,8 +1400,8 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
     // (Python nesting, YAML levels), which whitespace collapsing destroys.
     // Markdown joins them (R38.1): the block splitter reads list/code
     // indentation, and cleaning drops lines, which would shift the stored
-    // 1-based line ranges away from the raw item text. Extraction + distill
-    // still run for markdown — only the cleaning step is skipped.
+    // 1-based line ranges away from the raw item text. Extraction still
+    // runs for markdown — only the cleaning step is skipped.
     let skip_clean = ctx.skips_extraction()
         || crate::markdown::is_markdown_filename(&ctx.external_id)
         || crate::markdown::is_markdown_filename(&ctx.base_ref);
@@ -1463,7 +1412,7 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
         // rolls back on drop; only the fall-through path commits.
         conn.execute("BEGIN IMMEDIATE", []).map_err(|e| e.to_string())?;
         let _ = conn.execute(
-            "DELETE FROM chunks WHERE item_id=?1 AND entity_id IS NULL AND kind != 'distilled'",
+            "DELETE FROM chunks WHERE item_id=?1 AND entity_id IS NULL",
             [item_id],
         );
         let _ = conn.execute("DELETE FROM sections WHERE item_id=?1", [item_id]);
@@ -1510,126 +1459,6 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
     .await
 }
 
-// hash skip check: if all window hashes equal prev and not force, skip entirely.
-// R15.4: compares already-computed `ClassifyCtx.new_hashes` (was re-hashing
-// every window even though `classify_windows` had just hashed them).
-fn distill_changed_hashes(force: bool, new_hashes: &std::collections::HashMap<String, String>, prev: &std::collections::HashMap<String, String>) -> bool {
-    if force {
-        return true;
-    }
-    for (k, h) in new_hashes {
-        if prev.get(k).map(|v| v != h).unwrap_or(true) {
-            return true;
-        }
-    }
-    false
-}
-
-fn distill_unit_content(unit: &crate::classifier::DistilledUnit) -> String {
-    let mut content = format!("Q: {}\nA: {}", unit.question, unit.answer);
-    if !unit.terms.is_empty() {
-        content.push_str(&format!("\nTerms: {}", unit.terms.join(", ")));
-    }
-    if !unit.systems.is_empty() {
-        content.push_str(&format!("\nSystems: {}", unit.systems.join(", ")));
-    }
-    content
-}
-
-// B18 distillation (record bucket → Q&A units), hash-skipped.
-// R22.1: uses the LLM distiller (rules fallback inside `Classifier::distill`).
-async fn distill_item(ctx: &ClassifyCtx) -> Result<(), String> {
-    let distill_enabled = crate::classifier::distill_enabled(&ctx.settings);
-    // R33.4: structured files skip distillation too — paraphrase chunks are
-    // the same noise class as extracted entities (and burn an LLM call).
-    if ctx.skips_extraction()
-        || !(crate::classifier::bucket_distills(&ctx.doc_type) && distill_enabled)
-    {
-        // still need to update distill_hashes to current window hashes to avoid re-distilling later if type changes
-        return update_distill_hashes(ctx).await;
-    }
-    let item_id = ctx.item_id;
-    let force = ctx.force;
-    // R15.4: reuse classify-phase hashes (no re-hash of every window).
-    let new_hashes = ctx.new_hashes.clone();
-    let prev: std::collections::HashMap<String, String> = run_db(&ctx.data_dir, move |conn| {
-        let prev_str: String = conn.query_row("SELECT distill_hashes FROM ingested_items WHERE id=?1", [item_id], |r| r.get(0)).unwrap_or_else(|_| "{}".to_string());
-        Ok(serde_json::from_str(&prev_str).unwrap_or_default())
-    }).await?;
-    if !distill_changed_hashes(force, &new_hashes, &prev) {
-        return Ok(());
-    }
-    let jobs: Vec<(i64, String, String)> = ctx.windows.iter().enumerate().map(|(i, w)| {
-        let index = (i + 1) as i64;
-        let source_ref = if ctx.windows.len() > 1 { format!("{} §{}", ctx.base_ref, index) } else { ctx.base_ref.clone() };
-        (index, source_ref, w.clone())
-    }).collect();
-    let units = distill_all(&ctx.classifier, &jobs, ctx.classify_trusted, &ctx.data_dir, ctx.job_id).await?;
-    let max_units: usize = std::env::var("ANCHOR_DISTILL_MAX_UNITS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
-    let item_id = ctx.item_id;
-    run_db(&ctx.data_dir, move |conn| {
-        // delete old distilled chunks
-        let _ = conn.execute("DELETE FROM chunks WHERE item_id=?1 AND kind='distilled'", [item_id]);
-        for ((_index, source_ref, _window), batch) in jobs.iter().zip(units) {
-            for unit in batch.into_iter().take(max_units) {
-                let content = distill_unit_content(&unit);
-                let _ = conn.execute("INSERT INTO chunks (item_id, kind, source_ref, content, created_at, uid) VALUES (?1,'distilled',?2,?3,datetime('now'),?4)", rusqlite::params![item_id, source_ref, content, crate::db::new_uid()]);
-            }
-        }
-        let j = serde_json::to_string(&new_hashes).unwrap_or_else(|_| "{}".to_string());
-        let _ = conn.execute("UPDATE ingested_items SET distill_hashes=?1 WHERE id=?2", rusqlite::params![j, item_id]);
-        Ok(())
-    }).await
-}
-
-/// Bounded-concurrency LLM distillation for all windows; results keep window
-/// order. Batches keep cancellation latency at one model call.
-async fn distill_all(
-    classifier: &Arc<Classifier>,
-    jobs: &[(i64, String, String)],
-    trusted: bool,
-    data_dir: &str,
-    job_id: i64,
-) -> Result<Vec<Vec<crate::classifier::DistilledUnit>>, String> {
-    let mut out: Vec<Vec<crate::classifier::DistilledUnit>> = vec![Vec::new(); jobs.len()];
-    let mut start = 0usize;
-    for batch in jobs.chunks(classify_concurrency()) {
-        if job_cancelled(data_dir, job_id).await? {
-            return Err("job cancelled".to_string());
-        }
-        let mut set = tokio::task::JoinSet::new();
-        for (offset, (_index, source_ref, window)) in batch.iter().enumerate() {
-            let classifier = classifier.clone();
-            let source_ref = source_ref.clone();
-            let window = window.clone();
-            set.spawn(async move {
-                let units = classifier.distill(&window, &source_ref, trusted).await;
-                (offset, units)
-            });
-        }
-        while let Some(joined) = set.join_next().await {
-            match joined {
-                Ok((offset, units)) => out[start + offset] = units,
-                Err(e) => tracing::warn!("distillation task failed: {}", e),
-            }
-        }
-        start += batch.len();
-    }
-    Ok(out)
-}
-
-async fn update_distill_hashes(ctx: &ClassifyCtx) -> Result<(), String> {
-    let item_id = ctx.item_id;
-    // R15.4: classify phase already hashed every window into `new_hashes`.
-    let new_hashes = ctx.new_hashes.clone();
-    run_db(&ctx.data_dir, move |conn| {
-        if let Ok(j) = serde_json::to_string(&new_hashes) {
-            let _ = conn.execute("UPDATE ingested_items SET distill_hashes=?1 WHERE id=?2", rusqlite::params![j, item_id]);
-        }
-        Ok(())
-    }).await
-}
-
 // embed (gated) — wire embedder.embed_gated + sync_vec (P0 3.2)
 /// One batch of chunks of `source_id` that still need a vector (ascending ids
 /// so iteration always advances, even when the IDF gate embeds nothing).
@@ -1669,7 +1498,7 @@ async fn store_embeddings(data_dir: &str, embedder: Arc<Embedder>, updates: Vec<
 
 async fn embed_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
     let embed_min_signal = embed_min_signal();
-    let gated = sensitive_label(&ctx.label) && !(ctx.classify_trusted && ctx.embed_trusted);
+    let gated = sensitive_label(&ctx.label) && !ctx.embed_trusted;
     let item_id = ctx.item_id;
     let chunks: Vec<(i64, String, String)> = run_db(&ctx.data_dir, move |conn| {
         let mut stmt = conn.prepare("SELECT id, content, path FROM chunks WHERE (item_id=?1 OR entity_id IN (SELECT id FROM entities WHERE item_id=?1)) AND embedding IS NULL").unwrap();
@@ -2282,8 +2111,6 @@ mod tests {
         let conn = crate::db::init_db(&db_path).unwrap();
         let entities: i64 = conn.query_row("SELECT COUNT(*) FROM entities WHERE item_id=?1", [iid], |r| r.get(0)).unwrap();
         assert_eq!(entities, 0, "configs yield no entities");
-        let distilled: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE item_id=?1 AND kind='distilled'", [iid], |r| r.get(0)).unwrap();
-        assert_eq!(distilled, 0, "configs are not distilled");
         let mut stmt = conn.prepare("SELECT path FROM sections WHERE item_id=?1").unwrap();
         let paths: Vec<String> = stmt.query_map([iid], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
         assert!(paths.iter().any(|p| p == "server > tls > cert_file"), "key breadcrumb stored: {paths:?}");
@@ -2325,15 +2152,14 @@ mod tests {
         std::fs::write(dir.join(name), content).unwrap();
     }
 
-    /// Folder source + settings pinned to closed ports, so the classifier and
-    /// embedder fail fast into their degraded paths (no network in tests).
+    /// Folder source + settings pinned to closed ports, so the embedder
+    /// fails fast into its degraded path (no network in tests).
     fn seed_folder_source(data_dir: &str, folder: &std::path::Path) -> (Arc<SettingsService>, i64) {
         let db_path = crate::db::resolve_db_path(data_dir);
         let conn = crate::db::init_db(&db_path).unwrap();
         let store = crate::secrets::SecretStore::new(std::path::PathBuf::from(data_dir).join("secrets.enc"));
         let settings = Arc::new(crate::settings::SettingsService::new(store));
         settings.set_data_dir(std::path::Path::new(data_dir));
-        settings.set("classifier_base_url", "http://127.0.0.1:9", &conn).unwrap();
         settings.set("embed_base_url", "http://127.0.0.1:9", &conn).unwrap();
         let cfg = serde_json::json!({"path": folder.to_string_lossy()}).to_string();
         conn.execute(
@@ -2762,10 +2588,9 @@ mod tests {
 
     #[tokio::test]
     async fn default_ingest_of_sample_makes_zero_chat_calls() {
-        // R45.1 DoD: a `sample/` folder sync with default settings never
-        // calls the chat model (rules extraction, no distillation), while
-        // opting into `extract_entities=llm` + `distill_enabled` does — the
-        // second half proves the counter actually sees model traffic.
+        // R45.1 DoD: a `sample/` folder sync never calls the chat model.
+        // R45.18: the retired opt-ins (`extract_entities=llm`,
+        // `distill_enabled`) left behind in a DB change nothing.
         let (port, calls) = spawn_counting_chat_mock().await;
         let dir = tempdir().unwrap();
         let corpus = dir.path().join("corpus");
@@ -2781,7 +2606,7 @@ mod tests {
         let settings = Arc::new(crate::settings::SettingsService::new(store));
         settings.set_data_dir(std::path::Path::new(&data_dir));
         let mock = format!("http://127.0.0.1:{port}");
-        for key in ["classifier_base_url", "embed_base_url", "ollama_base_url"] {
+        for key in ["embed_base_url", "ollama_base_url"] {
             settings.set(key, &mock, &conn).unwrap();
         }
         drop(conn);
@@ -2794,18 +2619,17 @@ mod tests {
         let conn = crate::db::init_db(&db_path).unwrap();
         let items: i64 = conn.query_row("SELECT COUNT(*) FROM ingested_items WHERE source_id=?1", [sid], |r| r.get(0)).unwrap();
         let entities: i64 = conn.query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0)).unwrap();
-        let distilled: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE kind='distilled'", [], |r| r.get(0)).unwrap();
         assert!(items >= 5, "sample corpus ingested: {items}");
         assert!(entities > 0, "rules extraction still stores entities");
-        assert_eq!(distilled, 0, "distillation is opt-in");
-        assert!(!crate::classifier::chat_model_needed(&settings));
 
         settings.set("extract_entities", "llm", &conn).unwrap();
-        settings.set("distill_enabled", "true", &conn).unwrap();
+        conn.execute("INSERT INTO app_settings (key, value) VALUES ('distill_enabled','true')", []).unwrap();
         drop(conn);
-        assert!(crate::classifier::chat_model_needed(&settings));
         sync_with_new_job(&pipe, &db_path, sid, true).await;
-        assert!(calls.load(std::sync::atomic::Ordering::SeqCst) > 0, "opt-in llm mode reaches the model");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0, "retired opt-ins reached the model");
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let entities_again: i64 = conn.query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0)).unwrap();
+        assert_eq!(entities_again, entities, "`llm` reads as `rules`");
     }
 
     #[tokio::test]

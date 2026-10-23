@@ -424,6 +424,8 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/23_entity_records.sql")),
         // R45.13: glossary marks + drop vocabulary no person or initialism backs
         M::up_with_hook(include_str!("../migrations/24_glossary.sql"), prune_vocabulary),
+        // R45.18: drop distilled chunks (distillation deleted)
+        M::up_with_hook(include_str!("../migrations/25_drop_distilled.sql"), drop_distilled_chunks),
     ])
 }
 
@@ -432,6 +434,23 @@ fn prune_vocabulary(tx: &rusqlite::Transaction) -> rusqlite_migration::HookResul
     let n = crate::vocab::prune_to_trusted(tx)?;
     if n > 0 {
         tracing::warn!("R45.13: dropped {} vocabulary rows (LLM proposals + non-initialism rules)", n);
+    }
+    Ok(())
+}
+
+/// R45.18 hook for migration 25: drop distilled chunks when the schema has
+/// them (fresh DBs gain `chunks.kind` / `chunk_tags` only after migrations).
+fn drop_distilled_chunks(tx: &rusqlite::Transaction) -> rusqlite_migration::HookResult {
+    let has = |sql: &str| tx.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0;
+    if !has("SELECT COUNT(*) FROM pragma_table_info('chunks') WHERE name = 'kind'") {
+        return Ok(());
+    }
+    if has("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'chunk_tags'") {
+        tx.execute("DELETE FROM chunk_tags WHERE chunk_id IN (SELECT id FROM chunks WHERE kind = 'distilled')", [])?;
+    }
+    let n = tx.execute("DELETE FROM chunks WHERE kind = 'distilled'", [])?;
+    if n > 0 {
+        tracing::info!("R45.18: dropped {} distilled chunks", n);
     }
     Ok(())
 }
@@ -565,6 +584,9 @@ mod tests {
             let item: i64 = conn.query_row("SELECT id FROM ingested_items", [], |r| r.get(0)).unwrap();
             conn.execute("INSERT INTO chunks (item_id, content, embedding) VALUES (?1, 'legacy', zeroblob(8))", [item])
                 .unwrap();
+            // R45.18: one distilled chunk for migration 25 to drop.
+            conn.execute("INSERT INTO chunks (item_id, kind, content) VALUES (?1, 'distilled', 'Q: a\nA: b')", [item])
+                .unwrap();
             drop_entity_record_columns(&conn);
             drop_glossary_artifacts(&conn);
             conn.execute("DROP TABLE vec_chunks", []).unwrap();
@@ -588,7 +610,9 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         run_migrations(&mut conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 24);
+        assert_eq!(v, 25);
+        let distilled: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE kind = 'distilled'", [], |r| r.get(0)).unwrap();
+        assert_eq!(distilled, 0, "migration 25 (R45.18) must drop distilled chunks");
         let glossary_col: i64 = conn
             .query_row("SELECT COUNT(*) FROM pragma_table_info('ingested_items') WHERE name = 'is_glossary'", [], |r| r.get(0))
             .unwrap();

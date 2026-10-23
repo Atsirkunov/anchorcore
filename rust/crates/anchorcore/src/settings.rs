@@ -6,10 +6,8 @@ use std::time::{Duration, Instant};
 
 pub const SETTING_KEYS: &[&str] = &[
     "ollama_base_url",
-    "classifier_model",
     "embed_model",
-    "classifier_timeout",
-    "classifier_base_url",
+    "embed_timeout",
     "embed_base_url",
     "answer_model",
     "answer_base_url",
@@ -18,17 +16,14 @@ pub const SETTING_KEYS: &[&str] = &[
     "tag_reuse_threshold",
     "update_check_enabled",
     "extract_entities",
-    "distill_enabled",
     "llm_mode",
     "acronym_expansion",
 ];
-pub const SECRET_KEYS: &[&str] = &["answer_api_key", "classifier_api_key", "embed_api_key"];
+pub const SECRET_KEYS: &[&str] = &["answer_api_key", "embed_api_key"];
 pub const ALL_KEYS: &[&str] = &[
     "ollama_base_url",
-    "classifier_model",
     "embed_model",
-    "classifier_timeout",
-    "classifier_base_url",
+    "embed_timeout",
     "embed_base_url",
     "answer_model",
     "answer_base_url",
@@ -37,14 +32,15 @@ pub const ALL_KEYS: &[&str] = &[
     "tag_reuse_threshold",
     "update_check_enabled",
     "extract_entities",
-    "distill_enabled",
     "llm_mode",
     "acronym_expansion",
     "answer_api_key",
-    "classifier_api_key",
     "embed_api_key",
 ];
 pub const SECRET_PREFIX: &str = "app:";
+/// R45.18: secrets of deleted settings, wiped at startup so a key the UI
+/// can no longer show or clear doesn't linger in the keychain.
+const RETIRED_SECRET_KEYS: &[&str] = &["classifier_api_key"];
 
 /// R45.2: who writes answers. `agent` — the user's AI agent (MCP or the
 /// REST skill) composes from cited passages and the server runs no chat
@@ -125,17 +121,14 @@ fn env_value(key: &str) -> Option<String> {
     // fallback to Settings defaults (mirrors config.py defaults)
     match key {
         "ollama_base_url" => Some("http://localhost:11434".to_string()),
-        "classifier_model" => Some("llama3.2:3b".to_string()),
         "embed_model" => Some("nomic-embed-text".to_string()),
         "answer_model" => Some("gpt-4o-mini".to_string()),
         "answer_base_url" => Some("https://api.openai.com/v1".to_string()),
-        "classifier_base_url" => None,
         "embed_base_url" => None,
         "answer_reasoning_effort" => Some("none".to_string()),
         "tag_reuse_threshold" => Some("0.82".to_string()),
-        // R45.1: ingest makes no chat-model calls unless these opt in.
+        // R45.1/R45.18: ingest never calls a chat model.
         "extract_entities" => Some("rules".to_string()),
-        "distill_enabled" => Some("false".to_string()),
         "llm_mode" => Some(LLM_MODE_LOCAL.to_string()),
         _ => None,
     }
@@ -172,6 +165,16 @@ impl SettingsService {
     pub fn set_data_dir(&self, dir: &std::path::Path) {
         *self.data_dir.write().unwrap() = Some(dir.to_path_buf());
         self.cache.write().unwrap().clear();
+    }
+
+    /// R45.18: drop stored secrets of retired settings (idempotent).
+    pub fn forget_retired_secrets(&self) {
+        for key in RETIRED_SECRET_KEYS {
+            let skey = format!("{}{}", SECRET_PREFIX, key);
+            if self.secrets.get(&skey).is_some() {
+                self.secrets.delete(&skey);
+            }
+        }
     }
 
     /// The pinned data dir, if `set_data_dir` ran (R45.5 records query
@@ -410,7 +413,6 @@ pub async fn test_connection_handler(
         .to_string();
     match provider.as_str() {
         "ollama" => Ok(Json(test_ollama(&state.settings).await)),
-        "classifier" => Ok(Json(test_classifier(&state.settings).await)),
         "embedder" => Ok(Json(test_embedder(&state.settings).await)),
         "embed" => Ok(Json(test_embedder(&state.settings).await)),
         "answer" => Ok(Json(test_answer(&state.settings).await)),
@@ -470,13 +472,6 @@ async fn test_ollama(settings: &SettingsService) -> Value {
                 .collect()
         })
         .unwrap_or_default();
-    let classifier = settings
-        .get("classifier_model", None)
-        .unwrap_or_else(|| "llama3.2:3b".to_string())
-        .split(':')
-        .next()
-        .unwrap_or("llama3.2")
-        .to_string();
     let embed = settings
         .get("embed_model", None)
         .unwrap_or_else(|| "nomic-embed-text".to_string())
@@ -484,12 +479,7 @@ async fn test_ollama(settings: &SettingsService) -> Value {
         .next()
         .unwrap_or("nomic-embed-text")
         .to_string();
-    // R45.1: the classifier model only counts when ingest opts into it.
-    let mut wanted = vec![embed];
-    if crate::classifier::chat_model_needed(settings) {
-        wanted.insert(0, classifier);
-    }
-    let missing: Vec<String> = wanted
+    let missing: Vec<String> = [embed]
         .into_iter()
         .filter(|m| !models.contains(m))
         .collect();
@@ -497,41 +487,6 @@ async fn test_ollama(settings: &SettingsService) -> Value {
         return serde_json::json!({"ok": false, "provider": "ollama", "message": format!("reachable; models missing: {} (run: ollama pull {})", missing.join(", "), missing.join(" && ollama pull "))});
     }
     serde_json::json!({"ok": true, "provider": "ollama", "message": "Ollama up, models present"})
-}
-
-async fn test_classifier(settings: &SettingsService) -> Value {
-    let base = settings
-        .get("classifier_base_url", None)
-        .or_else(|| settings.get("ollama_base_url", None))
-        .unwrap_or_else(|| "http://localhost:11434".to_string());
-    let is_local = crate::common::provider_is_local(&base);
-    let api_key = settings.get("classifier_api_key", None).unwrap_or_default();
-    if !is_local && api_key.is_empty() {
-        return serde_json::json!({"ok": false, "provider": "classifier", "message": "API key required for a cloud classifier provider"});
-    }
-    let model = settings.get("classifier_model", None).unwrap_or_else(|| "llama3.2:3b".to_string());
-    let url = format!("{}/v1/chat/completions", base.trim_end_matches('/'));
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .connect_timeout(connect_timeout())
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => return serde_json::json!({"ok": false, "provider": "classifier", "message": format!("request failed: {}", e)}),
-    };
-    let mut req = client.post(&url).json(&serde_json::json!({
-        "model": model,
-        "messages": [{"role":"user","content":"ping"}],
-        "max_tokens": 1
-    }));
-    if !api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {}", api_key));
-    }
-    match req.send().await {
-        Ok(r) if r.status().is_success() => serde_json::json!({"ok": true, "provider": "classifier", "message": "classifier provider responds"}),
-        Ok(r) => serde_json::json!({"ok": false, "provider": "classifier", "message": format!("request failed: status {}", r.status())}),
-        Err(e) => serde_json::json!({"ok": false, "provider": "classifier", "message": format!("request failed: {}", e)}),
-    }
 }
 
 async fn test_embedder(settings: &SettingsService) -> Value {
@@ -689,32 +644,32 @@ mod tests {
 
     #[test]
     fn storing_empty_clears_the_override_row() {
-        let saved = std::env::var("ANCHOR_CLASSIFIER_BASE_URL").ok();
-        std::env::remove_var("ANCHOR_CLASSIFIER_BASE_URL");
+        let saved = std::env::var("ANCHOR_EMBED_BASE_URL").ok();
+        std::env::remove_var("ANCHOR_EMBED_BASE_URL");
         let dir = tempdir().unwrap();
         let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
         let svc = SettingsService::new(store);
         let conn = Connection::open(dir.path().join("t.db")).unwrap();
         conn.execute("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)", [])
             .unwrap();
-        svc.set("classifier_base_url", "http://example.test/v1", &conn)
+        svc.set("embed_base_url", "http://example.test/v1", &conn)
             .unwrap();
         assert_eq!(
-            svc.get("classifier_base_url", Some(&conn)),
+            svc.get("embed_base_url", Some(&conn)),
             Some("http://example.test/v1".to_string())
         );
-        svc.set("classifier_base_url", "", &conn).unwrap();
+        svc.set("embed_base_url", "", &conn).unwrap();
         let row: Option<String> = conn
             .query_row(
-                "SELECT value FROM app_settings WHERE key = 'classifier_base_url'",
+                "SELECT value FROM app_settings WHERE key = 'embed_base_url'",
                 [],
                 |r| r.get(0),
             )
             .ok();
         assert_eq!(row, None);
-        assert_eq!(svc.get("classifier_base_url", Some(&conn)), None);
+        assert_eq!(svc.get("embed_base_url", Some(&conn)), None);
         if let Some(v) = saved {
-            std::env::set_var("ANCHOR_CLASSIFIER_BASE_URL", v);
+            std::env::set_var("ANCHOR_EMBED_BASE_URL", v);
         }
     }
 

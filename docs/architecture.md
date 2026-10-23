@@ -25,7 +25,7 @@ flowchart TB
         browser["Browser UI<br/>(React SPA, localhost)"]
         api["AnchorCore App<br/>Rust Axum (single process)"]
         api --- connectors["Connectors<br/>Folder · Drive · Jira · Linear · REST"]
-        api --- pipeline["Ingestion Pipeline<br/>type detect → classify → distill → entities"]
+        api --- pipeline["Ingestion Pipeline<br/>bucket → record rules → entities"]
         api --- rag["Answer Engine<br/>planner → executor → RRF → graph → cited answer"]
         api --- review["Review API<br/>low-confidence · duplicates"]
         api --- projects["Projects API<br/>scoped search"]
@@ -88,11 +88,11 @@ old doc chunks deleted on re-sync). Cleaning is ported (prose documents;
 code/config keep raw text to preserve indentation — see the `rust/BACKLOG.md`
 shipped log).
 
-**Distillation:** chat-like windows (meetings, decision logs, general notes)
-are normalized into searchable Q&A units stored as `kind='distilled'` chunks.
-An IDF gate (`embed_min_signal=0.15`) skips low-signal filler from vector
-embedding — it stays keyword-findable in FTS5. Distillation is hash-skipped
-per window.
+**Extraction is model-free (R45.18):** decisions and actions are read from
+record structure (`records.rs`); ingest makes no chat-model calls. LLM
+extraction and Q&A distillation were deleted — distilled chunks never reached
+retrieval (R33.3). An IDF gate (`embed_min_signal=0.15`) skips low-signal
+filler from vector embedding — it stays keyword-findable in FTS5.
 
 **Scale — hierarchical TOC (shipped in 1.0.12):** documents keep their structure
 now. Headings become a saved `sections` tree (parent/level/path/summary),
@@ -206,7 +206,7 @@ erDiagram
         string content_hash
         string doc_type "standards|runbook|documentation|meeting|decision_log|prd|general"
         text window_hashes "JSON {index: sha256} — cheap reclassify"
-        text distill_hashes "JSON {index: sha256} — distillation"
+        text distill_hashes "legacy, unwritten since R45.18"
         bool stale
         datetime created_at
     }
@@ -251,7 +251,7 @@ erDiagram
         int item_id FK "full-document chunk"
         int entity_id FK "entity-summary chunk"
         int section_id FK "→ sections.id"
-        string kind "document|entity|distilled|section_summary|doc_summary"
+        string kind "document|entity|section_summary|doc_summary"
         string source_ref "section"
         string content
         bytes embedding "float32 blob"

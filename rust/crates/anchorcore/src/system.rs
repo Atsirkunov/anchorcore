@@ -30,9 +30,7 @@ pub(crate) async fn probe_ollama(base: &str, timeout_secs: u64) -> bool {
 
 struct StatusSnapshot {
     ollama_base: String,
-    classifier_model: String,
     embed_model: String,
-    classifier_base: String,
     embed_base: String,
     answer_model: String,
     answer_base: String,
@@ -42,12 +40,7 @@ struct StatusSnapshot {
 
 fn status_snapshot(settings: &crate::settings::SettingsService) -> StatusSnapshot {
     let ollama_base = settings.get("ollama_base_url", None).unwrap_or_else(|| "http://localhost:11434".to_string());
-    let classifier_model = settings.get("classifier_model", None).unwrap_or_else(|| "llama3.2:3b".to_string());
     let embed_model = settings.get("embed_model", None).unwrap_or_else(|| "nomic-embed-text".to_string());
-    let classifier_base = settings
-        .get("classifier_base_url", None)
-        .or_else(|| settings.get("ollama_base_url", None))
-        .unwrap_or_else(|| "http://localhost:11434".to_string());
     let embed_base = settings
         .get("embed_base_url", None)
         .or_else(|| settings.get("ollama_base_url", None))
@@ -64,9 +57,7 @@ fn status_snapshot(settings: &crate::settings::SettingsService) -> StatusSnapsho
     };
     StatusSnapshot {
         ollama_base,
-        classifier_model,
         embed_model,
-        classifier_base,
         embed_base,
         answer_model,
         answer_base,
@@ -75,19 +66,12 @@ fn status_snapshot(settings: &crate::settings::SettingsService) -> StatusSnapsho
     }
 }
 
-/// R45.1: whether ingest uses the chat model at all (default: no) —
-/// (`extract_entities`, `distill_enabled`, model needed).
-fn ingest_model_use(settings: &crate::settings::SettingsService) -> (&'static str, bool, bool) {
-    let mode = match crate::classifier::extract_mode(settings) {
+/// R45.18: entity extraction is model-free — `rules` or `off`.
+fn extraction_mode(settings: &crate::settings::SettingsService) -> &'static str {
+    match crate::classifier::extract_mode(settings) {
         crate::classifier::ExtractMode::Off => "off",
         crate::classifier::ExtractMode::Rules => "rules",
-        crate::classifier::ExtractMode::Llm => "llm",
-    };
-    (
-        mode,
-        crate::classifier::distill_enabled(settings),
-        crate::classifier::chat_model_needed(settings),
-    )
+    }
 }
 
 pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
@@ -97,9 +81,8 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
     let readiness = crate::ollama::model_readiness(&state.settings).await;
     let llm_mode = crate::settings::llm_mode(&state.settings);
     let answer_ready = crate::answer::answer_ready(&state.settings, readiness.answer_ready);
-    let classifier_is_local = provider_is_local(&snap.classifier_base);
     let embed_is_local = provider_is_local(&snap.embed_base);
-    let (extract_entities, distill, chat_model_needed) = ingest_model_use(&state.settings);
+    let extraction = extraction_mode(&state.settings);
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
@@ -120,19 +103,10 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
             "ollama": {
                 "reachable": readiness.reachable,
                 "base_url": snap.ollama_base,
-                "classifier_model": snap.classifier_model,
                 "embed_model": snap.embed_model,
                 "missing_models": readiness.missing_models
             },
-            "classifier": {
-                "provider": if classifier_is_local { "local" } else { "cloud" },
-                "base_url": snap.classifier_base,
-                "model": snap.classifier_model,
-                "concurrency": 4,
-                "extract_entities": extract_entities,
-                "distill_enabled": distill,
-                "in_use": chat_model_needed
-            },
+            "extraction": { "mode": extraction },
             "retrieval": {
                 "calls": 0,
                 "vec0_calls": 0,

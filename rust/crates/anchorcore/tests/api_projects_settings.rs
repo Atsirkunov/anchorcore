@@ -179,7 +179,9 @@ async fn settings_get_returns_env_defaults() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body: Value = resp.json().await.expect("settings");
     assert!(body.get("ollama_base_url").is_some(), "{body}");
-    assert!(body.get("classifier_model").is_some(), "{body}");
+    assert!(body.get("embed_model").is_some(), "{body}");
+    // R45.18: the classifier model settings are deleted (ingest is model-free).
+    assert!(body.get("classifier_model").is_none() && body.get("classifier_api_key").is_none(), "{body}");
     assert!(body.get("answer_model").is_some(), "{body}");
     assert!(matches!(body.get("answer_api_key"), Some(Value::String(s)) if s.is_empty() || s == "***set***"), "{body}");
 }
@@ -272,14 +274,8 @@ async fn system_status_reflects_runtime_settings() {
 }
 
 #[tokio::test]
-async fn classifier_and_embed_keys_masked() {
+async fn embed_key_masked() {
     let srv = TestServer::start().await;
-    srv.put("/settings", &json!({"classifier_api_key": "class-secret"})).await;
-    let body: Value = srv.get("/settings").await.json().await.expect("get");
-    assert_eq!(body["classifier_api_key"], "***set***", "{body}");
-    assert!(!body.to_string().contains("class-secret"), "{body}");
-    srv.put("/settings", &json!({"classifier_api_key": null})).await;
-
     srv.put("/settings", &json!({"embed_api_key": "emb-secret"})).await;
     let body: Value = srv.get("/settings").await.json().await.expect("get");
     assert_eq!(body["embed_api_key"], "***set***", "{body}");

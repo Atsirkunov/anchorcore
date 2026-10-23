@@ -13,7 +13,6 @@ function health(over: Partial<Health["components"]> = {}): Health {
       answer_ready: true,
       pending_embeddings: 0,
       tasks: {},
-      classifier: { windows: 0, avg_latency_ms: 0, concurrency: 4 },
       failing_sources: [],
       ...over,
     },

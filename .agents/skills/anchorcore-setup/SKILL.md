@@ -121,16 +121,16 @@ Three modes — pick with the user, configure, then **verify**:
    bring-your-own-model path. (`llm_mode` defaults to `local`.)
 2. **Local model (Ollama):** `POST /system/ollama/start`, then
    `POST /system/ollama/pull {"models":["llama3.2:3b","nomic-embed-text"]}`,
-   poll `GET /system/ollama/pulls`. Leaving `classifier_base_url` /
-   `embed_base_url` empty makes those roles fall back to `ollama_base_url`
+   poll `GET /system/ollama/pulls`. Leaving `embed_base_url` empty makes
+   embeddings fall back to `ollama_base_url`
    (`http://localhost:11434`). For **answers**, set `answer_base_url` to
    `http://localhost:11434/v1` and `answer_model` to a pulled chat model
    (e.g. `llama3.2:3b`) explicitly — the answer provider has no Ollama fallback
    of its own and quietly returns `context_only` otherwise.
 3. **The user's own AI (any OpenAI-compatible endpoint):** `PUT /settings` with
    `{"answer_base_url":"https://…/v1","answer_model":"…","answer_api_key":"…"}`
-   (classifier/embed accept the same `*_base_url` / `*_model` / `*_api_key`
-   keys), then `POST /settings/test-connection {"provider":"answer"}`.
+   (embeddings accept the same `embed_base_url` / `embed_model` /
+   `embed_api_key` keys), then `POST /settings/test-connection {"provider":"answer"}`.
 
 **Honesty contract — never skip this.** `POST /qa` (and MCP `ask`) reports how
 the answer was produced:

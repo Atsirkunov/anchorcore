@@ -436,7 +436,7 @@ fn tool_defs() -> Value {
                     "project_id": {"type": "integer"},
                     "public_only": {"type": "boolean", "description": "If true, only public sources are searched"},
                     "env": {"type": "string", "description": "Optional env class filter: 'live' or 'test' (path- or header-derived; test fixtures rank below live hits by default, not hidden)"},
-                    "kind": {"type": "string", "description": "Optional chunk-kind filter: comma list from document,entity,distilled (unknown values unfilter)"},
+                    "kind": {"type": "string", "description": "Optional chunk-kind filter: comma list from document,entity (unknown values unfilter)"},
                     "path_prefix": {"type": "string", "description": "Optional item-path prefix filter: relative (cfg/) or absolute (/data/corpus/cfg) via the owning folder source's root"},
                     "symbol": {"type": "string", "description": "Optional code-symbol filter: keeps hits whose section title/path names the symbol"},
                     "mode": {"type": "string", "description": "Optional retrieval mode: 'exact' matches the query as a literal case-sensitive substring in document order (unranked, score 1.0); omit for ranked hybrid"}
