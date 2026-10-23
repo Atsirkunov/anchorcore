@@ -180,7 +180,7 @@ pub fn extract_bytes(kind: &str, bytes: &[u8]) -> Result<String, String> {
         return decode_text(bytes);
     }
     match k {
-        "html" | "htm" => Ok(strip_toc(&strip_html(&decode_text(bytes)?))),
+        "html" | "htm" => Ok(strip_toc(&strip_html(&html_images_to_md(&decode_text(bytes)?)))),
         "pdf" => extract_pdf(bytes),
         "docx" | "docm" => extract_docx(bytes),
         "pptx" | "pptm" => extract_pptx(bytes),
@@ -397,6 +397,56 @@ pub(crate) fn strip_html(s: &str) -> String {
     t = re_cell.replace_all(&t, "\t").to_string();
     t = re_tag.replace_all(&t, " ").to_string();
     normalize_lines(&unescape_html(&t))
+}
+
+/// R46.7: `<img>` survives tag stripping as markdown image syntax, so the
+/// asset pass finds it on its hosting chunk. Inside a `<figure>`, the
+/// `<figcaption>` text rides in the caption slot (the figcaption itself
+/// stays in the prose). `data:` images keep only their alt text — inlined
+/// base64 must never land in chunk text — and src spaces/parens are
+/// percent-encoded so the markdown link stays one token.
+fn html_images_to_md(html: &str) -> String {
+    use std::sync::OnceLock;
+    static RE_FIGURE: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_FIGCAPTION: OnceLock<regex::Regex> = OnceLock::new();
+    let re_figure = RE_FIGURE.get_or_init(|| regex::Regex::new(r"(?is)<figure\b[^>]*>.*?</figure>").unwrap());
+    let re_figcaption =
+        RE_FIGCAPTION.get_or_init(|| regex::Regex::new(r"(?is)<figcaption\b[^>]*>(.*?)</figcaption>").unwrap());
+    let with_figures = re_figure.replace_all(html, |caps: &regex::Captures| {
+        let figure = &caps[0];
+        let caption = re_figcaption
+            .captures(figure)
+            .map(|c| strip_html(&c[1]).split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default();
+        img_tags_to_md(figure, &caption)
+    });
+    img_tags_to_md(&with_figures, "")
+}
+
+fn img_tags_to_md(html: &str, default_caption: &str) -> String {
+    use std::sync::OnceLock;
+    static RE_IMG: OnceLock<regex::Regex> = OnceLock::new();
+    let re_img = RE_IMG.get_or_init(|| regex::Regex::new(r"(?is)<img\b[^>]*>").unwrap());
+    re_img
+        .replace_all(html, |caps: &regex::Captures| {
+            let tag = &caps[0];
+            let clean = |s: String| unescape_html(&s).replace(['[', ']', '"', '\n', '\r'], " ").trim().to_string();
+            let alt = clean(crate::assets::tag_attr(tag, "alt").unwrap_or_default());
+            let Some(src) = crate::assets::tag_attr(tag, "src").map(|s| unescape_html(&s)) else {
+                return format!(" {alt} ");
+            };
+            if src.trim().starts_with("data:") {
+                return format!(" {alt} ");
+            }
+            let src = src.trim().replace(' ', "%20").replace('(', "%28").replace(')', "%29");
+            let title = clean(crate::assets::tag_attr(tag, "title").unwrap_or_else(|| default_caption.to_string()));
+            if title.is_empty() {
+                format!(" ![{alt}]({src}) ")
+            } else {
+                format!(" ![{alt}]({src} \"{title}\") ")
+            }
+        })
+        .into_owned()
 }
 
 /// Named + numeric HTML entity references (`&amp;`, `&#169;`, `&#x20;`,
@@ -2088,6 +2138,21 @@ Hello \b bold\b0  and \'93quoted\'94.\par Second \u8364? paragraph.\par}";
         }
         assert!(is_code_path(Path::new("a/b/main.go")));
         assert!(!is_code_path(Path::new("a/b/notes.md")));
+    }
+
+    #[test]
+    fn html_images_become_markdown_refs() {
+        let html = r#"<p>Intro</p><img src="img/a b.png" alt="Sign [in]"><figure><img src='chart.png'><figcaption>Q3 <b>revenue</b></figcaption></figure><img src="data:image/png;base64,AAAA" alt="inline"><img alt="no src">"#;
+        let text = extract_bytes("html", html.as_bytes()).unwrap();
+        assert!(text.contains("![Sign in](img/a%20b.png)"), "{text}");
+        assert!(text.contains("![](chart.png \"Q3 revenue\")"), "{text}");
+        assert!(text.contains("Q3 revenue"), "figcaption stays prose: {text}");
+        assert!(!text.contains("base64"), "{text}");
+        assert!(text.contains("inline") && text.contains("no src"), "{text}");
+        let refs = crate::assets::scan_refs(&text);
+        let srcs: Vec<&str> = refs.iter().map(|r| r.src.as_str()).collect();
+        assert_eq!(srcs, vec!["img/a%20b.png", "chart.png"]);
+        assert_eq!(refs[1].caption, "Q3 revenue");
     }
 
     #[test]

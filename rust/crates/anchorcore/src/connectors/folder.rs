@@ -29,7 +29,8 @@ fn skip_entry(entry: &ignore::DirEntry) -> bool {
 
 /// Walk a watched folder the way a developer expects for a repo: honor
 /// `.gitignore` (even outside a git checkout), keep dotfiles like `.github/`,
-/// skip `SKIP_DIRS`, and return only files `extract` can handle.
+/// skip `SKIP_DIRS`, and return only files `extract` can handle — plus image
+/// files, which sync stores as asset items (R46.7).
 fn supported_files(root: &Path) -> Vec<PathBuf> {
     let walker = WalkBuilder::new(root)
         .hidden(false)
@@ -43,7 +44,7 @@ fn supported_files(root: &Path) -> Vec<PathBuf> {
     walker
         .filter_map(|e| e.ok())
         .map(|e| e.into_path())
-        .filter(|p| p.is_file() && extract::is_supported_path(p))
+        .filter(|p| p.is_file() && (extract::is_supported_path(p) || crate::assets::is_image_path(p)))
         .collect()
 }
 
@@ -89,6 +90,11 @@ impl FolderConnector {
         Ok(Self { path })
     }
 
+    /// The canonical watched root (relative image links resolve inside it).
+    pub fn root(&self) -> &Path {
+        &self.path
+    }
+
     pub fn fetch(&self) -> Result<(Vec<IngestionDoc>, String), ConnectorError> {
         let (docs, _skipped, cursor) = self.fetch_with_skipped()?;
         Ok((docs, cursor))
@@ -131,7 +137,8 @@ impl FolderConnector {
         self.ensure_dir()?;
         let mut docs = Vec::new();
         let mut skipped = Vec::new();
-        for f in self.list_files()? {
+        // Raster images have no text; only the incremental sync stores them.
+        for f in self.list_files()?.into_iter().filter(|f| !crate::assets::is_raster_image_path(&f.path)) {
             let t_extract = std::time::Instant::now();
             let text = match Self::extract_listed(&f) {
                 (Ok(t), _) => t,

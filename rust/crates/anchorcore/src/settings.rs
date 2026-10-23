@@ -18,6 +18,7 @@ pub const SETTING_KEYS: &[&str] = &[
     "extract_entities",
     "llm_mode",
     "acronym_expansion",
+    "asset_max_bytes",
 ];
 pub const SECRET_KEYS: &[&str] = &["answer_api_key", "embed_api_key"];
 pub const ALL_KEYS: &[&str] = &[
@@ -34,6 +35,7 @@ pub const ALL_KEYS: &[&str] = &[
     "extract_entities",
     "llm_mode",
     "acronym_expansion",
+    "asset_max_bytes",
     "answer_api_key",
     "embed_api_key",
 ];
@@ -127,6 +129,8 @@ fn env_value(key: &str) -> Option<String> {
         "embed_base_url" => None,
         "answer_reasoning_effort" => Some("none".to_string()),
         "tag_reuse_threshold" => Some("0.82".to_string()),
+        // R46.7: provisional per-image cap (20 MB); R46.14 sets it from data.
+        "asset_max_bytes" => Some(crate::assets::DEFAULT_MAX_BYTES.to_string()),
         // R45.1/R45.18: ingest never calls a chat model.
         "extract_entities" => Some("rules".to_string()),
         "llm_mode" => Some(LLM_MODE_LOCAL.to_string()),

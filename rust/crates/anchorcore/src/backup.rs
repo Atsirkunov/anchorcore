@@ -42,6 +42,10 @@ const KEY_LEN: usize = 32;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
 const EXPORT_DIR: &str = "exports";
+/// R46.7: zip entry prefix for asset blobs (`assets/<sha256>`).
+const ASSET_ENTRY_PREFIX: &str = "assets/";
+/// Cap per imported asset entry (well above any `asset_max_bytes`).
+const MAX_ASSET_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 /// Finished archives in `exports/` are request-scoped; sweep stragglers.
 const EXPORT_TTL_SECS: u64 = 3600;
 
@@ -234,6 +238,11 @@ pub struct Counts {
     pub disputes: u64,
     pub merge_actions: u64,
     pub settings: u64,
+    /// R46.7: asset rows and the distinct blobs (`assets/<sha256>` entries).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub assets: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub asset_blobs: u64,
     #[serde(skip_serializing_if = "is_zero")]
     pub jobs: u64,
     #[serde(skip_serializing_if = "is_zero")]
@@ -438,6 +447,8 @@ fn export_core_counts(conn: &Connection, zip: &mut ArchiveWriter, opts: &ExportO
         chunk_tags: export_chunk_tags(conn, zip)?,
         projects: export_projects(conn, zip, opts)?,
         vocabulary: export_vocabulary(conn, zip, opts)?,
+        // after items/chunks/sections: asset records reference all three
+        assets: export_assets(conn, zip, opts)?,
         ..Default::default()
     })
 }
@@ -532,6 +543,48 @@ fn export_sections(conn: &Connection, zip: &mut ArchiveWriter, opts: &ExportOpti
         scope
     );
     write_jsonl_query(conn, zip, &sql)
+}
+
+/// R46.7: asset rows by uid; their bytes travel as `assets/<sha256>` entries
+/// (`export_asset_blobs`), so `bytes_hash` is the only link.
+fn export_assets(conn: &Connection, zip: &mut ArchiveWriter, opts: &ExportOptions) -> Result<u64, String> {
+    let scope = source_scope(opts.project_id, "i.source_id");
+    let sql = format!(
+        "SELECT json_object('type','asset','uid',a.uid,'item_uid',i.uid,'section_uid',sec.uid,'chunk_uid',c.uid, \
+            'origin',a.origin,'src',a.src,'ref_path',a.ref_path,'mime',a.mime,'w',a.w,'h',a.h, \
+            'bytes_hash',a.bytes_hash,'size',a.size,'alt',a.alt,'caption',a.caption,'context',a.context, \
+            'attribution',a.attribution,'manual_caption',a.manual_caption,'manual_target',a.manual_target, \
+            'created_at',a.created_at,'updated_at',a.updated_at) \
+         FROM assets a JOIN ingested_items i ON i.id = a.item_id \
+         LEFT JOIN sections sec ON sec.id = a.section_id \
+         LEFT JOIN chunks c ON c.id = a.chunk_id WHERE 1=1{} ORDER BY a.id",
+        scope
+    );
+    write_jsonl_query(conn, zip, &sql)
+}
+
+/// R46.7: one stored (not deflated — images are already compressed) zip
+/// entry per distinct blob the exported assets reference. Always written:
+/// the archive must restore every image even after its source is gone.
+fn export_asset_blobs(conn: &Connection, zip: &mut ArchiveWriter, opts: &ExportOptions) -> Result<u64, String> {
+    let scope = source_scope(opts.project_id, "i.source_id");
+    let sql = format!(
+        "SELECT b.hash, b.bytes FROM asset_blobs b WHERE b.hash IN ( \
+             SELECT a.bytes_hash FROM assets a JOIN ingested_items i ON i.id = a.item_id WHERE 1=1{}) ORDER BY b.hash",
+        scope
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+    let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let mut n = 0u64;
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let hash: String = row.get(0).map_err(|e| e.to_string())?;
+        let bytes: Vec<u8> = row.get(1).map_err(|e| e.to_string())?;
+        zip.start_file(format!("{ASSET_ENTRY_PREFIX}{hash}"), options).map_err(|e| e.to_string())?;
+        zip.write_all(&bytes).map_err(|e| e.to_string())?;
+        n += 1;
+    }
+    Ok(n)
 }
 
 fn export_tags(conn: &Connection, zip: &mut ArchiveWriter) -> Result<u64, String> {
@@ -772,6 +825,7 @@ fn export_inner(
     (counts.disputes, counts.merge_actions) = export_review_state(conn, zip, opts)?;
     counts.settings = export_settings(conn, zip)?;
     export_optional(conn, zip, opts, &mut counts, &source_export.secret_refs, store)?;
+    counts.asset_blobs = export_asset_blobs(conn, zip, opts)?;
 
     let summary = ExportSummary {
         counts,
@@ -830,6 +884,7 @@ fn readme_text() -> String {
          What is inside:\n\
          - manifest.json  — version, counts, options, which sources need credentials\n\
          - data.jsonl     — your memory: sources, documents, entities, chunks, review state\n\
+         - assets/        — image bytes (one file per distinct image, named by its SHA-256)\n\
          - secrets.bundle — only if the export included secrets; it is encrypted with\n           your passphrase and CANNOT be recovered if you lose the passphrase.\n\n\
          Secrets are not stored in plaintext. After importing you may need to\n\
          re-enter credentials for the sources listed in manifest.json.\n\
@@ -1361,6 +1416,71 @@ fn apply_section(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// R46.7: one asset row by uid (item required; section/chunk optional —
+/// sync re-points them). Missing bytes (an archive without the blob) keep
+/// the metadata with a warning instead of failing the import.
+fn apply_asset(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
+    let uid = str_field(rec, "uid");
+    let item_id = ctx.require("ingested_items", &str_field(rec, "item_uid"), "item")?;
+    let section_id = ctx.lookup("sections", &str_field(rec, "section_uid"))?;
+    let chunk_id = ctx.lookup("chunks", &str_field(rec, "chunk_uid"))?;
+    let existing = ctx.lookup("assets", &uid)?;
+    let existing_stamp = existing.and_then(|id| ctx.stamp_of("SELECT COALESCE(updated_at, created_at) FROM assets WHERE id=?1", id));
+    let stamp = opt_str_field(rec, "updated_at").or_else(|| opt_str_field(rec, "created_at"));
+    let action = decide(existing.is_some(), stamp.as_deref(), existing_stamp.as_deref());
+    ctx.record("asset", &uid, action);
+    if !ctx.write || action == Action::Skip {
+        return Ok(());
+    }
+    let hash = present_blob(ctx, &uid, opt_str_field(rec, "bytes_hash"))?;
+    write_asset(ctx, rec, action, &uid, (item_id, section_id, chunk_id), hash)?;
+    if let Some(id) = ctx.lookup("assets", &uid)? {
+        ctx.remember("assets", &uid, id);
+    }
+    Ok(())
+}
+
+/// The asset's blob hash when the blob is present, else `None` + a warning.
+fn present_blob(ctx: &mut ImportCtx, uid: &str, hash: Option<String>) -> Result<Option<String>, String> {
+    let Some(h) = hash else { return Ok(None) };
+    let present: i64 = ctx
+        .conn
+        .query_row("SELECT COUNT(*) FROM asset_blobs WHERE hash = ?1", [&h], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if present > 0 {
+        return Ok(Some(h));
+    }
+    ctx.warnings.push(format!("asset {uid}: image bytes missing from the archive (metadata kept)"));
+    Ok(None)
+}
+
+fn write_asset(
+    ctx: &mut ImportCtx,
+    rec: &Value,
+    action: Action,
+    uid: &str,
+    (item_id, section_id, chunk_id): (i64, Option<i64>, Option<i64>),
+    hash: Option<String>,
+) -> Result<(), String> {
+    let f = |k: &str| str_field(rec, k);
+    let origin = if f("origin") == "file" { "file" } else { "embed" };
+    let attribution = Some(f("attribution")).filter(|a| !a.is_empty()).unwrap_or_else(|| "none".to_string());
+    let p = rusqlite::params![
+        uid, item_id, section_id, chunk_id, origin, f("src"), f("ref_path"), f("mime"), i64_field(rec, "w"), i64_field(rec, "h"),
+        hash, i64_field(rec, "size").unwrap_or(0), f("alt"), f("caption"), f("context"), attribution, f("manual_caption"),
+        f("manual_target")
+    ];
+    let sql = if action == Action::Insert {
+        "INSERT INTO assets (uid, item_id, section_id, chunk_id, origin, src, ref_path, mime, w, h, bytes_hash, size, alt, caption, context, attribution, manual_caption, manual_target) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)"
+    } else {
+        "UPDATE assets SET item_id=?2, section_id=?3, chunk_id=?4, origin=?5, src=?6, ref_path=?7, mime=?8, w=?9, h=?10, bytes_hash=?11, size=?12, \
+         alt=?13, caption=?14, context=?15, attribution=?16, manual_caption=?17, manual_target=?18, updated_at=datetime('now') WHERE uid=?1"
+    };
+    ctx.conn.execute(sql, p).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn apply_entity(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let uid = str_field(rec, "uid");
     let item_id = ctx.require("ingested_items", &str_field(rec, "item_uid"), "item")?;
@@ -1759,6 +1879,7 @@ fn apply_core_record(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
         "chunk_tag" => apply_chunk_tag(ctx, rec),
         "project" => apply_project(ctx, rec),
         "vocab" => apply_vocab(ctx, rec),
+        "asset" => apply_asset(ctx, rec),
         other => Err(format!("unknown record type: {other}")),
     }
 }
@@ -1878,6 +1999,8 @@ fn read_manifest(zip: &mut zip::ZipArchive<std::fs::File>) -> Result<ImportRepor
 /// `replace` wipes every data record (settings, ops and users stay local).
 fn clear_data(conn: &Connection) -> Result<(), String> {
     let stmts = [
+        "DELETE FROM assets",
+        "DELETE FROM asset_blobs",
         "DELETE FROM chunk_tags",
         "DELETE FROM chunks",
         "DELETE FROM sections",
@@ -1993,12 +2116,62 @@ fn import_data(
     ctx: &mut ImportCtx,
     counts: &mut BTreeMap<String, u64>,
 ) -> Result<(), String> {
-    let mut entry = zip.by_name("data.jsonl").map_err(|_| "archive has no data.jsonl".to_string())?;
-    entry_within_caps(entry.size(), entry.compressed_size(), MAX_DATA_BYTES, "data.jsonl")?;
+    {
+        let entry = zip.by_name("data.jsonl").map_err(|_| "archive has no data.jsonl".to_string())?;
+        entry_within_caps(entry.size(), entry.compressed_size(), MAX_DATA_BYTES, "data.jsonl")?;
+    }
     if opts.mode == ImportMode::Replace && ctx.write {
         clear_data(conn)?;
     }
-    import_stream(&mut entry, ctx, counts)}
+    // R46.7: blobs first — asset records in data.jsonl reference them.
+    import_asset_blobs(zip, ctx, counts)?;
+    let mut entry = zip.by_name("data.jsonl").map_err(|_| "archive has no data.jsonl".to_string())?;
+    import_stream(&mut entry, ctx, counts)
+}
+
+/// R46.7: `assets/<sha256>` entries → `asset_blobs`. The name must be the
+/// bytes' own hash (a tampered or truncated entry aborts the import);
+/// blobs already present are identical by construction and count as skipped.
+fn import_asset_blobs(
+    zip: &mut zip::ZipArchive<std::fs::File>,
+    ctx: &mut ImportCtx,
+    counts: &mut BTreeMap<String, u64>,
+) -> Result<(), String> {
+    let names: Vec<String> = zip
+        .file_names()
+        .filter_map(|n| n.ok())
+        .filter(|n| n.starts_with(ASSET_ENTRY_PREFIX))
+        .map(|s| s.to_string())
+        .collect();
+    for name in names {
+        let hash = &name[ASSET_ENTRY_PREFIX.len()..];
+        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("archive has a malformed asset entry: {name}"));
+        }
+        let mut entry = zip.by_name(&name).map_err(|e| format!("{name}: {e}"))?;
+        entry_within_caps(entry.size(), entry.compressed_size(), MAX_ASSET_ENTRY_BYTES, &name)?;
+        let bytes = read_entry_bounded(&mut entry, MAX_ASSET_ENTRY_BYTES, &name)?;
+        if crate::assets::sha256_hex(&bytes) != hash.to_ascii_lowercase() {
+            return Err(format!("{name} does not match its hash"));
+        }
+        *counts.entry("asset_blob".to_string()).or_default() += 1;
+        let exists: i64 = ctx
+            .conn
+            .query_row("SELECT COUNT(*) FROM asset_blobs WHERE hash = ?1", [hash], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        let bucket = if exists > 0 { &mut ctx.skipped } else { &mut ctx.imported };
+        *bucket.entry("asset_blob".to_string()).or_default() += 1;
+        if ctx.write && exists == 0 {
+            ctx.conn
+                .execute(
+                    "INSERT INTO asset_blobs (hash, bytes, size) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![hash, bytes, bytes.len() as i64],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
 
 /// Always apply inside one transaction: a dry run is "apply, then roll back",
 /// which keeps conflict detection and counts identical to a real import while
@@ -2678,6 +2851,52 @@ mod tests {
         import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
         let conn = db(dst.path());
         assert_eq!(one::<String>(&conn, "SELECT note FROM relationships WHERE kind='conflicts_with'"), "doc says JWT, code uses sessions");
+    }
+
+    #[test]
+    fn asset_entries_must_match_their_hash() {
+        // R46.7: an `assets/<sha256>` entry whose bytes don't hash to its
+        // name aborts the import before anything is written.
+        let _env = EnvGuard::file_only();
+        let src = tempdir().unwrap();
+        seed(src.path());
+        let conn = db(src.path());
+        let png = crate::assets::TEST_PNG;
+        let hash = crate::assets::sha256_hex(png);
+        conn.execute("INSERT INTO asset_blobs (hash, bytes, size) VALUES (?1, ?2, ?3)", rusqlite::params![hash, png, png.len() as i64]).unwrap();
+        conn.execute(
+            "INSERT INTO assets (uid, item_id, origin, src, mime, bytes_hash, size, attribution) SELECT 'a1', id, 'embed', 'x.png', 'image/png', ?1, ?2, 'embedded' FROM ingested_items",
+            rusqlite::params![hash, png.len() as i64],
+        )
+        .unwrap();
+        drop(conn);
+        let archive = exported(src.path(), ExportOptions::default());
+        let (_, entries) = read_archive(&archive.path);
+        assert_eq!(entries[&format!("assets/{hash}")], png);
+        assert!(jsonl_records(&entries).iter().any(|r| r["type"] == "asset" && r["bytes_hash"] == hash.as_str()));
+
+        let tampered = src.path().join("tampered.anchorcore-backup");
+        let raw = std::fs::read(&archive.path).unwrap();
+        let mut zin = zip::ZipArchive::new(std::io::Cursor::new(raw)).unwrap();
+        let mut zout = zip::ZipWriter::new(std::fs::File::create(&tampered).unwrap());
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for i in 0..zin.len() {
+            let mut entry = zin.by_index(i).unwrap();
+            let name = entry.name().map(|n| n.to_string()).unwrap_or_default();
+            let mut buf = Vec::new();
+            entry.read_to_end(&mut buf).unwrap();
+            drop(entry);
+            if name.starts_with("assets/") {
+                buf.push(0);
+            }
+            zout.start_file(name, options).unwrap();
+            zout.write_all(&buf).unwrap();
+        }
+        zout.finish().unwrap();
+        let dst = tempdir().unwrap();
+        let err = import_archive(dst.path(), &tampered, &ImportOptions::default()).unwrap_err();
+        assert!(err.contains("does not match its hash"), "{err}");
+        assert_eq!(one::<i64>(&db(dst.path()), "SELECT COUNT(*) FROM ingested_items"), 0, "nothing written");
     }
 
     #[test]
