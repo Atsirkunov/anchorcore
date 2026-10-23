@@ -10,6 +10,7 @@
 
 mod answer;
 mod assets;
+mod assets_api;
 mod auth;
 mod backup;
 mod chunking;
@@ -547,6 +548,8 @@ fn build_router(state: health::AppState) -> Router {
         .route("/items", get(items::list_handler))
         .route("/items/:id", get(items::get_handler).patch(items::patch_handler))
         .route("/items/:id/outline", get(sections::outline_handler))
+        // R46.9: asset bytes from the DB (not `/assets/*` — that is the public SPA bundle dir)
+        .route("/media/:uid", get(assets_api::media_handler))
         .route("/entities/:id/context", get(entities::context_handler))
         .route("/review/low-confidence", get(review::low_confidence_handler))
         .route("/review/duplicates", get(review::duplicates_handler))

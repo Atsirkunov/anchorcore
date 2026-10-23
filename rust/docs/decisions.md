@@ -391,3 +391,14 @@ ADR log. Append newest first.
   - HTML `<img>` now survives extraction as `![alt](src "caption")` text (the figcaption text also stays in the prose); HTML `data:` images contribute only their alt text, so inlined base64 never enters chunks — they get no asset until an HTML path that sees raw markup exists.
   - A file over `asset_max_bytes` keeps its row (`bytes_hash` NULL, real `size`) and warns once per transition to over-cap; image file items over the cap hash as `oversize:<len>:<mtime>` so their bytes are never read.
   - `.svg` files are both a text item (R46.2) and a `file` asset. Repos with icon sets therefore add blobs (small) and empty-text items; R46.14 reports the cost.
+
+---
+
+## 2026-10-23 — R46.9: asset bytes are served at `/media/:uid`, not `/assets/:uid`
+
+* **Decision:** `GET /media/:uid` serves an asset's bytes from its DB blob, with the `/qa/search` label gate (403 `refusal: "gated_provider"` for a sensitive/pii source under an untrusted answer provider), a sandboxing CSP and `nosniff`. Later Phase 46 rows (R46.10 skill docs, R46.12 Unplaced listing/PATCH) use the same `/media` prefix.
+* **Context:** The Phase 46 draft named `/assets/:uid`. `/assets/*` is Vite's bundle directory, embedded in the binary and allow-listed as public in `auth::is_public_path` so the login page loads with auth on.
+* **Alternatives considered:**
+  - *Keep `/assets/:uid` and special-case the auth allowlist* — rejected: the route would also match the UI's own `/assets/index-*.js` requests (explicit routes beat the frontend fallback), breaking the app, and the allowlist would need hash-shape heuristics to tell the two apart.
+  - *Rename Vite's output dir* — rejected: touches the build, the embedded-UI serving and every cached client for a naming preference.
+* **Consequences:** Image responses are inert even for user SVG (CSP `sandbox`, `default-src 'none'`). Over-cap assets answer 404 with a distinct detail; their metadata stays visible on `GET /items/:id` and in hit `images` (with `url: null`).

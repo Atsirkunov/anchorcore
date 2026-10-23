@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 /// Provisional per-asset cap (R46.14 replaces it with a measured default).
@@ -547,6 +548,85 @@ pub fn refresh_file_attribution(conn: &Connection, source_id: i64) -> Result<(),
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ----- read side (R46.9) -----
+
+/// Where an asset's bytes are served: never the filesystem, always the DB.
+pub const MEDIA_ROUTE: &str = "/media";
+
+/// An image reference as agents and the UI see it (search hits, agent
+/// citations, item detail). `caption` prefers a person's caption.
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct AssetRef {
+    pub asset_id: String,
+    pub alt: String,
+    pub caption: String,
+    pub mime: String,
+    pub w: Option<i64>,
+    pub h: Option<i64>,
+    /// `GET` path for the bytes; `None` when they are not stored (over cap).
+    pub url: Option<String>,
+}
+
+const REF_COLUMNS: &str = "uid, alt, CASE WHEN manual_caption <> '' THEN manual_caption ELSE caption END, mime, w, h, bytes_hash IS NOT NULL";
+
+fn ref_row(r: &rusqlite::Row) -> rusqlite::Result<AssetRef> {
+    let uid: String = r.get(0)?;
+    let stored: bool = r.get(6)?;
+    Ok(AssetRef {
+        url: stored.then(|| format!("{MEDIA_ROUTE}/{uid}")),
+        asset_id: uid,
+        alt: r.get(1)?,
+        caption: r.get(2)?,
+        mime: r.get(3)?,
+        w: r.get(4)?,
+        h: r.get(5)?,
+    })
+}
+
+/// Images shown with a hit: those on its chunk, plus those elsewhere in
+/// its returned section (merged parent hits span several chunks).
+/// People-`ignored` assets never surface.
+pub fn refs_for_hit(conn: &Connection, chunk_id: i64, section_id: Option<i64>) -> Vec<AssetRef> {
+    let sql = format!(
+        "SELECT {REF_COLUMNS} FROM assets WHERE attribution <> 'ignored' \
+         AND (chunk_id = ?1 OR (?2 IS NOT NULL AND section_id = ?2)) ORDER BY id"
+    );
+    let Ok(mut stmt) = conn.prepare(&sql) else { return Vec::new() };
+    stmt.query_map(params![chunk_id, section_id], ref_row)
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
+/// Every asset of an item (item drill-down), embeds and its own file.
+pub fn refs_for_item(conn: &Connection, item_id: i64) -> Vec<Value> {
+    let sql = format!("SELECT {REF_COLUMNS}, origin, attribution, src FROM assets WHERE item_id = ?1 ORDER BY id");
+    let Ok(mut stmt) = conn.prepare(&sql) else { return Vec::new() };
+    stmt.query_map([item_id], |r| {
+        let mut v = serde_json::to_value(ref_row(r)?).unwrap_or_default();
+        v["origin"] = serde_json::json!(r.get::<_, String>(7)?);
+        v["attribution"] = serde_json::json!(r.get::<_, String>(8)?);
+        v["src"] = serde_json::json!(r.get::<_, String>(9)?);
+        Ok(v)
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+/// One asset for `GET /media/:uid`: (mime, source label, bytes if stored).
+pub type Media = (String, String, Option<Vec<u8>>);
+
+pub fn load_media(conn: &Connection, uid: &str) -> Result<Option<Media>, String> {
+    conn.query_row(
+        "SELECT a.mime, s.label, b.bytes FROM assets a \
+         JOIN ingested_items i ON i.id = a.item_id JOIN sources s ON s.id = i.source_id \
+         LEFT JOIN asset_blobs b ON b.hash = a.bytes_hash WHERE a.uid = ?1",
+        [uid],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
 }
 
 /// Documents whose chunks can carry image references: markdown (not the
