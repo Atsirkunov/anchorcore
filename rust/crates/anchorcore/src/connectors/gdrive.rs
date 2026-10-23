@@ -2,13 +2,15 @@ use super::{ConnectorError, IngestionDoc};
 use reqwest::Client;
 use serde_json::Value;
 
-const DRIVE_BASE: &str = "https://www.googleapis.com/drive/v3";
+const DEFAULT_BASE: &str = "https://www.googleapis.com/drive/v3";
 const LIST_FIELDS: &str = "nextPageToken, files(id, name, mimeType, modifiedTime, size, parents, trashed)";
 
 pub struct GDriveConnector {
     folder_id: String,
     token: String,
     drive_id: String,
+    /// Drive API root (`base_url` config; tests point it at a mock).
+    base: String,
 }
 
 impl GDriveConnector {
@@ -22,7 +24,9 @@ impl GDriveConnector {
         let drive_id = config.get("drive_id").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
         if folder_id.is_empty() { return Err(ConnectorError("gdrive connector requires folder_id".to_string())); }
         if token.is_empty() { return Err(ConnectorError("gdrive connector requires token".to_string())); }
-        Ok(Self { folder_id, token, drive_id })
+        let base = config.get("base_url").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty())
+            .unwrap_or(DEFAULT_BASE).trim_end_matches('/').to_string();
+        Ok(Self { folder_id, token, drive_id, base })
     }
 
     fn headers(&self) -> String { format!("Bearer {}", self.token) }
@@ -67,7 +71,10 @@ impl GDriveConnector {
         }
         super::bump_cursor(next_cursor, updated);
         let source_ref = format!("gdrive:{}", id);
-        docs.push(IngestionDoc { external_id: id, title: name, text, author: String::new(), updated_at: updated, source_ref });
+        // R46.15: no file on disk to re-read, so Office images resolve from
+        // the bytes already downloaded (never a second download).
+        let package = text.contains(crate::assets::EMBEDDED_SCHEME).then(|| std::sync::Arc::new(bytes));
+        docs.push(IngestionDoc { external_id: id, title: name, text, author: String::new(), updated_at: updated, source_ref, package });
     }
 
     /// B57/B28: like the folder connector, report files that failed to
@@ -92,7 +99,7 @@ impl GDriveConnector {
                 ("supportsAllDrives", all_drives.to_string()),
             ];
             if let Some(t) = &page_token { params.push(("pageToken", t.clone())); }
-            let resp = client.get(format!("{}/files", DRIVE_BASE))
+            let resp = client.get(format!("{}/files", self.base))
                 .header("Authorization", self.headers())
                 .query(&params)
                 .send().await.map_err(|e| ConnectorError(e.to_string()))?;
@@ -115,8 +122,8 @@ impl GDriveConnector {
 
     async fn download_bytes(&self, client: &Client, file_id: &str, export_mime: Option<&str>) -> Result<Vec<u8>, ConnectorError> {
         let url = match export_mime {
-            Some(m) => format!("{}/files/{}/export?mimeType={}", DRIVE_BASE, file_id, m),
-            None => format!("{}/files/{}?alt=media", DRIVE_BASE, file_id),
+            Some(m) => format!("{}/files/{}/export?mimeType={}", self.base, file_id, m),
+            None => format!("{}/files/{}?alt=media", self.base, file_id),
         };
         let resp = client.get(&url).header("Authorization", self.headers()).send().await.map_err(|e| ConnectorError(e.to_string()))?;
         if !resp.status().is_success() { return Err(ConnectorError(format!("download {}: {}", resp.status(), resp.text().await.unwrap_or_default()))); }
@@ -150,8 +157,88 @@ fn plan_for(mime: &str, name: &str) -> FilePlan {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Drive API mock: one folder listing (no paging) + `alt=media`
+    /// downloads of `(id, name, mimeType, bytes)` files. Every request
+    /// target lands in `hits`.
+    pub(crate) struct MockDrive {
+        pub base: String,
+        pub hits: Arc<Mutex<Vec<String>>>,
+        _task: tokio::task::JoinHandle<()>,
+    }
+
+    impl MockDrive {
+        pub fn hits_for(&self, needle: &str) -> usize {
+            self.hits.lock().unwrap().iter().filter(|h| h.contains(needle)).count()
+        }
+    }
+
+    pub(crate) async fn spawn_mock(files: Vec<(&'static str, &'static str, &'static str, Vec<u8>)>) -> MockDrive {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(Mutex::new(Vec::new()));
+        let h = hits.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = listener.accept().await else { break };
+                let mut buf = vec![0u8; 8192];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let target = head.split_whitespace().nth(1).unwrap_or("").to_string();
+                h.lock().unwrap().push(target.clone());
+                let listing = serde_json::json!({"files": files.iter().map(|(id, name, mime, _)| serde_json::json!({
+                    "id": id, "name": name, "mimeType": mime, "modifiedTime": "2026-10-20T10:00:00Z"
+                })).collect::<Vec<_>>()});
+                let (status, body) = match target.strip_prefix("/files/").and_then(|r| r.split_once("?alt=media")) {
+                    Some((id, _)) => match files.iter().find(|f| f.0 == id) {
+                        Some(f) => (200, f.3.clone()),
+                        None => (404, b"{}".to_vec()),
+                    },
+                    None if target.starts_with("/files?") => (200, listing.to_string().into_bytes()),
+                    None => (404, b"{}".to_vec()),
+                };
+                let reason = if status == 200 { "OK" } else { "Not Found" };
+                let resp = format!("HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let _ = s.write_all(resp.as_bytes()).await;
+                let _ = s.write_all(&body).await;
+            }
+        });
+        MockDrive { base: format!("http://{addr}"), hits, _task: task }
+    }
+
+    #[tokio::test]
+    async fn office_package_rides_along_only_with_image_markers() {
+        // R46.15: the downloaded docx stays on the doc when its text has
+        // `embedded:` markers; a plain doc carries nothing.
+        use std::io::Write;
+        let docx = |body: &str, media: bool| {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file("word/document.xml", opts).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+            if media {
+                zip.start_file("word/_rels/document.xml.rels", opts).unwrap();
+                zip.write_all(br#"<Relationships><Relationship Id="r1" Target="media/a.png"/></Relationships>"#).unwrap();
+            }
+            zip.finish().unwrap().into_inner()
+        };
+        let pic = r#"<w:document xmlns:w="w" xmlns:wp="wp" xmlns:a="a" xmlns:r="r"><w:body><w:p><w:r><w:t>Flow.</w:t></w:r></w:p><w:p><w:r><w:drawing><wp:docPr id="1" descr="Map"/><a:blip r:embed="r1"/></w:drawing></w:r></w:p></w:body></w:document>"#;
+        let plain = r#"<w:document xmlns:w="w"><w:body><w:p><w:r><w:t>Just text.</w:t></w:r></w:p></w:body></w:document>"#;
+        let mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        let mock = spawn_mock(vec![("d1", "pic.docx", mime, docx(pic, true)), ("d2", "plain.docx", mime, docx(plain, false))]).await;
+        let gc = GDriveConnector::new(&serde_json::json!({"folder_id": "f", "token": "t", "base_url": mock.base})).unwrap();
+        let (docs, skipped, _) = gc.fetch_with_skipped("").await.unwrap();
+        assert!(skipped.is_empty(), "{skipped:?}");
+        let by_id = |id: &str| docs.iter().find(|d| d.external_id == id).unwrap();
+        assert!(by_id("d1").text.contains("](embedded:word/media/a.png)"), "{}", by_id("d1").text);
+        assert!(by_id("d1").package.as_ref().is_some_and(|p| p.starts_with(b"PK")));
+        assert!(by_id("d2").package.is_none());
+        assert_eq!(mock.hits_for("alt=media"), 2, "one download per file");
+    }
 
     #[test]
     fn plan_native_google_types() {

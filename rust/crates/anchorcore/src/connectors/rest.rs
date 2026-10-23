@@ -315,6 +315,7 @@ fn map_item(item: &Value, cfg: &RestConnector, index: usize) -> Option<Ingestion
         text,
         author,
         updated_at: updated,
+        package: None,
     })
 }
 

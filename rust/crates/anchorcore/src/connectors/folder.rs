@@ -163,6 +163,7 @@ impl FolderConnector {
                 author: String::new(),
                 updated_at: mtime,
                 source_ref: f.path.to_string_lossy().to_string(),
+                package: None,
             });
         }
         Ok((docs, skipped, String::new()))

@@ -280,6 +280,7 @@ fn board_doc(board: &Value, items: &[Value], connectors: &[Value]) -> IngestionD
         author: str_at(board, "/owner/name").to_string(),
         updated_at: super::parse_dt(str_at(board, "/modifiedAt")),
         source_ref: if link.is_empty() { board_url(&id) } else { link.to_string() },
+        package: None,
     }
 }
 

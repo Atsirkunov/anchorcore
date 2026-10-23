@@ -16,6 +16,10 @@ pub struct IngestionDoc {
     pub author: String,
     pub updated_at: Option<DateTime<Utc>>,
     pub source_ref: String,
+    /// R46.15: the downloaded Office/ODF package, kept only when the text
+    /// carries `embedded:` image markers and the source has no file on disk
+    /// to re-read (Drive). The asset pass resolves the markers from it.
+    pub package: Option<std::sync::Arc<Vec<u8>>>,
 }
 
 #[derive(Debug)]
@@ -90,6 +94,7 @@ pub fn push_doc(
         author,
         updated_at: updated,
         source_ref: format!("{}:{}", source_prefix, external_id),
+        package: None,
     });
 }
 

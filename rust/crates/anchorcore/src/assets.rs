@@ -6,7 +6,9 @@
 //!
 //! - **embed**: an image a document references (`![alt](src "caption")`,
 //!   `<img>` in markdown, HTML `<img>`/`<figure>` via `extract.rs`). It sits on
-//!   its hosting chunk/section, attribution `embedded`. Folder sources resolve
+//!   its hosting chunk/section, attribution `embedded`. Office/ODF images are
+//!   `embedded:<part>` markers read from the doc package (folder: the file on
+//!   disk; Drive: the downloaded bytes, R46.15). Folder sources resolve
 //!   relative paths inside the source root (a link leaving the root never
 //!   resolves); `data:` URIs resolve for any source. Remote URLs are skipped —
 //!   no network on the ingest path; their alt text is already chunk text.
@@ -351,8 +353,8 @@ fn resolve_file(src: &str, place: &DocPlace, cap: u64) -> Option<Resolved> {
 /// R46.8: one image part inside the document's own zip package (docx
 /// `word/media`, pptx `ppt/media`, ODF `Pictures/`). EMF/WMF and other
 /// unsniffable parts, and decorative images under `MIN_EMBEDDED_PX`, are
-/// skipped. Folder sources only today: other connectors don't keep the
-/// package bytes past extraction.
+/// skipped. Folder sources read the package from disk; Drive hands the
+/// downloaded bytes through (R46.15); other connectors have no packages.
 pub fn resolve_embedded(part: &str, package: &[u8], cap: u64) -> Option<Resolved> {
     use std::io::Read;
     let part = percent_decode(part);
@@ -478,23 +480,25 @@ fn host_chunks(conn: &Connection, item_id: i64) -> Result<Vec<HostChunk>, String
 /// Embedded assets of one document, rebuilt after its chunks are stored:
 /// upsert every resolvable reference (stable uid per src + ordinal), drop
 /// the item's embed rows that no longer appear. File reads happen before
-/// the write transaction opens (single-writer rule).
-pub fn store_embedded(conn: &Connection, source_id: i64, item_id: i64, place: Option<&DocPlace>, cap: u64) -> Result<usize, String> {
+/// the write transaction opens (single-writer rule). `package` is the
+/// document's Office package when it is held in memory (Drive, R46.15);
+/// otherwise `embedded:` markers read it from `place.doc` (folder).
+pub fn store_embedded(conn: &Connection, source_id: i64, item_id: i64, place: Option<&DocPlace>, package: Option<&[u8]>, cap: u64) -> Result<usize, String> {
     let item_uid: String = conn
         .query_row("SELECT COALESCE(uid, '') FROM ingested_items WHERE id=?1", [item_id], |r| r.get(0))
         .map_err(|e| e.to_string())?;
     let mut rows = Vec::new();
     let mut ordinals: HashMap<String, usize> = HashMap::new();
     // R46.8: the document's own package, read once for all its images.
-    let mut package: Option<Option<Vec<u8>>> = None;
+    let mut from_disk: Option<Option<Vec<u8>>> = None;
     for (chunk_id, section_id, path, content) in host_chunks(conn, item_id)? {
         for r in scan_refs(&content) {
             let n = ordinals.entry(r.src.clone()).or_default();
             *n += 1;
             let resolved = match r.src.strip_prefix(EMBEDDED_SCHEME) {
                 Some(part) => {
-                    let pkg = package.get_or_insert_with(|| place.and_then(|p| std::fs::read(&p.doc).ok()));
-                    pkg.as_deref().and_then(|bytes| resolve_embedded(part, bytes, cap))
+                    let pkg = package.or_else(|| from_disk.get_or_insert_with(|| place.and_then(|p| std::fs::read(&p.doc).ok())).as_deref());
+                    pkg.and_then(|bytes| resolve_embedded(part, bytes, cap))
                 }
                 None => resolve(&r.src, place, cap),
             };
