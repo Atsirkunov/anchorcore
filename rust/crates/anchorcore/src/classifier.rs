@@ -43,6 +43,10 @@ const RECORD_PATTERNS: &[&str] = &[
     r"\*\*status:\*\*\s*(confirmed|accepted|approved)",
     r"(?m)^#{1,6}\s+decision\b",
     r"\brevisit triggers?\b",
+    // R45.14: an `Action items` heading or bold label. Stray checkboxes
+    // alone never flip the bucket — `records::parse_record` reads them.
+    r"(?m)^#{1,6}\s+action items?\s*:?\s*$",
+    r"(?m)^\*\*action items?:?\*\*:?\s*$",
 ];
 
 /// R33.6 deterministic bucket assignment: markers → `record`, everything
@@ -264,6 +268,29 @@ mod tests {
         assert_eq!(assign_bucket(d3), "record");
         let d4 = "# Payments service moves to new infrastructure\n\nDev proposed the migration, Sarah approved it after a dry-run showed zero-downtime deploys.\n\n**Status:** Done.";
         assert_eq!(assign_bucket(d4), "record");
+    }
+
+    #[test]
+    fn bucket_action_items_section_is_record() {
+        // R45.14: the section is the only marker; it buckets `record` and parses.
+        for text in [
+            "# Billing sync\n\n## Action items\n- [ ] Alex: draft spec — due 2024-06-23\n- [x] Maya: sign contract\n",
+            "# Billing sync\n\n**Action items:**\n- [ ] Alex: draft spec — due 2024-06-23\n",
+        ] {
+            assert_eq!(assign_bucket(text), "record", "{text:?}");
+            assert!(!crate::records::parse_record(text).actions.is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn bucket_stray_checkboxes_stay_reference() {
+        for text in [
+            "# Setup guide\n\n- [ ] install the CLI\n- [x] create a token\n",
+            "# Workflow\n\nList the action items in the ticket body.\n",
+            "# CI\n\n## Actions\n- build\n",
+        ] {
+            assert_eq!(assign_bucket(text), "reference", "{text:?}");
+        }
     }
 
     #[test]
