@@ -471,3 +471,14 @@ ADR log. Append newest first.
   - *Re-bucket unbucketed items inside the migration* — rejected: bucketing needs the pipeline's text path. Their legacy rows go, and a Reclassify brings back whatever their structure supports.
   - *Proceed without a backup when `VACUUM INTO` fails* — rejected: the row's DoD is "backup first".
 * **Consequences:** upgraded installs lose most model-era entities on first boot. Release notes must say "run Reclassify on each source to rebuild decisions/actions from structure" and point to the backup file. A person who verified a legacy row loses that mark (accepted in §7.2.3).
+
+---
+
+## 2026-10-26 — R30.2: embed concurrency kept, but the bottleneck is model compute
+
+* **Decision:** `Embedder::embed` keeps up to `ANCHOR_EMBED_CONCURRENCY` batches in flight (default 2, cap 8), with one pooled HTTP client and results in input order. Cross-document batching is not built. Re-sync cost is cut with exact-match vector reuse instead (R43.12).
+* **Context:** R30.7 read "82 s of a 91 s file were 263 back-to-back embed batches" as a sequencing problem. Measured back to back against local Ollama (`nomic-embed-text`, Metal), throughput was the same at concurrency 1, 2 and 4: ~35 chunks/s, which matches the 2026-10-21 probe's Ollama rate. Ollama computes embeddings one request at a time, so the wait is model compute. 600 files: 417 s → 419 s; a 4504-chunk file: 240 s → 227 s.
+* **Alternatives considered:**
+  - *Batch across documents* — rejected: it can't raise a compute-bound rate, and it would break the per-document phase order (embed is the last phase of each file's finalize).
+  - *Drop the concurrency knob* — rejected: remote OpenAI-compatible endpoints are latency-bound, and there overlap is a real gain. Default 2 costs nothing locally.
+* **Consequences:** first-index speed with local Ollama is set by the model. The built-in embedder (R45.4) is the next lever there (Metal f16 measured faster per query). For re-syncs, R43.12 removes the embed cost of unchanged chunks; the tags phase is now the largest re-sync cost (R30.5).

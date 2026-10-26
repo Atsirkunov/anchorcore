@@ -7,6 +7,66 @@ use crate::embed_fp::{fingerprint, model_family, record_active_fingerprint, PROV
 use crate::settings::SettingsService;
 
 pub const BATCH_SIZE: usize = 32;
+/// R30.2: embed batches in flight per `embed` call (`ANCHOR_EMBED_CONCURRENCY`).
+const CONCURRENCY_DEFAULT: usize = 2;
+const CONCURRENCY_MAX: usize = 8;
+
+pub(crate) fn embed_concurrency(raw: Option<&str>) -> usize {
+    raw.and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(CONCURRENCY_DEFAULT)
+        .clamp(1, CONCURRENCY_MAX)
+}
+
+/// R30.2: one pooled client for every embed call (was one per call); the
+/// timeout is set per request so a settings change applies immediately.
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
+#[derive(serde::Deserialize)]
+struct EmbedResponse {
+    data: Vec<EmbedItem>,
+}
+
+#[derive(serde::Deserialize)]
+struct EmbedItem {
+    index: usize,
+    embedding: Vec<f32>,
+}
+
+/// One request's settings, shared by its batches.
+struct EmbedCall {
+    url: String,
+    model: String,
+    api_key: String,
+    timeout: std::time::Duration,
+}
+
+impl EmbedCall {
+    async fn batch(&self, batch: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
+        let payload = serde_json::json!({"model": self.model, "input": batch});
+        let mut req = http_client().post(&self.url).timeout(self.timeout).json(&payload);
+        if !self.api_key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", self.api_key));
+        }
+        // R11.2: never persist degraded vectors — surface the error so the
+        // pipeline leaves the chunks NULL for the backfill.
+        let resp = req.send().await.map_err(|e| degraded(format!("embed failed: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(degraded(format!("embed status {}", resp.status())));
+        }
+        let body: EmbedResponse = resp.json().await.map_err(|e| degraded(format!("embed json failed: {e}")))?;
+        let mut items = body.data;
+        items.sort_by_key(|it| it.index);
+        Ok(items.into_iter().map(|it| it.embedding).collect())
+    }
+}
+
+fn degraded(msg: String) -> String {
+    tracing::warn!("{}, not persisting degraded", msg);
+    msg
+}
 
 /// Pack f32 vectors as little-endian bytes — mirrors `backend/app/embedder.py:15` `pack_f32`.
 pub fn pack_f32(vectors: &[Vec<f32>]) -> Vec<u8> {
@@ -169,61 +229,27 @@ impl Embedder {
         crate::common::provider_trusted(&self.base_url())
     }
 
+    /// Embed in `BATCH_SIZE` requests, up to `ANCHOR_EMBED_CONCURRENCY` in
+    /// flight (R30.2); vectors come back in input order, and the first
+    /// failed batch fails the call.
     pub async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
+        use futures_util::{StreamExt, TryStreamExt};
         if texts.is_empty() {
             return Ok(vec![]);
         }
-        let model = self.embed_model_name();
-        let base = self.base_url();
-        let api_key = self.settings.get("embed_api_key", None).unwrap_or_default();
-        let timeout = self.settings.get_float("embed_timeout", 60.0) as u64;
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(timeout))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let mut vectors = Vec::new();
-        for batch in texts.chunks(BATCH_SIZE) {
-            let payload = serde_json::json!({"model": model, "input": batch});
-            let url = format!("{}/v1/embeddings", base.trim_end_matches('/'));
-            let mut req = client.post(&url).json(&payload);
-            if !api_key.is_empty() {
-                req = req.header("Authorization", format!("Bearer {}", api_key));
-            }
-            let resp = match req.send().await {
-                Ok(r) => r,
-                Err(e) => {
-                    // R11.2: do not persist degraded deterministic embeddings — surface error so pipeline leaves NULL
-                    tracing::warn!("embed failed ({}), not persisting degraded", e);
-                    return Err(format!("embed failed: {}", e));
-                }
-            };
-            if !resp.status().is_success() {
-                tracing::warn!("embed status {}, not persisting degraded", resp.status());
-                return Err(format!("embed status {}", resp.status()));
-            }
-            let j: serde_json::Value = match resp.json().await {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!("embed json failed ({}), not persisting degraded", e);
-                    return Err(format!("embed json failed: {}", e));
-                }
-            };
-            let data = j.get("data").and_then(|v| v.as_array()).ok_or("missing data")?;
-            let mut sorted: Vec<(usize, Vec<f32>)> = data
-                .iter()
-                .filter_map(|item| {
-                    let idx = item.get("index")?.as_u64()? as usize;
-                    let emb = item.get("embedding")?.as_array()?;
-                    let v: Vec<f32> = emb.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect();
-                    Some((idx, v))
-                })
-                .collect();
-            sorted.sort_by_key(|(i, _)| *i);
-            for (_, v) in sorted {
-                vectors.push(v);
-            }
-        }
-        Ok(vectors)
+        let call = EmbedCall {
+            url: format!("{}/v1/embeddings", self.base_url().trim_end_matches('/')),
+            model: self.embed_model_name(),
+            api_key: self.settings.get("embed_api_key", None).unwrap_or_default(),
+            timeout: std::time::Duration::from_secs(self.settings.get_float("embed_timeout", 60.0) as u64),
+        };
+        let concurrency = embed_concurrency(std::env::var("ANCHOR_EMBED_CONCURRENCY").ok().as_deref());
+        let batches: Vec<Vec<String>> = texts.chunks(BATCH_SIZE).map(<[String]>::to_vec).collect();
+        let parts: Vec<Vec<Vec<f32>>> = futures_util::stream::iter(batches.into_iter().map(|b| call.batch(b)))
+            .buffered(concurrency)
+            .try_collect()
+            .await?;
+        Ok(parts.into_iter().flatten().collect())
     }
 
     /// B58: strict query embedding — `None` when remote is unavailable, so
@@ -427,6 +453,69 @@ mod tests {
         let svc = std::sync::Arc::new(crate::settings::SettingsService::new(store));
         let e = Embedder::new(svc);
         assert!(e.provider_is_local());
+    }
+
+    #[test]
+    fn embed_concurrency_defaults_and_caps() {
+        assert_eq!(embed_concurrency(None), 2);
+        assert_eq!(embed_concurrency(Some("junk")), 2);
+        assert_eq!(embed_concurrency(Some("0")), 1);
+        assert_eq!(embed_concurrency(Some(" 4 ")), 4);
+        assert_eq!(embed_concurrency(Some("99")), 8);
+    }
+
+    /// R30.2: batches run concurrently but vectors stay in input order, even
+    /// when a later batch answers first and items come back unsorted.
+    #[tokio::test]
+    async fn embed_keeps_order_across_concurrent_batches() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let (inf, pk) = (in_flight.clone(), peak.clone());
+        let app = axum::Router::new().route(
+            "/v1/embeddings",
+            axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let (inf, pk) = (inf.clone(), pk.clone());
+                async move {
+                    let now = inf.fetch_add(1, Ordering::SeqCst) + 1;
+                    pk.fetch_max(now, Ordering::SeqCst);
+                    let inputs: Vec<String> =
+                        body["input"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+                    let first: f32 = inputs[0].trim_start_matches("t").parse().unwrap();
+                    // the first batch answers last
+                    let delay = if first == 0.0 { 150 } else { 10 };
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    let mut data: Vec<serde_json::Value> = inputs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, t)| serde_json::json!({"index": i, "embedding": [t.trim_start_matches("t").parse::<f32>().unwrap()]}))
+                        .collect();
+                    data.reverse();
+                    inf.fetch_sub(1, Ordering::SeqCst);
+                    axum::Json(serde_json::json!({"data": data}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
+        std::env::set_var("ANCHOR_EMBED_BASE_URL", format!("http://127.0.0.1:{port}"));
+        std::env::set_var("ANCHOR_EMBED_CONCURRENCY", "3");
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let svc = Arc::new(crate::settings::SettingsService::new(store));
+        svc.set_data_dir(dir.path());
+        let e = Embedder::new(svc);
+        let texts: Vec<String> = (0..100).map(|i| format!("t{i}")).collect();
+        let out = e.embed(texts).await;
+        std::env::remove_var("ANCHOR_EMBED_BASE_URL");
+        std::env::remove_var("ANCHOR_EMBED_CONCURRENCY");
+        let out = out.unwrap();
+        assert_eq!(out.len(), 100);
+        assert!(out.iter().enumerate().all(|(i, v)| v == &vec![i as f32]), "order kept");
+        assert!(peak.load(Ordering::SeqCst) >= 2, "batches overlapped");
+        assert!(peak.load(Ordering::SeqCst) <= 3, "capped at the knob");
     }
 
     #[test]

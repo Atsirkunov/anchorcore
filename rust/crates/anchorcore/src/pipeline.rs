@@ -1160,12 +1160,13 @@ impl ClassifyCtx {
         update_window_hashes(self).await?;
         perf.mark("hashes");
         self.check_cancelled().await?;
-        store_doc_chunks(self).await?;
+        let reuse = store_doc_chunks(self).await?;
         perf.mark("chunks");
         store_doc_assets(self).await?;
         perf.mark("assets");
         self.check_cancelled().await?;
         create_summaries(self).await?;
+        restore_vectors(self, reuse).await?;
         perf.mark("summaries");
         self.check_cancelled().await?;
         create_tags(self).await?;
@@ -1622,7 +1623,9 @@ fn chunk_path_with_page(path: &str, start: u32, end: u32) -> String {
     }
 }
 
-async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
+/// Rebuild the item's sections + document chunks; returns the vectors of the
+/// chunks it deleted (R43.12) so summaries can take theirs back too.
+async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<VectorReuse, String> {
     let doc_type = ctx.doc_type.clone();
     // symbol families dispatch on the filename; opaque external ids (Drive)
     // degrade to root-only sections, never to an error
@@ -1640,11 +1643,20 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
         || crate::markdown::is_markdown_filename(&ctx.external_id)
         || crate::markdown::is_markdown_filename(&ctx.base_ref);
     run_db(&ctx.data_dir, move |conn| {
+        // R43.12: clean + chunk before taking the write lock — a large PDF
+        // used to hold BEGIN IMMEDIATE through all of it and starve writers.
+        let planning = std::time::Instant::now();
+        let (metas, chunk_metas) = plan_doc_chunks(&doc_type, &filename, &full_text, skip_clean);
+        // Read outside the lock too: a stale read only misses a reuse (the
+        // vector is then re-embedded), it never attaches a wrong one.
+        let reuse = old_vectors(conn, item_id)?;
+        let planned_ms = planning.elapsed().as_millis() as u64;
         // F-03: delete+insert is one transaction — a crash between the
         // DELETEs and the re-inserts used to strand the item chunk-less.
         // Early `?` returns skip COMMIT and this fresh per-call connection
         // rolls back on drop; only the fall-through path commits.
         conn.execute("BEGIN IMMEDIATE", []).map_err(|e| e.to_string())?;
+        let locked = std::time::Instant::now();
         // R46.12: a person's caption chunk is not the document's to drop;
         // `captions::refresh_for_item` re-points it after the rebuild.
         let _ = conn.execute(
@@ -1652,48 +1664,120 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
             [item_id],
         );
         let _ = conn.execute("DELETE FROM sections WHERE item_id=?1", [item_id]);
-        // B12 parity: clean BEFORE chunking so boundaries/embeddings/FTS
-        // tokens are clean (the stored item text stays raw, like archived).
-        let cleaned = if skip_clean {
-            full_text.clone()
-        } else {
-            crate::chunking::clean_doc_text(&full_text)
-        };
-        let (metas, chunk_metas) = crate::chunking::chunk_for_doc_type(&doc_type, &filename, &cleaned);
-        // R36.10: PDF marker text gains breadcrumb page numbers + marker-free
-        // chunk content; anything without markers passes through untouched.
-        let (metas, chunk_metas) = apply_page_plan(metas, chunk_metas, &cleaned);
-        // insert sections in order so parent idx maps correctly
-        let mut section_ids: Vec<i64> = Vec::with_capacity(metas.len());
-        for meta in &metas {
-            let parent_db = meta.parent.and_then(|p| section_ids.get(p).copied());
-            conn.execute(
-                "INSERT INTO sections (item_id, parent_id, level, title, path, line_start, line_end, kind, meta, created_at, uid) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,datetime('now'),?10)",
-                rusqlite::params![item_id, parent_db, meta.level, meta.title, meta.path, meta.line_start, meta.line_end, meta.kind, meta.meta, crate::db::new_uid()],
-            )
-            .map_err(|e| e.to_string())?;
-            section_ids.push(conn.last_insert_rowid());
-        }
-        // skip empty-title root sections that had no content? we kept all, but if root is empty with path="" it will have been inserted;
-        // chunks from that root will still point to it — keep for completeness. Alternative: skip inserts where title empty and no chunks map.
-        for (idx, cm) in chunk_metas.iter().enumerate() {
-            let sec_db = cm.section_idx.and_then(|s| section_ids.get(s).copied());
-            let r = if chunk_metas.len() > 1 {
-                format!("{} §{}", base_ref, idx + 1)
-            } else {
-                base_ref.clone()
-            };
-            conn.execute(
-                "INSERT INTO chunks (item_id, kind, source_ref, content, section_id, level, path, line_start, line_end, created_at, uid) VALUES (?1,'document',?2,?3,?4,?5,?6,?7,?8,datetime('now'),?9)",
-                rusqlite::params![item_id, r, cm.content, sec_db, cm.level, cm.path, cm.line_start, cm.line_end, crate::db::new_uid()],
-            )
-            .map_err(|e| e.to_string())?;
-        }
+        let section_ids = insert_sections(conn, item_id, &metas)?;
+        insert_doc_chunks(conn, item_id, &base_ref, &chunk_metas, &section_ids, &reuse)?;
         conn.execute("COMMIT", []).map_err(|e| e.to_string())?;
+        tracing::debug!(
+            target: "anchorcore::perf",
+            item_id,
+            chunks = chunk_metas.len(),
+            old_vectors = reuse.len(),
+            planned_ms,
+            held_ms = locked.elapsed().as_millis() as u64,
+            "chunks write lock"
+        );
         // New sections: captions targeting one re-resolve by path.
-        crate::captions::refresh_for_item(conn, item_id)
+        crate::captions::refresh_for_item(conn, item_id)?;
+        Ok(reuse)
     })
     .await
+}
+
+/// B12 parity: clean BEFORE chunking so boundaries/embeddings/FTS tokens are
+/// clean (the stored item text stays raw). R36.10: PDF marker text gains
+/// breadcrumb page numbers; anything without markers passes through.
+fn plan_doc_chunks(
+    doc_type: &str,
+    filename: &str,
+    full_text: &str,
+    skip_clean: bool,
+) -> (Vec<crate::chunking::SectionMeta>, Vec<crate::chunking::ChunkMeta>) {
+    let cleaned = if skip_clean { full_text.to_string() } else { crate::chunking::clean_doc_text(full_text) };
+    let (metas, chunk_metas) = crate::chunking::chunk_for_doc_type(doc_type, filename, &cleaned);
+    apply_page_plan(metas, chunk_metas, &cleaned)
+}
+
+/// R43.12: vectors of the item's rebuilt chunks (document + summaries)
+/// keyed by `(kind, path, content)` — `embed_input` reads only path and
+/// content — so an unchanged chunk keeps its vector across a re-chunk.
+type VectorKey = (String, String, String);
+type VectorReuse = std::collections::HashMap<VectorKey, (Vec<u8>, Option<String>)>;
+
+fn old_vectors(conn: &Connection, item_id: i64) -> Result<VectorReuse, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT kind, path, content, embedding, embed_fp FROM chunks \
+             WHERE item_id=?1 AND entity_id IS NULL AND kind IN ('document','section_summary','doc_summary') \
+             AND embedding IS NOT NULL",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([item_id], |r| Ok(((r.get(0)?, r.get(1)?, r.get(2)?), (r.get(3)?, r.get(4)?))))
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// R43.12: summaries are rebuilt after the document chunks; give unchanged
+/// ones their old vector back (the vec index follows via its trigger).
+async fn restore_vectors(ctx: &ClassifyCtx, reuse: VectorReuse) -> Result<(), String> {
+    if !reuse.keys().any(|(kind, _, _)| kind != "document") {
+        return Ok(());
+    }
+    let item_id = ctx.item_id;
+    run_db(&ctx.data_dir, move |conn| {
+        let pending: Vec<(i64, VectorKey)> = conn
+            .prepare("SELECT id, kind, path, content FROM chunks WHERE item_id=?1 AND embedding IS NULL AND kind IN ('section_summary','doc_summary')")
+            .and_then(|mut st| st.query_map([item_id], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))?.collect())
+            .map_err(|e| e.to_string())?;
+        conn.execute("BEGIN IMMEDIATE", []).map_err(|e| e.to_string())?;
+        for (id, key) in pending {
+            let Some((blob, fp)) = reuse.get(&key) else { continue };
+            conn.execute("UPDATE chunks SET embedding=?1, embed_fp=?2 WHERE id=?3", rusqlite::params![blob, fp, id])
+                .map_err(|e| e.to_string())?;
+        }
+        conn.execute("COMMIT", []).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+}
+
+/// Sections in order, so a parent index maps to an already-inserted id.
+fn insert_sections(conn: &Connection, item_id: i64, metas: &[crate::chunking::SectionMeta]) -> Result<Vec<i64>, String> {
+    let mut section_ids: Vec<i64> = Vec::with_capacity(metas.len());
+    for meta in metas {
+        let parent_db = meta.parent.and_then(|p| section_ids.get(p).copied());
+        conn.execute(
+            "INSERT INTO sections (item_id, parent_id, level, title, path, line_start, line_end, kind, meta, created_at, uid) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,datetime('now'),?10)",
+            rusqlite::params![item_id, parent_db, meta.level, meta.title, meta.path, meta.line_start, meta.line_end, meta.kind, meta.meta, crate::db::new_uid()],
+        )
+        .map_err(|e| e.to_string())?;
+        section_ids.push(conn.last_insert_rowid());
+    }
+    Ok(section_ids)
+}
+
+fn insert_doc_chunks(
+    conn: &Connection,
+    item_id: i64,
+    base_ref: &str,
+    chunk_metas: &[crate::chunking::ChunkMeta],
+    section_ids: &[i64],
+    reuse: &VectorReuse,
+) -> Result<(), String> {
+    for (idx, cm) in chunk_metas.iter().enumerate() {
+        let sec_db = cm.section_idx.and_then(|s| section_ids.get(s).copied());
+        let r = if chunk_metas.len() > 1 { format!("{} §{}", base_ref, idx + 1) } else { base_ref.to_string() };
+        let (embedding, embed_fp) = match reuse.get(&("document".to_string(), cm.path.clone(), cm.content.clone())) {
+            Some((blob, fp)) => (Some(blob), fp.as_deref()),
+            None => (None, None),
+        };
+        conn.execute(
+            "INSERT INTO chunks (item_id, kind, source_ref, content, section_id, level, path, line_start, line_end, embedding, embed_fp, created_at, uid) VALUES (?1,'document',?2,?3,?4,?5,?6,?7,?8,?9,?10,datetime('now'),?11)",
+            rusqlite::params![item_id, r, cm.content, sec_db, cm.level, cm.path, cm.line_start, cm.line_end, embedding, embed_fp, crate::db::new_uid()],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 // embed (gated) — wire embedder.embed_gated + sync_vec (P0 3.2)
@@ -1847,6 +1931,73 @@ mod tests {
         assert_eq!((total, processed), (10, 10), "changed items must not clobber scanned totals");
         assert!(result.contains("\"items\":3"), "result: {}", result);
         assert!(result.contains("\"unchanged\":7"), "result: {}", result);
+    }
+
+    /// R43.12: a one-character edit re-chunks the document, but every chunk
+    /// whose `(path, content)` is unchanged keeps its vector and fingerprint;
+    /// only the edited chunk is left for the embed phase.
+    #[tokio::test]
+    async fn rechunk_keeps_vectors_of_unchanged_chunks() {
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config, enabled, last_sync_cursor, error_count) VALUES ('s','folder','{}',1,'',0)", []).unwrap();
+        let sid = conn.last_insert_rowid();
+        conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale) VALUES (?1,'g.md','g.md','t','h','',0)", [sid]).unwrap();
+        let iid = conn.last_insert_rowid();
+        drop(conn);
+        let store = crate::secrets::SecretStore::new(dir.path().join("secrets.enc"));
+        let settings = Arc::new(crate::settings::SettingsService::new(store));
+        settings.set_data_dir(dir.path());
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let md = |word: &str| format!("# Guide\n\n## Alpha\nalpha body {word}\n\n## Beta\nbeta body stays\n\n## Gamma\ngamma body stays\n");
+        let run = |text: String| {
+            let doc = IngestionDoc {
+                external_id: "g.md".to_string(),
+                title: "g.md".to_string(),
+                text,
+                author: String::new(),
+                updated_at: None,
+                source_ref: "g.md".to_string(),
+                package: None,
+            };
+            let mut ctx = ClassifyCtx::new(&data_dir, sid, 0, &doc, false, settings.clone(), classifier.clone(), embedder.clone());
+            ctx.item_id = iid;
+            ctx.doc_type = "reference".to_string();
+            ctx
+        };
+        let first = run(md("one"));
+        store_doc_chunks(&first).await.unwrap();
+        create_summaries(&first).await.unwrap();
+        let conn = crate::db::init_db(&db_path).unwrap();
+        conn.execute("UPDATE chunks SET embedding = CAST(content AS BLOB), embed_fp = 'fp:test:1' WHERE item_id = ?1", [iid]).unwrap();
+        let before: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE item_id=?1", [iid], |r| r.get(0)).unwrap();
+        let summaries: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chunks WHERE item_id=?1 AND kind IN ('section_summary','doc_summary')", [iid], |r| r.get(0))
+            .unwrap();
+        assert!(summaries >= 2, "summaries are part of the rebuild: {summaries}");
+        let second = run(md("onf"));
+        let reuse = store_doc_chunks(&second).await.unwrap();
+        create_summaries(&second).await.unwrap();
+        restore_vectors(&second, reuse).await.unwrap();
+        let rows: Vec<(String, Option<Vec<u8>>, Option<String>)> = conn
+            .prepare("SELECT content, embedding, embed_fp FROM chunks WHERE item_id=?1 ORDER BY id")
+            .unwrap()
+            .query_map([iid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(rows.len() as i64, before);
+        for (content, emb, fp) in &rows {
+            if content.contains("alpha") {
+                assert!(emb.is_none() && fp.is_none(), "edited chunk must re-embed: {content:?}");
+            } else {
+                assert_eq!(emb.as_deref(), Some(content.as_bytes()), "unchanged chunk keeps its vector: {content:?}");
+                assert_eq!(fp.as_deref(), Some("fp:test:1"));
+            }
+        }
     }
 
     #[tokio::test]
