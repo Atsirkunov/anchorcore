@@ -71,9 +71,12 @@ flowchart LR
   reported `skipped`, never purged.
 - **Incremental sync:** folder files are re-extracted only when mtime/size change and re-processed only
   when the content hash changes. API connectors use cursors/stamps where available.
-- **Chunking** (`chunking.rs`, `markdown.rs`): markdown by fence-aware blocks with line ranges; code by
-  symbols; config by keys; prose by headings + paragraph packing. Every chunk carries a section breadcrumb
-  (`path`) used in its embedding input.
+- **Chunking** (`chunking.rs`, `markdown.rs`, `config_chunks.rs`): markdown by fence-aware blocks with line
+  ranges; code by symbols; config (YAML/JSON/TOML) by rule-level sections — a top-level key, or one entry of
+  a top-level list of mappings, with identifying scalars (`settle_code`, `item_type`, `*_id`…) promoted into
+  the breadcrumb and keys grouped into 500–800-char chunks; prose by headings + paragraph packing. Every
+  chunk carries a section breadcrumb (`path`) used in its embedding input. Each item records the chunker
+  generation that wrote its chunks (`chunker_version`); boot re-chunks older generations from stored text.
 - **Records** (`records.rs`): `Decision:` headings/fields, `Status:`, `Owner:`, ADR front matter,
   `Action items` bullets and checkboxes become entities with record fields (status, due, supersedes…).
   Never prose sentences. Everything starts `unverified`; only a person verifies.
@@ -126,7 +129,7 @@ sequenceDiagram
 | Table | Holds |
 |---|---|
 | `sources` | connector, config (no secrets), label `internal\|public\|sensitive`, sync cursor |
-| `ingested_items` | one row per document: text, content/processed hashes, stat fingerprint, bucket (`doc_type`), manual `is_pii` / `is_glossary` marks |
+| `ingested_items` | one row per document: text, content/processed hashes, stat fingerprint, bucket (`doc_type`), manual `is_pii` / `is_glossary` marks, `chunker_version` |
 | `sections` | heading tree per item: parent, level, path, extractive summary, line range |
 | `chunks` | `document` / `entity` / `caption` leaves + `section_summary` / `doc_summary`; path, line range, embedding + `embed_fp` |
 | `chunks_fts`, `vec_chunks` | FTS5 index; plain embeddings table (no `sqlite-vec` linked — retrieval scans) |

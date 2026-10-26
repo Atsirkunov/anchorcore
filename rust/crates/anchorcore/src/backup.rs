@@ -458,7 +458,7 @@ fn export_items(conn: &Connection, zip: &mut ArchiveWriter, opts: &ExportOptions
     let sql = format!(
         "SELECT json_object('type','item','uid',i.uid,'source_uid',s.uid,'external_id',i.external_id, \
             'title',i.title,'doc_type',i.doc_type,'text',i.text,'content_hash',i.content_hash, \
-            'processed_hash',i.processed_hash, \
+            'processed_hash',i.processed_hash,'chunker_version',i.chunker_version, \
             'author',i.author,'updated_at',i.updated_at,'stale',{stale},'is_pii',{is_pii}, \
             'is_glossary',{is_glossary},'created_at',i.created_at) \
          FROM ingested_items i JOIN sources s ON s.id = i.source_id WHERE 1=1{} ORDER BY i.id",
@@ -1325,9 +1325,17 @@ fn apply_item(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
 
 /// R45.13: the glossary mark round-trips with the item (old archives read
 /// as unmarked); the file's rows arrive as `vocab` records.
+///
+/// R36.2: so does the chunker generation of the archived chunks (old
+/// archives read as generation 1); `finalize_report` re-chunks whatever
+/// arrived older than the current chunker.
 fn apply_item_glossary(ctx: &mut ImportCtx, rec: &Value, id: i64) -> Result<(), String> {
+    let generation = rec.get("chunker_version").and_then(Value::as_i64).unwrap_or(crate::chunking::BASE_CHUNKER_VERSION);
     ctx.conn
-        .execute("UPDATE ingested_items SET is_glossary = ?1 WHERE id = ?2", rusqlite::params![bool_int(rec, "is_glossary"), id])
+        .execute(
+            "UPDATE ingested_items SET is_glossary = ?1, chunker_version = ?2 WHERE id = ?3",
+            rusqlite::params![bool_int(rec, "is_glossary"), generation, id],
+        )
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -2235,6 +2243,11 @@ fn finalize_report(
     }
     // tag vectors are local; rebuild any that arrived without one (R25.3)
     let _ = crate::tags::ensure_embeddings(conn);
+    // R36.2: chunks an older chunker wrote are rebuilt now (before the
+    // re-embed scan, which then picks up their vector-less chunks).
+    if let Err(e) = crate::pipeline::rechunk_outdated_items(conn) {
+        report.warnings.push(format!("chunker upgrade skipped: {e}"));
+    }
     report.reembed_source_ids = sources_missing_embeddings(conn)?;
     Ok(())
 }
@@ -2961,6 +2974,24 @@ mod tests {
         let conn = db(dst.path());
         let got: String = conn.query_row("SELECT processed_hash FROM ingested_items", [], |r| r.get(0)).unwrap();
         assert_eq!(got, "h1");
+    }
+
+    #[test]
+    fn item_chunker_version_survives_export_import() {
+        // R36.2: the chunker generation travels with the item, so a restore
+        // of current chunks is not re-chunked (and an old archive would be).
+        let _env = EnvGuard::file_only();
+        let src = tempdir().unwrap();
+        let sid = seed(src.path());
+        let conn = db(src.path());
+        conn.execute("UPDATE ingested_items SET chunker_version = 7 WHERE source_id = ?1", [sid]).unwrap();
+        drop(conn);
+        let archive = exported(src.path(), ExportOptions::default());
+        let dst = tempdir().unwrap();
+        import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
+        let conn = db(dst.path());
+        let got: i64 = conn.query_row("SELECT chunker_version FROM ingested_items", [], |r| r.get(0)).unwrap();
+        assert_eq!(got, 7);
     }
 
     #[test]

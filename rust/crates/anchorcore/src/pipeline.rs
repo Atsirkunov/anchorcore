@@ -11,6 +11,10 @@ use crate::embedder::Embedder;
 use crate::secrets::SecretStore;
 use crate::settings::SettingsService;
 
+// R36.2: chunker-version stamp + boot-time re-chunk of outdated items.
+mod rechunk;
+pub use rechunk::rechunk_outdated_items;
+
 fn content_hash(text: &str) -> String {
     crate::hashing::content_hash(text)
 }
@@ -1666,6 +1670,7 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<VectorReuse, String> {
         let _ = conn.execute("DELETE FROM sections WHERE item_id=?1", [item_id]);
         let section_ids = insert_sections(conn, item_id, &metas)?;
         insert_doc_chunks(conn, item_id, &base_ref, &chunk_metas, &section_ids, &reuse)?;
+        rechunk::stamp_chunker_version(conn, item_id, &filename)?;
         conn.execute("COMMIT", []).map_err(|e| e.to_string())?;
         tracing::debug!(
             target: "anchorcore::perf",
@@ -2470,7 +2475,7 @@ mod tests {
 
     #[tokio::test]
     async fn config_files_skip_extraction_and_chunk_by_key() {
-        // R33.4: a YAML file yields zero entities and key sections — same
+        // R33.4/R36.2: a YAML file yields zero entities and key sections — same
         // harness as the code-skip test. The doc_type stays a detected prose
         // type (not asserted: live Ollama would answer the detect call).
         let dir = tempdir().unwrap();
@@ -2508,7 +2513,10 @@ mod tests {
         assert_eq!(entities, 0, "configs yield no entities");
         let mut stmt = conn.prepare("SELECT path FROM sections WHERE item_id=?1").unwrap();
         let paths: Vec<String> = stmt.query_map([iid], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
-        assert!(paths.iter().any(|p| p == "server > tls > cert_file"), "key breadcrumb stored: {paths:?}");
+        // R36.2: rule-level sections (top-level keys), stamped generation 2.
+        assert_eq!(paths, vec!["server".to_string()], "top-level key section stored: {paths:?}");
+        let generation: i64 = conn.query_row("SELECT chunker_version FROM ingested_items WHERE id=?1", [iid], |r| r.get(0)).unwrap();
+        assert_eq!(generation, crate::chunking::CONFIG_CHUNKER_VERSION);
     }
 
     #[tokio::test]
