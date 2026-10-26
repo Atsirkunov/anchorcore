@@ -4,6 +4,18 @@ ADR log. Append newest first.
 
 ---
 
+## 2026-10-26 — R45.6: wizard picks the answer model by RAM; explicit size tags must match exactly
+
+* **Decision:** `GET /system/onboarding` gains `machine` = `{total_memory_bytes, recommended_answer_model, answer_models[]}` (`machine.rs`: `sysctlbyname("hw.memsize")` on macOS, `/proc/meminfo` capped by cgroup v2 `memory.max` on Linux, `GlobalMemoryStatusEx` on Windows; `null` elsewhere). The catalog lives server-side so the setup skill can read the same recommendation: `llama3.2:1b` (any RAM), `llama3.2:3b` (8 GB), `qwen2.5:7b` (16 GB), `qwen2.5:14b` (32 GB), `qwen2.5:32b` (64 GB); the recommendation is the largest whose floor the machine meets with 0.5 GiB firmware slack, and `llama3.2:3b` (the old default) when RAM is unknown. Model readiness (`ollama.rs`) now requires an explicit non-`latest` tag to be installed exactly; untagged/`:latest` names still match any tag of the family. The wizard is mode-first: step 1 sets the mode and search embeddings (built-in model first, Ollama `nomic-embed-text` offered as the faster alternative when Ollama runs); local mode then picks the answer model, agent mode picks a channel (MCP or the REST skill, neither preselected).
+* **Context:** B54's family-only match made a configured `qwen2.5:14b` read "ready" when only `qwen2.5:7b` was installed, so a size picker would have reported success and every answer would 404. The R45.17 note that the wizard's missing-models line wasn't mode-aware is resolved by splitting it: embeddings and answer models are checked in their own steps.
+* **Alternatives considered:**
+  - *Catalog in the frontend, RAM only from the server* — rejected: the REST/skill setup path would have no recommendation (no feature UI-only).
+  - *Add the `sysinfo` crate* — rejected: a new dependency tree for one number; the three platform calls need no new crate (`libc` was already in the lock, `windows-sys` gains one feature).
+  - *Exact matching for every name* — rejected: `nomic-embed-text` configured vs `nomic-embed-text:v1.5` installed must keep working.
+* **Consequences:** model choices (qwen2.5 for 16 GB+) are a product call to revisit as Ollama's catalog moves; only `machine.rs` changes. Windows RAM detection compiles only in CI (MinGW).
+
+---
+
 ## 2026-10-21 — R45.2: two answer modes (`llm_mode` agent/local), `agent_compose`
 
 * **Decision:** one setting, `llm_mode` = `agent` | `local` (default `local`, so upgrades keep today's behavior). In `agent` mode `ask` / `POST /qa` / `POST /qa/public` keep scope + `public_only` + the label gate + fusion but skip `rewrite_followup` and `generate_answer` — zero chat calls — and return `mode: "agent_compose"`: a one-line compose instruction as `answer`, citations always with content, and no warning (nothing degraded). `answer_ready` is true in agent mode (`answer::answer_ready`); `/system/status` reports `llm_mode`. `/qa/search` is mode-independent. The agent has two equal channels — MCP and the REST `anchorcore-search` skill — and no feature may be MCP-only. A BYO cloud answer endpoint is an advanced variant of `local` on the same code path, not a third mode.

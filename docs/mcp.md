@@ -57,7 +57,8 @@ AnchorCore never picks a model behind the user's back. The contract:
   the user already runs. No server-side model is involved at all.
 - **`ask` uses the server's configured answer model — the user's own.**
   Local Ollama or the user's own OpenAI-compatible endpoint (Settings →
-  Answer model, or the onboarding wizard's "Configure model" step). There
+  Answer model, or the onboarding wizard's "Answer model" step, which
+  recommends an Ollama model sized to the machine's RAM). There
   is no silent fallback to a model the user did not choose.
 - **Degraded answers stay visible, never silent.** Every `ask` result
   carries `mode` (`composed` | `agent_compose` | `context_only` | `none`)
@@ -71,7 +72,7 @@ AnchorCore never picks a model behind the user's back. The contract:
   back to Ollama. A local-only setup must set
   `http://localhost:11434/v1` explicitly, or answers stay `context_only`
   with the warning shown. The Settings "Run compose probe" button (and
-  the wizard's step-3 question) verifies the endpoint end to end: only
+  the wizard's "Ask a question" step) verifies the endpoint end to end: only
   `mode: "composed"` means answers really work.
 
 ### 2.2 Agentic vs local LLM — `llm_mode` (R45.2)
@@ -104,8 +105,10 @@ needs no re-ingest.
 
 **Setup is in the app — nothing to build.** Run AnchorCore, open the **System
 tab → MCP**, and click **Connect** for your client: it writes that app's config
-(backed up first) and prints the exact command. The onboarding wizard's last step
-offers the same card, and `GET /system/mcp` returns the command and args for
+(backed up first) and prints the exact command. The onboarding wizard's
+agent step offers the same card next to the REST-skill install (two equal
+channels — agent mode asks which one; local mode offers it as an optional
+last step), and `GET /system/mcp` returns the command and args for
 harness setups that have no UI.
 
 Under the hood: the same `anchorcore` binary also runs as the stdio MCP server —

@@ -14,35 +14,44 @@ use std::sync::{Mutex, OnceLock};
 use crate::health::AppState;
 use crate::settings::SettingsService;
 
-// ----- model-name matching (same family-only rule as settings::test_ollama) -----
+// ----- model-name matching -----
 
-/// "llama3.2:3b" -> "llama3.2" — a configured model counts as installed when
-/// any tag of the same family is present in Ollama.
+/// "llama3.2:3b" -> "llama3.2" (the model family).
 pub(crate) fn normalize_model(name: &str) -> String {
     name.split(':').next().unwrap_or(name).trim().to_string()
 }
 
+/// Installed models from an `/api/tags` body: every full name ("qwen2.5:7b")
+/// plus its family ("qwen2.5"). Families carry no `:`, so the two never collide.
 pub(crate) fn installed_families(tags_body: &Value) -> HashSet<String> {
-    tags_body
-        .get("models")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|m| m.get("name").and_then(|n| n.as_str()))
-                .map(normalize_model)
-                .collect()
-        })
-        .unwrap_or_default()
+    let mut out = HashSet::new();
+    let names = tags_body.get("models").and_then(|v| v.as_array());
+    for name in names.into_iter().flatten().filter_map(|m| m.get("name").and_then(|n| n.as_str())) {
+        out.insert(name.trim().to_ascii_lowercase());
+        out.insert(normalize_model(name).to_ascii_lowercase());
+    }
+    out
 }
 
-/// Full configured names whose family is absent from `installed`.
+/// R45.6: an explicit size tag ("qwen2.5:14b") must be installed exactly —
+/// another size of the same family can't serve it. An untagged or `:latest`
+/// name is satisfied by any tag of its family.
+fn model_installed(configured: &str, installed: &HashSet<String>) -> bool {
+    let name = configured.trim().to_ascii_lowercase();
+    match name.split_once(':') {
+        Some((_, tag)) if tag != "latest" => installed.contains(&name),
+        _ => installed.contains(&normalize_model(&name)),
+    }
+}
+
+/// Full configured names that `installed` can't serve.
 pub(crate) fn missing_from_installed(
     configured: &[String],
     installed: &HashSet<String>,
 ) -> Vec<String> {
     configured
         .iter()
-        .filter(|m| !installed.contains(&normalize_model(m)))
+        .filter(|m| !model_installed(m, installed))
         .cloned()
         .collect()
 }
@@ -482,8 +491,10 @@ mod tests {
         let body = serde_json::json!({"models": [{"name": "llama3.2:3b"}, {"name": "nomic-embed-text:latest"}]});
         let set = installed_families(&body);
         assert!(set.contains("llama3.2"));
+        assert!(set.contains("llama3.2:3b"));
         assert!(set.contains("nomic-embed-text"));
-        assert_eq!(set.len(), 2);
+        assert!(set.contains("nomic-embed-text:latest"));
+        assert_eq!(set.len(), 4);
     }
 
     #[test]
@@ -495,12 +506,24 @@ mod tests {
 
     #[test]
     fn missing_keeps_full_configured_names() {
-        let installed: HashSet<String> = ["llama3.2".to_string()].into_iter().collect();
+        let installed = installed_families(&serde_json::json!({"models": [{"name": "llama3.2:3b"}]}));
         let got = missing_from_installed(
             &["llama3.2:3b".to_string(), "nomic-embed-text".to_string()],
             &installed,
         );
         assert_eq!(got, vec!["nomic-embed-text".to_string()]);
+    }
+
+    /// R45.6: the wizard's size picker offers several tags of one family —
+    /// a 7b install must not make a configured 14b read as ready.
+    #[test]
+    fn explicit_size_tag_needs_that_exact_tag() {
+        let installed = installed_families(&serde_json::json!({"models": [{"name": "qwen2.5:7b"}, {"name": "nomic-embed-text:v1.5"}]}));
+        let got = missing_from_installed(
+            &["qwen2.5:14b".to_string(), "Qwen2.5:7b".to_string(), "nomic-embed-text".to_string()],
+            &installed,
+        );
+        assert_eq!(got, vec!["qwen2.5:14b".to_string()]);
     }
 
     #[test]

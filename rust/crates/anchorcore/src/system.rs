@@ -287,6 +287,8 @@ pub async fn onboarding_handler(State(state): State<AppState>) -> Json<Value> {
             },
             "answer_provider": answer_provider,
             "answer_ready": answer_ready,
+            // R45.6: RAM + a sized answer model for the wizard's local picker.
+            "machine": crate::machine::machine_json(),
             "sample": {
                 "available": sample_available,
                 "path": sample_path
@@ -708,8 +710,9 @@ mod tests {
         let v = res.0;
         assert_eq!(
             sorted_keys(&v),
-            ["answer_provider", "answer_ready", "needs_wizard", "ollama", "sample", "sources_count"]
+            ["answer_provider", "answer_ready", "machine", "needs_wizard", "ollama", "sample", "sources_count"]
         );
+        assert_eq!(sorted_keys(&v["machine"]), ["answer_models", "recommended_answer_model", "total_memory_bytes"]);
         assert_eq!(sorted_keys(&v["ollama"]), ["base_url", "missing_models", "reachable"]);
         assert_eq!(sorted_keys(&v["sample"]), ["available", "path"]);
         assert_eq!(v["needs_wizard"], true);

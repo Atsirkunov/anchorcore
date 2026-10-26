@@ -36,6 +36,7 @@ pub mod idf;
 pub mod items;
 pub mod jobs;
 pub mod license;
+pub mod machine;
 pub mod markdown;
 pub mod mcp;
 pub mod mcp_setup;
