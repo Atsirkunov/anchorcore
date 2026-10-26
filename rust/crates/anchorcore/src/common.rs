@@ -13,6 +13,15 @@ pub fn open_data_db(data_dir: &str) -> rusqlite::Connection {
     crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap())
 }
 
+/// R43.11: the message of a caught panic payload (`panic!("…")` carries a
+/// `&str` or a `String`; anything else is reported generically).
+pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        return (*s).to_string();
+    }
+    payload.downcast_ref::<String>().cloned().unwrap_or_else(|| "non-string panic payload".to_string())
+}
+
 /// `IN (?, ?, ...)` placeholders for `count` ids.
 pub fn placeholders(count: usize) -> String {
     std::iter::repeat_n("?", count).collect::<Vec<_>>().join(",")

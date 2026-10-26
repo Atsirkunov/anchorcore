@@ -145,8 +145,36 @@ pub fn extract_file(path: &Path) -> Result<String, String> {
 /// `extract_file` plus the PDF catcher's report — `Some` only when a PDF
 /// tripped the split-word detector (repaired or not). The pipeline turns
 /// improved notes into `system_events` rows.
+///
+/// R43.11: a parser panic on one file is caught here and reported as an
+/// extraction error, so the caller's "unreadable → skipped" path handles it
+/// and the sync continues.
 pub fn extract_file_noted(path: &Path) -> (Result<String, String>, Option<PdfQualityNote>) {
+    // The closure only reads `path`; a panic leaves no shared state behind.
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| extract_file_noted_unguarded(path))) {
+        Ok(out) => out,
+        Err(p) => (Err(panic_error(&path.display().to_string(), p.as_ref())), None),
+    }
+}
+
+/// R43.11: the error a caught extractor panic becomes, logged once here.
+fn panic_error(label: &str, payload: &(dyn std::any::Any + Send)) -> String {
+    let msg = format!("extractor panicked on {}: {}", label, crate::common::panic_message(payload));
+    tracing::error!("{}", msg);
+    msg
+}
+
+/// R43.11 test-only fault injection: a file with this name panics inside the
+/// extractor, standing in for a parser bug on hostile input.
+#[cfg(test)]
+pub(crate) const PANIC_PROBE_NAME: &str = "__r43_11_panic_probe__.md";
+
+fn extract_file_noted_unguarded(path: &Path) -> (Result<String, String>, Option<PdfQualityNote>) {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    #[cfg(test)]
+    if name == PANIC_PROBE_NAME {
+        panic!("injected extractor panic");
+    }
     let kind = diagram_kind(name).map(str::to_string).unwrap_or_else(|| {
         path.extension()
             .and_then(|e| e.to_str())
@@ -168,8 +196,14 @@ pub fn extract_file_noted(path: &Path) -> (Result<String, String>, Option<PdfQua
 }
 
 /// Labeled variant: the PDF catcher logs the file it repaired (Drive
-/// passes the file name; the kind alone names nothing).
+/// passes the file name; the kind alone names nothing). R43.11: panics are
+/// caught like `extract_file_noted`, so Drive skips the file and continues.
 pub fn extract_bytes_labeled(kind: &str, bytes: &[u8], label: &str) -> Result<String, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| extract_bytes_labeled_unguarded(kind, bytes, label)))
+        .unwrap_or_else(|p| Err(panic_error(label, p.as_ref())))
+}
+
+fn extract_bytes_labeled_unguarded(kind: &str, bytes: &[u8], label: &str) -> Result<String, String> {
     let raw = kind.to_ascii_lowercase();
     if raw.trim_start_matches('.') == "pdf" {
         return extract_pdf_labeled(bytes, label).map(|(text, _)| text);

@@ -84,6 +84,7 @@ Local-first "company memory": connect sources (folder, Jira, Linear, Drive, Miro
 - Every chunk-vector write stamps `chunks.embed_fp` (`Embedder::sync_vec` does it); vectors are compared only within a family (`SHARED_FAMILIES` is an explicit allowlist). The backfill (startup + 15 min) is deliberately ungated; backup-import re-embed stays gated.
 - PDF extraction is adaptive: the repair pass runs only when the split-word detector trips and wins only on strict improvement.
 - Job concurrency: `MAX_CONCURRENT=2`, excess queues as `pending`. At most one sync/reclassify per source — explicit POSTs get 409 with the live `job_id`, watcher/scheduler triggers coalesce. Job `total` is set by the run phase, not `finish_job`.
+- Job bodies run through `Pipeline::finish_guarded` (`jobs::guard_job` catches panics → `failed`, slot freed); a new job kind must too. Extractor panics are caught in `extract.rs` → file skipped. Take `PROMOTE_LOCK` via `promote_lock()` (poison-recovering), never `.lock().unwrap()`.
 
 **Images (assets)**
 - Bytes live in the DB (`asset_blobs` + `assets`, migration 26) for every source kind — never store a path or fetch later. Relative image links resolve only inside the canonical folder root; no network on ingest. Asset uids are deterministic (item uid + src + ordinal) so re-sync keeps them. Over `asset_max_bytes` → metadata row with NULL bytes + one warning, never a sync failure.

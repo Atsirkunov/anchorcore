@@ -474,7 +474,19 @@ impl Pipeline {
         if !self.wait_for_slot(&data_dir, job_id).await {
             return;
         }
-        let res = Box::pin(self.run_sync_inner(source_id, job_id, force_reclassify, &data_dir)).await;
+        let body = Box::pin(self.run_sync_inner(source_id, job_id, force_reclassify, &data_dir));
+        self.finish_guarded(source_id, job_id, body).await;
+    }
+
+    /// R43.11: run a job body under the panic guard, then `finish_job`
+    /// unconditionally — a panicking body ends `failed` (a concurrent cancel
+    /// stays `cancelled`), its slot frees and the next pending job promotes.
+    async fn finish_guarded<F>(&self, source_id: i64, job_id: i64, body: F)
+    where
+        F: std::future::Future<Output = Result<(i64, i64, i64, i64), String>>,
+    {
+        let res = crate::jobs::guard_job(job_id, body).await;
+        let data_dir = self.data_dir.clone();
         let conn = crate::common::open_data_db(&data_dir);
         self.finish_job(&conn, source_id, job_id, res);
     }
@@ -488,9 +500,8 @@ impl Pipeline {
         if !self.wait_for_slot(&data_dir, job_id).await {
             return;
         }
-        let res = Box::pin(self.run_embed_missing(source_id, job_id, &data_dir)).await;
-        let conn = crate::common::open_data_db(&data_dir);
-        self.finish_job(&conn, source_id, job_id, res);
+        let body = Box::pin(self.run_embed_missing(source_id, job_id, &data_dir));
+        self.finish_guarded(source_id, job_id, body).await;
     }
 
     async fn run_embed_missing(&self, source_id: i64, job_id: i64, data_dir: &str) -> Result<(i64, i64, i64, i64), String> {
@@ -2442,6 +2453,89 @@ mod tests {
         let db_path = crate::db::resolve_db_path(data_dir);
         let conn = crate::db::init_db(&db_path).unwrap();
         conn.query_row(&format!("SELECT COUNT(*) FROM {}", table), [], |r| r.get(0)).unwrap()
+    }
+
+    fn job_status(data_dir: &str, jid: i64) -> (String, Option<String>) {
+        let conn = crate::common::open_data_db(data_dir);
+        conn.query_row("SELECT status, error FROM jobs WHERE id=?1", [jid], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+    }
+
+    /// R43.11: a panicking job body still runs `finish_job` — the job ends
+    /// `failed`, its slot frees and the queued job is promoted.
+    #[tokio::test]
+    async fn panicking_job_body_fails_and_promotes_next() {
+        let data_tmp = tempdir().unwrap();
+        let folder_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().to_string_lossy().to_string();
+        let (settings, s1) = seed_folder_source(&data_dir, folder_tmp.path());
+        let (_, s2) = seed_folder_source(&data_dir, folder_tmp.path());
+        let (_, s3) = seed_folder_source(&data_dir, folder_tmp.path());
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let jobs = crate::jobs::JobManager::new();
+        let pipe = Pipeline::new(classifier, embedder, settings, data_dir.clone(), jobs.clone());
+        let conn = crate::common::open_data_db(&data_dir);
+        let a = jobs.create_job(&conn, s1, "sync").unwrap();
+        let _b = jobs.create_job(&conn, s2, "sync").unwrap();
+        let c = jobs.create_job(&conn, s3, "sync").unwrap();
+        drop(conn);
+        assert_eq!(job_status(&data_dir, c).0, "pending", "both slots taken");
+        pipe.finish_guarded(s1, a, async {
+            tokio::task::yield_now().await;
+            panic!("injected job-body panic");
+        })
+        .await;
+        let (status, err) = job_status(&data_dir, a);
+        assert_eq!(status, "failed");
+        assert!(err.unwrap_or_default().contains("injected job-body panic"));
+        assert_eq!(job_status(&data_dir, c).0, "running", "the freed slot promotes the queued job");
+    }
+
+    /// R43.11: a panic in a job that was cancelled meanwhile never clobbers
+    /// `cancelled`.
+    #[tokio::test]
+    async fn panicking_cancelled_job_stays_cancelled() {
+        let data_tmp = tempdir().unwrap();
+        let folder_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().to_string_lossy().to_string();
+        let (settings, sid) = seed_folder_source(&data_dir, folder_tmp.path());
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let jobs = crate::jobs::JobManager::new();
+        let pipe = Pipeline::new(classifier, embedder, settings, data_dir.clone(), jobs.clone());
+        let conn = crate::common::open_data_db(&data_dir);
+        let jid = jobs.create_job(&conn, sid, "sync").unwrap();
+        jobs.cancel(&conn, jid);
+        drop(conn);
+        pipe.finish_guarded(sid, jid, async { panic!("late panic") }).await;
+        assert_eq!(job_status(&data_dir, jid).0, "cancelled");
+    }
+
+    /// R43.11: a panicking extractor makes that one file `skipped`; the rest
+    /// of the sync completes and the job ends `done`.
+    #[tokio::test]
+    async fn panicking_extractor_skips_file_and_sync_completes() {
+        let data_tmp = tempdir().unwrap();
+        let folder_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().to_string_lossy().to_string();
+        let folder = folder_tmp.path();
+        write_doc(folder, "good.md", "# Good\n\nPlain notes about the release plan.\n");
+        write_doc(folder, crate::extract::PANIC_PROBE_NAME, "# Probe\n\nNever extracted.\n");
+        let (settings, sid) = seed_folder_source(&data_dir, folder);
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        sync_with_new_job(&pipe, &db_path, sid, false).await;
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let ids: Vec<String> = conn
+            .prepare("SELECT external_id FROM ingested_items WHERE source_id=?1 ORDER BY external_id")
+            .unwrap()
+            .query_map([sid], |r| r.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(ids, vec!["good.md".to_string()], "the panicking file is skipped, the rest ingested");
     }
 
     #[tokio::test]

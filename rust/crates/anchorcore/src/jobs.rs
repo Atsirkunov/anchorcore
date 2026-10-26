@@ -9,7 +9,11 @@ use axum::{
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::task::{Context, Poll};
 use std::time::Instant;
 
 use crate::health::AppState;
@@ -17,6 +21,62 @@ use crate::health::AppState;
 pub const MAX_CONCURRENT: usize = 2;
 
 static PROMOTE_LOCK: Mutex<()> = Mutex::new(());
+
+/// R43.11: take `PROMOTE_LOCK` even when a panic poisoned it. The lock
+/// guards no data (`()`) — the DB transaction is the state — so a panic
+/// while holding it must not wedge every later create/promote.
+fn promote_lock() -> MutexGuard<'static, ()> {
+    PROMOTE_LOCK.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!("PROMOTE_LOCK was poisoned by a panic; recovering");
+        PROMOTE_LOCK.clear_poison();
+        poisoned.into_inner()
+    })
+}
+
+/// R43.11: lock an in-memory bookkeeping map, recovering from poison (the
+/// maps are advisory; the `jobs` table is the source of truth).
+fn lock_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// R43.11: polls a job body and turns a panic into `Err(message)` so the
+/// caller can still run `finish_job` (status `failed`, slot freed, next
+/// pending promoted). Hand-rolled instead of `futures::FutureExt::catch_unwind`
+/// to avoid a new dependency; it is never polled again after it panicked
+/// because the first panic resolves it.
+struct CatchUnwind<F>(Pin<Box<F>>);
+
+impl<F: Future> Future for CatchUnwind<F> {
+    type Output = Result<F::Output, String>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let inner = self.get_mut().0.as_mut();
+        // AssertUnwindSafe: on panic the body is dropped unpolled; its DB
+        // work is per-call connections (rolled back on drop), and the job
+        // row is repaired by `finish_job`.
+        match std::panic::catch_unwind(AssertUnwindSafe(|| inner.poll(cx))) {
+            Ok(Poll::Pending) => Poll::Pending,
+            Ok(Poll::Ready(v)) => Poll::Ready(Ok(v)),
+            Err(payload) => Poll::Ready(Err(crate::common::panic_message(payload.as_ref()))),
+        }
+    }
+}
+
+/// R43.11: run a job body under the panic guard. A panic becomes
+/// `Err("job panicked: …")`, which `finish_job` records as `failed`
+/// (never over a concurrent `cancelled`).
+pub async fn guard_job<T, F>(job_id: i64, body: F) -> Result<T, String>
+where
+    F: Future<Output = Result<T, String>>,
+{
+    match CatchUnwind(Box::pin(body)).await {
+        Ok(res) => res,
+        Err(msg) => {
+            tracing::error!("job {} panicked: {}", job_id, msg);
+            Err(format!("job panicked: {}", msg))
+        }
+    }
+}
 
 /// R30.1: why `create_job` can fail without a DB error.
 #[derive(Debug)]
@@ -155,7 +215,7 @@ impl JobManager {
     /// transaction as the insert, so racing triggers can't both slip
     /// through. A duplicate fails with `Conflict(active_id)`, no new row.
     pub fn create_job(&self, conn: &Connection, source_id: i64, kind: &str) -> Result<i64, CreateJobError> {
-        let _guard = PROMOTE_LOCK.lock().unwrap();
+        let _guard = promote_lock();
         let _ = conn.execute("BEGIN IMMEDIATE", []);
         if is_sync_family(kind) {
             if let Some(active) = active_sync_job(conn, source_id) {
@@ -174,7 +234,7 @@ impl JobManager {
         // enforce MAX_CONCURRENT immediately, in the same transaction
         let promoted = promote_pending_inner(conn);
         let _ = conn.execute("COMMIT", []);
-        let mut running = self.running.lock().unwrap();
+        let mut running = lock_recover(&self.running);
         for pid in promoted {
             running.insert(pid, Instant::now());
         }
@@ -184,11 +244,11 @@ impl JobManager {
     /// Try to promote pending -> running up to MAX_CONCURRENT — atomic (P1 4.10).
     /// Uses `BEGIN IMMEDIATE` + global `PROMOTE_LOCK` so concurrent `create_job` cannot double-promote same pending.
     pub fn maybe_promote(&self, conn: &Connection) {
-        let _guard = PROMOTE_LOCK.lock().unwrap();
+        let _guard = promote_lock();
         let _ = conn.execute("BEGIN IMMEDIATE", []);
         let promoted = promote_pending_inner(conn);
         let _ = conn.execute("COMMIT", []);
-        let mut running = self.running.lock().unwrap();
+        let mut running = lock_recover(&self.running);
         for id in promoted {
             running.insert(id, Instant::now());
         }
@@ -202,7 +262,7 @@ impl JobManager {
             )
             .unwrap_or(0);
         if n > 0 {
-            self.running.lock().unwrap().remove(&job_id);
+            lock_recover(&self.running).remove(&job_id);
             self.maybe_promote(conn);
             return true;
         }
@@ -215,7 +275,7 @@ impl JobManager {
             "UPDATE jobs SET status = ?1, error = ?2 WHERE id = ?3",
             rusqlite::params![status, error, job_id],
         );
-        self.running.lock().unwrap().remove(&job_id);
+        lock_recover(&self.running).remove(&job_id);
         self.maybe_promote(conn);
     }
 
@@ -536,5 +596,48 @@ mod tests {
         let c = crate::db::open_db(&path).unwrap();
         let n: i64 = c.query_row("SELECT COUNT(*) FROM jobs WHERE source_id=?1", [sid], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+    }
+
+    /// R43.11: a panic while holding `PROMOTE_LOCK` (and the in-memory
+    /// running map) must not wedge later create/finish/promote calls.
+    #[test]
+    fn poisoned_promote_lock_still_allows_create_and_finish() {
+        let dir = tempdir().unwrap();
+        let conn = crate::db::init_db(&dir.path().join("poison.db")).unwrap();
+        let mgr = JobManager::new();
+        let mgr2 = mgr.clone();
+        let poisoner = std::thread::spawn(move || {
+            let _promote = promote_lock();
+            let _running = lock_recover(&mgr2.running);
+            panic!("injected panic while holding PROMOTE_LOCK");
+        });
+        assert!(poisoner.join().is_err());
+        assert!(mgr.running.is_poisoned(), "the running map really was poisoned");
+        let (s1, s2, s3) = (mk_source(&conn, "a"), mk_source(&conn, "b"), mk_source(&conn, "c"));
+        let a = mgr.create_job(&conn, s1, "sync").unwrap();
+        let _b = mgr.create_job(&conn, s2, "sync").unwrap();
+        let c = mgr.create_job(&conn, s3, "sync").unwrap();
+        let status = |id: i64| -> String { conn.query_row("SELECT status FROM jobs WHERE id=?1", [id], |r| r.get(0)).unwrap() };
+        assert_eq!(status(c), "pending");
+        mgr.complete(&conn, a, false, Some("boom"));
+        assert_eq!(status(a), "failed");
+        assert_eq!(status(c), "running", "finishing a job still promotes after poison");
+    }
+
+    /// R43.11: the async guard turns a panicking body into `Err` and passes
+    /// normal results through untouched.
+    #[tokio::test]
+    async fn guard_job_catches_panics() {
+        let ok: Result<i32, String> = guard_job(1, async { Ok(7) }).await;
+        assert_eq!(ok, Ok(7));
+        let err: Result<i32, String> = guard_job(2, async { Err("plain".to_string()) }).await;
+        assert_eq!(err, Err("plain".to_string()));
+        let panicked: Result<i32, String> = guard_job(3, async {
+            tokio::task::yield_now().await;
+            panic!("body exploded");
+        })
+        .await;
+        let msg = panicked.unwrap_err();
+        assert!(msg.starts_with("job panicked: ") && msg.contains("body exploded"), "{msg}");
     }
 }
