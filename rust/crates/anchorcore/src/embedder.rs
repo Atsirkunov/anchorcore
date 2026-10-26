@@ -7,6 +7,9 @@ use crate::embed_fp::{fingerprint, model_family, record_active_fingerprint, PROV
 use crate::settings::SettingsService;
 
 pub const BATCH_SIZE: usize = 32;
+/// R30.4: texts per built-in blocking task — the cancel granularity of the
+/// in-process engine (it length-sorts within a group, so keep it > 1 batch).
+const BUILTIN_GROUP: usize = BATCH_SIZE * 2;
 /// R30.2: embed batches in flight per `embed` call (`ANCHOR_EMBED_CONCURRENCY`).
 const CONCURRENCY_DEFAULT: usize = 2;
 const CONCURRENCY_MAX: usize = 8;
@@ -333,14 +336,23 @@ impl Embedder {
     }
 
     /// R45.4: in-process engine on a blocking thread (loads on first use).
+    /// R30.4: one blocking task per `BUILTIN_GROUP` texts, so a cancelled job
+    /// (which drops this future) waits out at most one group, never the
+    /// whole document.
     async fn embed_builtin(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
         let Some(dir) = self.builtin_dir().filter(|d| crate::model_store::ready(d)) else {
             return Err(degraded("built-in embedding model is not downloaded".to_string()));
         };
-        tokio::task::spawn_blocking(move || crate::embed_local::embed_blocking(&dir, &texts))
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| degraded(format!("built-in embed failed: {e}")))
+        let mut out = Vec::with_capacity(texts.len());
+        for group in texts.chunks(BUILTIN_GROUP) {
+            let (dir, group) = (dir.clone(), group.to_vec());
+            let part = tokio::task::spawn_blocking(move || crate::embed_local::embed_blocking(&dir, &group))
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| degraded(format!("built-in embed failed: {e}")))?;
+            out.extend(part);
+        }
+        Ok(out)
     }
 
     async fn embed_http(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {

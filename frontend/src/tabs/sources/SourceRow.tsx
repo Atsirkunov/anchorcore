@@ -3,18 +3,21 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api";
 import { theme, commonStyles, radius } from "../../theme";
 import type { Job, Source } from "../../types";
+import { JobStopButton, StopNoteLine } from "../../JobStopButton";
+import { useJobStop } from "../../useJobStop";
 import { SourceEditForm } from "./SourceForm";
 
 function jobLabel(job: Job): string {
-  const verb = job.kind === "reclassify" ? "Reclassifying" : "Syncing";
+  if (job.status === "pending") return `Queued ${job.kind} #${job.id}`;
+  const verb = job.kind === "reclassify" ? "Reclassifying" : job.kind === "embed" ? "Embedding" : "Syncing";
   if (job.total > 0) {
     // `processed/total` counts files scanned; `result.items` is the live
     // changed count, so "514/514 · 3 changed" can't read as a full re-sync.
     const changed = job.result?.items;
     const suffix = typeof changed === "number" ? ` · ${changed} changed` : "";
-    return `${verb}… ${job.processed}/${job.total}${suffix}`;
+    return `${verb} #${job.id}… ${job.processed}/${job.total}${suffix}`;
   }
-  return `${verb}…`;
+  return `${verb} #${job.id}…`;
 }
 
 const LABEL_ALLOWS: Record<string, string> = {
@@ -24,16 +27,18 @@ const LABEL_ALLOWS: Record<string, string> = {
   // back to the sensitive hint below instead of rendering "undefined".
 };
 
-/** B37: one source row — status, running job badge, actions, inline edit form. */
+/** B37: one source row — status, every active job with its own Stop
+ * control (R30.4), actions, inline edit form. */
 export function SourceRow({
   source,
   config,
-  job,
+  jobs,
   onChanged,
 }: {
   source: Source;
   config: Record<string, string>;
-  job: Job | undefined;
+  /** All pending/running jobs of this source, oldest first. */
+  jobs: Job[];
   onChanged: () => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -43,6 +48,9 @@ export function SourceRow({
   // slips through (the backend 409s it, but the button should never be live).
   const [busy, setBusy] = useState(false);
   const queryClient = useQueryClient();
+  const stopper = useJobStop(onChanged);
+  // R30.1: sync + reclassify share one slot per source; embed jobs don't block them.
+  const syncJob = jobs.find((j) => j.kind === "sync" || j.kind === "reclassify");
 
   function configSummary(): string {
     if (source.connector === "folder") return config.path ? config.path : "folder source";
@@ -53,7 +61,7 @@ export function SourceRow({
   }
 
   async function startJob(id: number, kind: "sync" | "reclassify") {
-    if (busy || job) return;
+    if (busy || syncJob) return;
     try {
       setBusy(true);
       setActionError(null);
@@ -79,15 +87,6 @@ export function SourceRow({
       onChanged();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
-    }
-  }
-
-  async function cancelJob(job: Job) {
-    try {
-      await api.cancelJob(job.id);
-      onChanged();
-    } catch (e) {
-      console.error(e);
     }
   }
 
@@ -131,9 +130,12 @@ export function SourceRow({
             label: {source.label === "pii" ? "pii (deprecated — behaves like sensitive)" : source.label} — {LABEL_ALLOWS[source.label] ?? LABEL_ALLOWS.sensitive}
           </div>
         )}
-          {job && (
-            <div style={{ marginTop: 6 }}>
-              <div style={{ fontSize: 12, color: theme.accentAlt }}>{jobLabel(job)}</div>
+          {jobs.map((job) => (
+            <div key={job.id} style={{ marginTop: 6 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12, color: theme.accentAlt }}>{jobLabel(job)}</span>
+                <JobStopButton job={job} sourceName={source.name} busy={stopper.inFlight.has(job.id)} onStop={stopper.stop} />
+              </div>
               {job.total > 0 && (
                 <div style={{ height: 6, borderRadius: radius, background: theme.border, marginTop: 4, overflow: "hidden" }}>
                   <div
@@ -147,7 +149,10 @@ export function SourceRow({
                 </div>
               )}
             </div>
-          )}
+          ))}
+          {Object.entries(stopper.notes).map(([id, note]) => (
+            <StopNoteLine key={id} note={note} />
+          ))}
           {source.last_error && (
             <div style={{ fontSize: 12, color: theme.red, marginTop: 2 }} title={source.last_error}>
               {source.last_error.slice(0, 120)}
@@ -163,25 +168,16 @@ export function SourceRow({
           <button onClick={() => setEditing((v) => !v)} style={commonStyles.button}>
             {editing ? "Editing…" : "Edit"}
           </button>
-          <button onClick={() => startJob(source.id, "sync")} disabled={!!job || busy} style={commonStyles.button}>
-            {job?.kind === "sync" ? "Syncing…" : "Sync now"}
+          <button onClick={() => startJob(source.id, "sync")} disabled={!!syncJob || busy} style={commonStyles.button}>
+            {syncJob?.kind === "sync" ? "Syncing…" : "Sync now"}
           </button>
-          <button onClick={() => startJob(source.id, "reclassify")} disabled={!!job || busy} style={commonStyles.button}>
-            {job?.kind === "reclassify" ? "Reclassifying…" : "Reclassify"}
+          <button onClick={() => startJob(source.id, "reclassify")} disabled={!!syncJob || busy} style={commonStyles.button}>
+            {syncJob?.kind === "reclassify" ? "Reclassifying…" : "Reclassify"}
           </button>
-          {job && (
-            <button
-              onClick={() => cancelJob(job)}
-              style={{ ...commonStyles.button, background: theme.redBg, color: theme.redText }}
-              title="Stop this job"
-            >
-              Stop
-            </button>
-          )}
           <button
             onClick={() => deleteSource(source.id, source.name)}
-            disabled={!!job}
-            title={job ? "Stop the running job first" : "Delete this source and its synced data"}
+            disabled={jobs.length > 0}
+            title={jobs.length > 0 ? "Stop the active jobs first" : "Delete this source and its synced data"}
             style={{ ...commonStyles.button, background: theme.redBg }}
           >
             Delete

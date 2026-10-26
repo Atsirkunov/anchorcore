@@ -2,11 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { useJobsPoll } from "../hooks/useJobsPoll";
 import { theme } from "../theme";
-import type { Source } from "../types";
+import { isActiveJob } from "../jobControlsText";
+import type { Job, Source } from "../types";
 import { ProjectSection } from "./sources/ProjectSection";
 import { SourceForm } from "./sources/SourceForm";
 import { SourceRow } from "./sources/SourceRow";
 import { UnplacedImages } from "./sources/UnplacedImages";
+
+const NO_JOBS: Job[] = [];
 
 /** B37: slim composition — sources list, configs, project section and the
  * shared jobs poll. The god component's state/logic moved into SourceForm /
@@ -42,9 +45,14 @@ export function SourcesTab() {
 
   // one polling hook for ingestion jobs (pauses when nothing runs / tab hidden)
   const jobsQuery = useJobsPoll();
-  const runningJobs = useMemo(() => {
-    const jobs = jobsQuery.data ?? [];
-    return Object.fromEntries(jobs.filter((j) => j.status === "running" || j.status === "pending").map((j) => [j.id, j]));
+  // R30.4: every active job per source, oldest first — never a `.find`
+  // (that picked the lowest-id job, so `Stop` could target the wrong one).
+  const jobsBySource = useMemo(() => {
+    const map = new Map<number, Job[]>();
+    for (const j of (jobsQuery.data ?? []).filter(isActiveJob).sort((a, b) => a.id - b.id)) {
+      map.set(j.source_id, [...(map.get(j.source_id) ?? []), j]);
+    }
+    return map;
   }, [jobsQuery.data]);
 
   useEffect(() => {
@@ -67,7 +75,7 @@ export function SourcesTab() {
             key={s.id}
             source={s}
             config={configs[s.id] ?? {}}
-            job={Object.values(runningJobs).find((j) => j.source_id === s.id)}
+            jobs={jobsBySource.get(s.id) ?? NO_JOBS}
             onChanged={refresh}
           />
         ))}

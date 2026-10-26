@@ -20,6 +20,30 @@ use crate::health::AppState;
 
 pub const MAX_CONCURRENT: usize = 2;
 
+/// R30.4: cancel requests seen by this process, keyed by `(data_dir, job id)`
+/// (job ids are per database). The `jobs` row stays the authority — a
+/// cancel written straight to the DB is still honoured by
+/// `pipeline::job_cancelled` — this set only lets a running job notice a
+/// cancel without a DB round trip, so in-flight provider calls can be raced
+/// against it cheaply (`pipeline::until_cancelled`).
+type CancelKey = (String, i64);
+static CANCEL_REQUESTS: Mutex<Option<std::collections::HashSet<CancelKey>>> = Mutex::new(None);
+
+pub fn request_cancel(data_dir: &str, job_id: i64) {
+    lock_recover(&CANCEL_REQUESTS).get_or_insert_with(Default::default).insert((data_dir.to_string(), job_id));
+}
+
+pub fn cancel_requested(data_dir: &str, job_id: i64) -> bool {
+    lock_recover(&CANCEL_REQUESTS).as_ref().is_some_and(|s| s.contains(&(data_dir.to_string(), job_id)))
+}
+
+/// Forget a finished job's cancel flag (called once its row is terminal).
+pub fn clear_cancel(data_dir: &str, job_id: i64) {
+    if let Some(s) = lock_recover(&CANCEL_REQUESTS).as_mut() {
+        s.remove(&(data_dir.to_string(), job_id));
+    }
+}
+
 static PROMOTE_LOCK: Mutex<()> = Mutex::new(());
 
 /// R43.11: take `PROMOTE_LOCK` even when a panic poisoned it. The lock
@@ -254,25 +278,31 @@ impl JobManager {
         }
     }
 
+    /// R30.4: atomic cancel — only a pending/running row flips (so a second
+    /// cancel, or one racing the job's own finish, finds nothing and the
+    /// handler answers 409). `finished_at` is the Stop time; the job task
+    /// notices within one poll and stops at its next checkpoint. The freed
+    /// slot promotes the next queued job right away.
     pub fn cancel(&self, conn: &Connection, job_id: i64) -> bool {
         let n = conn
             .execute(
-                "UPDATE jobs SET status = 'cancelled' WHERE id = ?1 AND status IN ('pending','running')",
+                "UPDATE jobs SET status = 'cancelled', finished_at = datetime('now'), error = 'job cancelled' WHERE id = ?1 AND status IN ('pending','running')",
                 [job_id],
             )
             .unwrap_or(0);
-        if n > 0 {
-            lock_recover(&self.running).remove(&job_id);
-            self.maybe_promote(conn);
-            return true;
+        if n == 0 {
+            return false;
         }
-        false
+        lock_recover(&self.running).remove(&job_id);
+        self.maybe_promote(conn);
+        true
     }
 
+    /// Finish a job without ever overwriting a concurrent cancel (R9.1).
     pub fn complete(&self, conn: &Connection, job_id: i64, success: bool, error: Option<&str>) {
         let status = if success { "done" } else { "failed" };
         let _ = conn.execute(
-            "UPDATE jobs SET status = ?1, error = ?2 WHERE id = ?3",
+            "UPDATE jobs SET status = ?1, error = ?2, finished_at = datetime('now') WHERE id = ?3 AND status <> 'cancelled'",
             rusqlite::params![status, error, job_id],
         );
         lock_recover(&self.running).remove(&job_id);
@@ -397,41 +427,55 @@ pub async fn get_handler(State(state): State<AppState>, Path(job_id): Path<i64>)
     result
 }
 
-pub async fn cancel_handler(State(state): State<AppState>, Path(job_id): Path<i64>) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+type ApiError = (StatusCode, Json<serde_json::Value>);
+
+fn api_error(code: StatusCode, detail: String) -> ApiError {
+    (code, Json(serde_json::json!({ "detail": detail })))
+}
+
+/// R30.4: `POST /sources/jobs/:id/cancel`. Pending jobs cancel instantly
+/// (they never started); running jobs stop at their next checkpoint — at
+/// most one in-flight provider call, and an in-flight HTTP embed is dropped.
+/// Already-processed documents are kept. A job that is not pending/running
+/// (including a second cancel) is 409. An orphaned `running` row with no
+/// live task behind it cancels the same way. The body carries the job's
+/// progress so the UI can say what was kept.
+pub async fn cancel_handler(State(state): State<AppState>, Path(job_id): Path<i64>) -> Result<Json<serde_json::Value>, ApiError> {
     let data_dir = state.data_dir.clone();
     let jobs = state.jobs.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        let exists: Option<String> = conn.query_row("SELECT status FROM jobs WHERE id = ?1", [job_id], |r| r.get(0)).ok();
-        let status = match exists {
-            Some(s) => s,
-            None => return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Job not found"})))),
-        };
-        if status != "pending" && status != "running" {
-            // check if orphaned running (no in-memory task) — treat as cancellable
-            // For Rust, we don't track tasks, so we allow cancelling any running
-            // If it's done/failed/cancelled already, return 409
-            if status == "done" || status == "failed" || status == "cancelled" {
-                return Err((StatusCode::CONFLICT, Json(serde_json::json!({"detail": format!("Job is {}, not running", status)}))));
-            }
-        }
-        // If job is running but we have no task, still mark cancelled (orphan handling)
-        let was_running = status == "running";
-        let cancelled = jobs.cancel(&conn, job_id);
-        if cancelled {
-            // ensure status is cancelled even if JobManager didn't have it
-            let _ = conn.execute("UPDATE jobs SET status='cancelled', finished_at=datetime('now') WHERE id=?1", [job_id]);
-            return Ok(Json(serde_json::json!({"cancelled": true})));
-        }
-        // If cancel returned false but it was pending/running, try direct update
-        if status == "pending" || was_running {
-            let _ = conn.execute("UPDATE jobs SET status='cancelled', finished_at=datetime('now') WHERE id=?1", [job_id]);
-            return Ok(Json(serde_json::json!({"cancelled": true})));
-        }
-        Err((StatusCode::CONFLICT, Json(serde_json::json!({"detail":"Job is not cancellable"}))))
-    }).await.unwrap();
-    result
+    tokio::task::spawn_blocking(move || cancel_job_blocking(&data_dir, &jobs, job_id))
+        .await
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+}
+
+fn cancel_job_blocking(data_dir: &str, jobs: &JobManager, job_id: i64) -> Result<Json<serde_json::Value>, ApiError> {
+    let conn = crate::common::open_data_db(data_dir);
+    let row: Option<(String, String)> = conn
+        .query_row("SELECT status, kind FROM jobs WHERE id = ?1", [job_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .ok();
+    let Some((status, kind)) = row else {
+        return Err(api_error(StatusCode::NOT_FOUND, "Job not found".to_string()));
+    };
+    // `cancel` is the atomic gate: a row that is already terminal (or was
+    // cancelled/finished between the read above and now) is a conflict.
+    if !jobs.cancel(&conn, job_id) {
+        let now: String = conn.query_row("SELECT status FROM jobs WHERE id = ?1", [job_id], |r| r.get(0)).unwrap_or(status);
+        return Err(api_error(StatusCode::CONFLICT, format!("Job #{job_id} is {now}, not running")));
+    }
+    request_cancel(data_dir, job_id);
+    let (total, processed): (i64, i64) = conn
+        .query_row("SELECT total, processed FROM jobs WHERE id = ?1", [job_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap_or((0, 0));
+    tracing::info!("job {} ({}) cancel requested while {} at {}/{} docs", job_id, kind, status, processed, total);
+    Ok(Json(serde_json::json!({
+        "cancelled": true,
+        "job_id": job_id,
+        "kind": kind,
+        "was": status,
+        "status": "cancelled",
+        "processed": processed,
+        "total": total,
+    })))
 }
 
 #[cfg(test)]

@@ -86,6 +86,17 @@ flowchart LR
 - **Images** (`assets.rs`): image bytes are stored in the DB (export/backup is self-contained), attached
   to the chunk that hosts them; images with no context go to the people-captioned "Unplaced images" view.
 - **Deletion:** removing a source cascades to its items, chunks, entities and jobs (`foreign_keys=ON`).
+- **Jobs and stopping them** (`jobs.rs`): at most 2 jobs run at once, the rest queue as `pending`; one
+  sync/reclassify per source. Every active job has its own labeled Stop control (`Stop reclassify #11`)
+  in its source row and in the System tab job list (the header "N running" badge opens it);
+  `POST /sources/jobs/{id}/cancel` does the same for agents. A queued job cancels at once. A running job
+  stops at its next checkpoint (between documents, classify windows and finalize phases); an in-flight
+  embed call is dropped (the built-in engine finishes its current 64-text group), so Stop lands within
+  about one provider call; measured 24–98 ms on a 500-file corpus with local Ollama. Cancelling again,
+  or cancelling a finished job, is 409. The freed slot promotes the next queued job right away.
+  **Partial ingestion is kept:** documents finished before the Stop stay searchable, and the job keeps
+  its `processed/total` count (`cancelled — X/Y docs kept`). The interrupted document is not marked
+  processed, so the next sync redoes only it and the files after it.
 
 ## 4. Q&A and search
 
