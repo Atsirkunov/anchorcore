@@ -1,5 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import { useJobsPoll } from "../hooks/useJobsPoll";
+import { cancelledLine, isActiveJob } from "../jobControlsText";
+import { JobStopButton, StopNoteLine } from "../JobStopButton";
+import { useJobStop, type StopNote } from "../useJobStop";
 import { BackupCard } from "../BackupCard";
 import { McpConnectCard } from "../McpConnect";
 import { useModelPull } from "../useModelPull";
@@ -9,18 +14,35 @@ import type { Job, LogFile, McpClient, SystemEvent, SystemStatus } from "../type
 
 const POLL_MS = 10000;
 
-export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
+const RECENT_JOBS = 10;
+
+export function SystemTab({ onConfigure, focusJobs }: { onConfigure?: () => void; focusJobs?: number } = {}) {
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [events, setEvents] = useState<SystemEvent[]>([]);
   const [logs, setLogs] = useState<LogFile[]>([]);
-  const [jobs, setJobs] = useState<Job[]>([]);
+  // R30.4: the shared jobs poll (1 s while anything is active) — every
+  // active job is listed with its own Stop control, plus the recent ones.
+  const jobsQuery = useJobsPoll();
+  const jobs = useMemo(() => {
+    const all = jobsQuery.data ?? [];
+    return all.filter((j, i) => i < RECENT_JOBS || isActiveJob(j));
+  }, [jobsQuery.data]);
+  const stopper = useJobStop();
+  const [sourceNames, setSourceNames] = useState<Record<number, string>>({});
+  const jobsRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (focusJobs) jobsRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+  }, [focusJobs]);
   const [componentFilter, setComponentFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [startingOllama, setStartingOllama] = useState(false);
   const [ollamaMsg, setOllamaMsg] = useState<string | null>(null);
   const pull = useModelPull();
 
+  const queryClient = useQueryClient();
   const refresh = useCallback(() => {
+    // the jobs poll idles when nothing is active — pick up jobs started elsewhere
+    void queryClient.invalidateQueries({ queryKey: ["jobs"] });
     api
       .systemStatus()
       .then(setStatus)
@@ -30,8 +52,11 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
       .then(setEvents)
       .catch(() => {});
     api.systemLogs().then(setLogs).catch(() => {});
-    api.listJobs(undefined, 10).then(setJobs).catch(() => {});
-  }, [componentFilter]);
+    api
+      .listSources()
+      .then((list) => setSourceNames(Object.fromEntries(list.map((s) => [s.id, s.name]))))
+      .catch(() => {});
+  }, [componentFilter, queryClient]);
 
   useEffect(() => {
     refresh();
@@ -251,24 +276,20 @@ export function SystemTab({ onConfigure }: { onConfigure?: () => void } = {}) {
         </ul>
       )}
 
-      <h3 style={{ marginBottom: 8 }}>Recent jobs</h3>
+      <h3 ref={jobsRef} id="jobs" style={{ marginBottom: 8 }}>Jobs</h3>
       {jobs.length === 0 ? (
         <p style={{ color: theme.textDim, fontSize: 13 }}>No jobs yet.</p>
       ) : (
         <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 6, marginBottom: 20 }}>
           {jobs.map((j) => (
-            <li key={j.id} style={styles.row}>
-              <div style={{ fontSize: 12, color: theme.textMuted }}>
-                #{j.id} {j.kind} · {new Date(j.created_at).toLocaleString()} · {j.processed}/{j.total}
-              </div>
-              <div style={{ fontSize: 13 }}>
-                <span style={{ fontFamily: theme.mono, color: j.status === "failed" ? theme.red : j.status === "cancelled" ? theme.amber : j.status === "running" ? theme.accentAlt : theme.green }}>{j.status}</span>
-                {j.status === "done" && j.result && (
-                  <span> — {j.result.items ?? 0} items, {j.result.entities ?? 0} entities{j.result.purged ? `, ${j.result.purged} purged` : ''}{j.result.unchanged ? `, ${j.result.unchanged} unchanged` : ''}</span>
-                )}
-                {j.status === "failed" && j.error && <span style={{ color: theme.red }}> — {j.error}</span>}
-              </div>
-            </li>
+            <JobRow
+              key={j.id}
+              job={j}
+              sourceName={sourceNames[j.source_id]}
+              busy={stopper.inFlight.has(j.id)}
+              onStop={stopper.stop}
+              note={stopper.notes[j.id]}
+            />
           ))}
         </ul>
       )}
@@ -493,6 +514,42 @@ function AgentSkillsCard() {
       )}
       {error && <div style={{ fontSize: 12, color: theme.red, marginTop: 6 }}>{error}</div>}
     </div>
+  );
+}
+
+function jobStatusColor(status: Job["status"]): string {
+  if (status === "failed") return theme.red;
+  if (status === "cancelled") return theme.amber;
+  if (status === "running" || status === "pending") return theme.accentAlt;
+  return theme.green;
+}
+
+/** R30.4: one job line; running/pending rows carry their own labeled Stop. */
+function JobRow({ job: j, sourceName, busy, onStop, note }: {
+  job: Job;
+  sourceName?: string;
+  busy: boolean;
+  onStop: (job: Job) => void;
+  note?: StopNote;
+}) {
+  return (
+    <li style={styles.row}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 12, color: theme.textMuted }}>
+          #{j.id} {j.kind}{sourceName ? ` · ${sourceName}` : ""} · {new Date(j.created_at).toLocaleString()} · {j.processed}/{j.total}
+        </div>
+        {isActiveJob(j) && <JobStopButton job={j} sourceName={sourceName} busy={busy} onStop={onStop} />}
+      </div>
+      <div style={{ fontSize: 13 }}>
+        <span style={{ fontFamily: theme.mono, color: jobStatusColor(j.status) }}>{j.status}</span>
+        {j.status === "done" && j.result && (
+          <span> — {j.result.items ?? 0} items, {j.result.entities ?? 0} entities{j.result.purged ? `, ${j.result.purged} purged` : ''}{j.result.unchanged ? `, ${j.result.unchanged} unchanged` : ''}</span>
+        )}
+        {j.status === "cancelled" && <span style={{ color: theme.textMuted }}> — {cancelledLine(j.processed, j.total)}</span>}
+        {j.status === "failed" && j.error && <span style={{ color: theme.red }}> — {j.error}</span>}
+      </div>
+      {note && !note.ok && <StopNoteLine note={note} />}
+    </li>
   );
 }
 

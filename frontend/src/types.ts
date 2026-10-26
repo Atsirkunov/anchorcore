@@ -474,6 +474,17 @@ export type Job = {
   finished_at: string | null;
 };
 
+/** R30.4: `POST /sources/jobs/:id/cancel` — progress at the moment of Stop. */
+export type CancelJobResult = {
+  cancelled: boolean;
+  job_id: number;
+  kind: Job["kind"];
+  was: "running" | "pending";
+  status: "cancelled";
+  processed: number;
+  total: number;
+};
+
 // R25.5 — backup / restore (Phase A of docs/plan-backup-sync.md)
 export type BackupExportOptions = {
   include_secrets?: boolean;

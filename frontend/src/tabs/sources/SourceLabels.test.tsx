@@ -33,7 +33,7 @@ async function renderRow(label: Source["label"]) {
     // R30.1: SourceRow refreshes the jobs query after a sync/stop, so it needs a client.
     root!.render(
       <QueryClientProvider client={new QueryClient()}>
-        <SourceRow source={mkSource(label)} config={{ path: "/tmp/docs" }} job={undefined} onChanged={() => {}} />
+        <SourceRow source={mkSource(label)} config={{ path: "/tmp/docs" }} jobs={[]} onChanged={() => {}} />
       </QueryClientProvider>,
     );
   });

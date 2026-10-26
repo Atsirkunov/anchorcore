@@ -1,4 +1,4 @@
-import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, ConflictLink, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult, UpdateStatus } from "./types";
+import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, CancelJobResult, ConflictLink, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult, UpdateStatus } from "./types";
 
 export class RequestAbortedError extends Error {
   constructor(message = "Request cancelled") {
@@ -112,7 +112,7 @@ export const api = {
     request<Job>(`/sources/${id}/reclassify`, { method: "POST" }),
   getJob: (id: number) => request<Job>(`/sources/jobs/${id}`),
   cancelJob: (id: number) =>
-    request<{ cancelled: boolean; job_id: number }>(`/sources/jobs/${id}/cancel`, { method: "POST" }),
+    request<CancelJobResult>(`/sources/jobs/${id}/cancel`, { method: "POST" }),
   listJobs: (sourceId?: number, limit = 10) => {
     const params = new URLSearchParams({ limit: String(limit) });
     if (sourceId !== undefined) params.set("source_id", String(sourceId));

@@ -110,7 +110,57 @@ async fn job_status(data_dir: &str, job_id: i64) -> Result<String, String> {
 }
 
 async fn job_cancelled(data_dir: &str, job_id: i64) -> Result<bool, String> {
+    // R30.4: the in-process flag answers without a DB round trip; the row
+    // stays the authority for cancels written by other paths.
+    if crate::jobs::cancel_requested(data_dir, job_id) {
+        return Ok(true);
+    }
     Ok(job_status(data_dir, job_id).await? == "cancelled")
+}
+
+/// R30.4: how often an in-flight provider call re-checks for a cancel.
+const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+/// The DB is re-read every Nth poll (cancels that bypass the handler).
+const CANCEL_DB_EVERY: u32 = 10;
+
+/// Resolves once the job is cancelled (in-process flag every poll, DB row
+/// every `CANCEL_DB_EVERY` polls). Never resolves for a live job.
+async fn wait_cancelled(data_dir: &str, job_id: i64) {
+    let mut tick = 0u32;
+    loop {
+        tokio::time::sleep(CANCEL_POLL).await;
+        tick += 1;
+        if crate::jobs::cancel_requested(data_dir, job_id) {
+            return;
+        }
+        if tick % CANCEL_DB_EVERY == 0 && matches!(job_status(data_dir, job_id).await.as_deref(), Ok("cancelled")) {
+            return;
+        }
+    }
+}
+
+/// R30.4: race a provider call against the job's cancel. On cancel the call
+/// is dropped (an HTTP request is aborted; a built-in batch already on its
+/// blocking thread finishes, but no further batch starts) and the job gets
+/// `Err("job cancelled")`. Provider timeouts still bound a hung call for
+/// jobs nobody cancels (`embed_timeout`).
+async fn until_cancelled<T>(data_dir: &str, job_id: i64, call: impl std::future::Future<Output = T>) -> Result<T, String> {
+    tokio::select! {
+        out = call => Ok(out),
+        _ = wait_cancelled(data_dir, job_id) => Err("job cancelled".to_string()),
+    }
+}
+
+/// R30.4: one log line when a cancelled job's task has actually stopped —
+/// with the handler's "cancel requested" line, the Stop→stopped latency
+/// reads straight off the log timestamps.
+fn log_cancel_landed(conn: &Connection, job_id: i64) {
+    let row: Option<(String, i64, i64)> = conn
+        .query_row("SELECT kind, processed, total FROM jobs WHERE id=?1", [job_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .ok();
+    if let Some((kind, processed, total)) = row {
+        tracing::info!("job {} ({}) stopped: cancelled, {}/{} docs kept", job_id, kind, processed, total);
+    }
 }
 
 /// Returns `(docs, skipped)` — `skipped` are files present at the source but
@@ -532,10 +582,9 @@ impl Pipeline {
             .await;
             let contents: Vec<String> = batch.iter().map(|(_, c, _)| c.clone()).collect();
             let embed_texts: Vec<String> = batch.iter().map(|(_, c, p)| crate::markdown::embed_input(p, c)).collect();
-            let out = self
-                .embedder
-                .embed_gated(contents, embed_texts, gated, embed_min_signal())
-                .await
+            let call = self.embedder.embed_gated(contents, embed_texts, gated, embed_min_signal());
+            let out = until_cancelled(data_dir, job_id, call)
+                .await?
                 .unwrap_or_else(|_| vec![None; batch.len()]);
             let updates: Vec<(i64, Vec<u8>)> = batch
                 .iter()
@@ -600,42 +649,44 @@ impl Pipeline {
 
     /// Record the sync outcome without clobbering a concurrent cancel (R9.1),
     /// then promote the next pending job.
+    ///
+    /// R30.4: every terminal write is conditional (`status <> 'cancelled'`)
+    /// so a cancel landing between the job's last checkpoint and this write
+    /// can never be overwritten; `processed`/`total` are never touched here,
+    /// so a cancelled job keeps the count of documents it got through.
     fn finish_job(&self, conn: &Connection, source_id: i64, job_id: i64, res: Result<(i64, i64, i64, i64), String>) {
         match res {
             Ok((items, entities, purged, unchanged)) => {
-                // R9.1: do not clobber concurrent cancel
-                let cur: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "done".to_string());
-                if cur == "cancelled" {
-                    self.jobs.maybe_promote(conn);
-                } else {
-                    let result = serde_json::json!({"items": items, "entities": entities, "purged": purged, "unchanged": unchanged}).to_string();
-                    let _ = conn.execute("UPDATE jobs SET status='done', finished_at=datetime('now'), result=?1, error=NULL WHERE id=?2", rusqlite::params![result, job_id]);
+                // R28.1: keep the totals set by the run phase (total = docs
+                // scanned, processed = docs walked) — `items` is only the
+                // changed/new subset and used to overwrite both, making a
+                // 10-file resync with 3 changed files read as 3/3.
+                let result = serde_json::json!({"items": items, "entities": entities, "purged": purged, "unchanged": unchanged}).to_string();
+                let n = conn
+                    .execute("UPDATE jobs SET status='done', finished_at=datetime('now'), result=?1, error=NULL WHERE id=?2 AND status <> 'cancelled'", rusqlite::params![result, job_id])
+                    .unwrap_or(0);
+                if n > 0 {
                     record_sync_success(conn, source_id);
-                    // R28.1: keep the totals set by the run phase (total = docs
-                    // scanned, processed = docs walked) — `items` is only the
-                    // changed/new subset and used to overwrite both, making a
-                    // 10-file resync with 3 changed files read as 3/3.
-                    // promote next pending
-                    self.jobs.maybe_promote(conn);
                 }
             }
             Err(e) if e == "job cancelled" => {
-                // R9.1: cancelled must stay cancelled, no error_count bump, promote next
-                let _ = conn.execute("UPDATE jobs SET status='cancelled', finished_at=datetime('now'), error='job cancelled' WHERE id=?1", [job_id]);
-                self.jobs.maybe_promote(conn);
+                // R9.1: cancelled stays cancelled, no error_count bump. The
+                // handler already stamped finished_at (the Stop time).
+                let _ = conn.execute("UPDATE jobs SET status='cancelled', finished_at=COALESCE(finished_at, datetime('now')), error='job cancelled' WHERE id=?1", [job_id]);
+                log_cancel_landed(conn, job_id);
             }
             Err(e) => {
-                // do not clobber a concurrent cancel that already set cancelled
-                let cur: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "failed".to_string());
-                if cur == "cancelled" {
-                    self.jobs.maybe_promote(conn);
-                } else {
-                    let _ = conn.execute("UPDATE jobs SET status='failed', finished_at=datetime('now'), error=?1 WHERE id=?2", rusqlite::params![e, job_id]);
+                let n = conn
+                    .execute("UPDATE jobs SET status='failed', finished_at=datetime('now'), error=?1 WHERE id=?2 AND status <> 'cancelled'", rusqlite::params![e, job_id])
+                    .unwrap_or(0);
+                if n > 0 {
                     record_sync_error(conn, source_id, &e);
-                    self.jobs.maybe_promote(conn);
                 }
             }
         }
+        crate::jobs::clear_cancel(&self.data_dir, job_id);
+        // the freed slot promotes the next pending job
+        self.jobs.maybe_promote(conn);
     }
 
     async fn run_sync_inner(&self, source_id: i64, job_id: i64, force_reclassify: bool, data_dir: &str) -> Result<(i64, i64, i64, i64), String> {
@@ -1832,8 +1883,10 @@ async fn embed_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
     let pending_ids: Vec<i64> = chunks.iter().map(|(id, _, _)| *id).collect();
     let contents: Vec<String> = chunks.iter().map(|(_, c, _)| c.clone()).collect();
     let embed_texts: Vec<String> = chunks.iter().map(|(_, c, p)| crate::markdown::embed_input(p, c)).collect();
-    // call embedder (graceful fallback inside embed_gated on remote failure)
-    let out = ctx.embedder.embed_gated(contents, embed_texts, gated, embed_min_signal).await.unwrap_or_else(|_| vec![None; pending_ids.len()]);
+    // call embedder (graceful fallback inside embed_gated on remote failure);
+    // R30.4: a cancel drops the in-flight call instead of waiting it out.
+    let call = ctx.embedder.embed_gated(contents, embed_texts, gated, embed_min_signal);
+    let out = until_cancelled(&ctx.data_dir, ctx.job_id, call).await?.unwrap_or_else(|_| vec![None; pending_ids.len()]);
     let updates: Vec<(i64, Vec<u8>)> = out
         .into_iter()
         .enumerate()

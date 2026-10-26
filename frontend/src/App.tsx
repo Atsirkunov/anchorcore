@@ -13,8 +13,16 @@ import { EntitiesTab } from "./tabs/EntitiesTab";
 import { SettingsTab } from "./tabs/SettingsTab";
 import { SourcesTab } from "./tabs/SourcesTab";
 import { SystemTab } from "./tabs/SystemTab";
+import { isActiveJob } from "./jobControlsText";
+import type { Job } from "./types";
 
 type Tab = "ask" | "sources" | "entities" | "settings" | "system";
+
+function badgeText(jobs: Job[]): string {
+  const running = jobs.filter((j) => j.status === "running").length;
+  const queued = jobs.length - running;
+  return queued > 0 ? `${running} running · ${queued} queued` : `${running} running`;
+}
 
 // Primary = everyday flow; secondary = configure & inspect (airy grouped nav)
 // R31.2: the Review tab folded into Entities ("Needs a look" + Possible doubles);
@@ -34,6 +42,8 @@ export default function App() {
   const [dismissedSig, setDismissedSig] = useState<string | null>(() => localStorage.getItem("banner-dismissed"));
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
   const [showWizard, setShowWizard] = useState(false);
+  // R30.4: bumping this scrolls the System tab to its job list
+  const [focusJobs, setFocusJobs] = useState(0);
   // B37: projects come from the shared context (no duplicate fetch here)
   const { projects } = useProjects();
 
@@ -44,9 +54,10 @@ export default function App() {
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
   });
+  // R30.4: active = running + queued, so the badge counts every job a Stop can target.
   const { data: runningJobs } = useQuery({
     queryKey: ["running-jobs"],
-    queryFn: () => api.runningJobs(),
+    queryFn: async () => (await api.listJobs(undefined, 50)).filter(isActiveJob),
     refetchInterval: 5_000,
     refetchIntervalInBackground: true,
   });
@@ -133,12 +144,18 @@ export default function App() {
         </nav>
         {runningJobs && runningJobs.length > 0 && (
           <button
-            onClick={() => setTab("sources")}
-            title={runningJobs.map((j) => `#${j.id} ${j.kind}${j.total > 0 ? ` ${j.processed}/${j.total}` : ""}`).join("\n")}
+            onClick={() => {
+              setTab("system");
+              setFocusJobs((n) => n + 1);
+            }}
+            title={[
+              ...runningJobs.map((j) => `#${j.id} ${j.kind} ${j.status}${j.total > 0 ? ` ${j.processed}/${j.total}` : ""}`),
+              "Open the job list to stop a job",
+            ].join("\n")}
             style={styles.jobsBadge}
           >
             <span style={styles.spinner} />
-            {runningJobs.length} running
+            {badgeText(runningJobs)}
           </button>
         )}
         <select
@@ -210,7 +227,7 @@ export default function App() {
           {tab === "settings" && <SettingsTab />}
         </ErrorBoundary>
         <ErrorBoundary label="System">
-          {tab === "system" && <SystemTab onConfigure={() => setTab("settings")} />}
+          {tab === "system" && <SystemTab onConfigure={() => setTab("settings")} focusJobs={focusJobs} />}
         </ErrorBoundary>
       </main>
     </div>
