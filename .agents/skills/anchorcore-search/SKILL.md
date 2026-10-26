@@ -24,8 +24,7 @@ If MCP starts working later, drop this skill again.
 
 ## Connect
 
-- Base URL: ANCHOR_BACKEND_URL env, else ~/.anchorcore/runtime.json, else
-  http://127.0.0.1:8000. Probe GET /health (expect `{"status":"ok"}`).
+- Base URL: ANCHOR_BACKEND_URL env, else http://127.0.0.1:8000. Probe GET /health (expect `{"status":"ok"}`).
 - Search is a POST: first GET /csrf, then send its csrf_token as
   X-CSRF-Token with Content-Type: application/json. (No CSRF header needed
   when you authenticate with a Bearer token instead.)

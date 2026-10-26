@@ -1,9 +1,9 @@
 # Handover 2026-10-21 (EOD): 1.1.0 shipped + probe + wizard interim
 
 For the next agent / owner. Supersedes the *status* parts of
-`docs/handover-2026-10-21-phase45-progress.md` (all of its §3.1 decisions
+`docs/archive/handover-2026-10-21-phase45-progress.md` (all of its §3.1 decisions
 are answered, §4 release done, worktrees deleted).
-`docs/handover-2026-10-21-llm-modes.md` stays the Phase 45 design
+`docs/archive/handover-2026-10-21-llm-modes.md` stays the Phase 45 design
 reference (§2 findings, §4 target design).
 
 ## 1. State of the tree

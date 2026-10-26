@@ -20,7 +20,7 @@ the only exit, same as before.
 
 ## Notes
 
-- The icon matches `frontend/public/favicon.svg` (Stone & Sage tile), rasterized
+- The icon matches `frontend/public/favicon.svg` (the original Stone & Sage tile — the favicon predates the Archive palette), rasterized
   in code (`tray.rs: build_icon_rgba`) so the binary needs no image asset.
 - Menu-bar clicks can't be automated here: the Open/Quit plumbing is
   unit-tested at the seams (gating matrix, icon pixels, Notify→shutdown) and

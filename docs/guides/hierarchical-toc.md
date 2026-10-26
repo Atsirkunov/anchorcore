@@ -32,13 +32,13 @@ Migrations: `rust/crates/anchorcore/migrations/11_sections.sql`,
 1. **Sections** (`src/chunking.rs`): headings detected (`§` forms, dotted
    numbers, article/annex/section words, ALL-CAPS lines) and nested with a
    stack into parent/child paths; passages pack up to 1600 chars per section.
-2. **Summaries**: each section gets an extractive summary (first paragraphs,
-   capped) plus one per document, stored as special chunks — these are what
+2. **Summaries**: each section gets an extractive summary (first two
+   paragraphs, capped — no model) plus one per document, stored as special chunks — these are what
    the coarse search pass reads.
 3. **Tags** (`src/tags.rs`): keyword proposals per section, merged against
    existing tags at the 0.82 threshold (`count++`) or inserted new.
 4. Re-syncing a document replaces its sections and chunks in one transaction;
-   unchanged sections are hash-skipped like classifier windows.
+   unchanged sections are hash-skipped.
 
 Sources labeled `sensitive` skip cloud embedding here too — source labels
 are the trust boundary for the whole pipeline.
@@ -57,7 +57,8 @@ are the trust boundary for the whole pipeline.
 
 If the TOC pass comes back empty, retrieval falls back to the flat hybrid
 search. Context expansion reads same-section siblings instead of ±1
-neighbors; the 1–2 hop graph walk still runs after fusion.
+neighbors. What happens after the legs (fusion, slots, gates) is in
+[retrieval-tuning.md](./retrieval-tuning.md).
 
 Benchmarks: hierarchical search ~7ms vs ~40ms flat on a 30k-chunk probe
 (5.6×); projected ~7ms vs ~200ms at 150k chunks (28×) — meets the
@@ -89,19 +90,15 @@ curl -X POST http://127.0.0.1:8123/qa/search -H "Content-Type: application/json"
 ```
 
 (CSRF: local `POST`s from curl need the `X-CSRF-Token` header — fetch it from
-`GET /csrf` first. The MCP sidecar handles this automatically.)
+`GET /csrf` first. `anchorcore mcp` handles this automatically.)
 
 ## 8. Caveats
 
-- `is_public_path` in `src/auth.rs` used to be an accepted high-complexity
-  decision table — the R43.8 allowlist rewrite flattened it (CCN 22→13),
-  so the do-not-touch note is retired.
-- A few complexity warnings remain in `retrieval.rs` — follow-up, not blocking.
-- Entity chunks have `NULL` section and bypass the section filter (keeps the
-  disputed-entity tests green).
+- Entity chunks have a `NULL` section and bypass the section filter; cited
+  entities are attributed via their item, not the hit.
 
 ## 9. References
 
-- `rust/BACKLOG.md` Phase 14 (`R14.1–R14.6`, done, 1.0.12)
-- `docs/architecture.md` (system view; §4a retrieval detail)
-- `README.md` ("Scale — hierarchical TOC" section)
+- `rust/BACKLOG-archive.md` Phase 14 (`R14.1–R14.6`, shipped in 1.0.12)
+- [architecture.md](../architecture.md) — system view
+- [retrieval-tuning.md](./retrieval-tuning.md) — fusion, slots, gates

@@ -23,7 +23,7 @@ Status: `todo` | `doing` | `done` (✅). Update this file when you pick/complete
 
 ### Phase 45 — Agentic vs local LLM, built-in embeddings, entities + vocabulary rework (handover 2026-10-21) — 11 shipped / 2 partial / 5 open / 2 closed
 
-> Source: `docs/handover-2026-10-21-llm-modes.md` (findings §2, design §4, owner decisions still needed §7.2). Supersedes R43.30 (→ R45.13) and Phase 31 R31.1/R31.2 (→ R45.9). Waves: R45.0 first; then R45.1 ∥ R45.2 ∥ R45.3 ∥ R45.5; then R45.4 → R45.6 → R45.7; R45.13 after R45.1 + R45.2; R45.8 → R45.10 → R45.9 → R45.11 alongside, serialized with R45.1/R45.13 in `pipeline.rs`/`classifier.rs`. Migration numbers: 21 = R45.0, 22 = R45.5, 23 = R45.8, 24 = R45.13.
+> Source: `docs/archive/handover-2026-10-21-llm-modes.md` (findings §2, design §4, owner decisions still needed §7.2). Supersedes R43.30 (→ R45.13) and Phase 31 R31.1/R31.2 (→ R45.9). Waves: R45.0 first; then R45.1 ∥ R45.2 ∥ R45.3 ∥ R45.5; then R45.4 → R45.6 → R45.7; R45.13 after R45.1 + R45.2; R45.8 → R45.10 → R45.9 → R45.11 alongside, serialized with R45.1/R45.13 in `pipeline.rs`/`classifier.rs`. Migration numbers: 21 = R45.0, 22 = R45.5, 23 = R45.8, 24 = R45.13.
 
 | ID | Title | Priority | Est | Dependencies | DoD | Files |
 |---|---|---|---|---|---|---|
@@ -49,7 +49,7 @@ Status: `todo` | `doing` | `done` (✅). Update this file when you pick/complete
 
 ### Phase 43 — Full-repo audit 2026-10-21 (tracks A–E, staged S1→S3) — 19 open / 10 shipped (S1 + R43.28/R43.29 DONE 2026-10-21) / R43.30 closed into R45.13
 
-> Source: `docs/handover-2026-10-21-audit.md` (base `4bb7443`; severities calibrated during this fold — see the doc's Calibration section). Stages: **S1 retrieval crispness now** (tracks A+B + cheap C1 pull-forward), **S2 local reliability + scale alongside** (track C), **S3 hosted gate** (tracks D+E — no networked deploy before these). Duplicates folded, not duplicated: H4→R30.1, H8→R30.3, M9→R36.18a, M3-embed→R43.12-interim/R36.9-full, H6⇄R30.6 split. The audit's coverage gaps (vocab/review/entities/items handlers, backup merge logic, dependency majors) stay for a later round, except MCP config-writes (R43.26).
+> Source: `docs/archive/handover-2026-10-21-audit.md` (base `4bb7443`; severities calibrated during this fold — see the doc's Calibration section). Stages: **S1 retrieval crispness now** (tracks A+B + cheap C1 pull-forward), **S2 local reliability + scale alongside** (track C), **S3 hosted gate** (tracks D+E — no networked deploy before these). Duplicates folded, not duplicated: H4→R30.1, H8→R30.3, M9→R36.18a, M3-embed→R43.12-interim/R36.9-full, H6⇄R30.6 split. The audit's coverage gaps (vocab/review/entities/items handlers, backup merge logic, dependency majors) stay for a later round, except MCP config-writes (R43.26).
 
 | ID | Title | Priority | Est | Dependencies | DoD | Files |
 |---|---|---|---|---|---|---|
@@ -112,7 +112,7 @@ Status: `todo` | `doing` | `done` (✅). Update this file when you pick/complete
 
 ### Phase 20 — MCP zero-setup UX (2026-10-11) — 2 open / 8 shipped
 
-> One executable (`anchorcore mcp`), real-path card, one-click client connect. Shipped: R20.1-R20.3, R20.8, R20.9 (see shipped log; plan: `docs/plan-mcp-zero-setup.md`). Remaining:
+> One executable (`anchorcore mcp`), real-path card, one-click client connect. Shipped: R20.1-R20.3, R20.8, R20.9 (see shipped log; plan: `docs/archive/plan-mcp-zero-setup.md`). Remaining:
 
 | ID | Title | Priority | Est | Dependencies | DoD | Files |
 |---|---|---|---|---|---|---|
@@ -276,7 +276,7 @@ Status: `todo` | `doing` | `done` (✅). Update this file when you pick/complete
 | 2026-10-11 | R18.3 | Nav IA truth: every nav label now matches its section heading verbatim ("Roadmap" -> "Get started", section h2 renamed, #roadmap kept as the legacy anchor; "Demo" -> "60-second demo"; "Privacy" -> "Privacy notice"); demo moved to nav slot 2; burger breakpoint 760px -> 1080px (the longer labels need ~1000px; a headless render showed only ~10px slack at 900px before); README + index.html sync comments updated; verified by script + render |
 | 2026-10-11 | R26.2 | --stone text contrast fixed in .matrix .n (3.31 -> 5.98:1 on the white card; text moves to --dim, --stone keeps its 9 stroke/fill uses). Survived R18.4 (scoped to --dim) and R18.8 (Lighthouse passes short cells). Verified with a precise grep for real color:var(--stone) -> 0 hits; build + typecheck + lint green |
 | 2026-10-11 | R20.5 | release.yml asserts the MCP-capable binary before every upload (linux: anchorcore in the zip; macOS: the executable app binary in the bundle; windows: anchorcore.exe in the zip) and runs an initialize + tools/list handshake on the shipped file per OS, requiring 6 tools incl. search — deleting the binary now fails before upload (macOS was a soft `if [ -f ]`). ci.yml gained the same handshake smoke against the built binary. Note: `anchorcore mcp` is an argv check, not a clap subcommand, so --help is not a capability probe. **The end-to-end search smoke moved to R20.10**: four attempts died in harness plumbing, not in the product, and main was red while iterating — the handshake is the part that must hold on every push |
-| 2026-10-11 | R20.7 | stdio-vs-HTTP decided and B14.2/B14.4 re-ranked: docs/mcp.md 9 (R20 row updated; **B14.2 streamable HTTP -> Next as the Team/remote path**; B14.4 registry -> Later) and 10.1 answered (local stays stdio + runtime.json discovery because a local harness must own the stdio process; HTTP removes the path for shared instances). docs/plan-mcp-zero-setup.md status + the re-rank rationale under Decisions recorded. Also repaired 7b4825a (mcp.md duplication) |
+| 2026-10-11 | R20.7 | stdio-vs-HTTP decided and B14.2/B14.4 re-ranked: docs/mcp.md 9 (R20 row updated; **B14.2 streamable HTTP -> Next as the Team/remote path**; B14.4 registry -> Later) and 10.1 answered (local stays stdio + runtime.json discovery because a local harness must own the stdio process; HTTP removes the path for shared instances). docs/archive/plan-mcp-zero-setup.md status + the re-rank rationale under Decisions recorded. Also repaired 7b4825a (mcp.md duplication) |
 | 2026-10-11 | R20.6 | Docs + wizard audience split: docs/mcp.md 4.1 is artifact-first (setup lives in the app: System tab to Connect, the wizard card, /system/mcp for harnesses) and the dev-checkout build moved to a new section 11, For contributors, at the end; the README 60-second start gained the System-tab step. The wizard half was already satisfied - step 4 renders the shared McpConnectCard (R20.9). DoD: git grep -n cargo docs/mcp.md README.md frontend/src returns only developer-labelled hits (README Developers/Tests, mcp.md 11) |
 | 2026-10-11 | R26.1 | Type-check + lint gate for website/: tsconfig.json (strict, vite/client types so ?raw imports resolve), eslint.config.js (flat + typescript-eslint), typecheck/lint scripts, allowScripts entries for esbuild/workerd, and a CI website job (node 22) between frontend and docker-team. Found and fixed three real issues on the first run: TS2551 navigator.userAgentData, TS7006 a Formspree callback param, eslint no-empty on a deliberate catch. DoD verified: a deliberate type error fails typecheck (exit 2), build still green |
 | 2026-10-11 | R18.15 | Second sample corpus: sample-ai/ (10 files — a fictional AI startup: tiered model routing, eval gates, usage-tier pricing, a postmortem, and a stale 0.94 vs corrected 0.89 metric for the dispute demo), its own guide tab + #guide-ai anchor + docs/sample-ai.md, and ?corpus=ai to swap the landing examples (payments stays the static default; the task text called it ?track=, but that is the Personal/Team/Hosted switch since R18.1, so the corpus got its own param). initGuideTabs now derives tab/panel pairs from the markup. Verified: 4 tabs, deep link opens its panel with aria-expanded, corpus swaps both ways, no heading skips across 52 headings |
@@ -336,5 +336,5 @@ Full tables + verification evidence: [`BACKLOG-archive.md`](./BACKLOG-archive.md
 * Plan: `docs/product-plan.md#b31-backend-port-to-rust-p3deferred`
 * Architecture: `docs/architecture.md`
 * Packaging: `docs/packaging.md`
-* MCP zero-setup plan: `docs/plan-mcp-zero-setup.md`
+* MCP zero-setup plan: `docs/archive/plan-mcp-zero-setup.md`
 * Archive: `rust/BACKLOG-archive.md`

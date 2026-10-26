@@ -1,6 +1,6 @@
 # Probe 2026-10-21: built-in embedding engine (R45.3, macOS part)
 
-Follow-up to `docs/handover-2026-10-21-llm-modes.md` §3. Answers what a Mac
+Follow-up to `docs/archive/handover-2026-10-21-llm-modes.md` §3. Answers what a Mac
 can answer from §3.2: f16, parity over a real corpus, a Linux build, and
 Matryoshka dims. Windows MinGW is still open (CI only, see §5).
 

@@ -1,6 +1,7 @@
 # B48 — Clean-machine end-to-end script (v1.0.13)
 
 > B48 DoD: both platforms pass this script; every papercut filed as a backlog item.
+> Versions, sizes and counts below are from the v1.0.13 run — substitute the current release. The macOS leg now rides R41.2's DMG check (`rust/BACKLOG.md`).
 > Scope: download → unzip → run → sync `sample/` → cited answers, on clean
 > Windows + macOS; MCP smoke via one harness; fresh-clone `docker build` + Team
 > image boots with a valid license and refuses without one.

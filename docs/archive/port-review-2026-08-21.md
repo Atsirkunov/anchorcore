@@ -41,7 +41,7 @@
 
 **Phase 4 jobs & system:** `R4.1` `JobManager MAX_CONCURRENT=2` pending, `R4.2` scheduler, `R4.3` PII `GET/PUT /pii/config`, `review`, `R4.4` entities `context` B27 + projects `project_sources`, `R4.5` MCP 6 tools.
 
-**Phase 5 packaging:** `R5.1` `include_dir!` SPA fallback, `R5.2` `cargo cross` win/mac/linux `codesign`, `R5.3` cutover checklist `rust/docs/cutover.md:1`.
+**Phase 5 packaging:** `R5.1` `include_dir!` SPA fallback, `R5.2` `cargo cross` win/mac/linux `codesign`, `R5.3` cutover checklist `docs/archive/rust-cutover.md:1`.
 
 **Phase 6 cutover completeness (least-conflict order):**
 
@@ -99,7 +99,7 @@ curl http://127.0.0.1:8123/auth/status # {"enabled":false}
 
 ---
 
-## 7) Packaging & cutover (`rust/docs/cutover.md:1`)
+## 7) Packaging & cutover (`docs/archive/rust-cutover.md:1`)
 
 * **Version** `rust/Cargo.toml:6` `1.0.8` single source (was `backend/app/config.py:11`).
 * **Release** `cargo build --release` embeds `frontend/dist` → `dist/AnchorCore-rust-macos.zip` 5.7M (8.7M binary + 3.4M frontend), `release.yml` 3 Rust jobs `cross` + `codesign`.
@@ -135,4 +135,4 @@ Parallel: `R6.5` (`retrieval.rs` vs `pipeline.rs` already file-disjoint) can run
 * [ ] `docs/handover-2026-08-21.md:1` handover for next agent
 * [ ] This review doc `docs/port-review-2026-08-21.md:1`
 
-*Generated for 2026-08-21 review from `rust/BACKLOG.md:65`, `rust/docs/cutover.md:1`, `docs/rust-port.md:1`, `AGENTS.md:1`, `git log` `9eaa9a4`.*
+*Generated for 2026-08-21 review from `rust/BACKLOG.md:65`, `docs/archive/rust-cutover.md:1`, `docs/rust-port.md:1`, `AGENTS.md:1`, `git log` `9eaa9a4`.*

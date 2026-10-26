@@ -40,9 +40,11 @@ Useful when judging whether something is a bug:
   requests without the per-session CSRF token (`rust/crates/anchorcore/src/security.rs`).
 - Source credentials live in the OS keychain (or an encrypted-file fallback),
   never in the database, and are never returned to the UI (`***set***`).
-- `sensitive` / `pii` sources and PII-flagged chunks are sent to cloud models
+- Content from `sensitive` / `pii`-labelled sources is sent to cloud models
   only when that provider is explicitly trusted (`ANCHOR_TRUSTED_PROVIDERS`,
   or the broader `ANCHOR_CLOUD_TRUST=1`); refusals are recorded as events.
+  Manual PII marks on individual documents are visible but not yet enforced
+  on cloud flows — label the source `sensitive` to gate it.
 - There is no telemetry: outbound requests go to the model, Drive, Jira, Linear
   or REST endpoints you configure, and nowhere else.
 - The team edition enforces its license gate at startup (`license.rs`);

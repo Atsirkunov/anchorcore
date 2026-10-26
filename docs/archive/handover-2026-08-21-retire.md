@@ -27,7 +27,7 @@ bc8a4af Week2: watcher/service 3s debounce + handle map, SQL param IN/LIKE, RRF 
   - Wired `pipeline.rs:427` `embed_gated` + `sync_vec`: `SELECT ... WHERE embedding IS NULL`, `embedder.embed_gated(contents, is_pii_flags, gated, 0.15)`, `UPDATE chunks SET embedding` + `sync_vec`, `sensitive_label` gate + `signal` gate.
 - **Requested for this agent:** finish `watcher/service.rs` extraction (P0 3.3) + retrieval harness (P0 3.1) per `docs/port-review-2026-08-21-lead.md:55` (`rust/BACKLOG.md:65`), then retire Python. This handover documents the **7 commits that went from 9ea85ed (watcher gated, embed wired) to 1.0.9 retired**.
 
-**Cutover gate (`rust/docs/cutover.md:14`):** `cargo test 44` + `cargo check 0` + `124/3` vs Rust + `cargo build --release` + `scripts/sync_version.py` + tag `v1.0.9` → Rust is shipped, Python is legacy conformance only.
+**Cutover gate (`docs/archive/rust-cutover.md:14`):** `cargo test 44` + `cargo check 0` + `124/3` vs Rust + `cargo build --release` + `scripts/sync_version.py` + tag `v1.0.9` → Rust is shipped, Python is legacy conformance only.
 
 ---
 
@@ -100,7 +100,7 @@ bc8a4af Week2: watcher/service 3s debounce + handle map, SQL param IN/LIKE, RRF 
 ### 2.7 `7131cfe` 1.0.9 retire (final)
 **Commit:** `7131cfe 1.0.9: retire Python, Rust is shipped artifact`
 
-- Bump `rust/Cargo.toml:6` `1.0.8→1.0.9` + `backend/app/config.py:11` `__version__` via `scripts/sync_version.py`, `Cargo.lock` 1.0.9, `rust/BACKLOG.md:62` `R5.3` `1.0.0→1.0.9` retired, `rust/docs/cutover.md:1` gate `44` + `0` + `124/3` + `9.8M` `codesign valid`.
+- Bump `rust/Cargo.toml:6` `1.0.8→1.0.9` + `backend/app/config.py:11` `__version__` via `scripts/sync_version.py`, `Cargo.lock` 1.0.9, `rust/BACKLOG.md:62` `R5.3` `1.0.0→1.0.9` retired, `docs/archive/rust-cutover.md:1` gate `44` + `0` + `124/3` + `9.8M` `codesign valid`.
 - Tag `v1.0.9` pushed, `release.yml` builds `AnchorCore-rust-*` 5 artifacts.
 
 **Total diff `9ea85ed..7131cfe` (7 commits + 52b52bd):** `32 files 1196+/335-` (see `git diff --stat HEAD~7..HEAD`).
@@ -180,7 +180,7 @@ reqwest (OnceLock Client) ───┤  AppState{data_dir, settings:Arc<RwLock>,
 | 5.P2 | Logs unbounded | `system.rs:284` `logs_handler` scans `data_dir` each call, no pagination/max_size | Add `Content-Length` limit, keep 404 guard. |
 | 5.P2 | Stale deps | `Cargo.toml:19` `rusqlite 0.31→0.32`, `notify 6→8`, `rand 0.8→0.9`, `keyring 2` API, `fernet 0.2` unmaintained | Bump when time, migration cost compounds. |
 
-**Cutover redefinition (`rust/docs/cutover.md:14`):**
+**Cutover redefinition (`docs/archive/rust-cutover.md:14`):**
 ```
 - cargo check -p anchorcore: 0 warnings (now 0 via #![allow], was 71)
 - cargo test -p anchorcore: ≥42 passed (now 44: 37 + 4 harness + 3 jobs/auth)
@@ -196,7 +196,7 @@ reqwest (OnceLock Client) ───┤  AppState{data_dir, settings:Arc<RwLock>,
 ## 6. How to continue (new agent)
 
 ### 6.1 Read these first
-1. `AGENTS.md:1`, `rust/BACKLOG.md:1`, `rust/README.md:1`, `docs/rust-port.md:1`, `rust/docs/cutover.md:1`, `docs/handover-2026-08-21-retire.md:1` (this file) + `backend/tests/conftest.py:1`, `rust/AGENTS.md:1`.
+1. `AGENTS.md:1`, `rust/BACKLOG.md:1`, `rust/README.md:1`, `docs/rust-port.md:1`, `docs/archive/rust-cutover.md:1`, `docs/handover-2026-08-21-retire.md:1` (this file) + `backend/tests/conftest.py:1`, `rust/AGENTS.md:1`.
 2. `git log --oneline -7` shows `7131cfe` 1.0.9 retire on top of `52b52bd` sync fix.
 
 ### 6.2 Run / verify (no Ollama needed, degraded rules)
@@ -286,4 +286,4 @@ rg "LIKE '%trusted%'" rust/crates --no-heading # must be 0 (now parametrized LIK
 * `rust/crates/anchorcore/src/system.rs:14` `status_handler` real probe + `:104` `errors_handler` 4-arm
 * `rust/crates/anchorcore/src/auth.rs:21` `auth_enabled` pub + `:139` `require_auth_middleware` 401 + `jobs.rs:97` `BEGIN IMMEDIATE` atomic
 
-*Generated 2026-08-21 final retire. Source of truth: `rust/BACKLOG.md:1`, `rust/docs/cutover.md:1`, `docs/rust-port.md:1`, `AGENTS.md:1`, `git log 7131cfe..52b52bd`.*
+*Generated 2026-08-21 final retire. Source of truth: `rust/BACKLOG.md:1`, `docs/archive/rust-cutover.md:1`, `docs/rust-port.md:1`, `AGENTS.md:1`, `git log 7131cfe..52b52bd`.*

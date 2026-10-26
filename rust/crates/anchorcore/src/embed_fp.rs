@@ -21,7 +21,7 @@ pub const PROVIDER_HTTP: &str = "ollama";
 const NOMIC_V15: &str = "nomic-embed-text-v1.5";
 
 /// `(provider, normalized model, family)`: the probe in
-/// `docs/handover-2026-10-21-llm-modes.md` §3 measured cosine 1.00000 between
+/// `docs/archive/handover-2026-10-21-llm-modes.md` §3 measured cosine 1.00000 between
 /// candle nomic v1.5 and Ollama `nomic-embed-text` (with the R43.6 prefixes),
 /// so those share a family and switching between them needs no re-embed.
 /// A remote OpenAI-compatible "nomic" is NOT listed — unproven, re-embed.

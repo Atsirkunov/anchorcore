@@ -1,7 +1,7 @@
 # Handover 2026-10-22 (EOD): 1.2.0 shipped — Archive redesign (app + website)
 
 For the next agent / owner. Supersedes the *status* parts of
-`docs/handover-2026-10-21-release-1.1.0.md`; its §6 "Resume here" list is
+`docs/archive/handover-2026-10-21-release-1.1.0.md`; its §6 "Resume here" list is
 still the roadmap (nothing on it was touched today).
 
 ## 1. State of the tree

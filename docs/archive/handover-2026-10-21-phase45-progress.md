@@ -1,7 +1,7 @@
 # Handover 2026-10-21 (evening): Phase 45 progress + all pending work
 
 For the next agent / owner. Supersedes the *status* parts of
-`docs/handover-2026-10-21-llm-modes.md`. That file stays the design
+`docs/archive/handover-2026-10-21-llm-modes.md`. That file stays the design
 reference for Phase 45 (§2 findings, §4 target design, §7.2 owner
 decisions); this file covers what landed, what's left, and the rest of the
 open backlog.

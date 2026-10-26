@@ -46,14 +46,14 @@ No sales team, no procurement cycle in v1. Website has one page with a Personal/
 | Area | Decision |
 |---|---|
 | Runtime | Local-first app (local server + browser UI); Windows + macOS downloads, Linux zip in CI |
-| Connectors | Local folder, Drive, Jira, Linear, REST (v1); Slack planned |
-| Model tiering | Ollama (local, 3B) for classification; BYO big models via API for Q&A/planning |
+| Connectors | Local folder, Drive, Jira, Linear, Miro, REST; Slack planned |
+| Models | No chat model on the ingest path (R45.18 — records come from structure). Embeddings via Ollama or BYO API (built-in engine planned, R45.4). Answers written by the user's agent (`agent` mode) or Ollama / a BYO model (`local` mode) |
 | Model access | Bring-your-own-key (v1); bundled access v2–3 |
 | Trust layer | Sources + confidence + review UI (v1); contradictions & verification workflows (v2) |
 | Retrieval | SQLite (FTS5 + in-code embedding scan; sqlite-vec is not linked — R43.10), local embeddings (`nomic-embed-text`), swappable VectorStore |
 | Sync | Incremental connector polls/cursors; folder watcher + hourly scan fallback; hash dedup; delete cascades |
 | Data model | Uniform entity graph (entities + typed relationships + provenance); contradictions as external layer |
-| Answers | Planner → executor → fusion → graph walk, section-level citations, cheap default BYO model |
+| Answers | Hybrid keyword + vector retrieval fused by RRF, section-level citations; decisions/actions answered from parsed records (`/decisions`, `/actions`) |
 | Identity | Hash dedup in-source; cross-source duplicate proposals for manual merge |
 | Billing | Personal local free forever; Team self-hosted = one-time platform license (perpetual + 1yr maintenance), offline ed25519 key (`rust/crates/anchorcore/src/license.rs`, issue via `scripts/make_license.py`); hosted pricing TBD from pilots. *(Superseded 2026-10-21: Team pricing is quote-only and the fee structure is undecided — see `rust/docs/decisions.md`.)* |
 | Security | OS keychain for credentials (macOS/Windows; encrypted-file fallback elsewhere); secrets never in DB/config |
@@ -62,11 +62,11 @@ No sales team, no procurement cycle in v1. Website has one page with a Personal/
 
 ```
 Sources (folder, Drive, Jira, Linear, REST; Slack planned)
-    -> Extract text + metadata (incremental, deduped by hash)
-    -> Classify into entity kinds (decision | document | action | note)
-    -> Attach entities (person, system, feature, customer) + relationships
-    -> Store: SQLite entities/relationships + sqlite-vec embeddings
-    -> Review: low-confidence items + cross-source duplicates proposed to user
+    -> Extract text + metadata (incremental, deduped by hash; images kept as cited assets)
+    -> Chunk along document structure (sections, symbols, config keys)
+    -> Parse records by rules: decisions + action items with owner/status/due (unverified)
+    -> Store: SQLite chunks + FTS5 + embeddings, entities with provenance
+    -> Review: people verify/dispute records, merge duplicates, mark PII, caption images
 ```
 
 **Example entity:**
@@ -77,15 +77,15 @@ Sources (folder, Drive, Jira, Linear, REST; Slack planned)
 | Summary | Instant Payments MVP excludes incoming payments |
 | Reasoning | Reconciliation complexity |
 | Source | PRD v3 (section 4.2) |
-| Confidence | 82% |
-| Owner | (user-assigned) |
+| Status | unverified (until a person confirms) |
+| Owner | from the record's `Owner:` field |
 
 ## 7. Trust Model (v1 vs v2)
 
 **v1 — "show your work":**
-- Every entity carries source, confidence, timestamp, author, verification status.
+- Every record carries its source, section, timestamp and verification status; nothing is `verified` until a person says so.
 - Every answer cites its sources as clickable section-level references.
-- Review UI: user confirms/reclassifies low-confidence items (recorded with user as author).
+- Review UI: people verify or dispute records (recorded with the person as author).
 - Duplicate proposals: user merges (never auto-merge).
 
 **v2 (deferred):** contradiction detection (claim graph + pairwise conflict scanning). Verified/disputed states shipped in v1 (B3).
@@ -248,7 +248,7 @@ DONE items are one-line verdicts — full narratives lived here until 2026-10-19
 **Problem:** users want their own harnesses (Claude Code, Codex, opencode) to use AnchorCore's memory; the stdio sidecar (B14.1/R12.5) ships, and B14.2–B14.4 extend it to shared/HTTP, write-back and registry installs.
 
 **Scope (per [mcp.md](./mcp.md)):**
-- B14.1 Local stdio MCP server, read-only: `ask`, `search`, `get_entity`, `get_source`, `list_sources`, `memory_status` — thin adapters over existing services; results respect status/dispute filtering
+- B14.1 Local stdio MCP server, read-only — shipped; now 9 tools (`ask`, `search`, `decisions`, `actions`, `get_asset`, `get_entity`, `get_source`, `list_sources`, `memory_status`), each with a REST equivalent; results respect status/dispute filtering
 - B14.2 Streamable HTTP transport mounted on the Axum app (`/mcp`), bearer-token auth (opt-in, disabled on localhost), calls audited in `system_events` — the "centralized dataset for agents" story
 - B14.3 Write-back `ingest` tool (items stored `unverified`, author `mcp:<token>`, routed to the review UI)
 - B14.4 Registry publishing for one-command harness installs
@@ -266,9 +266,9 @@ DONE items are one-line verdicts — full narratives lived here until 2026-10-19
 **B45.2 Teams/hosted: native live Slack connector (P1, Teams tier flagship):**
 - One install per workspace by an admin (bot token `xoxb-`, hosted OAuth relay); central sync so every seat gets "the AI already knows #deploys"
 - Crawl: `conversations.list` (channel picker like Jira projects) → `conversations.history` per channel (`oldest` = cursor) → `conversations.replies` for threads → cached `users.info` for names; Tier 2/3 backoff; job progress (B2) for multi-hour backfills
-- Behavior: ingestion unit = author burst (~5min collapse) or thread (parent = question, replies = resolution) → B18 distillation to `Q:/A:` units; channel name/topic as metadata + `source_ref` `slack:#chan/<ts>` with permalink citations; drop `channel_join/leave`, empty bots, emoji-only noise via `_signal` gate; humans weighted over bots for `who_knows`; edited → re-ingest, deleted → `stale`; DMs/private channels default `sensitive` (local-only, never shared)
+- Behavior: ingestion unit = author burst (~5min collapse) or thread (parent = question, replies = resolution) → the normal record + chunk path (no distillation — R45.18); channel name/topic as metadata + `source_ref` `slack:#chan/<ts>` with permalink citations; drop `channel_join/leave`, empty bots, emoji-only noise via `_signal` gate; humans weighted over bots for `who_knows`; edited → re-ingest, deleted → `stale`; DMs/private channels default `sensitive` (local-only, never shared)
 - Self-hosted team: same connector against the company instance (Socket Mode if no public endpoint for real-time)
-- **DoD:** sync 3 channels; a 5-message burst yields 1 distilled unit; a threaded decision answers "why X?" with a permalink citation; DMs stay local-only with a gate event
+- **DoD:** sync 3 channels; a 5-message burst yields 1 chunk; a threaded decision answers "why X?" with a permalink citation; DMs stay local-only with a gate event
 
 ---
 
@@ -418,61 +418,23 @@ question as a golden case takes minutes and is documented.
 
 **Status (2026-10-12):** Phase A **shipped** — R25.1–R25.7 (uids, export, import, secrets bundle, CLI, System-tab card, docs). Verified on Windows end-to-end (live export from a seeded instance → import into a fresh data dir → hybrid retrieval + re-embed job; replace with safety backup; wrong passphrase leaves nothing behind; secrets restore as `***set***`); the macOS leg of A1–A3 still needs a run on a Mac. Phase B/C remain design-only until the §8 decisions are signed off.
 
-## Current execution priorities (agreed 2026-08-07 — updated after Aug review + the B48 pass, amended for no-UX constraint)
+## Current execution priorities (open B-items, reviewed 2026-10-26)
 
-Explicit order — v1 core, hardening, scale and the website are DONE (v1.0.10–1.0.12). Queue below is post-website launch prep.
+Engineering rows live in `rust/BACKLOG.md`; shipped B-items are in the compact log above. When testers complain about a specific screen, fix that screen.
 
-> **Hardening & scale (P0/P1) before new connectors. No UX expertise needed for P0 — P0 is pure engineering. Visual polish via Stone & Sage tokens — taste-free.**
-
-> **UX constraint (owner: no UX/UI background):** Grouped doc view shipped engineer-only (`EntitiesTab` `Map<item_id>` + `PII ●` + `Needs review` filter) — no custom design. When testers complain about a specific screen, fix that screen.
-
-| # | Item | Status | Why here |
+| # | Item | Priority | Why / status |
 |---|---|---|---|
-| — | B32 Graph-based retrieval | ✅ DONE (v1.0.3) | graph walk after RRF → connected entities in context + citations |
-| — | B17 Planner→Executor→Synthesis | ✅ DONE (v1.0.4) | tool planner + executor + evidence fusion; who_knows tool |
-| — | B18 Distillation | ✅ DONE (v1.0.5) | normalized Q&A units + IDF-gated embedding |
-| — | B15 Scoped search / projects | ✅ DONE (v1.0.6) | project bundles of sources; QA scoped via project picker |
-| — | B19 newest answer on top | ✅ DONE (v1.0.7) | Ask renders newest-first |
-| — | B3 Dispute tracking | ✅ DONE (v1.0.7) | audit trail + counter; disputed excluded from Q&A |
-| — | B7 Source config editing | ✅ DONE (v1.0.7) | PUT /sources/{id} + edit form; keychain-backed secrets |
-| — | B8 First-run wizard | ✅ DONE (v1.0.7) | onboarding overlay: Ollama checks → connect → ask |
-| — | B33 vec0 retrieval | ✅ DONE | vec0 index + Python-scan fallback; `/system/status.retrieval` |
-| — | B34 Backend hardening | ✅ DONE | single `__version__`, dedup route, shared secret fields, bounded jobs |
-| — | B36 Frontend hardening | ✅ DONE | /projects proxy, abort+timeout, ErrorBoundary, shared stripPlaceholders |
-| — | B37 Frontend decomposition | ✅ DONE | SourcesTab split, useJobsPoll, ProjectsContext, theme tokens |
-| — | B35 Pipeline decomposition | ✅ DONE | chunking.py/hashing.py/distill.py; commit-before-LLM invariant tested |
-| — | B38 Testing uplift | ✅ DONE | vitest + eslint + CI; paginated duplicates; isolated_db fixture |
-| — | B39 PII thin gate | ✅ DONE | sources.label + provider trust; cloud blocked until ANCHOR_CLOUD_TRUST |
-| — | B30 PII gating (full) | ✅ DONE (v1.0.8) | labels + provider trust; cloud classify/embed/answer gating (source + chunk); `/qa/public` share-safe scope; PII config + review |
-| — | B27 Review context expansion | ✅ DONE | ReviewTab/EntitiesTab neighbour sections + highlight + full-doc |
-| — | B28 Google Drive connector | ✅ DONE (skeleton) | Drive API direct ingest (mocked tests); OAuth + mirror polish next |
-| — | B31 Rust port | ✅ DONE (v1.0.10) | `rust/` shipped artifact, `1.0.10` single source `Cargo.toml:6`, honest `110/17` vs Rust |
-| — | B40 Stone & Sage palette | ✅ DONE (v1.0.11) | `C3 #4A5A52 / #F2F0EB` replaces indigo `docs/design-system.md:17` `theme.ts`, banner/spinner `App.tsx` |
-| — | B41 Doc-grouped Entities + PII shield | ✅ DONE (v1.0.11) | `EntitiesTab` `Map<item_id>` `Grouped/Flat` default `>200`, `Whole doc` `GET /entities/{id}/context` + `GET /pii/item/:id` `PII ●` `Reveal`, `Verify all & collapse` → navigable doc |
-| — | B42 A dozen review + banner persist | ✅ DONE (v1.0.11) | `classifier 0.5→0.78/0.72` selective, `pipeline verified≥0.70`, `1577→12 unverified`, `App.tsx` `localStorage["banner-dismissed"]` + suppress while `running`, `Entities` `Needs review` `⚠` flag + `limit 2000` |
-| — | B43 Business-scale corpus | ✅ DONE (v1.0.11) | `scripts/build_business_corpus.py` `tech/finance/AI` `800→5k docs` (`data/business-scale` gitignored) + Rust `NOT NULL` fixes `sources/jobs/ingested_items/entities/chunks` |
 | 1 | **B14.2 MCP HTTP transport** | **P1** | stdio shipped + tested local without UI (R12.5); HTTP + tokens unblock share links |
 | 2 | B22 Jira/Linear live validation | **P1** | sandbox fixtures; both connectors exist, need real-instance proof |
-| — | B9 Document type coverage | ✅ DONE (R24.2 + R24.3) | Business formats (Office/ODF/RTF/EML/PDF) shared by folder + Drive, plus code languages and `.gitignore`-aware repo walking; legacy `.doc`/`.ppt` = export first |
-| — | B16 who_knows (full) | CLOSED 2026-10-26 | the who-knows leg was deleted in R45.9; ownership is `GET /actions` |
 | 5 | B29 remainder: CHANGELOG + hosted prep | **P1** | website shipped; changelog discipline + pilot prep open |
 | 6 | B28 Drive OAuth polish | **P2** | OAuth browser flow + `data/drive/<name>/` mirror; the token-refresh half is `rust/BACKLOG.md` R43.14 |
 | 7 | B45 Slack | **P2** | export-ZIP import local (free); live connector = Teams/hosted feature |
-| — | B47 deploy website | ✅ DONE | live at anchorcore.dev (Cloudflare Workers Static Assets) |
 | 10 | B48 end-to-end test | **P1** | Windows §1 + MCP §2 PASS (simulated-clean); Mac §3 rides the R41.2 DMG clean-Mac run (with backup A1–A3); Docker §4 awaits owner |
 | 11 | B49 hosted design | **P2** | owner design session → decisions in hosted-cloud-plan.md/v2v3 |
 | 12 | B50 sample corpus in releases | **P1** | wizard sample path dead on release installs (from B48) |
 | 13 | B51 console feedback for exe | **P2** | partial: `attach_parent_console` (`cli.rs`) covers the backup/import subcommands; a plain server run from a terminal is still silent |
-| — | B52 onboarding Ollama probe | ✅ DONE (via B54) | real probe + install guidance in wizard |
-| — | B54 dummy-proof model setup | ✅ DONE (CI gates Rust) | guided wizard + Pull button + sticky degraded banner |
 | 15 | B53 citation path cosmetics | **P3** | verbatim `\\?\` refs + empty `path` on Windows (from B48) |
 | 16 | B55 answer-eval half | **P3** | retrieval gate shipped (`tests/retrieval_eval.rs`); left: model-judged answer eval, `local` mode only |
-| — | B56 watcher content edits | ✅ DONE (cargo 118/118) | mtime+size fingerprints; edits auto-sync; Obsidian promise holds |
-| — | B57 deleted-file cleanup | ✅ DONE (cargo 118/118) | hard-delete on sync; `rest`/empty guarded; job result gains `purged` |
-| — | B58 degraded-answer honesty | ✅ DONE (cargo 118/118, vitest 22/22) | `mode`+`retrieval` flags; per-answer banner; strict query embed |
-| 20 | B59 single-container Team image | ✅ DONE (R19.1) | site promises "One Docker container" but `hosting/` is a two-service Python stack; ship the Rust single container (or reword) |
-| 21 | B60 classification wiring + PDF purge safety | ✅ DONE (live) | Rust never called the LLM classifier → keyword rules fabricated decisions from process docs; PDF stub + B57 purge then deleted the ingested PDFs |
 | 22 | B61 backup / export / device migration | **P1** | no way off the device; secrets make "copy the folder" unsafe; zero-knowledge sync is the hosted differentiator — **Phase A shipped 2026-10-12 (R25.1–R25.7); Phases B/C gated on the §8 sign-off** |
-| — | B62 Entities clarity | ✅ DONE (R31.1+R31.2) | option A view + Review fold — single attention queue, honest states (2026-10-14) |
 
 *Companion docs: [architecture.md](./architecture.md), [packaging.md](./packaging.md), [mcp.md](./mcp.md), [archive/rust-port.md](./archive/rust-port.md), [design-system.md](./design-system.md)*

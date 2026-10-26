@@ -2,7 +2,7 @@
 
 > Copy-paste site, no taste required. Edit `index.html` or `src/main.ts` `copy` object, not CSS.
 
-Stack: Vite static, `Stone & Sage` `paper #F2F0EB` + `sage #4A5A52` same tokens as `frontend/src/theme.ts` / `docs/design-system.md:17`.
+Stack: Vite static, **Archive** palette (ink `#1F1B16` on paper `#F6F5F2`, oxblood for citations) — tokens on `:root` in `src/style.css`, shared with the app (`frontend/src/theme.css`); rules in `docs/design-system.md`.
 
 ## Run
 

@@ -2,7 +2,7 @@
 
 ## Context
 - Rust port incremental, contract-first (`rust/BACKLOG.md:1`, `rust/README.md:1`, `docs/rust-port.md:1`). Workspace `rust/Cargo.toml:1` version `1.0.8` now single source (`backend/app/config.py:11`).
-- Previous push `f61cd3f` finished R5.3 checklist + version bump; backlog showed all R0–R5 done except pipeline sync orchestration documented as gap in `rust/docs/cutover.md:1`.
+- Previous push `f61cd3f` finished R5.3 checklist + version bump; backlog showed all R0–R5 done except pipeline sync orchestration documented as gap in `docs/archive/rust-cutover.md:1`.
 - Requested: wire `POST /sources/:id/sync` folder→chunk→classify→distill→pii→embed to make `backend/tests` 121 green.
 
 ## Done since f61cd3f (unpushed, on `main`)
@@ -24,7 +24,7 @@
 - **Push** — `git add rust/src/{pipeline,db,health,main,sources,jobs} backend/tests/conftest.py && git commit -m "R5.3 pipeline: POST /sources/:id/sync folder→chunk→classify→pii (121 green prep)" && git push`.
 
 ## How to Continue (new agent)
-1. Read `rust/BACKLOG.md:1`, `rust/docs/cutover.md:1`, `AGENTS.md:1`, `docs/handover-2026-08-20-sync.md:1` (this file) + `backend/tests/conftest.py:1`.
+1. Read `rust/BACKLOG.md:1`, `docs/archive/rust-cutover.md:1`, `AGENTS.md:1`, `docs/handover-2026-08-20-sync.md:1` (this file) + `backend/tests/conftest.py:1`.
 2. Reproduce overflow: `source $HOME/.cargo/env && cargo test -p anchorcore classifier::tests::provider_local_gate -- --nocapture` → fix by (a) `RUSTFLAGS="-C target-feature=+crt-static"` or (b) move watcher to `std::thread::spawn` or (c) `#[tokio::test(flavor="current_thread")]` for classifier test, or increase `stack-size` in `rust/.cargo/config.toml` `target.'cfg(all())'.rustflags = ["-C", "force-frame-pointers=yes"]` and `RUST_MIN_STACK`.
 3. Run `cargo check -p anchorcore` (should be warnings only), `cargo test -p anchorcore` (35 passed before overflow), `curl http://127.0.0.1:8128/health` etc. per `docs/handover-2026-08-20-sync.md`.
 4. Never hold `rusqlite::Connection` (`!Send`) across `await` — use `spawn_blocking` like `sources.rs:1` and `pipeline.rs:1`; Axum `0.7` uses `:id` not `{id}`.

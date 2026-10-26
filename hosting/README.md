@@ -51,8 +51,9 @@ Same options as Personal:
 
 - **Local (default):** run [Ollama](https://ollama.com) on the host; Compose
   already points the container at `host.docker.internal:11434`. Pull
-  `nomic-embed-text` there (plus `llama3.2:3b` only for local answers or
-  `ANCHOR_EXTRACT_ENTITIES=llm` — ingest uses rules by default).
+  `nomic-embed-text` there (plus a chat model such as `llama3.2:3b` only if
+  you want `local`-mode answers — ingest never uses a chat model, and in
+  `agent` mode your agent writes the answers).
 - **Cloud:** any OpenAI-compatible API — set base URL + key in `.env` or in
   the app's Settings tab (runtime-mutable, no restart).
 - **Without models:** keyword search still works; answers degrade honestly.

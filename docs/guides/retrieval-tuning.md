@@ -63,8 +63,6 @@ Code constants (need a rebuild; change only with a failing test in hand):
 - `CANDIDATE_MULT = 10` — legs fetch `top_k × 10`; live-first and the cut
   can only pick what was fetched.
 - `TOC_SUMMARY_FETCH = 15` — summary candidates before top-section prune.
-- `GRAPH_KIND_WEIGHTS` — currently unused by ask (graph leg removed from
-  the ask path; entities never enter retrieval).
 
 ## How to verify a change
 

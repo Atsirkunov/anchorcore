@@ -1,50 +1,17 @@
-# AnchorCore Rust Port — workspace
+# AnchorCore — Rust workspace
 
-> **Status: shipped** (since `v1.0.9`, 2026-08-21; current version: see `docs/release-notes/`). Python `backend/` is archived history on tag `archive/python-final` (nothing consumes it — R45.16 retired the conformance suite; see R19.1: `hosting/` is the one-container Rust Team image); Rust `rust/` is the shipped artifact (single source `rust/Cargo.toml:6`). The API contract tests (`tests/api_*.rs`) run inside `cargo test`. See `docs/archive/rust-port.md:1` (evaluation closed) + `rust/BACKLOG.md` (open work; completed Phases 0–17 in `rust/BACKLOG-archive.md`) + `docs/archive/handover-2026-08-21-retire.md:1`.
-
-## Why a separate folder?
-
-* AI agents can work here in parallel without touching Python code
-* Same REST API + same SQLite file = contract, both sides stay green
-* Frontend (`/frontend`) is untouched — it talks to `localhost:8000` regardless of language
-
-## Layout
-
-```
-rust/
-  README.md          — this file
-  BACKLOG.md         — AI-agent friendly task backlog (the source of truth for the port)
-  AGENTS.md          — agent guide for this workspace (mirrors /AGENTS.md but Rust-specific)
-  Cargo.toml         — workspace root
-  crates/
-    anchorcore/      — axum + rusqlite binary (FTS5 + embedding scan; sqlite-vec not linked)
-      Cargo.toml
-      src/
-        main.rs      — entry (mirrors backend/run_app.py)
-        lib.rs
-  docs/
-    decisions.md     — ADR log
-```
-
-## Contract
-
-* **API:** must be byte-for-byte compatible with the archived `backend/app/routers/*` (same routes, same JSON, same error shapes). The `tests/api_*.rs` suite pins the contract.
-* **DB:** reads/writes the *same* SQLite file (Alembic migrations are source of truth; Rust uses `rusqlite` + `refinery`/`rusqlite_migration` to apply them, never invents schema).
-* **Secrets:** OS keychain via `keyring` crate, same keys as `backend/app/secrets.py:1`.
-* **Frontend:** embedded via `include_dir!` (like `packaging.spec` does for `frontend/dist`).
-
-## Quick start (shipped)
+The shipped app: one Axum + rusqlite binary (`crates/anchorcore`) that serves the REST API, the embedded
+React UI and the MCP stdio mode (`anchorcore mcp`). Version lives in `Cargo.toml`
+(`workspace.package.version`).
 
 ```bash
-source $HOME/.cargo/env
-cargo build -p anchorcore --release  # 9.8M single binary (app + `anchorcore mcp` mode), codesign valid
-cargo run -p anchorcore -- --port 8123 --data-dir /tmp/ac-data & curl http://127.0.0.1:8123/health
-cargo test -p anchorcore  # all green (harness + jobs atomic + auth 401 + scheduler + R10.4 queue)
-cargo check -p anchorcore # 0 warnings
-scripts/sync_version.py --check # prints: ok <version> (single source)
-cargo test -p anchorcore --test api_smoke # one contract file; full suite is `cargo test -p anchorcore`
+cargo run -p anchorcore -- --port 8000 --data-dir ~/.anchorcore   # dev server
+cargo test -p anchorcore                                          # unit + API contract + golden eval
+RUSTFLAGS="-D warnings" cargo check -p anchorcore                 # strict check
+cargo build -p anchorcore --release                               # embeds ../frontend/dist — build it first
 ```
 
-Release is `rust/Cargo.toml:6` single edit → `scripts/sync_version.py` → `cargo test` + `cargo build --release` → `git tag vX.Y.Z` → `git push origin vX.Y.Z` (CI `release.yml` builds `AnchorCore-{windows,macos,linux}.zip`).
-
-Petite note: `backend/` is archived history on tag `archive/python-final`; `packaging.spec` retired with it.
+- Guide for contributors and coding agents: root [`AGENTS.md`](../AGENTS.md), plus [`AGENTS.md`](./AGENTS.md) here
+  for the complexity gate.
+- Open work: [`BACKLOG.md`](./BACKLOG.md) · decisions: [`docs/decisions.md`](./docs/decisions.md).
+- Releasing: [`docs/releasing.md`](../docs/releasing.md).

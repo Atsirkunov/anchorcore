@@ -1,6 +1,6 @@
 ---
 name: anchorcore-setup
-description: Install, update, launch, connect, and fully configure AnchorCore (local-first company memory) through its local REST API — always check the installed build and any installer copy on the PC against the newest GitHub release and update when stale, first-run setup on Windows/macOS/Linux, answer-model choice (local Ollama or the user's own OpenAI-compatible AI), classification/embedding models, sources (folder, Jira, Linear, Google Drive, generic REST), source labels and cloud-trust rules, projects, manual PII marking, MCP agent connection (REST-API fallback when MCP can't be installed), and end-to-end verification of cited answers. Use when the user asks to set up, configure, install, update, upgrade, connect, audit, or troubleshoot AnchorCore; add their documents or trackers to it; point its answers at their own model; or asks why answers are context-only, keyword-only, or uncited.
+description: Install, update, launch, connect, and fully configure AnchorCore (local-first company memory) through its local REST API — always check the installed build and any installer copy on the PC against the newest GitHub release and update when stale, first-run setup on Windows/macOS/Linux, who writes answers (the user's agent, local Ollama, or the user's own OpenAI-compatible AI), embedding models, sources (folder, Jira, Linear, Google Drive, generic REST), source labels and cloud-trust rules, projects, manual PII marking, MCP agent connection (REST-API fallback when MCP can't be installed), and end-to-end verification of cited answers. Use when the user asks to set up, configure, install, update, upgrade, connect, audit, or troubleshoot AnchorCore; add their documents or trackers to it; point its answers at their own model; or asks why answers are context-only, keyword-only, or uncited.
 ---
 
 # AnchorCore setup
@@ -15,9 +15,8 @@ command or action and wait.
 
 ## Rules (read first)
 
-1. **Find the app before anything.** Base URL, in order: `ANCHOR_BACKEND_URL`
-   env → `~/.anchorcore/runtime.json` (if present; newer builds write it) →
-   `http://127.0.0.1:8000`. Probe `GET /health`; expected `{"status":"ok"}`.
+1. **Find the app before anything.** Base URL: `ANCHOR_BACKEND_URL` env if
+   set, else `http://127.0.0.1:8000`. Probe `GET /health`; expected `{"status":"ok"}`.
    Anything else means the app is not up — see step 1.
 2. **Newest version first.** Before configuring anything, check the installed
    build (and any installer copy you are about to use) against the newest GitHub
@@ -72,9 +71,10 @@ release is left alone. No network → say so and continue with what is installed
 Prebuilt artifacts — users never need Rust or Node:
 `https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-{windows,macos,linux}.zip`
 Unzip: Windows/Linux `anchorcore.exe` / `anchorcore`; macOS `AnchorCore.app`
-(right-click → Open once — not notarized — or `xattr -dr com.apple.quarantine AnchorCore.app`).
+(not notarized: first launch needs System Settings → Privacy & Security → Open
+Anyway, or `xattr -dr com.apple.quarantine AnchorCore.app`).
 Keep the app in one place so the next check is cheap: Windows
-`%LOCALAPPDATA%\AnchorCore\`, macOS `~/Applications/AnchorCore.app`, Linux
+`%LOCALAPPDATA%\AnchorCore\`, macOS `/Applications/AnchorCore.app` (or `~/Applications`), Linux
 `~/.local/share/anchorcore\` — or wherever the user already keeps it.
 
 **Update in place** (same folder, same data dir):
@@ -89,7 +89,7 @@ migrations run on the next start. Report what changed: `old → new`.
 
 Launch detached so it survives your shell:
 - Windows (PowerShell): `Start-Process -FilePath 'C:\path\anchorcore.exe'`
-- macOS: `open "$HOME/Applications/AnchorCore.app"` (or `/Applications/AnchorCore.app`; or run `AnchorCore.app/Contents/MacOS/AnchorCore`)
+- macOS: `open /Applications/AnchorCore.app` (or wherever it lives; or run `AnchorCore.app/Contents/MacOS/AnchorCore`)
 - Linux: `nohup ./anchorcore >/dev/null 2>&1 &`
 
 Terminal launch flags: `--port 8123`, `--data-dir <path>`, and
@@ -110,16 +110,17 @@ Summarize the state in plain language before changing anything.
 
 ## 2. Decide how answers are produced (do this early)
 
-Three modes — pick with the user, configure, then **verify**:
+Two modes (`llm_mode`), the second with two providers — pick with the user,
+configure, then **verify**. Indexing never needs a chat model either way.
 
-1. **Agent-native (recommended when the user chats through Claude Code, Codex,
+1. **Agent mode (recommended when the user chats through Claude Code, Codex,
    opencode, Cursor, …):** `PUT /settings {"llm_mode":"agent"}`. The agent
    calls `search` (MCP) or `POST /qa/search` (REST skill) and answers with
    *its own* model; `ask` / `POST /qa` return `mode: "agent_compose"`
    (gated citations with content, no server model, no warning). AnchorCore
    needs no answer model at all and `answer_ready` reads `true`. This is the
    bring-your-own-model path. (`llm_mode` defaults to `local`.)
-2. **Local model (Ollama):** `POST /system/ollama/start`, then
+2. **Local mode, Ollama** (`llm_mode` `local`, the default): `POST /system/ollama/start`, then
    `POST /system/ollama/pull {"models":["llama3.2:3b","nomic-embed-text"]}`,
    poll `GET /system/ollama/pulls`. Leaving `embed_base_url` empty makes
    embeddings fall back to `ollama_base_url`
@@ -127,7 +128,7 @@ Three modes — pick with the user, configure, then **verify**:
    `http://localhost:11434/v1` and `answer_model` to a pulled chat model
    (e.g. `llama3.2:3b`) explicitly — the answer provider has no Ollama fallback
    of its own and quietly returns `context_only` otherwise.
-3. **The user's own AI (any OpenAI-compatible endpoint):** `PUT /settings` with
+3. **Local mode, the user's own AI (any OpenAI-compatible endpoint):** `PUT /settings` with
    `{"answer_base_url":"https://…/v1","answer_model":"…","answer_api_key":"…"}`
    (embeddings accept the same `embed_base_url` / `embed_model` /
    `embed_api_key` keys), then `POST /settings/test-connection {"provider":"answer"}`.
@@ -204,15 +205,12 @@ repo's `sample/` corpus (release zips do not include it; clone
 End this step with exactly one working connection: MCP when it goes in, the
 API fallback below when it doesn't. MCP first:
 
-`GET /system/mcp` returns the canonical command (`command`+`args:["mcp"]` on
-current builds). Builds up to 1.0.14 have no such endpoint: the MCP helper sits
-next to the app binary (`anchorcore-mcp.exe` / `anchorcore-mcp`;
-`AnchorCore.app/Contents/MacOS/anchorcore-mcp`) and takes no `mcp` argument. The
-app must be running — the MCP process talks to it over `127.0.0.1` (single DB
-owner). When the port isn't 8000, older builds need
-`ANCHOR_BACKEND_URL=http://127.0.0.1:<port>` in the client entry.
+`GET /system/mcp` returns the canonical command (`command` + `args:["mcp"]`).
+The app must be running — the MCP process talks to it over `127.0.0.1`
+(single DB owner); on a port other than 8000, add
+`ANCHOR_BACKEND_URL=http://127.0.0.1:<port>` to the client entry.
 
-Newer builds expose one-click setup — prefer it when present:
+One-click setup:
 
 ```
 GET  /system/mcp/clients                               → detection + connected state
@@ -221,18 +219,17 @@ POST /system/mcp/disconnect {"client":"…"}             # claude-desktop, curso
 ```
 
 Writes are explicit and backup+merge (never clobber an existing config) — ask
-the user first. If those endpoints 404, print the manual line instead:
-- Claude Code: `claude mcp add anchorcore -- "<path>" mcp` (≤1.0.14: the
-  `anchorcore-mcp` helper path, no `mcp` argument)
+the user first. Manual equivalents (for harnesses the endpoint doesn't know):
+- Claude Code: `claude mcp add anchorcore -- "<path>" mcp`
 - Claude Desktop / Cursor JSON: `{"mcpServers":{"anchorcore":{"command":"<path>","args":["mcp"]}}}`
 - opencode: `mcp.servers.anchorcore = {"type":"local","command":["<path>","mcp"]}`
 - Codex (TOML): `[mcp_servers.anchorcore]`, `command = "<path>"`, `args = ["mcp"]`
 
-Verify after a harness restart: `tools/list` shows the 6 read-only tools
-(`ask`, `search`, `get_entity`, `get_source`, `list_sources`, `memory_status`),
-and `search "…"` returns cited chunks. Calls are audited (rows under
-`/system/errors?component=mcp`; `GET /system/mcp` reports the counter on builds
-that have it).
+Verify after a harness restart: `tools/list` shows the 9 read-only tools
+(`ask`, `search`, `decisions`, `actions`, `get_asset`, `get_entity`,
+`get_source`, `list_sources`, `memory_status`), and `search "…"` returns cited
+chunks. Calls are audited (rows under `/system/errors?component=mcp`;
+`GET /system/mcp` reports the counter).
 
 ### MCP can't be installed, blocked, or unreachable — fall back to the API skill
 
@@ -254,25 +251,17 @@ writes, resyncs, or reclassifies. **Either/or, never both:** with MCP tools
 out over MCP and over plain HTTP). If you install the skill, do not also
 connect MCP — and if MCP later starts working, remove the skill again.
 
-Install it from the repo — the app does not serve skills yet (release zips
-ship only the binary), so the source is
-`.agents/skills/anchorcore-search/SKILL.md` in the checkout:
+Install it through the app (the binary embeds both skills):
+`GET /system/skills/install-targets` lists clients, then
+`POST /system/skills/search/install {"client":"claude-code"}` writes it into
+that client's skills dir (backup first; same client ids as MCP connect). For a
+harness the app doesn't know, save `GET /system/skills/search` (raw markdown) to
+`<skills dir>/anchorcore-search/SKILL.md`.
 
-1. Preferred: `npx skills add Atsirkunov/anchorcore --skill anchorcore-search`
-   (puts the file into whatever skills dir your agent reads). If the CLI does
-   not offer that skill yet, or there is no `npx`, copy it by hand next to this
-   setup skill — if this file lives at `<dir>/anchorcore-setup/SKILL.md`, the
-   search skill goes to `<dir>/anchorcore-search/SKILL.md`:
-   `mkdir -p <dir>/anchorcore-search && curl -sL https://raw.githubusercontent.com/Atsirkunov/anchorcore/main/.agents/skills/anchorcore-search/SKILL.md -o <dir>/anchorcore-search/SKILL.md`
-   (PowerShell: `Invoke-WebRequest -Uri <that URL> -OutFile <dir>\anchorcore-search\SKILL.md`).
-2. Repo already cloned (e.g. for `sample/`) → copy
-   `.agents/skills/anchorcore-search/SKILL.md` from the checkout to the same
-   `<dir>/anchorcore-search/SKILL.md` target instead of downloading.
-3. Restart the harness (skills load at start), then verify: ask it to search
-   AnchorCore for a known term — expect ranked hits with citations — and
-   confirm `tools/list` shows **no** anchorcore tools (the either/or check).
-   Connection refused means the app itself is not up — start it per step 1;
-   the skill talks to the same `127.0.0.1` API as MCP.
+Restart the harness (skills load at start), then verify: ask it to search
+AnchorCore for a known term — expect ranked hits with citations — and confirm
+`tools/list` shows **no** anchorcore tools (the either/or check). Connection
+refused means the app itself is not up — start it per step 1.
 
 ## 6. Verify end to end (always)
 
@@ -298,7 +287,7 @@ Report back: what you configured, what you verified, what is degraded and why.
 | `401` | auth enabled | `POST /auth/login`, use `Authorization: Bearer` |
 | `retrieval: keyword_only` | embed model/base unreachable or unset | pull `nomic-embed-text` or set `embed_base_url`, then sync/reclassify to re-embed |
 | `mode: context_only` | answer provider missing or broken | configure step 2, `test-connection`, re-probe |
-| `refusal: gated_provider` | sensitive/PII content + untrusted cloud | local model, `ANCHOR_TRUSTED_PROVIDERS`, or user-approved `ANCHOR_CLOUD_TRUST=1` |
+| `refusal: gated_provider` | sensitive/pii-labelled content + untrusted cloud | local model, `ANCHOR_TRUSTED_PROVIDERS`, or user-approved `ANCHOR_CLOUD_TRUST=1` |
 | job `failed` | connector/auth error | `GET /sources/jobs/{id}`, `/system/errors`, fix config, re-sync |
 | settings seem ignored | empty string means "unset" (falls back to env/default) | set real values; confirm via `/system/status` |
 

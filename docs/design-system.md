@@ -118,7 +118,7 @@ app URL, not shared storage.
 
 * `Ask your memory` — perfect, keep.
 * Follow-up hint ("N questions in context — follow-ups work") — excellent, keep.
-* Offline banner: `Ollama offline — classification falls back to rules. Settings → Test connection.` — current text, keep.
+* Offline banner (`modelHealth.ts`): `Ollama is offline — …` followed by what actually degrades for the current mode (search keyword-only, local answers basic) — keep it mode-aware.
 
 ---
 

@@ -165,7 +165,7 @@ Use single `DbPool` (see §4.1), `mpsc::channel` for events, `tokio::select!` fo
 4. `secrets.rs:1 + sources.rs:14 + settings.rs:1` — unify `SECRET_FIELDS`, fix trunc 32→64, remove dead `ENV_CACHE`, `LogFileOut` dead code, `cargo check` 0 warnings. Owner: reviewer A (parallel).
 5. `auth.rs:1 + main.rs:240` — add `require_auth` middleware when `auth_enabled()`, add `cargo test` for 401 on `/sources` create. Owner: reviewer B.
 
-**Cutover redefinition (`rust/docs/cutover.md:1`):**
+**Cutover redefinition (`docs/archive/rust-cutover.md:1`):**
 
 ```
 - cargo check -p anchorcore: 0 warnings
@@ -176,7 +176,7 @@ Use single `DbPool` (see §4.1), `mpsc::channel` for events, `tokio::select!` fo
 - backend/app/config.py:11 version == rust/Cargo.toml:1 version (scripts/sync_version.py exists + CI check)
 ```
 
-Until then **Python remains shipped artifact** (`rust/docs/cutover.md:1` gate).
+Until then **Python remains shipped artifact** (`docs/archive/rust-cutover.md:1` gate).
 
 ---
 
@@ -219,4 +219,4 @@ Checklist mirrors `docs/port-review-2026-08-21.md:128` but stricter.
 * `rust/crates/anchorcore/src/system.rs:14 status_handler` + `:104 errors_handler` + `:283 logs_handler`
 * `rust/crates/anchorcore/src/auth.rs:1` `hash_password` PBKDF2 200k + `:91 create_token` HS256
 
-*Generated 2026-08-21 for handover. Source of truth: `rust/BACKLOG.md:1`, `rust/docs/cutover.md:1`, `docs/rust-port.md:1`, `AGENTS.md:1`, `git log 9ea85ed..9eaa9a4`.*
+*Generated 2026-08-21 for handover. Source of truth: `rust/BACKLOG.md:1`, `docs/archive/rust-cutover.md:1`, `docs/rust-port.md:1`, `AGENTS.md:1`, `git log 9ea85ed..9eaa9a4`.*

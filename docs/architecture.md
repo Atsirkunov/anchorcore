@@ -1,432 +1,168 @@
 # AnchorCore — Architecture Overview
 
-> Stack: **Rust (Axum) · React (Vite) · SQLite (FTS5 + embedding scan) · Ollama
-> or BYO cloud LLM APIs** — env-driven. **Rust is the shipped backend everywhere:
-> the local app and the one-container Team image (`hosting/`, R19.1). Python
-> `backend/` is archived history on tag `archive/python-final` (nothing consumes it).**
+> Stack: **Rust (Axum) · React (Vite) · SQLite (FTS5 + embedding scan)** · embeddings via Ollama or any
+> OpenAI-compatible API · answers written by your agent (`agent` mode) or by Ollama / a BYO cloud model
+> (`local` mode). One binary serves the API and the embedded UI — locally and in the one-container Team
+> image (`hosting/`). Retrieval knobs live in [guides/retrieval-tuning.md](./guides/retrieval-tuning.md);
+> TOC mechanics in [guides/hierarchical-toc.md](./guides/hierarchical-toc.md).
 
 ---
 
-## 1. Runtime Model: Local-First, Hosted Env-Driven
+## 1. Runtime model
 
-One local process = the entire product. No Docker, no required sidecar services, no
-setup. **Local:** Rust binary `anchorcore` (`frontend/dist` embedded,
-SQLite + FTS5). **Team self-hosted:** `hosting/` runs this same binary in ONE
-container (`/data` volume, UI embedded, license-gated — R19.1); a future
-Hosted cloud tier would swap SQLite → Postgres (B49). See
-`hosting/README.md` + `docs/v2v3-scope.md`.
+One local process is the whole product: no Docker, no required sidecars. **Local:** the `anchorcore`
+binary (`frontend/dist` embedded, SQLite + FTS5, data in `~/.anchorcore`). **Team self-hosted:** the same
+binary in one container (`/data` volume, license-gated). A future Hosted tier would swap SQLite for
+Postgres (B49, `hosted-cloud-plan.md`).
 
-## 2. System Diagram
+**Ingest uses no chat model** (R45.18): decisions and actions are read from record structure by rules.
+The only model on the ingest path is the embedder, and it is optional — without it everything stays
+keyword-searchable.
+
+## 2. System diagram
 
 ```mermaid
 flowchart TB
-    subgraph laptop["User's Laptop (Windows/macOS)"]
+    subgraph host["User's machine (or the Team container)"]
         direction TB
-        browser["Browser UI<br/>(React SPA, localhost)"]
-        api["AnchorCore App<br/>Rust Axum (single process)"]
-        api --- connectors["Connectors<br/>Folder · Drive · Jira · Linear · REST"]
-        api --- pipeline["Ingestion Pipeline<br/>bucket → record rules → entities"]
-        api --- rag["Answer Engine<br/>planner → executor → RRF → graph → cited answer"]
-        api --- review["Review API<br/>low-confidence · duplicates"]
-        api --- projects["Projects API<br/>scoped search"]
-        api --- jobs["Job Manager<br/>background jobs · cancel"]
-        db[("Entity Graph<br/>SQLite + FTS5 + embeddings table")]
-        settings[("app_settings<br/>runtime overrides")]
-        secrets["Secrets<br/>OS Keychain"]
+        browser["Browser UI<br/>(React SPA)"]
+        api["AnchorCore<br/>Rust Axum (single process)"]
+        api --- connectors["Connectors<br/>Folder · Drive · Jira · Linear · Miro · REST"]
+        api --- pipeline["Ingest pipeline<br/>extract → chunk → record rules → embed"]
+        api --- rag["Retrieval<br/>legs → RRF → slots → gates"]
+        api --- jobs["Jobs + scheduler<br/>sync · embed backfill · watcher"]
+        db[("SQLite<br/>items · chunks · entities · assets<br/>FTS5 + embeddings table")]
+        secrets["Secrets<br/>OS keychain / encrypted file"]
         api --- db
-        api --- settings
         api --- secrets
         browser --- api
-        ollama["Ollama<br/>classifier + embed models"]
+        ollama["Ollama (optional)<br/>embed + local answers"]
         api --- ollama
     end
 
-    tickets["Jira · Linear · REST APIs"]
-    drive["Google Drive"]
-    folder["Local folder<br/>(watched)"]
-    cloud["BYO LLM API<br/>(OpenAI-compatible)"]
+    agent["Agent (Claude Code, Codex, Cursor…)<br/>MCP stdio or REST skill"]
+    sources["Folders · Drive · Jira · Linear · Miro · REST APIs"]
+    cloud["BYO OpenAI-compatible API<br/>(embed / answers)"]
 
-    connectors --- folder
-    connectors --- drive
-    connectors --- tickets
-    pipeline --- cloud
-    rag --- cloud
+    agent --- api
+    connectors --- sources
+    pipeline -. "embed only" .- cloud
+    rag -. "local-mode answers" .- cloud
 ```
 
-## 3. Data Flow — Ingestion
+## 3. Ingestion
 
 ```mermaid
 flowchart LR
-    watcher["Folder watcher<br/>fs events + hourly scan"] --> extract["Extract text"]
-    apis["Drive · Jira · Linear · REST<br/>poll, incremental cursors"] --> extract
-    extract --> hash["Hash dedup"]
-    hash --> type["Document-type pre-pass<br/>(1 cheap call, cached)"]
-    type --> classify["Classify windows<br/>(local Ollama or cloud, parallel)"]
-    classify --> entities["Entities + window context<br/>(SQLite)"]
-    classify --> embed["Embed chunks<br/>(local or cloud)"]
-    embed --> vec["embeddings table (cosine scan)"]
-    classify --> fts["FTS5 keyword index"]
-    entities --> review["Review UI<br/>context panel · confirm / merge / reclassify"]
+    watcher["Folder watcher<br/>fs events + stat-compare fallback"] --> extract["extract.rs<br/>text · Office · PDF · diagrams · images"]
+    apis["Drive · Jira · Linear · Miro · REST<br/>scheduled poll"] --> extract
+    extract --> hash["Fingerprint + content hash<br/>(skip unchanged)"]
+    hash --> bucket["Bucket: code · record · reference<br/>(rules)"]
+    bucket --> chunk["Chunk: markdown · prose · code · config<br/>+ section tree"]
+    chunk --> records["records.rs<br/>decisions + actions (unverified)"]
+    chunk --> summ["Extractive summaries + tags"]
+    chunk --> fts["FTS5 index"]
+    chunk --> embed["Embed (IDF-gated, provenance-stamped)"]
+    extract --> assets["Images → assets (bytes in DB)"]
 ```
 
-**Deletion policy:** deleting a source cascade-deletes everything under it
-(items, entities, chunks, jobs) via FK cascade. Re-syncing a changed document
-replaces its entities/chunks. Retrieval always excludes `stale` entities —
-and `disputed` ones unless opted back in.
+- **Formats** live in `extract.rs` only — plain text, Word/PowerPoint/Excel/ODF/RTF/EML/PDF/HTML, diagram
+  files (draw.io, Excalidraw, SVG, Visio) rendered to markdown via `diagram.rs`. Unreadable files are
+  reported `skipped`, never purged.
+- **Incremental sync:** folder files are re-extracted only when mtime/size change and re-processed only
+  when the content hash changes. API connectors use cursors/stamps where available.
+- **Chunking** (`chunking.rs`, `markdown.rs`): markdown by fence-aware blocks with line ranges; code by
+  symbols; config by keys; prose by headings + paragraph packing. Every chunk carries a section breadcrumb
+  (`path`) used in its embedding input.
+- **Records** (`records.rs`): `Decision:` headings/fields, `Status:`, `Owner:`, ADR front matter,
+  `Action items` bullets and checkboxes become entities with record fields (status, due, supersedes…).
+  Never prose sentences. Everything starts `unverified`; only a person verifies.
+- **Embeddings** (`embedder.rs`): low-signal chunks skip the vector (IDF gate) and stay keyword-findable;
+  every vector is stamped with its `provider:model:dim` family and only compared within it. A scheduler
+  backfill (startup + every 15 min) drains missing vectors.
+- **Images** (`assets.rs`): image bytes are stored in the DB (export/backup is self-contained), attached
+  to the chunk that hosts them; images with no context go to the people-captioned "Unplaced images" view.
+- **Deletion:** removing a source cascades to its items, chunks, entities and jobs (`foreign_keys=ON`).
 
-**Chunking & cleaning:**
-
-| Layer | Function | Config | Purpose |
-|---|---|---|---|
-| Cleaning | `clean_text` + repeated-line stripping | — | Strip control chars, page numbers, repeated headers/footers and normalize whitespace *before* chunking, so boundaries, embeddings and FTS tokens are clean |
-| Entity summary | `chunk_text` (`chunking.rs`) | `ANCHOR_CHUNK_SIZE=800`, `ANCHOR_CHUNK_OVERLAP=100` (chars, UTF-8 safe) | Fixed 800/100 slices of each entity summary → `chunks kind=entity` |
-| Full-document | `chunk_document` | `ANCHOR_CHUNK_MAX_CHARS=1600` | Section-aware: hard split at headings (`§434`, `4.2.1`, `Article 12`, ALL-CAPS), paragraphs packed per section up to 1600 chars, fixed-slice fallback only for oversized paragraphs |
-| Classifier windows | `classify_windows` | `ANCHOR_CLASSIFY_WINDOW_CHARS=16000`, 50% overlap | Overlapping windows for the classifier — not stored as chunks, but governs hash dedup and cost |
-
-The pipeline runs clean → strip → chunk → store (`Chunk(kind=document)`,
-old doc chunks deleted on re-sync). Cleaning is ported (prose documents;
-code/config keep raw text to preserve indentation — see the `rust/BACKLOG.md`
-shipped log).
-
-**Extraction is model-free (R45.18):** decisions and actions are read from
-record structure (`records.rs`); ingest makes no chat-model calls. LLM
-extraction and Q&A distillation were deleted — distilled chunks never reached
-retrieval (R33.3). An IDF gate (`embed_min_signal=0.15`) skips low-signal
-filler from vector embedding — it stays keyword-findable in FTS5.
-
-**Scale — hierarchical TOC (shipped in 1.0.12):** documents keep their structure
-now. Headings become a saved `sections` tree (parent/level/path/summary),
-passages point at their section, and a `tags` taxonomy is built as documents
-arrive (similar topics merged at 0.82 similarity). Retrieval goes
-coarse-to-fine — tag prune, summary search over ~5k section summaries, then
-leaf search inside the winning sections — instead of ranking all ~150k
-chunks flat. Full detail: `docs/guides/hierarchical-toc.md`.
-
-## 4. Data Flow — Q&A
+## 4. Q&A and search
 
 ```mermaid
 sequenceDiagram
-    participant U as User (browser)
-    participant A as AnchorCore App
-    participant V as Embedding scan
-    participant F as FTS5 (chunks_fts)
-    participant O as Ollama
-    participant M as BYO LLM API
+    participant C as UI / agent
+    participant A as AnchorCore
+    participant E as Embedder
+    participant M as Answer model (local mode only)
 
-    U->>A: "What was decided about X, and why?" (+ chat history, project scope)
-    A->>A: rewrite follow-up into standalone query (if history)
-    A->>A: resolve project scope → source ids
-    A->>A: planner — pick retrieval tools (hybrid, who_knows)
-    A->>O: embed query
-    O-->>A: query vector
-    A->>V: top-k similarity (scoped to project sources)
-    A->>F: FTS5 keyword (bm25, scoped)
-    A->>A: who_knows tool — owner/expertise entities
-    A->>A: RRF fusion + age decay + diversity cap + context expansion
-    A->>A: graph walk — connected entities join context + citations
-    A->>M: answer prompt w/ sections (+ conversation)
-    M-->>A: answer + citations
-    A-->>U: answer + clickable source chips
+    C->>A: question (+ history, project scope)
+    A->>A: scope → source ids; label gate
+    A->>A: follow-up rewrite (local mode, pronoun-only)
+    A->>E: embed query (if an embedder is configured)
+    A->>A: TOC-or-flat legs (vector scan + FTS5) → RRF
+    A->>A: age decay · per-file cap · live-first · authority tiers
+    A->>A: cut + type/keyword slots · filename boost · relevance gate
+    alt agent mode
+        A-->>C: cited evidence (mode: agent_compose) — the agent writes the answer
+    else local mode
+        A->>M: answer prompt with cited sections
+        M-->>A: answer
+        A-->>C: answer + citations
+    end
 ```
 
-### 4a. Access pattern — flat vs hierarchical
+- **Fusion** is reciprocal-rank: `score = Σ weight / (60 + rank)` — never raw scores. Reordering happens
+  after fusion.
+- **Status filter:** `status_ok` (`retrieval.rs`) is the single place stale/disputed rows are dropped, for
+  every path including `/decisions` and `/actions`.
+- **Hits** are leaf chunks with match-centred previews, leg provenance and RRF-range scores; summary chunks
+  are TOC internals and never surface as evidence.
+- **Ownership and supersession** are answered by `GET /actions` and `GET /decisions` (record fields), not
+  by a retrieval leg.
+- **Vocabulary:** a people-owned glossary (`/glossary`, marked glossary files, strict initialism rule)
+  widens keyword queries. Nothing is proposed by a model.
+- **Projects** scope every question to a bundle of sources.
 
-*Flat:* `ask` resolves project source ids → the planner picks tools (`hybrid`
-always, `who_knows` on ownership cues) → the executor runs them with one
-shared embedding call (`hybrid` = vector scan + FTS5 keyword) → fusion (RRF
-`score=Σ w/(60+rank)`, age decay, per-item diversity cap, context expansion,
-near-duplicate dedupe) → 1–2 hop graph walk → source-label gate for
-unapproved providers (`sensitive` sources excluded) → cited generation. Every retrieval path takes an
-optional source-id scope; every hit carries chunk, entity, item, source and
-score.
+## 5. Data model (main tables)
 
-*Hierarchical (shipped in 1.0.12):* the same pipeline with a TOC pre-stage
-(`toc_search` before flat hybrid). Persisted sections + tags let retrieval
-prune *before* vector search: tag/SQL filter, summary-node vector search over
-~5k summaries, then leaf vector scan restricted to the top sections. Falls back to
-flat hybrid when the TOC pass is empty. Context expansion reads same-section
-siblings. Endpoints: `GET /sections`, `GET /tags`.
+| Table | Holds |
+|---|---|
+| `sources` | connector, config (no secrets), label `internal\|public\|sensitive`, sync cursor |
+| `ingested_items` | one row per document: text, content/processed hashes, stat fingerprint, bucket (`doc_type`), manual `is_pii` / `is_glossary` marks |
+| `sections` | heading tree per item: parent, level, path, extractive summary, line range |
+| `chunks` | `document` / `entity` / `caption` leaves + `section_summary` / `doc_summary`; path, line range, embedding + `embed_fp` |
+| `chunks_fts`, `vec_chunks` | FTS5 index; plain embeddings table (no `sqlite-vec` linked — retrieval scans) |
+| `entities` | decisions / actions / notes with record fields, owner, status `unverified\|verified\|disputed\|stale` |
+| `relationships`, `disputes`, `merge_actions` | `conflicts_with` etc. links, dispute audit, duplicate merges |
+| `tags`, `chunk_tags` | deterministic topic tags |
+| `vocabulary` | glossary terms (`manual` · `glossary` · `rule`) |
+| `assets`, `asset_blobs` | image metadata + content-addressed bytes |
+| `projects`, `project_sources` | scoped-search bundles |
+| `jobs`, `system_events`, `embed_state` | job queue/history, audit trail, query embedding family |
+| `app_settings`, `users` | runtime setting overrides; Team auth users |
 
-## 4b. Retrieval Design (informed by Cerebras' knowledge base)
+Migrations are in `rust/crates/anchorcore/migrations/` (registered in `db.rs`).
 
-Cerebras published how their internal KB serves 15k queries/day (2026-07).
-Their design validated our hybrid approach and added concrete techniques we
-adopted:
+## 6. Security
 
-1. **Multi-scorer fusion, no single trusted scorer** — they run full-text,
-   embeddings, and IDF-scored retrievers in parallel and fuse the ranked
-   lists. We fuse FTS5 (bm25) + cosine via **reciprocal rank fusion (RRF)**:
-   `score = Σ weight / (60 + rank)`. Consensus across scorers beats a single
-   strong vote; no score normalization needed.
-2. **Per-file diversity cap** — a document that matches broadly must not
-   monopolize the top-k. After fusion, cap results per file (default 3);
-   relaxed for single-file corpora so a big document's sections can surface.
-3. **Age decay** — when relevance is otherwise equal, the newer hit wins. A
-   recency multiplier is applied in fusion.
-4. **Context expansion** — once winners are picked, pull the neighboring
-   sections (heading, preconditions, caveats) that chunking split apart, so
-   the LLM sees a complete section instead of a lonely paragraph.
-5. **Near-duplicate chunk dedupe** — TOC entries duplicating body sections
-   keep only the best-scoring copy.
+- Binds `127.0.0.1` by default. LAN binds without auth are refused on bare metal; the Team container
+  binds `0.0.0.0` behind a Host/Origin allowlist and `ANCHOR_AUTH_SECRET` logins.
+- Secrets live in the OS keychain (per-key encrypted-file fallback), never in the DB, configs or logs;
+  API responses mask them as `***set***`.
+- **Labels:** `sensitive` sources never go to an untrusted cloud provider (embed or answer); the
+  refusal is recorded in `system_events`. `/qa/public` and MCP `public_only` see `public` sources only.
+- **PII** is a manual whole-document mark (R35.1); there is no auto-detection.
+- `GET /media/:uid` serves image bytes from the DB only, label-gated and CSP-sandboxed.
 
-Follow-up questions reuse retrieval with a **query-rewrite pass**: history is
-sent with the question, a cheap LLM call rewrites it standalone, and the
-conversation is included in generation.
+## 7. Swap points
 
-**Planner → Executor → Synthesis:** a lightweight planner picks the
-retrieval tools for each query (`hybrid` vector+FTS always; `who_knows` for
-ownership/expertise questions). The executor runs them (one shared embedding
-call), each tool returns a ranked hit list in a normalized evidence shape, and
-synthesis RRF-fuses them into the final context. An LLM planner can replace the
-heuristic rules later without changing the executor contract.
-
-**Graph-based retrieval:** after RRF picks the winning entities, the
-pipeline walks `relationships` 1–2 hops (`supersedes` > `depends_on` > `owns` >
-`blocks` > `related`, hop decay, fan-out cap) and pulls connected entities'
-summaries/chunks into the answer context as `[related]` sections + citations.
-This answers "what supersedes this?" / "what depends on this decision?" that
-lexical+vector fusion alone misses, because the connected knowledge doesn't
-need to co-occur in the question's words. Pure SQL — no model calls.
-
-Remaining backlog: a fuller *who_knows* ranking and per-user ACLs for hosted.
-Scoped search via *projects* and source-label gating both shipped.
-
-## 5. Data Model — Uniform Entity Graph
-
-Everything is an entity. Contradictions stay external to the baseline object.
-
-```mermaid
-erDiagram
-    INGESTED_ITEMS {
-        int id PK
-        int source_id FK
-        string external_id
-        string title
-        text text "raw content"
-        string content_hash
-        string doc_type "standards|runbook|documentation|meeting|decision_log|prd|general"
-        text window_hashes "JSON {index: sha256} — cheap reclassify"
-        text distill_hashes "legacy, unwritten since R45.18"
-        bool stale
-        datetime created_at
-    }
-    ENTITIES {
-        int id PK
-        int item_id FK
-        string kind "decision|document|action|note"
-        string summary
-        string reasoning
-        float confidence
-        string author
-        string source_ref "source + section"
-        text window_text "classifier input window (review context)"
-        int window_index
-        string status "unverified|verified|disputed|stale"
-        string owner
-        datetime created_at
-        datetime updated_at
-    }
-    RELATIONSHIPS {
-        int id PK
-        int from_entity_id FK
-        int to_entity_id FK
-        string kind "supersedes|depends_on|owns|blocks"
-        string source_ref
-        float confidence
-        datetime created_at
-    }
-    SOURCES {
-        int id PK
-        string connector "folder|gdrive|jira|linear|rest"
-        string config
-        string last_sync_cursor
-        datetime last_synced_at
-        string last_error
-        int error_count
-        bool enabled
-        string label "internal|public|sensitive (+legacy pii)"
-    }
-    CHUNKS {
-        int id PK
-        int item_id FK "full-document chunk"
-        int entity_id FK "entity-summary chunk"
-        int section_id FK "→ sections.id"
-        string kind "document|entity|section_summary|doc_summary"
-        string source_ref "section"
-        string content
-        bytes embedding "float32 blob"
-        bool is_pii "legacy, unwritten"
-        string pii_categories "legacy, unwritten"
-        int level "heading level"
-        string path "section path e.g. Art12 > 12.3"
-        datetime created_at
-    }
-    SECTIONS {
-        int id PK
-        int item_id FK
-        int parent_id FK "self, null=root"
-        int level "nesting depth"
-        string title "heading text"
-        string path "full path"
-        string chunk_range "first/last chunk id"
-        text summary "extractive summary"
-        bytes summary_embedding "float32 blob"
-        datetime created_at
-    }
-    TAGS {
-        int id PK
-        string name "unique, lowercased"
-        string description "optional"
-        bytes embedding "float32 blob"
-        int count "usage count"
-    }
-    CHUNK_TAGS {
-        int chunk_id FK
-        int tag_id FK
-    }
-    CHUNKS_FTS {
-        int rowid "= chunks.id"
-        string content "FTS5, kept in sync by triggers"
-    }
-    JOBS {
-        int id PK
-        int source_id FK
-        string kind "sync|reclassify"
-        string status "pending|running|done|failed|cancelled"
-        int total
-        int processed
-        text result
-        string error
-        datetime started_at
-        datetime finished_at
-    }
-    MERGE_ACTIONS {
-        int id PK
-        int entity_a_id FK
-        int entity_b_id FK
-        string status "proposed|merged|dismissed"
-        string user
-        datetime created_at
-    }
-    APP_SETTINGS {
-        string key PK
-        text value "runtime overrides of .env defaults"
-        datetime updated_at
-    }
-    SYSTEM_EVENTS {
-        int id PK
-        string component
-        string level "error|warning|info"
-        int source_id FK
-        string message
-        text detail "redacted"
-        datetime created_at
-    }
-    PROJECTS {
-        int id PK
-        string name
-        bool is_default "user's default query scope"
-        datetime created_at
-    }
-    USERS {
-        int id PK
-        string email "unique"
-        string password_hash "pbkdf2"
-        datetime created_at
-    }
-    VEC_CHUNKS {
-        int rowid "plain table of 768d embeddings (cosine scan in code)"
-        bytes embedding
-    }
-    PROJECT_SOURCES {
-        int project_id FK
-        int source_id FK "many-to-many"
-    }
-    SOURCES ||--o{ INGESTED_ITEMS : "contains"
-    INGESTED_ITEMS ||--o{ ENTITIES : "classified into"
-    INGESTED_ITEMS ||--o{ CHUNKS : "chunked"
-    INGESTED_ITEMS ||--o{ SECTIONS : "section tree"
-    SECTIONS ||--o{ SECTIONS : "parent/children"
-    SECTIONS ||--o{ CHUNKS : "contains"
-    ENTITIES ||--o{ RELATIONSHIPS : "participates"
-    ENTITIES ||--o{ CHUNKS : "summarized into"
-    ENTITIES ||--o{ MERGE_ACTIONS : "proposed"
-    CHUNKS ||--o| CHUNKS_FTS : "indexed"
-    CHUNKS ||--o{ CHUNK_TAGS : "tagged"
-    TAGS ||--o{ CHUNK_TAGS : "labels"
-    SOURCES ||--o{ JOBS : "processed by"
-    PROJECTS ||--o{ PROJECT_SOURCES : "contains"
-    SOURCES ||--o{ PROJECT_SOURCES : "belongs to"
-
-    CONTRADICTIONS {
-        int id PK "planned, v2 — not in schema yet"
-        int claim_a_id FK
-        int claim_b_id FK
-        string kind
-        string evidence
-        string status
-    }
-```
-
-## 6. Container Table
-
-| Container | Responsibility | Tech |
+| Interface | Today | Later |
 |---|---|---|
-| Web UI | Connect sources, project scoping, review queue, Q&A chat, model settings | React SPA (Vite, TS, 6 tabs) |
-| API | All endpoints, orchestration, config | **Rust Axum (shipped)** — same binary in the local app and the Team container; Python `backend/` archived (history only) |
-| Entity Store | Entities, provenance, window context, sync state | SQLite (Rust `rusqlite`) — local app and Team container |
-| Vector Store | Chunk embeddings + similarity search | embeddings table in the same SQLite file; vector search is an in-code cosine scan (no vec0 module is linked) |
-| Keyword Store | FTS5 bm25 for hybrid retrieval | SQLite FTS5 (trigger-synced, same file) |
-| Classifier | Doc-type detection + entity extraction | Ollama or cloud OpenAI-compatible + rule fallback (Rust `classifier.rs`) |
-| Embedder | Chunk embeddings | Ollama or cloud OpenAI-compatible (Rust `embedder.rs`) |
-| Answer Engine | Planner → Executor → RRF fusion → graph walk → cited answer | BYO cloud model or Ollama (Rust `answer.rs`/`retrieval.rs`) |
-| Retrieval | Vector cosine + FTS5 bm25, who_knows owner/author ranking, `relationships` graph walk | embedding scan + FTS5 + SQL (Rust) |
-| Job Manager | Background sync/reclassify + cancel | `jobs` table, `MAX_CONCURRENT=2` (Rust `jobs.rs`) |
-| Settings Service | Runtime-mutable model config | `app_settings` table + SecretStore (Rust `settings.rs`) |
-| Secret Store | Credentials (Jira token, model keys) | OS Keychain via `keyring` + encrypted-file fallback (Rust `secrets.rs`) |
-
-## 7. Security
-
-- Credentials: **OS Keychain** (`keyring`), encrypted-file fallback; never in DB/config/logs.
-- Local server binds 127.0.0.1 by default; the Team container sets `--host 0.0.0.0` (Host/Origin allowlist; set `ANCHOR_AUTH_SECRET` for logins).
-- Secret values masked in logs, error responses, and API payloads (`***set***`).
-- Tests never touch the real keychain (`ANCHOR_SECRETS_NO_KEYRING`).
-- **Data labels:** `sources.label` (`public|internal|sensitive`, default
-  `internal`); `sensitive` sources skip cloud classify/embed/answer, fall
-  back to local rules, and record a `system_event`. Share/MCP surface
-  (`GET /qa/public`, `public_only`) only sees public sources. Per-user ACL
-  deferred to hosted. (Chunk/item PII flags and the legacy `pii` label were
-  removed from user-facing surfaces — R35.1, owner decision 2026-10-13; the
-  backend still accepts them as hidden compat.)
-- Every allow/block decision is audited in `system_events`; hosted auth
-  issues HS256 JWT when `ANCHOR_AUTH_SECRET` is set, otherwise disabled
-  (local stays single-user).
-
-## 8. Key Interfaces (Swap Points)
-
-| Interface | v1 (shipped) | v2+ swap |
-|---|---|---|
-| `VectorStore` | SQLite embedding scan | Qdrant / pgvector (hosted cloud, B49) |
-| `ModelClient` | Ollama + BYO OpenAI-compatible | Any provider |
-| `SecretStore` | Keychain | Cloud secret manager |
-| `Connector` | Folder, Drive, Jira, Linear, REST | Slack, Notion, Confluence |
-| `AgentAdapter` | MCP mode (`anchorcore mcp`, stdio, read-only) — see [mcp.md](./mcp.md) | MCP HTTP transport / registry / write-back |
-| `SettingsService` | DB-backed overrides + keychain secrets | Cloud config service |
-| `DB` | SQLite — local app + Team container | Postgres for the hosted cloud tier (B49) |
-
-## 9. Evolution Path
-
-```
-v1 (shipped; current version: see docs/release-notes/): local-first app — folder/Drive/Jira/Linear/REST connectors,
-    document-aware classification + review queue, cited Q&A (hybrid RRF + vector scan +
-    planner/executor + graph walk + distillation + projects + source-label gate),
-    hierarchical sections, MCP mode, Team self-hosted (Docker + offline license),
-    Windows/macOS apps
-  -> next: website + launch, Drive OAuth, Slack connector, hosted pilot
-           (per-user ACL, contradictions, workspace export/delete)
-  -> v3: agentic levels (draft, prepare-action-with-approval), enterprise compliance
-```
+| Vector search | SQLite embedding scan | `sqlite-vec` (R43.10); pgvector for hosted |
+| Embedder | Ollama · OpenAI-compatible | built-in local engine (R45.4) |
+| Answers | agent (MCP/REST) · Ollama · OpenAI-compatible | MCP sampling (R45.2b) |
+| Connectors | Folder · Drive · Jira · Linear · Miro · REST | demand-driven (FigJam, Lucid, Slack…) |
+| Agent access | MCP stdio (`anchorcore mcp`) + REST skill — see [mcp.md](./mcp.md) | MCP HTTP transport (B14.2) |
+| DB | SQLite (local + Team) | Postgres for hosted (B49) |
 
 ---
 
-*Companion docs: [product-plan.md](./product-plan.md), [packaging.md](./packaging.md), [releasing.md](./releasing.md), [mcp.md](./mcp.md), [design-system.md](./design-system.md)*
+*Companion docs: [product-plan.md](./product-plan.md), [mcp.md](./mcp.md), [packaging.md](./packaging.md), [releasing.md](./releasing.md), [design-system.md](./design-system.md)*

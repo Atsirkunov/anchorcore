@@ -1,5 +1,6 @@
-//! R2.2: Answer orchestration — port of `backend/app/answer_engine.py:169` `ask()`
-//! - project scoping, public_only gate, planner, executor, graph, B30 gate, generation
+//! Answer orchestration: project scoping, `public_only` + label gate, follow-up
+//! rewrite, shared fusion (`retrieval::orchestrate_fusion`), and generation
+//! (`local` mode) or `agent_compose` evidence (`agent` mode).
 
 use crate::embedder::Embedder;
 use crate::retrieval;
