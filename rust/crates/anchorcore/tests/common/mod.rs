@@ -264,6 +264,11 @@ impl TestServer {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
+
+    /// OS pid of the server process (R20.4 `runtime.json` asserts).
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
 }
 
 impl Drop for TestServer {

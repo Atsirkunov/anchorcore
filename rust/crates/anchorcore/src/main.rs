@@ -9,7 +9,7 @@
 //! Mirrors `backend/app/main.py:130` health shape + `backend/app/db.py:44` PRAGMAs.
 
 use anchorcore::{
-    auth, cli, db, embedder, health, jobs, license, mcp, routes, scheduler, secrets, security,
+    auth, cli, db, embedder, health, jobs, license, mcp, routes, runtime, scheduler, secrets, security,
     settings, system, tray,
 };
 #[cfg(not(test))]
@@ -44,34 +44,8 @@ enum Command {
 }
 
 fn resolve_data_dir(cli: &str) -> PathBuf {
-    if !cli.is_empty() {
-        return PathBuf::from(cli);
-    }
-    if let Ok(v) = std::env::var("ANCHOR_DATA_DIR") {
-        if !v.is_empty() {
-            return PathBuf::from(v);
-        }
-    }
-    if let Ok(v) = std::env::var("ANCHOR_DATABASE_URL") {
-        // sqlite:///path — extract path
-        if let Some(p) = v.strip_prefix("sqlite:///") {
-            if let Some(parent) = PathBuf::from(p).parent() {
-                if !parent.as_os_str().is_empty() {
-                    return parent.to_path_buf();
-                }
-            }
-        }
-    }
-    // Double-click app (no env, no --data-dir): use ~/.anchorcore like Python's run_app.py
-    // (was `data` — wrong when launched via Finder, CWD is /). Fallback to `data` for dev checkout.
-    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
-        let p = PathBuf::from(home).join(".anchorcore");
-        // use home dir if it exists or can be created, else fallback to ./data for dev
-        if p.exists() || std::fs::create_dir_all(&p).is_ok() {
-            return p;
-        }
-    }
-    PathBuf::from("data")
+    // R20.4: shared with `anchorcore mcp` so both sides find the same runtime.json.
+    runtime::resolve_data_dir(cli)
 }
 
 fn resolve_host(cli: &str) -> String {
@@ -634,10 +608,29 @@ async fn main() {
     let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
     let _tray = tray::spawn_if_enabled(&addr, args.no_tray, shutdown.clone());
     let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
-    axum::serve(listener, app)
+    let advertised = advertise_runtime(&data_dir, &resolve_host(&args.host), &listener);
+    let served = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(shutdown))
-        .await
-        .unwrap();
+        .await;
+    if let Some(pid) = advertised {
+        runtime::remove_own(&data_dir, pid);
+    }
+    served.unwrap();
+}
+
+/// R20.4: after a successful bind, advertise the real port in
+/// `{data_dir}/runtime.json` for `anchorcore mcp`. Best-effort: a failed
+/// write only costs discovery (MCP falls back to the default port).
+fn advertise_runtime(data_dir: &std::path::Path, host: &str, listener: &tokio::net::TcpListener) -> Option<u32> {
+    let port = listener.local_addr().ok()?.port();
+    let info = runtime::RuntimeInfo::current(host, port);
+    match runtime::write(data_dir, &info) {
+        Ok(()) => Some(info.pid),
+        Err(e) => {
+            tracing::warn!("could not write {}: {}", runtime::path_in(data_dir).display(), e);
+            None
+        }
+    }
 }
 
 // Route table lives in `routes.rs` (lib) so unit tests can build it.

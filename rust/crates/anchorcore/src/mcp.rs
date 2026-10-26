@@ -52,7 +52,7 @@ async fn get_csrf_token() -> Option<String> {
         if let Some(t) = &*guard { return Some(t.clone()); }
     }
     // fetch fresh
-    let base = backend_url();
+    let base = backend_url().await;
     let url = format!("{}/csrf", base.trim_end_matches('/'));
     let resp = http_client().get(&url).send().await.ok()?;
     if !resp.status().is_success() { return None; }
@@ -63,15 +63,91 @@ async fn get_csrf_token() -> Option<String> {
     Some(token)
 }
 
-fn backend_url() -> String {
-    std::env::var("ANCHOR_BACKEND_URL").unwrap_or_else(|_| DEFAULT_URL.to_string())
+/// R20.4: the data dir `anchorcore mcp` shares with the app (same order:
+/// `--data-dir` → `ANCHOR_DATA_DIR` → `ANCHOR_DATABASE_URL` parent → `~/.anchorcore`).
+fn mcp_data_dir() -> std::path::PathBuf {
+    crate::runtime::resolve_data_dir(&crate::runtime::data_dir_arg(std::env::args().skip(1)))
+}
+
+fn env_backend_url() -> Option<String> {
+    std::env::var("ANCHOR_BACKEND_URL").ok().filter(|u| !u.is_empty())
+}
+
+static RESOLVED_URL: OnceLock<tokio::sync::Mutex<Option<String>>> = OnceLock::new();
+fn resolved_cache() -> &'static tokio::sync::Mutex<Option<String>> {
+    RESOLVED_URL.get_or_init(|| tokio::sync::Mutex::new(None))
+}
+
+/// R20.4 discovery order: `ANCHOR_BACKEND_URL` (wins, never cached) →
+/// `runtime.json` in the data dir when its server answers `/health` →
+/// `DEFAULT_URL`. The discovered URL is cached until a call fails to
+/// connect (`forget_backend`), so an app restarted on a new port is found
+/// again without restarting the MCP client.
+async fn backend_url() -> String {
+    if let Some(u) = env_backend_url() {
+        return u;
+    }
+    let mut guard = resolved_cache().lock().await;
+    if let Some(u) = &*guard {
+        return u.clone();
+    }
+    let url = resolve_backend(None, &mcp_data_dir()).await;
+    *guard = Some(url.clone());
+    url
+}
+
+async fn resolve_backend(env: Option<String>, data_dir: &std::path::Path) -> String {
+    if let Some(u) = env.filter(|u| !u.is_empty()) {
+        return u;
+    }
+    if let Some(info) = crate::runtime::read(data_dir) {
+        let url = info.base_url();
+        if probe_health(&url).await {
+            return url;
+        }
+    }
+    DEFAULT_URL.to_string()
+}
+
+/// Stale-file guard: a crashed app leaves `runtime.json` behind; trust it
+/// only when something answers `/health` with a status there.
+async fn probe_health(base: &str) -> bool {
+    let url = format!("{}/health", base.trim_end_matches('/'));
+    let req = http_client().get(&url).timeout(std::time::Duration::from_millis(1500));
+    let Ok(resp) = req.send().await else { return false };
+    if !resp.status().is_success() {
+        return false;
+    }
+    resp.json::<Value>().await.is_ok_and(|v| v.get("status").is_some())
+}
+
+/// Connection failed: re-discover next call (the app may have moved ports)
+/// and drop the per-session CSRF token of the old process.
+async fn forget_backend() {
+    *resolved_cache().lock().await = None;
+    *csrf_cache().lock().await = None;
+}
+
+/// Origin only (never a path/query that could carry a credential).
+fn url_origin(base: &str) -> String {
+    reqwest::Url::parse(base)
+        .map(|u| u.origin().ascii_serialization())
+        .unwrap_or_else(|_| "the configured backend".to_string())
+}
+
+fn unreachable_message(base: &str, err: &str) -> String {
+    format!(
+        "backend unreachable at {} ({err}). Is the app running? Start AnchorCore (open the app, or run `anchorcore --port <N>`); `anchorcore mcp` finds its port via {}, or set ANCHOR_BACKEND_URL.",
+        url_origin(base),
+        crate::runtime::path_in(&mcp_data_dir()).display()
+    )
 }
 fn backend_token() -> String {
     std::env::var("ANCHOR_MCP_TOKEN").unwrap_or_default()
 }
 
 async fn http_call(method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
-    let base = backend_url();
+    let base = backend_url().await;
     let token = backend_token();
     let url = format!("{}{}", base.trim_end_matches('/'), path);
     let client = http_client();
@@ -96,7 +172,15 @@ async fn http_call(method: &str, path: &str, body: Option<Value>) -> Result<Valu
         }
     }
     // token never appears in URL/path, but redact base if it ever contains token param
-    let resp = req.send().await.map_err(|e| format!("backend unreachable ({}). Is the app running?", e))?;
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            if e.is_connect() {
+                forget_backend().await;
+            }
+            return Err(unreachable_message(&base, &e.to_string()));
+        }
+    };
     if resp.status() == 404 {
         return Err("not found".to_string());
     }
@@ -112,16 +196,7 @@ async fn http_call(method: &str, path: &str, body: Option<Value>) -> Result<Valu
 
 fn audit_mcp(tool: &str, detail: &str) {
     // best-effort audit to system_events (component=mcp) — like Python backend's system_events for MCP
-    let data_dir = std::env::var("ANCHOR_DATA_DIR").unwrap_or_else(|_| {
-        std::env::var("HOME").map(|h| format!("{}/.anchorcore", h)).unwrap_or_else(|_| "data".to_string())
-    });
-    let db_path = {
-        if let Ok(url) = std::env::var("ANCHOR_DATABASE_URL") {
-            if let Some(p) = url.strip_prefix("sqlite:///").or_else(|| url.strip_prefix("sqlite://")) {
-                if !p.is_empty() { std::path::PathBuf::from(p) } else { std::path::PathBuf::from(format!("{}/anchorcore.db", data_dir)) }
-            } else { std::path::PathBuf::from(format!("{}/anchorcore.db", data_dir)) }
-        } else { std::path::PathBuf::from(format!("{}/anchorcore.db", data_dir)) }
-    };
+    let db_path = crate::db::resolve_db_path(&mcp_data_dir().to_string_lossy());
     if let Ok(conn) = rusqlite::Connection::open(&db_path) {
         let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('mcp','info',?1,?2)",
             rusqlite::params![format!("mcp tool {}", tool), detail.chars().take(800).collect::<String>()]);
@@ -1066,5 +1141,51 @@ mod tests {
         let defs = tool_defs();
         let tool = defs.as_array().unwrap().iter().find(|t| t["name"] == "get_asset").expect("get_asset tool");
         assert_eq!(tool.pointer("/inputSchema/required/0"), Some(&json!("asset_id")));
+    }
+
+    fn runtime_for(base: &str) -> crate::runtime::RuntimeInfo {
+        let port = base.rsplit(':').next().unwrap().parse().unwrap();
+        crate::runtime::RuntimeInfo::current("127.0.0.1", port)
+    }
+
+    /// R20.4: env > live runtime.json > default.
+    #[tokio::test]
+    async fn backend_resolution_precedence_env_file_default() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(resolve_backend(None, dir.path()).await, DEFAULT_URL, "no file → default");
+        let mock = spawn_fixed_mock("200 OK", "{\"status\":\"ok\"}".to_string()).await;
+        crate::runtime::write(dir.path(), &runtime_for(&mock.base)).unwrap();
+        assert_eq!(resolve_backend(None, dir.path()).await, mock.base, "live file wins over default");
+        let env = Some("http://127.0.0.1:9999".to_string());
+        assert_eq!(resolve_backend(env, dir.path()).await, "http://127.0.0.1:9999", "env wins over file");
+        assert_eq!(resolve_backend(Some(String::new()), dir.path()).await, mock.base, "empty env is unset");
+    }
+
+    /// R20.4: a file left by a crashed app (nothing listening, or something
+    /// that is not AnchorCore) falls back to the default port.
+    #[tokio::test]
+    async fn stale_runtime_file_falls_back_to_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let dead = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let mut info = crate::runtime::RuntimeInfo::current("127.0.0.1", dead);
+        info.pid = u32::MAX - 1;
+        crate::runtime::write(dir.path(), &info).unwrap();
+        assert_eq!(resolve_backend(None, dir.path()).await, DEFAULT_URL);
+        let not_us = spawn_fixed_mock("200 OK", "{\"hello\":1}".to_string()).await;
+        crate::runtime::write(dir.path(), &runtime_for(&not_us.base)).unwrap();
+        assert_eq!(resolve_backend(None, dir.path()).await, DEFAULT_URL, "no health status → stale");
+    }
+
+    #[test]
+    fn unreachable_message_says_how_to_start_and_hides_url_path() {
+        let msg = unreachable_message("http://127.0.0.1:8123/x?token=secret", "connection refused");
+        assert!(msg.contains("backend unreachable at http://127.0.0.1:8123 "), "{msg}");
+        assert!(msg.contains("anchorcore --port"), "{msg}");
+        assert!(msg.contains("runtime.json"), "{msg}");
+        assert!(msg.contains("ANCHOR_BACKEND_URL"), "{msg}");
+        assert!(!msg.contains("secret"), "{msg}");
     }
 }

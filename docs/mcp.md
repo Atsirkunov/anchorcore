@@ -110,8 +110,25 @@ harness setups that have no UI.
 
 Under the hood: the same `anchorcore` binary also runs as the stdio MCP server —
 the harness spawns `anchorcore mcp`, which talks to the running app over
-`127.0.0.1` (`ANCHOR_BACKEND_URL`, default `http://127.0.0.1:8000`). The app stays
-the single owner of the DB, exactly like with the browser UI.
+`127.0.0.1`. The app stays the single owner of the DB, exactly like with the
+browser UI.
+
+**Finding the app (R20.4) — no env vars on any port.** After its listener binds,
+the app writes `runtime.json` (`port`, `host`, `pid`, `version`; atomic temp +
+rename) into its data dir and removes it on graceful shutdown. `anchorcore mcp`
+resolves the backend in this order:
+
+1. `ANCHOR_BACKEND_URL`, when set — always wins.
+2. `runtime.json` in the data dir, only if that server answers `GET /health`
+   (a file left by a crash is ignored).
+3. `http://127.0.0.1:8000`.
+
+The MCP side resolves the data dir like the app does: `anchorcore mcp --data-dir
+<dir>` → `ANCHOR_DATA_DIR` → the `ANCHOR_DATABASE_URL` parent → `~/.anchorcore`. So
+`anchorcore --port 8123` needs nothing extra; a custom `--data-dir` needs the same
+flag (or env) on the MCP entry. The discovered URL is cached until a call fails
+to connect, then re-resolved, so restarting the app on another port needs no
+client restart. When nothing answers, tool errors say how to start the app.
 
 Manual configuration (equivalent to what Connect writes):
 
@@ -171,7 +188,10 @@ producers, not just consumers. Risks to manage:
   HTTP calls into the app, audit logging.
 - `rust/crates/anchorcore/src/mcp_setup.rs` — R20.9: client connect/
   disconnect (Claude Code/Desktop, Cursor, opencode, Codex).
-- Config: `ANCHOR_BACKEND_URL` (default `http://127.0.0.1:8000`),
+- `rust/crates/anchorcore/src/runtime.rs` — R20.4: `runtime.json` write/read
+  and the shared data-dir resolution.
+- Config: `ANCHOR_BACKEND_URL` (overrides `runtime.json` discovery; default
+  `http://127.0.0.1:8000`),
   `ANCHOR_MCP_TOKEN` is optional — sent as `Bearer` to the backend when set (required for the planned HTTP transport).
 - Planned: mount `/mcp` on the Axum app when the HTTP transport ships.
 
@@ -200,8 +220,8 @@ cargo test -p anchorcore          # MCP surface tests
 ```
 
 `rust/crates/anchorcore/src/mcp.rs` is the implementation and `AGENTS.md` has the
-full dev and release workflow. Open MCP work (`runtime.json` port discovery
-R20.4, CI search smoke R20.10, HTTP transport B14.2) is in `rust/BACKLOG.md`.
+full dev and release workflow. Open MCP work (CI search smoke R20.10, HTTP
+transport B14.2) is in `rust/BACKLOG.md`.
 
 ---
 
