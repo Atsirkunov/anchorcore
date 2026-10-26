@@ -6,14 +6,13 @@ this page is context.
 
 ## State of `main` at handover
 
-- Local `main` is ahead of `origin/main` by these commits; **none are pushed or tagged** — check
-  `git log --oneline origin/main..main` before you start, and ask the owner before pushing:
-  `db19078` Cargo.lock 1.4.1 sync · `f9259ba` merge R43.11 · `41194e7` merge R20.4 · `5445923` merge R41.2 ·
-  `925cf5f` R41.5 · this handover.
+- Pushed to `origin/main`, **not tagged** (still 1.4.1): `db19078` Cargo.lock 1.4.1 sync · `f9259ba` merge R43.11 ·
+  `41194e7` merge R20.4 · `5445923` merge R41.2 · `925cf5f` R41.5 · this handover. The next release tag ships all of
+  it (bump per `docs/releasing.md`).
 - Gates on the merged tree: `ANCHOR_SECRETS_NO_KEYRING=1 cargo test -p anchorcore` 667 passed / 0 failed,
   `RUSTFLAGS="-D warnings" cargo check --tests` clean, clippy clean, lizard = the 7-warning baseline.
-- Leftovers: agent worktrees under `.claude/worktrees/` and branches `rust/R43.11`, `rust/R20.4`, `rust/R41.2`
-  (all merged — safe to remove with `git worktree remove` + `git branch -d` once the owner agrees).
+- Agent worktrees and the merged `rust/R43.11`, `rust/R20.4`, `rust/R41.2` branches were removed (local only, never
+  pushed). The `.muse/worktrees/*` and `r40-work` worktrees predate this session — not touched.
 
 ## Shipped today (don't redo)
 
