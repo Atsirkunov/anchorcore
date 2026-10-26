@@ -519,3 +519,15 @@ ADR log. Append newest first.
   - *Built-in, with a UI hint to switch on big indexes* — rejected: it puts the choice on the person for something the app can detect.
   - *Cross-document batching for the built-in engine only* — deferred: it would change the per-document phase order (see R30.2). It is the lever if built-in bulk speed matters on machines without Ollama.
 * **Consequences:** a machine without Ollama gets hybrid retrieval after one ~550 MB download (verified end to end: Ollama unreachable → `retrieval: hybrid`, backend `metal`). Ollama users see no change. `ollama.rs` readiness no longer asks Ollama for the embed model while the built-in engine is active. The suite needs no weights. Real-model tests are opt-in via `ANCHOR_TEST_BUILTIN_MODEL_DIR`. Windows MinGW and x86 Linux builds are proven only by CI (R45.3 legs) before this merges to `main`.
+
+---
+
+## 2026-10-26 — R30.6: local Ollama answers use native `/api/chat` with `num_ctx` pinned
+
+* **Decision:** every local-mode chat call (generation, follow-up rewrite, acronym expansion, the settings "test answer model" ping) goes through `llm_chat.rs`. When the answer base URL is a loopback Ollama — port 11434, or the same root as `ollama_base_url` — the call is `POST {root}/api/chat` with `stream: false` and `options: {num_ctx: 8192, temperature, num_predict}`; `ANCHOR_OLLAMA_NUM_CTX` overrides the 8192. A 404/405 from the native endpoint (some other server on that port) retries once as OpenAI-compatible. Cloud, BYO OpenAI-compatible and other local servers keep the exact `{base}/chat/completions` payload.
+* **Context:** Ollama ≥ 0.15.5 sizes the context from free memory (32k tokens on a 32 GB Mac → a 3B model at ~12 GB) and its OpenAI-compatible endpoint ignores context options (ollama/ollama#18229). 8192 covers the 6000-token generation budget (R43.7) plus prompt and answer. Verified live on Ollama 0.32.5 with `llama3.2:3b`: the OpenAI endpoint loaded it at Ollama's auto size (4096 on that machine), the app's answer and settings ping load it at 8192.
+* **Alternatives considered:**
+  - *Document `OLLAMA_CONTEXT_LENGTH` as the supported control* — rejected: it is a server-wide env the app cannot set (Ollama is often launched by its own app or launchd), it applies to every model and client on the machine, and an unset value silently keeps the memory-sized default. The code fix is ~100 lines in one module.
+  - *Send `options.num_ctx` on `/v1/chat/completions`* — rejected: ignored by Ollama (the issue above).
+  - *Detect Ollama by probing `/api/version`* — rejected: an extra round-trip per call; the port/base-root check plus the 404 fallback covers misdetection.
+* **Consequences:** the settings ping and the answer path load the model with the same context, so the first answer no longer forces a reload. Ollama users who want a bigger window set `ANCHOR_OLLAMA_NUM_CTX`. Streaming stays a follow-up.

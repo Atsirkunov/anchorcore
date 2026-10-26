@@ -1302,29 +1302,21 @@ async fn llm_rewrite(settings: &SettingsService, transcript: &str, question: &st
     let base = settings.get("answer_base_url", None).unwrap_or_default();
     let key = settings.get("answer_api_key", None).unwrap_or_default();
     let model = settings.get("answer_model", None).unwrap_or_else(|| "gpt-4o-mini".to_string());
-    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
-    let client = reqwest::Client::builder().timeout(answer_timeout(settings)).build().ok()?;
-    let mut headers = reqwest::header::HeaderMap::new();
-    if !key.is_empty() {
-        if let Ok(h) = format!("Bearer {}", key).parse() {
-            headers.insert(reqwest::header::AUTHORIZATION, h);
-        }
-    }
-    let payload = serde_json::json!({
-        "model": model,
-        "messages": [
+    let ollama_base = settings.get("ollama_base_url", None);
+    let spec = crate::llm_chat::ChatSpec {
+        base: &base,
+        api_key: &key,
+        model: &model,
+        messages: serde_json::json!([
             {"role": "system", "content": "You rewrite a user's follow-up question into a standalone question that includes all context from the conversation needed to answer it alone. Respond with ONLY the rewritten question, no preamble."},
             {"role": "user", "content": format!("Conversation:\n{}\n\nFollow-up: {}", transcript, question)}
-        ],
-        "temperature": 0.0,
-        "max_tokens": 120
-    });
-    let resp = client.post(&url).headers(headers).json(&payload).send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let j = resp.json::<serde_json::Value>().await.ok()?;
-    let content = j.pointer("/choices/0/message/content").and_then(|v| v.as_str())?;
+        ]),
+        temperature: Some(0.0),
+        max_tokens: Some(120),
+        timeout: answer_timeout(settings),
+        ollama_base: ollama_base.as_deref(),
+    };
+    let content = crate::llm_chat::chat(&spec).await.ok()?;
     let trimmed = content.trim().to_string();
     if trimmed.is_empty() {
         None
@@ -1380,18 +1372,7 @@ async fn generate_answer(settings: &SettingsService, question: &str, context: &s
     if !is_local && key.is_empty() {
         return (format!("Answer for: {}\n\n[No model key configured. Matching context:]\n\n{}", question, context.chars().take(1500).collect::<String>()), false);
     }
-    // For R2.2, we do not yet call LLM; return context stub (will be wired in R3.4)
-    // Try to call LLM if configured (best-effort, like Python fallback)
     let model = settings.get("answer_model", None).unwrap_or_else(|| "gpt-4o-mini".to_string());
-    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
-    let client = match reqwest::Client::builder().timeout(answer_timeout(settings)).build() {
-        Ok(c) => c,
-        Err(_) => return (format!("Answer for: {}\n\n{}", question, context.chars().take(1500).collect::<String>()), false),
-    };
-    let mut headers = reqwest::header::HeaderMap::new();
-    if !key.is_empty() {
-        headers.insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", key).parse().unwrap());
-    }
     let user_content = if history.is_empty() {
         format!("Question: {}\n\nContext:\n{}", question, context)
     } else {
@@ -1400,24 +1381,28 @@ async fn generate_answer(settings: &SettingsService, question: &str, context: &s
         let transcript = history[start..].iter().map(turn_text).collect::<Vec<_>>().join("\n");
         format!("Conversation so far:\n{}\n\nQuestion: {}\n\nContext:\n{}", transcript, question, context)
     };
-    let payload = serde_json::json!({
-        "model": model,
-        "messages": [
+    let ollama_base = settings.get("ollama_base_url", None);
+    // R30.6: a local Ollama gets native `/api/chat` with `num_ctx` pinned.
+    let spec = crate::llm_chat::ChatSpec {
+        base: &base,
+        api_key: &key,
+        model: &model,
+        messages: serde_json::json!([
             {"role": "system", "content": "You are AnchorCore, answer using only context with citations [S1] etc."},
             {"role": "user", "content": user_content}
-        ],
-        "temperature": 0.2
-    });
-    match client.post(&url).headers(headers).json(&payload).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            if let Ok(j) = resp.json::<serde_json::Value>().await {
-                if let Some(content) = j.pointer("/choices/0/message/content").and_then(|v| v.as_str()) {
-                    return (content.to_string(), true);
-                }
-            }
-            (format!("Answer for: {}\n\n{}", question, context.chars().take(1500).collect::<String>()), false)
+        ]),
+        temperature: Some(0.2),
+        max_tokens: None,
+        timeout: answer_timeout(settings),
+        ollama_base: ollama_base.as_deref(),
+    };
+    let preview = || context.chars().take(1500).collect::<String>();
+    match crate::llm_chat::chat(&spec).await {
+        Ok(content) => (content, true),
+        Err(crate::llm_chat::ChatError::Empty) => (format!("Answer for: {}\n\n{}", question, preview()), false),
+        Err(crate::llm_chat::ChatError::Unreachable) => {
+            (format!("Answer for: {}\n\n[Answer model unreachable; showing context]\n\n{}", question, preview()), false)
         }
-        _ => (format!("Answer for: {}\n\n[Answer model unreachable; showing context]\n\n{}", question, context.chars().take(1500).collect::<String>()), false),
     }
 }
 

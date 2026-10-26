@@ -111,6 +111,10 @@ sequenceDiagram
 
 - **Fusion** is reciprocal-rank: `score = Σ weight / (60 + rank)` — never raw scores. Reordering happens
   after fusion.
+- **Local-mode chat calls** (answer, follow-up rewrite, acronym expansion, the settings ping) go through
+  `llm_chat.rs`. A loopback Ollama (port 11434, or the `ollama_base_url` root) gets native `/api/chat`
+  with `options.num_ctx` pinned to 8192 (`ANCHOR_OLLAMA_NUM_CTX` overrides); every other provider keeps
+  `{base}/chat/completions` unchanged. Agent mode makes no chat call.
 - **Status filter:** `status_ok` (`retrieval.rs`) is the single place stale/disputed rows are dropped, for
   every path including `/decisions` and `/actions`.
 - **Hits** are leaf chunks with match-centred previews, leg provenance and RRF-range scores; summary chunks
