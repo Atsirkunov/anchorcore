@@ -16,7 +16,9 @@ command or action and wait.
 ## Rules (read first)
 
 1. **Find the app before anything.** Base URL: `ANCHOR_BACKEND_URL` env if
-   set, else `http://127.0.0.1:8000`. Probe `GET /health`; expected `{"status":"ok"}`.
+   set, else the `port` in `~/.anchorcore/runtime.json` (the running app writes
+   it; use `http://127.0.0.1:<port>`), else `http://127.0.0.1:8000`. Probe
+   `GET /health`; expected `{"status":"ok"}`.
    Anything else means the app is not up — see step 1.
 2. **Newest version first.** Before configuring anything, check the installed
    build (and any installer copy you are about to use) against the newest GitHub
@@ -207,8 +209,10 @@ API fallback below when it doesn't. MCP first:
 
 `GET /system/mcp` returns the canonical command (`command` + `args:["mcp"]`).
 The app must be running — the MCP process talks to it over `127.0.0.1`
-(single DB owner); on a port other than 8000, add
-`ANCHOR_BACKEND_URL=http://127.0.0.1:<port>` to the client entry.
+(single DB owner). Any port works with no env vars: `anchorcore mcp` reads the
+port from `runtime.json` in the data dir. Only a custom `--data-dir` needs the
+same `--data-dir <dir>` appended to the MCP args (or `ANCHOR_DATA_DIR`);
+`ANCHOR_BACKEND_URL` still overrides everything.
 
 One-click setup:
 

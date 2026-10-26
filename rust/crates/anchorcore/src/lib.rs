@@ -47,6 +47,7 @@ pub mod records_api;
 pub mod retrieval;
 pub mod review;
 pub mod routes;
+pub mod runtime;
 pub mod scheduler;
 pub mod secrets;
 pub mod sections;
