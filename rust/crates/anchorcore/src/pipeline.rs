@@ -861,7 +861,9 @@ impl Pipeline {
         run_db(data_dir, move |conn| {
             let existing: Option<(i64, String, Option<String>, Option<String>)> = conn.query_row("SELECT id, content_hash, text, processed_hash FROM ingested_items WHERE source_id=?1 AND external_id=?2", rusqlite::params![source_id, doc.external_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).ok();
             if let Some((id, existing_hash, existing_text, processed)) = existing {
-                let missing_text = existing_text.as_deref().unwrap_or("").is_empty();
+                // R30.5: only a row missing text the doc now has needs a
+                // rewrite; genuinely empty text hash-skips like any other.
+                let missing_text = existing_text.as_deref().unwrap_or("").is_empty() && !doc.text.is_empty();
                 // F-03: "stored" (content_hash) and "fully processed"
                 // (processed_hash) are separate markers — a cancel between
                 // upsert and finalize must re-process, not skip. The stat
@@ -1384,6 +1386,8 @@ fn create_tags_inner(conn: &Connection, item_id: i64, full_text: &str) -> Result
     // + per-tag id queries).
     let sec_ids: Vec<i64> = secs.iter().map(|(id, _, _)| *id).collect();
     let mut section_chunks = load_section_chunks(conn, &sec_ids)?;
+    // R30.5: tag vectors are decoded once per pass, not on every miss.
+    let mut tag_cache = crate::tags::TagVecCache::default();
     for (sec_id, title, _path) in secs {
         if title.is_empty() {
             continue;
@@ -1396,7 +1400,7 @@ fn create_tags_inner(conn: &Connection, item_id: i64, full_text: &str) -> Result
         let chunk_ids: Vec<i64> = chunks.into_iter().map(|(cid, _)| cid).collect();
         let proposed = crate::tags::propose_tags(&sec_text, &title);
         for tag_name in proposed {
-            let tag_id = crate::tags::ensure_tag(conn, &tag_name)?;
+            let tag_id = crate::tags::ensure_tag_cached(conn, &tag_name, &mut tag_cache)?;
             for cid in &chunk_ids {
                 let _ = conn.execute(
                     "INSERT OR IGNORE INTO chunk_tags (chunk_id, tag_id) VALUES (?1,?2)",
@@ -1417,7 +1421,7 @@ fn create_tags_inner(conn: &Connection, item_id: i64, full_text: &str) -> Result
             .filter_map(|r| r.ok())
             .collect();
         for tag_name in doc_tags.iter().take(2) {
-            let tag_id = crate::tags::ensure_tag(conn, tag_name)?;
+            let tag_id = crate::tags::ensure_tag_cached(conn, tag_name, &mut tag_cache)?;
             for cid in &doc_chunks {
                 let _ = conn.execute(
                     "INSERT OR IGNORE INTO chunk_tags (chunk_id, tag_id) VALUES (?1,?2)",
@@ -2687,6 +2691,39 @@ mod tests {
             .filter_map(|r| r.ok())
             .collect();
         assert_eq!(ids, vec!["good.md".to_string()], "the panicking file is skipped, the rest ingested");
+    }
+
+    /// R30.5: an item whose extracted text is empty (an image-only PDF, an
+    /// empty file) hash-skips like any other once processed — re-extraction
+    /// (touched file, connector without stat fingerprints) must not re-ingest
+    /// and reclassify it every sync.
+    #[tokio::test]
+    async fn empty_text_item_hash_skips_on_resync() {
+        let data_tmp = tempdir().unwrap();
+        let folder_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().to_string_lossy().to_string();
+        let folder = folder_tmp.path();
+        write_doc(folder, "empty.md", "");
+        let (settings, sid) = seed_folder_source(&data_dir, folder);
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
+        let cfg = serde_json::json!({"path": folder.to_string_lossy()});
+        let (items, _, _, _, _) = run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        assert_eq!(items, 1, "first sync ingests the empty-text file");
+        for _ in 0..2 {
+            // Touched-but-identical: extracted again (stat changed), same
+            // empty text — processed already, so no re-ingest.
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            write_doc(folder, "empty.md", "");
+            let (items, entities, purged, unchanged, _) = run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+            assert_eq!((items, entities, purged, unchanged), (0, 0, 0, 0), "empty text must hash-skip");
+        }
+        // Content arriving later still re-ingests (the hash changes).
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        write_doc(folder, "empty.md", "# Now\n\nThe file has text.\n");
+        let (items, _, _, _, _) = run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        assert_eq!(items, 1);
     }
 
     #[tokio::test]
