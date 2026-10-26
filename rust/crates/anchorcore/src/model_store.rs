@@ -221,8 +221,21 @@ fn convert_to_f16(dir: &Path) -> Result<(), String> {
     }
     let tmp = dir.join(format!("{WEIGHTS_F16}.tmp"));
     candle_core::safetensors::save(&half, &tmp).map_err(|e| e.to_string())?;
+    make_world_readable(&tmp)?;
     std::fs::rename(&tmp, dir.join(WEIGHTS_F16)).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&src);
+    Ok(())
+}
+
+/// The safetensors writer creates 0600 files; the Team image prepares the
+/// model as root and runs as a service user, so the weights must be 0644.
+fn make_world_readable(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).map_err(|e| e.to_string())?;
+    }
+    let _ = path;
     Ok(())
 }
 
@@ -366,6 +379,12 @@ mod tests {
         candle_core::safetensors::save(&map, dir.path().join(WEIGHTS_F32)).unwrap();
         convert_to_f16(dir.path()).unwrap();
         assert!(!dir.path().join(WEIGHTS_F32).exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join(WEIGHTS_F16)).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o644, "readable by the Team image's service user");
+        }
         let back = candle_core::safetensors::load(dir.path().join(WEIGHTS_F16), &candle_core::Device::Cpu).unwrap();
         assert_eq!(back["w"].dtype(), candle_core::DType::F16);
         assert_eq!(back["ids"].dtype(), candle_core::DType::U32, "non-f32 tensors pass through");
