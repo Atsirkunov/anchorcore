@@ -86,6 +86,5 @@ this page is context.
 
 ## Housekeeping noticed, not done
 
-- R30.8 is ✅ DONE but still sits in the Phase 30 open table — move it to `BACKLOG-archive.md`.
 - Owner's machine has an old `~/Applications/AnchorCore.app` next to the new `/Applications` one; MCP client configs
   still launch the old path until Connect is clicked again (owner action, not code).
