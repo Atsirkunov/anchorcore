@@ -20,7 +20,9 @@ on your machine. Connectors you enable (Drive, Jira, Linear, REST) and any cloud
 you configure make network requests; see the
 [security notes](https://anchorcore.dev/security) for the full list.
 The app keeps running in the system tray (Windows) / menu bar (macOS) — quit
-it from there; closing the browser tab doesn't stop it. Linux has no tray yet.
+it from there; closing the browser tab doesn't stop it. On a Mac with many
+menu-bar icons, look left of your other icons and ⌘-drag it where you want it.
+Linux has no tray yet.
 Verify a download against `SHA256SUMS` on the release page.
 
 > First launch: run AnchorCore from `/Applications`. macOS: open it, then System Settings → Privacy & Security → Open Anyway (the app isn't Apple-notarized yet).

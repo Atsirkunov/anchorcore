@@ -26,6 +26,9 @@ const ICON_H: u32 = 32;
 const PAPER: [u8; 4] = [0xF2, 0xF0, 0xEB, 0xFF];
 const TAUPE: [u8; 4] = [0x9A, 0x8B, 0x7A, 0xFF];
 const PINE: [u8; 4] = [0x4A, 0x5A, 0x52, 0xFF];
+// R41.6 macOS template image: AppKit draws only the alpha channel.
+const INK: [u8; 4] = [0x00, 0x00, 0x00, 0xFF];
+const CLEAR: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
 
 /// Shared with `maybe_open_browser`: absolute `/usr/bin/open` on macOS because
 /// a Finder launch has a minimal PATH; the `open` crate everywhere else.
@@ -142,6 +145,20 @@ pub fn build_icon_rgba() -> (Vec<u8>, u32, u32) {
     (buf, ICON_W, ICON_H)
 }
 
+/// R41.6: the same glyph as a monochrome template for the macOS menu bar —
+/// a 2 px rounded outline, the spine and three bars in ink, the rest clear,
+/// so AppKit tints it like native items in light and dark bars.
+pub fn build_template_rgba() -> (Vec<u8>, u32, u32) {
+    let mut buf = vec![0u8; (ICON_W * ICON_H * 4) as usize];
+    fill_rounded(&mut buf, 1, 1, 31, 31, 7, INK);
+    fill_rounded(&mut buf, 3, 3, 29, 29, 5, CLEAR);
+    fill_rect(&mut buf, 8, 6, 13, 26, INK);
+    fill_rect(&mut buf, 16, 8, 24, 11, INK);
+    fill_rect(&mut buf, 16, 14, 22, 17, INK);
+    fill_rect(&mut buf, 16, 20, 24, 23, INK);
+    (buf, ICON_W, ICON_H)
+}
+
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 mod imp {
     use super::Arc;
@@ -169,6 +186,18 @@ mod imp {
         Some(NSApplication::sharedApplication(mtm))
     }
 
+    /// macOS: template image (tinted like native items) and a saved position,
+    /// so an icon ⌘-dragged out from under long menus stays put (R41.6).
+    #[cfg(target_os = "macos")]
+    fn with_platform_icon(b: TrayIconBuilder, icon: Icon) -> TrayIconBuilder {
+        b.with_icon_templated(icon).with_autosave_name("AnchorCore")
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn with_platform_icon(b: TrayIconBuilder, icon: Icon) -> TrayIconBuilder {
+        b.with_icon(icon)
+    }
+
     pub(super) fn spawn(
         addr: &str,
         shutdown: Arc<tokio::sync::Notify>,
@@ -183,7 +212,8 @@ mod imp {
             tracing::warn!("tray: menu build failed, running without a tray icon");
             return None;
         }
-        let (rgba, w, h) = super::build_icon_rgba();
+        let (rgba, w, h) =
+            if cfg!(target_os = "macos") { super::build_template_rgba() } else { super::build_icon_rgba() };
         let icon = match Icon::from_rgba(rgba, w, h) {
             Ok(icon) => icon,
             Err(e) => {
@@ -192,8 +222,7 @@ mod imp {
             }
         };
         tracing::info!("creating system tray icon");
-        let tray = match TrayIconBuilder::new()
-            .with_icon(icon)
+        let tray = match with_platform_icon(TrayIconBuilder::new(), icon)
             .with_menu(Box::new(menu))
             .with_tooltip("AnchorCore")
             .with_menu_on_left_click(true)
@@ -325,5 +354,18 @@ mod tray_tests {
         assert_eq!(px(&buf, 20, 10), TAUPE, "top bar");
         assert_eq!(px(&buf, 18, 15), TAUPE, "middle bar");
         assert_eq!(px(&buf, 20, 21), TAUPE, "bottom bar");
+    }
+
+    #[test]
+    fn template_icon_is_alpha_only_glyph() {
+        let (buf, w, h) = build_template_rgba();
+        assert_eq!((w, h, buf.len()), (32, 32, 32 * 32 * 4));
+        assert!(buf.chunks(4).all(|p| p == INK || p == CLEAR), "only ink or clear pixels");
+        assert_eq!(px(&buf, 0, 0), CLEAR, "outer corner");
+        assert_eq!(px(&buf, 2, 15), INK, "outline");
+        assert_eq!(px(&buf, 25, 25), CLEAR, "inside is see-through");
+        assert_eq!(px(&buf, 10, 10), INK, "spine");
+        assert_eq!(px(&buf, 20, 10), INK, "top bar");
+        assert_eq!(px(&buf, 14, 10), CLEAR, "gap between spine and bars");
     }
 }

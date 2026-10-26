@@ -20,7 +20,7 @@ the only exit, same as before.
 
 ## Notes
 
-- The icon matches `frontend/public/favicon.svg` (the original Stone & Sage tile — the favicon predates the Archive palette), rasterized
+- The Windows icon matches `frontend/public/favicon.svg` (the original Stone & Sage tile — the favicon predates the Archive palette), rasterized
   in code (`tray.rs: build_icon_rgba`) so the binary needs no image asset.
 - Menu-bar clicks can't be automated here: the Open/Quit plumbing is
   unit-tested at the seams (gating matrix, icon pixels, Notify→shutdown) and
@@ -56,8 +56,11 @@ the only exit, same as before.
   icon exists. Tray-less runs (`--no-tray`, `ANCHOR_TRAY=0`, Linux, CLI, MCP)
   keep `block_on(serve)` on the main thread.
 - Finding the icon: macOS adds new status items on the far left; on a notched
-  Mac with many items, long app menus can cover it. Look left of the existing
-  icons (with Finder frontmost) and ⌘-drag it right. R41.6 tracks a
-  template-image icon.
+  Mac with many items, long app menus can cover it. Look left of your other
+  icons (with Finder frontmost) and ⌘-drag it right — macOS remembers the spot
+  (`with_autosave_name("AnchorCore")`). On macOS the icon is a monochrome
+  template (`build_template_rgba`: outline, spine, three bars) that AppKit
+  tints like native items in light and dark bars; Windows keeps the colour
+  tile (R41.6).
 - Failures (not on main thread, no display, menu thread) log and fall back to
   tray-less; the server always runs.
