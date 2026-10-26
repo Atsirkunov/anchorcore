@@ -20,21 +20,24 @@ impl FolderWatcher {
         Ok(Self { _watcher: watcher, rx })
     }
 
-    /// Non-blocking poll with debounce (like Python `folder_watch_debounce` 3.0)
+    /// Non-blocking when idle: returns at once without a pending event;
+    /// otherwise keeps collecting for up to `debounce` (Python
+    /// `folder_watch_debounce` 3.0) while events keep arriving.
     pub fn poll(&self, debounce: Duration) -> Vec<std::path::PathBuf> {
         let mut out = Vec::new();
-        // collect all pending events within debounce window
+        let Ok(first) = self.rx.try_recv() else { return out };
         let start = std::time::Instant::now();
-        while start.elapsed() < debounce {
-            match self.rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(Ok(ev)) => {
-                    for p in ev.paths {
-                        if !out.contains(&p) {
-                            out.push(p);
-                        }
+        let mut next = Some(first);
+        while let Some(ev) = next.take() {
+            if let Ok(ev) = ev {
+                for p in ev.paths {
+                    if !out.contains(&p) {
+                        out.push(p);
                     }
                 }
-                _ => break,
+            }
+            if start.elapsed() < debounce {
+                next = self.rx.recv_timeout(Duration::from_millis(100)).ok();
             }
         }
         out
@@ -56,5 +59,16 @@ mod tests {
         let evs = w.poll(Duration::from_millis(300));
         // may or may not have event depending on FS, just check no panic
         assert!(evs.len() < 1000);
+    }
+
+    #[test]
+    fn idle_poll_returns_immediately() {
+        let dir = tempdir().unwrap();
+        let w = FolderWatcher::new(dir.path()).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        while !w.poll(Duration::from_millis(50)).is_empty() {}
+        let t = std::time::Instant::now();
+        assert!(w.poll(Duration::from_secs(3)).is_empty());
+        assert!(t.elapsed() < Duration::from_millis(50), "idle poll blocked {:?}", t.elapsed());
     }
 }

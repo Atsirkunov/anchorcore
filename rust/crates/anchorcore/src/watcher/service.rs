@@ -28,12 +28,10 @@ impl WatcherService {
         })
     }
 
-    /// Spawn background watcher loop. Returns JoinHandle that runs forever.
-    /// Debounce 3s, single DB init per discover tick, handle map for reload.
+    /// Spawn the watcher thread (runs forever). Call from inside the runtime.
     #[cfg(not(test))]
-    pub fn spawn(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
-        let state = self.state.clone();
-        tokio::spawn(Box::pin(run(state)))
+    pub fn spawn(self: Arc<Self>) -> std::thread::JoinHandle<()> {
+        run(self.state.clone())
     }
 
     #[cfg(test)]
@@ -70,178 +68,192 @@ fn snapshot_from_listing(files: &[crate::connectors::folder::ListedFile]) -> Fil
         .collect()
 }
 
-/// Spawn background watcher loop. Returns JoinHandle that runs forever.
-/// Caller should keep `#[cfg(not(test))]` gate in `main.rs` — this fn itself
-/// is also `#[cfg(not(test))]` for safety but we gate at call site as well.
+/// Spawn the watcher thread. Caller keeps the `#[cfg(not(test))]` gate in
+/// `main.rs` too.
 #[cfg(not(test))]
-pub fn spawn(state: AppState) -> tokio::task::JoinHandle<()> {
+pub fn spawn(state: AppState) -> std::thread::JoinHandle<()> {
     let svc = WatcherService::new(state);
     svc.spawn()
 }
 
-#[cfg(not(test))]
-async fn discover_folder_sources(data_dir: &str) -> Vec<(i64, String)> {
-    let data_dir = data_dir.to_string();
-    // discover folder sources (spawn_blocking to keep Connection off async stack)
-    tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path)
-            .unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        let mut stmt =
-            match conn.prepare("SELECT id, config FROM sources WHERE connector='folder' AND enabled=1") {
-                Ok(s) => s,
-                Err(_) => return vec![],
-            };
-        let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
-            .unwrap();
-        let mut out = vec![];
-        for row in rows.flatten() {
-            let (id, cfg_str) = row;
-            let cfg: serde_json::Value =
-                serde_json::from_str(&cfg_str).unwrap_or(serde_json::json!({}));
-            if let Some(p) = cfg.get("path").and_then(|v| v.as_str()) {
-                out.push((id, p.to_string()));
-            }
-        }
-        out
-    })
-    .await
-    .unwrap_or_default()
+/// R30.3: missed-event fallback period (`ANCHOR_WATCH_FALLBACK_SECS`,
+/// default 60, min 5). notify events still sync within the debounce.
+const FALLBACK_SECS_DEFAULT: u64 = 60;
+const FALLBACK_SECS_MIN: u64 = 5;
+/// How often enabled folder sources are re-read (new/removed sources).
+const DISCOVER_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+const TICK: std::time::Duration = std::time::Duration::from_secs(1);
+
+fn fallback_interval(raw: Option<&str>) -> std::time::Duration {
+    let secs = raw
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(FALLBACK_SECS_DEFAULT)
+        .max(FALLBACK_SECS_MIN);
+    std::time::Duration::from_secs(secs)
 }
 
-#[cfg(not(test))]
-fn expand_path(path_str: &str) -> PathBuf {
-    if path_str.starts_with('~') {
-        PathBuf::from(path_str.replacen(
-            '~',
-            &std::env::var("HOME").unwrap_or_default(),
-            1,
-        ))
-    } else {
-        PathBuf::from(path_str)
-    }
-}
-
-#[cfg(not(test))]
-fn ensure_watchers(
-    watchers: &mut HashMap<i64, crate::connectors::watcher::FolderWatcher>,
-    known_files: &mut HashMap<i64, FileSnapshot>,
-    folder_sources: &[(i64, String)],
-) {
-    for (sid, path_str) in folder_sources {
-        if watchers.contains_key(sid) {
-            continue;
-        }
-        let expanded = expand_path(path_str);
-        let cfg = serde_json::json!({"path": expanded.to_string_lossy()});
-        if let Ok(w) = crate::connectors::watcher::FolderWatcher::new(&expanded) {
-            let mut snapshot = FileSnapshot::new();
-            if let Ok(fc) = crate::connectors::folder::FolderConnector::new(&cfg) {
-                if let Ok(files) = fc.list_files() {
-                    snapshot = snapshot_from_listing(&files);
-                }
-            }
-            known_files.insert(*sid, snapshot);
-            let display_str = expanded.display().to_string();
-            watchers.insert(*sid, w);
-            tracing::info!("watcher started for source {} at {}", sid, display_str);
-        }
-    }
-}
-
-#[cfg(not(test))]
-fn poll_changed(
-    watchers: &HashMap<i64, crate::connectors::watcher::FolderWatcher>,
-) -> Vec<i64> {
-    let mut to_sync: Vec<i64> = Vec::new();
-    for (sid, watcher) in watchers.iter() {
-        // debounce 3s like Python folder_watch_debounce (was 300ms)
-        if !watcher.poll(std::time::Duration::from_secs(3)).is_empty() {
-            to_sync.push(*sid);
-        }
-    }
-    to_sync
-}
-
-#[cfg(not(test))]
-async fn fetch_and_compare(
-    state: &AppState,
-    known_files: &mut HashMap<i64, FileSnapshot>,
-    sid: i64,
-    require_nonempty: bool,
-    log_line: Option<&str>,
-) -> bool {
-    let cfg_str = {
-        let db_path = crate::db::resolve_db_path(&state.data_dir);
-        let conn = crate::db::init_db(&db_path)
-            .unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        conn.query_row(
-            "SELECT config FROM sources WHERE id=?1",
-            [sid],
-            |r| r.get::<_, String>(0),
-        )
-        .unwrap_or_default()
+/// Enabled folder sources with their stored config (one short read).
+fn discover_folder_sources(data_dir: &str) -> Vec<(i64, serde_json::Value)> {
+    let db_path = crate::db::resolve_db_path(data_dir);
+    let Ok(conn) = crate::db::open_db(&db_path) else { return vec![] };
+    let Ok(mut stmt) = conn.prepare("SELECT id, config FROM sources WHERE connector='folder' AND enabled=1") else {
+        return vec![];
     };
-    let cfg: serde_json::Value =
-        serde_json::from_str(&cfg_str).unwrap_or(serde_json::json!({}));
-    let mut changed = false;
-    if let Ok(fc) = crate::connectors::folder::FolderConnector::new(&cfg) {
-        // Stat listing only — comparing it never reads file content.
-        if let Ok(files) = fc.list_files() {
-            let new_snapshot = snapshot_from_listing(&files);
-            let old_snapshot = known_files.get(&sid).cloned().unwrap_or_default();
-            if new_snapshot != old_snapshot && (!require_nonempty || !new_snapshot.is_empty()) {
-                if let Some(line) = log_line {
-                    tracing::info!(line, sid);
-                }
-                known_files.insert(sid, new_snapshot);
-                changed = true;
-            }
-        }
+    let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))) else {
+        return vec![];
+    };
+    rows.flatten()
+        .filter_map(|(id, cfg)| serde_json::from_str(&cfg).ok().map(|v| (id, v)))
+        .collect()
+}
+
+/// Stat-only listing of a folder source — never reads file content.
+fn list_snapshot(cfg: &serde_json::Value) -> Option<(PathBuf, FileSnapshot)> {
+    let fc = crate::connectors::folder::FolderConnector::new(cfg).ok()?;
+    let files = fc.list_files().ok()?;
+    Some((fc.root().to_path_buf(), snapshot_from_listing(&files)))
+}
+
+/// Per-source last-seen snapshots; `compare` says whether a sync is due.
+#[derive(Default)]
+struct Snapshots {
+    configs: HashMap<i64, serde_json::Value>,
+    known: HashMap<i64, FileSnapshot>,
+}
+
+impl Snapshots {
+    /// Record a source's baseline; returns the watch root.
+    fn track(&mut self, sid: i64, cfg: &serde_json::Value) -> Option<PathBuf> {
+        let (root, snapshot) = list_snapshot(cfg)?;
+        self.configs.insert(sid, cfg.clone());
+        self.known.insert(sid, snapshot);
+        Some(root)
     }
-    changed
+
+    fn forget(&mut self, sid: i64) {
+        self.configs.remove(&sid);
+        self.known.remove(&sid);
+    }
+
+    /// True (and the baseline moves) when the stat listing changed. With
+    /// `require_nonempty`, an empty listing (unmounted drive) never counts.
+    fn compare(&mut self, sid: i64, require_nonempty: bool) -> bool {
+        let Some((_, fresh)) = self.configs.get(&sid).and_then(list_snapshot) else { return false };
+        if require_nonempty && fresh.is_empty() {
+            return false;
+        }
+        if self.known.get(&sid) == Some(&fresh) {
+            return false;
+        }
+        self.known.insert(sid, fresh);
+        true
+    }
 }
 
 #[cfg(not(test))]
-async fn run(state: AppState) {
-    let mut watchers: HashMap<i64, crate::connectors::watcher::FolderWatcher> = HashMap::new();
-    let mut known_files: HashMap<i64, FileSnapshot> = HashMap::new();
-    loop {
-        let folder_sources = discover_folder_sources(&state.data_dir).await;
-        // ensure watchers
-        ensure_watchers(&mut watchers, &mut known_files, &folder_sources);
+struct WatchLoop {
+    state: AppState,
+    rt: tokio::runtime::Handle,
+    watchers: HashMap<i64, crate::connectors::watcher::FolderWatcher>,
+    snaps: Snapshots,
+}
 
-        let to_sync = poll_changed(&watchers);
-
-        for sid in to_sync.clone() {
-            tracing::info!("watcher detected changes for source {}", sid);
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            if fetch_and_compare(&state, &mut known_files, sid, false, None).await {
-                trigger_sync(state.clone(), sid).await;
-            }
+#[cfg(not(test))]
+impl WatchLoop {
+    /// Start watchers for new sources, drop ones that were removed/disabled.
+    fn reconcile(&mut self) {
+        let sources = discover_folder_sources(&self.state.data_dir);
+        let live: HashSet<i64> = sources.iter().map(|(id, _)| *id).collect();
+        self.watchers.retain(|sid, _| live.contains(sid));
+        let stale: Vec<i64> = self.snaps.configs.keys().filter(|s| !live.contains(s)).copied().collect();
+        for sid in stale {
+            self.snaps.forget(sid);
         }
-
-        // fallback: periodic fetch-compare for missed notify events (FSEvents coalescing)
-        for sid in watchers.keys().cloned().collect::<Vec<_>>() {
-            if to_sync.contains(&sid) {
+        for (sid, cfg) in sources {
+            if self.watchers.contains_key(&sid) {
                 continue;
             }
-            if fetch_and_compare(
-                &state,
-                &mut known_files,
-                sid,
-                true,
-                Some("watcher fallback detected changes for source {} (missed notify)"),
-            )
-            .await
-            {
-                trigger_sync(state.clone(), sid).await;
+            self.start_watcher(sid, &cfg);
+        }
+    }
+
+    fn start_watcher(&mut self, sid: i64, cfg: &serde_json::Value) {
+        let Some(root) = self.snaps.track(sid, cfg) else { return };
+        match crate::connectors::watcher::FolderWatcher::new(&root) {
+            Ok(w) => {
+                self.watchers.insert(sid, w);
+                tracing::info!("watcher started for source {} at {}", sid, root.display());
+            }
+            Err(e) => {
+                self.snaps.forget(sid);
+                tracing::debug!("watcher for source {} at {} not started: {}", sid, root.display(), e);
             }
         }
-
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
+
+    /// Sources with pending notify events (debounced 3 s, like Python).
+    fn poll_changed(&self) -> Vec<i64> {
+        let debounce = std::time::Duration::from_secs(3);
+        self.watchers.iter().filter(|(_, w)| !w.poll(debounce).is_empty()).map(|(sid, _)| *sid).collect()
+    }
+
+    fn sync_if_changed(&mut self, sid: i64, require_nonempty: bool) -> bool {
+        if !self.snaps.compare(sid, require_nonempty) {
+            return false;
+        }
+        self.rt.spawn(trigger_sync(self.state.clone(), sid));
+        true
+    }
+
+    /// notify-driven syncs; then, every `fallback`, a stat compare of the rest.
+    fn run(mut self, fallback: std::time::Duration) {
+        let mut last_discover: Option<std::time::Instant> = None;
+        let mut last_fallback = std::time::Instant::now();
+        loop {
+            if last_discover.is_none_or(|t| t.elapsed() >= DISCOVER_EVERY) {
+                self.reconcile();
+                last_discover = Some(std::time::Instant::now());
+            }
+            let changed = self.poll_changed();
+            for &sid in &changed {
+                tracing::info!("watcher detected changes for source {}", sid);
+                std::thread::sleep(TICK);
+                self.sync_if_changed(sid, false);
+            }
+            if last_fallback.elapsed() >= fallback {
+                self.fallback_pass(&changed);
+                last_fallback = std::time::Instant::now();
+            }
+            std::thread::sleep(TICK);
+        }
+    }
+
+    /// Missed notify events (FSEvents coalescing): stat-compare the rest.
+    fn fallback_pass(&mut self, skip: &[i64]) {
+        let sids: Vec<i64> = self.watchers.keys().filter(|s| !skip.contains(s)).copied().collect();
+        for sid in sids {
+            if self.sync_if_changed(sid, true) {
+                tracing::info!("watcher fallback detected changes for source {} (missed notify)", sid);
+            }
+        }
+    }
+}
+
+/// R30.3: the loop is blocking (notify channel, stat walks, SQLite), so it
+/// owns a plain thread and only hops onto the runtime to start a sync.
+#[cfg(not(test))]
+fn run(state: AppState) -> std::thread::JoinHandle<()> {
+    let fallback = fallback_interval(std::env::var("ANCHOR_WATCH_FALLBACK_SECS").ok().as_deref());
+    let looper = WatchLoop {
+        state,
+        rt: tokio::runtime::Handle::current(),
+        watchers: HashMap::new(),
+        snaps: Snapshots::default(),
+    };
+    std::thread::Builder::new()
+        .name("watcher".into())
+        .spawn(move || looper.run(fallback))
+        .expect("spawn watcher thread")
 }
 
 #[cfg(not(test))]
@@ -292,6 +304,36 @@ mod tests {
         let cfg = serde_json::json!({"path": dir.to_string_lossy()});
         let fc = crate::connectors::folder::FolderConnector::new(&cfg).unwrap();
         snapshot_from_listing(&fc.list_files().unwrap())
+    }
+
+    #[test]
+    fn compare_triggers_only_on_change() {
+        // R30.3 DoD: unchanged folder → no trigger; edit/add/remove → trigger.
+        let dir = tempdir().unwrap();
+        write(dir.path(), "a.md", "hello");
+        let cfg = serde_json::json!({"path": dir.path().to_string_lossy()});
+        let mut snaps = Snapshots::default();
+        assert!(snaps.track(7, &cfg).is_some());
+        assert!(!snaps.compare(7, true), "untouched folder must not trigger");
+        write(dir.path(), "a.md", "hello world");
+        assert!(snaps.compare(7, true), "edit");
+        assert!(!snaps.compare(7, true), "baseline moved");
+        write(dir.path(), "b.md", "new");
+        assert!(snaps.compare(7, true), "add");
+        std::fs::remove_file(dir.path().join("a.md")).unwrap();
+        assert!(snaps.compare(7, true), "remove");
+        std::fs::remove_file(dir.path().join("b.md")).unwrap();
+        assert!(!snaps.compare(7, true), "empty listing never counts under require_nonempty");
+        assert!(snaps.compare(7, false), "notify path accepts an emptied folder");
+        assert!(!snaps.compare(99, false), "untracked source");
+    }
+
+    #[test]
+    fn fallback_interval_defaults_and_clamps() {
+        assert_eq!(fallback_interval(None).as_secs(), 60);
+        assert_eq!(fallback_interval(Some("junk")).as_secs(), 60);
+        assert_eq!(fallback_interval(Some("1")).as_secs(), 5);
+        assert_eq!(fallback_interval(Some(" 300 ")).as_secs(), 300);
     }
 
     #[test]

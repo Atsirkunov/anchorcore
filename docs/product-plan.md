@@ -51,7 +51,7 @@ No sales team, no procurement cycle in v1. Website has one page with a Personal/
 | Model access | Bring-your-own-key (v1); bundled access v2–3 |
 | Trust layer | Sources + confidence + review UI (v1); contradictions & verification workflows (v2) |
 | Retrieval | SQLite (FTS5 + in-code embedding scan; sqlite-vec is not linked — R43.10), local embeddings (`nomic-embed-text`), swappable VectorStore |
-| Sync | Incremental connector polls/cursors; folder watcher + hourly scan fallback; hash dedup; delete cascades |
+| Sync | Incremental connector polls/cursors; folder watcher + stat-compare fallback every 60 s (`ANCHOR_WATCH_FALLBACK_SECS`); hash dedup; delete cascades |
 | Data model | Uniform entity graph (entities + typed relationships + provenance); contradictions as external layer |
 | Answers | Hybrid keyword + vector retrieval fused by RRF, section-level citations; decisions/actions answered from parsed records (`/decisions`, `/actions`) |
 | Identity | Hash dedup in-source; cross-source duplicate proposals for manual merge |
