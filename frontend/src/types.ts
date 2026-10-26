@@ -12,6 +12,30 @@ export type AppSettings = {
   tag_reuse_threshold?: string;
   update_check_enabled?: string; // "1" on, "0"/"" off (startup update check)
   llm_mode?: LlmMode; // R45.2: who writes answers (default "local")
+  embed_provider?: EmbedProvider; // R45.4: which engine embeds (default "auto")
+};
+
+/** R45.4: `auto` — Ollama (or a configured cloud endpoint) when it serves,
+ * else the built-in model once downloaded;
+ * `builtin` — always the built-in model; `ollama` — the HTTP embedder. */
+export type EmbedProvider = "auto" | "builtin" | "ollama";
+
+export type EmbedModelStatus = {
+  model: string;
+  revision: string;
+  setting: EmbedProvider;
+  active: "builtin" | "ollama";
+  ready: boolean;
+  dir: string | null;
+  download_bytes: number;
+  backend: string | null;
+  progress: {
+    phase: "idle" | "downloading" | "converting" | "ready" | "failed";
+    done_bytes: number;
+    total_bytes: number;
+    file: string | null;
+    error: string | null;
+  };
 };
 
 /** R45.2: `agent` — your AI agent (MCP or the REST skill) writes answers and the
@@ -292,6 +316,45 @@ export type MediaPatch = {
 export type ItemDetail = ItemMeta & {
   content?: string;
   assets?: ItemAsset[];
+};
+
+/** R47.0: redacted bug-report bundle — ranks and counts, never document text. */
+export type ReportBundle = {
+  report_version: number;
+  generated_at: string;
+  query: {
+    text: string;
+    kind: string;
+    scope: string;
+    asked_at: string;
+    retrieval: string;
+    mode: string | null;
+    blocked: number;
+    refusal: string | null;
+    hits_returned: number;
+  };
+  hits: {
+    item_ref: string;
+    title_hash: string;
+    title_len: number;
+    ext: string;
+    kind: string;
+    doc_type: string;
+    env: string;
+    score: number;
+    decay: number;
+    boosted: boolean;
+    pierced: boolean;
+    provenance: { leg: string; rank: number }[];
+  }[];
+  index: {
+    sources: { source_ref: string; kind: string; label: string; items: number; error_count: number }[];
+    items: number;
+    chunks: number;
+    pending_embeddings: number;
+    stale_vectors: number;
+  };
+  environment: { version: string; llm_mode: string; embed_family: string | null; ollama: string };
 };
 
 export type Citation = {

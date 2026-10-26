@@ -86,6 +86,8 @@ pub fn build_router(state: health::AppState) -> Router {
         .route("/system/mcp/disconnect", post(mcp_setup::disconnect_handler))
         .route("/system/logs", get(system::logs_handler))
         .route("/system/logs/:name", get(system::log_download_handler))
+        .route("/system/embed-model", get(crate::embed_model_api::status_handler))
+        .route("/system/embed-model/download", post(crate::embed_model_api::download_handler))
         .route("/system/ollama/start", post(system::ollama_start_handler))
         .route("/system/ollama/pull", post(ollama::pull_handler))
         .route("/system/ollama/pulls", get(ollama::pulls_handler))

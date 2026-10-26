@@ -35,6 +35,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/rust/target \
     cargo build --release -p anchorcore --manifest-path rust/Cargo.toml \
   && cp rust/target/release/anchorcore /usr/local/bin/anchorcore
+# R45.4: prefetch the built-in embedder (pinned revision, SHA-256 checked,
+# converted to f16) so the Team image embeds with no Ollama and no download
+# at runtime. Its own layer: re-runs only when the binary changes.
+RUN ANCHOR_MODELS_DIR=/opt/anchorcore/models ANCHOR_TRAY=0 \
+    anchorcore --data-dir /tmp/anchorcore-build embed-model fetch
 
 # ---------- 3) runtime — one process, one volume ----------
 FROM debian:bookworm-slim
@@ -44,7 +49,9 @@ RUN apt-get update \
   && useradd --system --uid 10001 --create-home --home-dir /home/anchorcore anchorcore \
   && install -d -o anchorcore -g anchorcore /data
 COPY --from=builder /usr/local/bin/anchorcore /usr/local/bin/anchorcore
+COPY --from=builder /opt/anchorcore/models /opt/anchorcore/models
 ENV ANCHOR_DATA_DIR=/data \
+    ANCHOR_MODELS_DIR=/opt/anchorcore/models \
     ANCHOR_SECRETS_NO_KEYRING=1 \
     ANCHOR_EDITION=team \
     ANCHOR_OPEN_BROWSER=0

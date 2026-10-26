@@ -482,3 +482,40 @@ ADR log. Append newest first.
   - *Batch across documents* — rejected: it can't raise a compute-bound rate, and it would break the per-document phase order (embed is the last phase of each file's finalize).
   - *Drop the concurrency knob* — rejected: remote OpenAI-compatible endpoints are latency-bound, and there overlap is a real gain. Default 2 costs nothing locally.
 * **Consequences:** first-index speed with local Ollama is set by the model. The built-in embedder (R45.4) is the next lever there (Metal f16 measured faster per query). For re-syncs, R43.12 removes the embed cost of unchanged chunks; the tags phase is now the largest re-sync cost (R30.5).
+
+---
+
+## 2026-10-26 — R47.0: bug reports are a redacted endpoint over retained query metadata
+
+* **Decision:** `GET /system/report` serves a redacted bundle for one of the last 20 `/qa`/`/qa/search` calls: query text, per-hit legs/ranks/scores, index counts, versions, embedding family — no document text, titles, paths, settings, or secrets (pseudonyms + hashes; the structs lack the fields, and `tests/api_report.rs` pins the exact key set). Retention hooks sit in the `routes.rs` handlers over a process-global metadata-only ring, so UI, REST-agent and MCP-over-HTTP traffic is all covered with no `answer.rs` signature churn. The Ask tab gets a Report button; the `anchorcore-search` skill documents the one-call agent flow.
+* **Context:** owner asked for reporting "both Agents and People can use" after a retrieval investigation that needed three hand-rolled evidence captures. Rejected a new skill as too heavy; GitHub-issue filing stays a maybe (the bundle is paste-ready JSON).
+* **Alternatives considered:**
+  - *Skill-only collection (agent gathers via existing endpoints)* — rejected: redaction by prompt compliance instead of by construction, and a repeat of the bespoke-capture dance every time.
+  - *In-app-only download* — rejected: leaves REST/MCP agents without the flow the owner explicitly asked for.
+  - *Re-run the query at report time* — rejected: ranks drift as the index changes and it costs an embedding call; retained diagnostics describe what the user actually saw.
+  - *AppState-held ring* — rejected: 11 constructor edits for no gain; black-box tests are separate processes so the global ring never leaks between tests (unit tests must not assert on it).
+* **Consequences:** last-20 queries' metadata lives in process memory (~10 KB each worst case). Any future serialized field trips the redaction test first.
+
+---
+
+## 2026-10-26 — R47.1: rich keyword evidence pierces the authority-tier partition
+
+* **Decision:** FTS legs flag `Hit.rich_match` when a row matches ≥3 distinct surface forms (`ANCHOR_PIERCE_MIN_TERMS`) with BM25 magnitude ≥5.0 (`ANCHOR_PIERCE_MIN_BM25`); the tier key becomes (env, pierced, tier), so rich evidence sorts on score order within its env class while thin matches stay tiered. Either knob negative disables the pierce. Exposed as `rich_match` on search hits/citations and `pierced` in the R47.0 report bundle.
+* **Context:** two PDFs vanished from a 5k-item index for queries whose terms they contain (even the PDFs' own title words). Root cause, proven with captured leg ranks: term scatter gives single discounted floor legs; the (env, tier) partition then sorts all Code/Config above Prose before the cut — the global keyword-1/2 chunks were cut too. Repair/extraction was exonerated first (intact text, `suspect` flags are domain-vocabulary false positives). Per-tier minimums were rejected: the cut already contained Prose — the PDFs lost *within* Prose, so only evidence-ordered rescue reaches them.
+* **Alternatives considered:**
+  - *FTS `matchinfo` per-phrase bitsets* — rejected: FTS5 has no `matchinfo` (FTS3/4-only); discovered when the leg returned zero hits. `highlight()` spans give the same FTS-accurate matched set with no stemmer dependency.
+  - *Deeper slots* — rejected as the primary fix: fixed-count rescues don't scale (2 slots vs millions at org scale) and can't reach within-Prose burial while top floor ranks consume them.
+  - *Score multipliers for Prose* — rejected: ordering-only rule (R32.7); partitions reorder, multipliers don't compose with RRF.
+* **Consequences:** tier semantics narrow to thin matches; rich matches everywhere behave as if tiers were off. Small corpora self-disable (magnitudes can't clear the bar where burial is impossible). Calibration (thin-max ≈ 2.3, rich-min ≈ 7.4) is pinned by the burial repro and the flags-01 guard tests; golden eval stays 1.00.
+
+---
+
+## 2026-10-26 — R45.4: built-in embedder ships; `auto` prefers a serving Ollama (owner decision)
+
+* **Decision:** `embed_provider` = `auto` (default) | `builtin` | `ollama`. `auto` uses the HTTP embedder when it serves: an explicitly configured cloud `embed_base_url`, or a local Ollama that has the embed model (checked against `/api/tags`, cached 60 s, re-checked before each embed call and on `GET /system/embed-model`). It falls back to the built-in candle engine (nomic-embed-text v1.5, f16, Metal on macOS, pure CPU elsewhere) when its model is ready and nothing better serves. The weights are fetched only on an explicit action (wizard/Settings button, `POST /system/embed-model/download`, `anchorcore embed-model fetch`). They are pinned to HF revision `e9b6763…` with per-file SHA-256, the download is resumable, and dropped-in files are adopted offline. The f32 download is converted once to f16 (273 MB) and the f32 file deleted. The Team image prefetches the weights at build time (`ANCHOR_MODELS_DIR=/opt/anchorcore/models`).
+* **Context:** the 2026-10-21 decision (§7.2.2) was "built-in first", based on a probe that put Metal f16 within ~1.4× of Ollama. In-app measurements on the owner's M2 Pro (release build, quiet machine, 600-file synthetic corpus, 7507 chunks): built-in 6.8 chunks/s (1101 s of embedding) vs Ollama ~34 chunks/s (222 s). A single query takes 21 ms built-in. Larger batches help the built-in engine (64 texts in 450 ms in isolation), but the pipeline embeds per document (~12 chunks per call). Parity with Ollama, live: cosine 0.999999 (Metal f16), so the vectors stay one family and switching re-embeds nothing. Asked with these numbers, the owner chose "prefer Ollama if serving".
+* **Alternatives considered:**
+  - *Built-in whenever downloaded (the 2026-10-21 plan)* — rejected by the owner: Ollama users who downloaded the model would index ~5× slower.
+  - *Built-in, with a UI hint to switch on big indexes* — rejected: it puts the choice on the person for something the app can detect.
+  - *Cross-document batching for the built-in engine only* — deferred: it would change the per-document phase order (see R30.2). It is the lever if built-in bulk speed matters on machines without Ollama.
+* **Consequences:** a machine without Ollama gets hybrid retrieval after one ~550 MB download (verified end to end: Ollama unreachable → `retrieval: hybrid`, backend `metal`). Ollama users see no change. `ollama.rs` readiness no longer asks Ollama for the embed model while the built-in engine is active. The suite needs no weights. Real-model tests are opt-in via `ANCHOR_TEST_BUILTIN_MODEL_DIR`. Windows MinGW and x86 Linux builds are proven only by CI (R45.3 legs) before this merges to `main`.

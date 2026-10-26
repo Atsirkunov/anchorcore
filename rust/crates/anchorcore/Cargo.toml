@@ -55,6 +55,13 @@ notify = "6"
 include_dir = "0.7"
 mime_guess = "2"
 open = "5"
+# R45.4: built-in embedder (nomic-embed-text v1.5, candle). Pure Rust on the
+# CPU path (gemm; tokenizers without Oniguruma/esaxx) so Linux and Windows
+# MinGW need no system libraries; Metal is added on macOS below.
+candle-core = "0.11"
+candle-nn = "0.11"
+candle-transformers = "0.11"
+tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
 
 [dev-dependencies]
 tempfile = "3"
@@ -71,6 +78,10 @@ tray-icon = "0.26"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication"] }
+# R45.4: Metal for the built-in embedder (f16; CPU fallback when unavailable).
+candle-core = { version = "0.11", features = ["metal"] }
+candle-nn = { version = "0.11", features = ["metal"] }
+candle-transformers = { version = "0.11", features = ["metal"] }
 # R41.5 Windows: tray-icon's hidden window needs a message loop on the thread
 # that created it (same version tray-icon already pulls in).
 [target.'cfg(target_os = "windows")'.dependencies]

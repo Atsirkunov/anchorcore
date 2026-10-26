@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { AGENT_COMPOSE_HINT, isAgentCompose } from "./answerMode";
 import { api } from "./api";
+import { BuiltinEmbedder } from "./BuiltinEmbedder";
 import { FolderPicker } from "./FolderPicker";
 import { McpConnectCard } from "./McpConnect";
 import { summarizePulls, useModelPull } from "./useModelPull";
@@ -268,6 +269,12 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
                 {llmMode === "agent"
                   ? "Agent mode: your agent answers from cited passages — no answer model needed. Ollama below only feeds search embeddings."
                   : "Local mode: AnchorCore composes answers with the model you configure."}
+              </div>
+            </div>
+            <div style={styles.note}>
+              <label style={{ fontSize: 13, color: theme.textMuted }}>Search embeddings</label>
+              <div style={{ marginTop: 6 }}>
+                <BuiltinEmbedder onReady={recheck} />
               </div>
             </div>
             <div style={styles.checkRow}>

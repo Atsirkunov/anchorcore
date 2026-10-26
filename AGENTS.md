@@ -9,7 +9,7 @@ Read this before doing anything. It holds what a fresh session needs so it doesn
 
 ## What this is
 
-Local-first "company memory": connect sources (folder, Jira, Linear, Drive, Miro, REST) → extract and chunk with provenance → hybrid search and cited Q&A for people and agents. One Axum process serves the React SPA. Stack: **Rust (Axum) + SQLite (FTS5, embedding scan)** · React/Vite · Ollama or BYO OpenAI-compatible for embeddings and local-mode answers. Ships as a single binary (`frontend/dist` embedded); `hosting/` is the one-container Team image. Version: `rust/Cargo.toml` (`workspace.package.version`). Repo: `git@github.com:Atsirkunov/anchorcore.git`. System view: `docs/architecture.md`.
+Local-first "company memory": connect sources (folder, Jira, Linear, Drive, Miro, REST) → extract and chunk with provenance → hybrid search and cited Q&A for people and agents. One Axum process serves the React SPA. Stack: **Rust (Axum) + SQLite (FTS5, embedding scan)** · React/Vite · built-in candle embedder (nomic v1.5, one explicit download), Ollama or BYO OpenAI-compatible for embeddings and local-mode answers. Ships as a single binary (`frontend/dist` embedded); `hosting/` is the one-container Team image. Version: `rust/Cargo.toml` (`workspace.package.version`). Repo: `git@github.com:Atsirkunov/anchorcore.git`. System view: `docs/architecture.md`.
 
 ## Run / test / release
 
@@ -28,7 +28,7 @@ Local-first "company memory": connect sources (folder, Jira, Linear, Drive, Miro
 - HTTP areas: `sources.rs` `entities.rs` `records_api.rs` (`/decisions`, `/actions`) `jobs.rs` `projects.rs` `items.rs` `review.rs` `settings.rs` `system.rs` `sections.rs` `tags.rs` `glossary.rs` `assets_api.rs` `captions.rs`, plus `auth.rs` `security.rs` `health.rs`. Errors are `{"detail": …}`.
 - Retrieval: `answer.rs` (ask/search orchestration, follow-up rewrite, generation) + `retrieval.rs` (legs, fusion, slots, gates) + `query_expand.rs` (local-mode acronym expansion) + `vocab.rs` (glossary terms).
 - Ingest: `pipeline.rs` (`ClassifyCtx` phases) · `extract.rs` (every file format) · `diagram.rs` + `diagram_formats.rs` · `pdf_images.rs` · `chunking.rs` + `markdown.rs` · `classifier.rs` (bucket + window dispatch) + `records.rs` (record parser) · `idf.rs` · `hashing.rs` · `assets.rs`.
-- Models: `embedder.rs` + `embed_fp.rs` (vector families) + `ollama.rs`. There is no classifier model.
+- Models: `embedder.rs` (provider switch: built-in or HTTP) + `embed_local.rs` (candle nomic v1.5) + `model_store.rs` (pinned download, f16 convert) + `embed_model_api.rs` + `embed_fp.rs` (vector families) + `ollama.rs`. There is no classifier model.
 - Ops: `watcher/` · `scheduler.rs` (source polls, embedding backfill) · `jobs.rs`.
 - Platform: `secrets.rs` · `backup.rs` + `cli.rs` · `license.rs` · `frontend.rs` · `tray.rs` · `mcp.rs` + `mcp_setup.rs` · `skills_setup.rs` · `fsbrowse.rs`.
 - DB work goes through `spawn_blocking` + `with_db`/`run_db` (`pipeline.rs`); never hold a `Connection` (`!Send`) across `.await`.
