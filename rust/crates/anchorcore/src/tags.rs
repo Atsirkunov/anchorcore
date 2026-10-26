@@ -146,8 +146,12 @@ pub fn ensure_tag(conn: &Connection, name: &str) -> Result<i64, String> {
         return Ok(id);
     }
     ENSURE_SCANS.fetch_add(1, Ordering::Relaxed);
-    // cosine similarity against existing tags
+    // cosine similarity against existing tags. The reuse threshold is one
+    // env/DB read per call — it was evaluated per row inside the loop below,
+    // opening a throwaway DB connection per tag (~1.3 ms/row, ~282 ms/scan
+    // at 216 tags, linear in table size; 41% of a 40-file sync wall time).
     let new_vec = tag_vec(&norm);
+    let reuse_threshold = threshold();
     let mut stmt = conn
         .prepare("SELECT id, embedding FROM tags WHERE embedding IS NOT NULL")
         .map_err(|e| e.to_string())?;
@@ -160,7 +164,7 @@ pub fn ensure_tag(conn: &Connection, name: &str) -> Result<i64, String> {
         let Some(blob) = blob_opt else { continue };
         let Some(vec) = crate::embedder::unpack_f32(&blob, new_vec.len()) else { continue };
         let sim = cosine(&new_vec, &vec);
-        if sim > threshold() && best.map(|(_, s)| sim > s).unwrap_or(true) {
+        if sim > reuse_threshold && best.map(|(_, s)| sim > s).unwrap_or(true) {
             best = Some((id, sim));
         }
     }
