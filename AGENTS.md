@@ -30,7 +30,7 @@ Local-first "company memory": connect sources (folder, Jira, Linear, Drive, Miro
 - Ingest: `pipeline.rs` (`ClassifyCtx` phases) · `extract.rs` (every file format) · `diagram.rs` + `diagram_formats.rs` · `pdf_images.rs` · `chunking.rs` + `markdown.rs` + `config_chunks.rs` · `classifier.rs` (bucket + window dispatch) + `records.rs` (record parser) · `idf.rs` · `hashing.rs` · `assets.rs`.
 - Models: `embedder.rs` (provider switch: built-in or HTTP) + `embed_local.rs` (candle nomic v1.5) + `model_store.rs` (pinned download, f16 convert) + `embed_model_api.rs` + `embed_fp.rs` (vector families) + `ollama.rs`. There is no classifier model.
 - Ops: `watcher/` · `scheduler.rs` (source polls, embedding backfill) · `jobs.rs`.
-- Platform: `secrets.rs` · `backup.rs` + `cli.rs` · `license.rs` · `frontend.rs` · `tray.rs` · `mcp.rs` + `mcp_setup.rs` · `skills_setup.rs` · `fsbrowse.rs`.
+- Platform: `secrets.rs` · `backup.rs` + `cli.rs` · `license.rs` · `frontend.rs` · `tray.rs` · `mcp.rs` + `mcp_setup.rs` · `skills_setup.rs` · `fsbrowse.rs` · `machine.rs` (RAM + answer-model catalog for the wizard).
 - DB work goes through `spawn_blocking` + `with_db`/`run_db` (`pipeline.rs`); never hold a `Connection` (`!Send`) across `.await`.
 
 ## Retrieval (core rules)
@@ -122,7 +122,7 @@ Local-first "company memory": connect sources (folder, Jira, Linear, Drive, Miro
 
 ## UI notes
 
-- `App.tsx` tabs + header (project picker scopes Ask); `OnboardingWizard.tsx` on first launch with no sources (mode choice → Ollama checks → folder or bundled `sample/` → cited answer). `FolderPicker.tsx` browses via `GET /system/fs` — keep the typed-path input.
+- `App.tsx` tabs + header (project picker scopes Ask); `OnboardingWizard.tsx` (steps in `wizard/`) on first launch with no sources: mode + embeddings (built-in first) → local: RAM-sized answer model (`/system/onboarding` `machine`) | agent: MCP or REST-skill channel → folder or bundled `sample/` → cited answer. `FolderPicker.tsx` browses via `GET /system/fs` — keep the typed-path input.
 - Ask renders newest-first via `AnswerView.tsx` + `answerText.ts` (strips `[match N]`, safe markdown subset, `[S1]` marks). `SourcesTab` composes `tabs/sources/*`; job polling is the single `useJobsPoll` hook; projects live in `ProjectsContext`.
 - `api.ts request()` throws `Error(detail)`, 30 s timeout, `RequestAbortedError` on cancel; `types.ts` mirrors backend schemas; error boundaries per tab.
 - Website: CI deploys anchorcore.dev on `v*` tags when `website/` changed; manual `cd website && npm run build && npx wrangler deploy`. Landing copy uses only the `sample/` or `sample-ai/` corpora. `/.webmcp/bridge.js` is edge-injected, not a repo asset.

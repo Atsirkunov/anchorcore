@@ -1,174 +1,62 @@
-import { useEffect, useState } from "react";
-import { AGENT_COMPOSE_HINT, isAgentCompose } from "./answerMode";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
-import { BuiltinEmbedder } from "./BuiltinEmbedder";
-import { FolderPicker } from "./FolderPicker";
-import { McpConnectCard } from "./McpConnect";
-import { summarizePulls, useModelPull } from "./useModelPull";
-import { theme, radius } from "./theme";
-import type { Citation, LlmMode, OnboardingState } from "./types";
+import { theme } from "./theme";
+import type { LlmMode, OnboardingState } from "./types";
+import { AgentChannelStep } from "./wizard/AgentChannelStep";
+import { AnswerModelStep } from "./wizard/AnswerModelStep";
+import { AskStep } from "./wizard/AskStep";
+import { ModeStep } from "./wizard/ModeStep";
+import { SourceStep } from "./wizard/SourceStep";
+import { styles } from "./wizard/styles";
+import { stepLabel, stepsFor, type StepId } from "./wizard/wizardText";
 
-const STEPS = ["Setup checks", "Configure model", "Connect a source", "Ask a question", "Connect an agent"];
-
-function delay(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function platformHints(): { brew: string | null; installer: string | null } {
-  const os = (navigator.platform || "").toLowerCase();
-  if (os.includes("mac")) return { brew: "brew install ollama", installer: "https://ollama.com/download" };
-  if (os.includes("win")) return { brew: null, installer: "https://ollama.com/download" };
-  return { brew: "curl -fsSL https://ollama.com/install.sh | sh", installer: "https://ollama.com/download" };
-}
-
+/**
+ * First-run wizard (R45.6). Mode first: who writes the answers decides the
+ * rest — local mode picks a RAM-sized answer model, agent mode picks a
+ * channel (MCP or the REST skill). Search embeddings come from the built-in
+ * model; Ollama is needed only for local answers (or faster indexing).
+ */
 export function OnboardingWizard({ onClose }: { onClose: () => void }) {
   const [state, setState] = useState<OnboardingState | null>(null);
-  const [step, setStep] = useState(0);
-  const [folderPath, setFolderPath] = useState("");
-  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState<{ total: number; processed: number } | null>(null);
-  const [question, setQuestion] = useState("");
-  const [answer, setAnswer] = useState<{ text: string; citations: Citation[]; mode?: string; warning?: string | null } | null>(null);
+  const [mode, setModeState] = useState<LlmMode>("local");
+  const [embedModel, setEmbedModel] = useState("nomic-embed-text");
+  const [step, setStep] = useState<StepId>("setup");
   const [error, setError] = useState<string | null>(null);
-  const hints = platformHints();
-  // Configure model (new step 1)
-  const [ollamaBaseUrl, setOllamaBaseUrl] = useState("http://localhost:11434");
-  const [answerBaseUrl, setAnswerBaseUrl] = useState("");
-  const [answerApiKey, setAnswerApiKey] = useState("");
-  const [answerKeyStored, setAnswerKeyStored] = useState(false);
-  const [answerModel, setAnswerModel] = useState("");
-  const [savingConfig, setSavingConfig] = useState(false);
-  const [configMsg, setConfigMsg] = useState<string | null>(null);
-  const [testingAnswer, setTestingAnswer] = useState(false);
-  const [answerTestMsg, setAnswerTestMsg] = useState<string | null>(null);
-  const pull = useModelPull();
-  const [startingOllama, setStartingOllama] = useState(false);
-  const [startMsg, setStartMsg] = useState<string | null>(null);
-  const [usingOllama, setUsingOllama] = useState(false);
-  const [llmMode, setLlmMode] = useState<LlmMode>("local");
-  const missing = state?.ollama.missing_models ?? [];
-  const pullSummary = summarizePulls(pull.pulls, missing);
-  const stepLabels = STEPS.map((label, i) => (i === 1 && llmMode === "agent" ? "Configure search" : label));
 
-  useEffect(() => {
-    api.onboarding().then(setState).catch((e) => setError(String(e)));
-    api.getSettings().then((s) => setLlmMode(s.llm_mode === "agent" ? "agent" : "local")).catch(() => {});
+  const steps = stepsFor(mode);
+  const index = Math.max(0, steps.indexOf(step));
+  const last = index === steps.length - 1;
+
+  const recheck = useCallback(async (): Promise<OnboardingState | null> => {
+    try {
+      const fresh = await api.onboarding();
+      setState(fresh);
+      setError(null);
+      return fresh;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      return null;
+    }
   }, []);
 
   useEffect(() => {
-    if (step === 1) {
-      api.getSettings().then((s) => {
-        setOllamaBaseUrl((s as unknown as Record<string, string>).ollama_base_url || "http://localhost:11434");
-        setAnswerBaseUrl((s as unknown as Record<string, string>).answer_base_url || "");
-        const k = (s as unknown as Record<string, string>).answer_api_key || "";
-        setAnswerKeyStored(k === "***set***");
-        setAnswerApiKey(k === "***set***" ? "" : k);
-        setAnswerModel((s as unknown as Record<string, string>).answer_model || "");
-      }).catch(() => {});
-    }
-  }, [step]);
+    api
+      .onboarding()
+      .then(setState)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    api
+      .getSettings()
+      .then((s) => {
+        setModeState(s.llm_mode === "agent" ? "agent" : "local");
+        if (s.embed_model) setEmbedModel(s.embed_model);
+      })
+      .catch(() => {});
+  }, []);
 
-  useEffect(() => {
-    if (step === 3) {
-      api.onboarding().then(setState).catch(() => {});
-    }
-  }, [step]);
-
-  async function saveConfig() {
-    setSavingConfig(true);
-    setConfigMsg(null);
-    try {
-      const payload: Record<string, string> = {};
-      if (ollamaBaseUrl.trim()) payload.ollama_base_url = ollamaBaseUrl.trim();
-      if (llmMode !== "agent") {
-        if (answerBaseUrl.trim()) payload.answer_base_url = answerBaseUrl.trim();
-        if (answerApiKey.trim()) payload.answer_api_key = answerApiKey.trim();
-        if (answerModel.trim()) payload.answer_model = answerModel.trim();
-      }
-      await api.updateSettings(payload as unknown as Parameters<typeof api.updateSettings>[0]);
-      setConfigMsg("Saved — re-checking…");
-      await recheck();
-      setTimeout(() => setStep(2), 600);
-    } catch (e) {
-      setConfigMsg(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSavingConfig(false);
-    }
-  }
-
-  // R23.4: one-flow BYOM in the wizard — test the saved answer endpoint
-  // here; the real compose probe is the step-3 question (mode must be
-  // "composed", anything else banners loudly).
-  async function testAnswerConnection() {
-    setTestingAnswer(true);
-    setAnswerTestMsg(null);
-    try {
-      const r = await api.testConnection("answer");
-      setAnswerTestMsg(r.ok ? `Connected: ${r.message}` : `Not connected: ${r.message} — save settings first, then test.`);
-    } catch (e) {
-      setAnswerTestMsg(e instanceof Error ? e.message : String(e));
-    } finally {
-      setTestingAnswer(false);
-    }
-  }
-
-  async function startOllama() {
-    setStartingOllama(true);
-    setStartMsg(null);
-    try {
-      const res = await api.startOllama();
-      if (res.ok) {
-        setStartMsg(res.already_running ? "Ollama already running — re-checking…" : "Ollama started — re-checking…");
-        await delay(1200);
-        await recheck();
-      } else {
-        setStartMsg(res.error ?? "Could not start Ollama — install it first (see below).");
-      }
-    } catch (e) {
-      setStartMsg(e instanceof Error ? e.message : String(e));
-    } finally {
-      setStartingOllama(false);
-    }
-  }
-
-  async function installModels() {
-    if (missing.length === 0 || pull.pulling) return;
-    const done = await pull.startPull(missing);
-    if (done.length > 0) await recheck();
-  }
-
-  async function useOllamaForAnswers() {
-    setUsingOllama(true);
-    setError(null);
-    try {
-      await api.updateSettings({ answer_base_url: "http://localhost:11434/v1", answer_model: "llama3.2:3b" });
-      const fresh = await api.onboarding();
-      setState(fresh);
-      const stillMissing = fresh.ollama.missing_models ?? [];
-      if (stillMissing.length > 0) {
-        const done = await pull.startPull(stillMissing);
-        if (done.length > 0) await recheck();
-      } else {
-        await recheck();
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setUsingOllama(false);
-    }
-  }
-
-  async function recheck() {
-    setError(null);
-    setState(await api.onboarding());
-  }
-
-  // Mode-first (R45.6 interim): the readiness flags are mode-aware
-  // server-side (agent mode needs no answer model), so switching just
-  // persists llm_mode and re-reads the checks.
+  // Readiness flags are mode-aware server-side, so switching persists
+  // llm_mode and re-reads the checks.
   async function setMode(m: LlmMode) {
-    setLlmMode(m);
+    setModeState(m);
     try {
       await api.updateSettings({ llm_mode: m });
       await recheck();
@@ -177,56 +65,17 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
     }
   }
 
-  async function runSync(path: string, name: string) {
-    setBusy(true);
-    setError(null);
-    setProgress(null);
-    try {
-      const source = await api.createSource({ connector: "folder", name, config: { path } });
-      const job = await api.syncSource(source.id);
-      for (;;) {
-        await delay(900);
-        const j = await api.getJob(job.id);
-        setProgress({ total: j.total, processed: j.processed });
-        if (j.status !== "running") {
-          if (j.status === "failed") throw new Error(j.error || "sync failed");
-          break;
-        }
-      }
-      setStep(3);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function connectSample() {
-    if (state?.sample.path) await runSync(state.sample.path, "Sample company memory");
-  }
-
-  async function connectFolder() {
-    if (folderPath.trim()) await runSync(folderPath.trim(), "My folder");
-  }
-
-  async function askSample() {
-    if (!question.trim() || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await api.ask(question);
-      const warning = (res as unknown as { warning?: string | null }).warning ?? null;
-      setAnswer({ text: res.answer, citations: res.citations, mode: res.mode, warning });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
+  const go = (to: StepId) => {
+    setStep(to);
+    if (to === "ask" || to === "answers") recheck();
+  };
+  const next = () => (last ? onClose() : go(steps[index + 1]));
+  const back = () => index > 0 && go(steps[index - 1]);
+  const sourceMissing = step === "source" && (state?.sources_count ?? 0) === 0;
 
   return (
     <div style={styles.backdrop}>
-      <div style={styles.card}>
+      <div style={styles.card} role="dialog" aria-label="Welcome to AnchorCore">
         <div style={styles.header}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
             <div>
@@ -238,7 +87,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
             <button
               onClick={onClose}
               title="Skip the wizard — you can connect a source later in Sources"
-              style={{ ...styles.button, background: "transparent", border: `1px solid ${theme.border}`, color: theme.textMuted, flexShrink: 0 }}
+              style={{ ...styles.button, ...styles.ghost, flexShrink: 0 }}
             >
               Skip →
             </button>
@@ -246,382 +95,54 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
         </div>
 
         <div style={styles.steps}>
-          {stepLabels.map((label, i) => (
-            <span key={label} style={{ ...styles.step, ...(i === step ? styles.stepActive : {}), ...(i < step ? styles.stepDone : {}) }}>
-              {i + 1}. {label}
+          {steps.map((id, i) => (
+            <span key={id} style={{ ...styles.step, ...(i === index ? styles.stepActive : {}), ...(i < index ? styles.stepDone : {}) }}>
+              {i + 1}. {stepLabel(id, mode)}
             </span>
           ))}
         </div>
 
         {error && <p style={{ color: theme.red }}>{error}</p>}
 
-        {step === 0 && (
-          <div style={styles.body}>
-            <div style={styles.note}>
-              <label style={{ fontSize: 13, color: theme.textMuted }}>Who writes the answers?</label>
-              <div style={{ marginTop: 6 }}>
-                <select value={llmMode} onChange={(e) => setMode(e.target.value as LlmMode)} style={styles.input} title="Who writes the answers?">
-                  <option value="agent">My AI agent (MCP or the anchorcore-search skill)</option>
-                  <option value="local">A local model on this computer</option>
-                </select>
-              </div>
-              <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
-                {llmMode === "agent"
-                  ? "Agent mode: your agent answers from cited passages — no answer model needed. Ollama below only feeds search embeddings."
-                  : "Local mode: AnchorCore composes answers with the model you configure."}
-              </div>
-            </div>
-            <div style={styles.note}>
-              <label style={{ fontSize: 13, color: theme.textMuted }}>Search embeddings</label>
-              <div style={{ marginTop: 6 }}>
-                <BuiltinEmbedder onReady={recheck} />
-              </div>
-            </div>
-            <div style={styles.checkRow}>
-              <span style={{ ...styles.dot, background: state?.ollama.reachable ? theme.green : theme.red }} />
-              <span>
-                Ollama {state?.ollama.reachable ? "is running" : "is not reachable"} ({state?.ollama.base_url || "http://localhost:11434"})
-              </span>
-            </div>
-            {state && !state.ollama.reachable && (
-              <div style={styles.note}>
-                <div>Install Ollama, then start it — or start it now if it&apos;s already installed:</div>
-                <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center" }}>
-                  <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} disabled={startingOllama} onClick={startOllama}>
-                    {startingOllama ? "Starting…" : "Start Ollama"}
-                  </button>
-                  <button style={styles.button} onClick={recheck}>Re-check</button>
-                </div>
-                {startMsg && <div style={{ fontSize: 12, marginTop: 6 }}>{startMsg}</div>}
-                <div style={{ marginTop: 8 }}>Don&apos;t have it yet?</div>
-                {hints.brew && <pre style={styles.code}>{hints.brew}</pre>}
-                {hints.installer && (
-                  <a href={hints.installer} target="_blank" rel="noreferrer" style={{ color: theme.accentAlt }}>
-                    Download Ollama ↗
-                  </a>
-                )}
-              </div>
-            )}
-            {state?.ollama.reachable && missing.length > 0 && (
-              <div style={styles.note}>
-                <div>These models aren&apos;t installed yet — answers and search stay basic until they are:</div>
-                <div style={{ ...styles.code, whiteSpace: "normal" }}>{missing.join(", ")}</div>
-                {!pull.pulling ? (
-                  <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent, marginTop: 6 }} onClick={installModels}>
-                    Install {missing.length} model{missing.length === 1 ? "" : "s"} (large download)
-                  </button>
-                ) : (
-                  <div style={{ marginTop: 6 }}>
-                    <div style={{ background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: radius, height: 8, overflow: "hidden" }}>
-                      <div style={{ background: theme.accentAlt, height: "100%", width: `${pullSummary.pct}%` }} />
-                    </div>
-                    {pull.pulls.map((p) => (
-                      <div key={p.model} style={{ fontSize: 12, marginTop: 4 }}>
-                        {p.model}: {p.done ? (p.error ? `failed \u2014 ${p.error}` : "done") : p.total > 0 ? `${p.status} \u2014 ${(p.completed / 1048576).toFixed(0)} / ${(p.total / 1048576).toFixed(0)} MB` : p.status}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {pull.pullError && <div style={{ fontSize: 12, color: theme.red, marginTop: 6 }}>{pull.pullError}</div>}
-                <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
-                  Terminal fallback: <code>ollama pull {missing.join(" && ollama pull ")}</code>
-                </div>
-              </div>
-            )}
-            {state?.ollama.reachable && missing.length === 0 && (
-              <div style={{ ...styles.checkRow, marginTop: 8 }}>
-                <span style={{ ...styles.dot, background: theme.green }} />
-                <span>Ollama models ready</span>
-              </div>
-            )}
-            {state && !state.answer_ready && (
-              <div style={styles.note}>
-                <div>No working answer model — answers will be keyword excerpts, not composed answers.</div>
-                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                  {state.ollama.reachable ? (
-                    <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} disabled={usingOllama} onClick={useOllamaForAnswers}>
-                      {usingOllama ? "Setting up…" : "Use Ollama for answers (free)"}
-                    </button>
-                  ) : (
-                    <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} onClick={() => setStep(1)}>
-                      Configure a model →
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-            <div style={styles.actions}>
-              <button style={{ ...styles.button, background: "transparent", border: `1px solid ${theme.border}`, color: theme.textMuted }} onClick={onClose}>
-                Skip for now
-              </button>
-              <button style={styles.button} onClick={recheck}>Re-check</button>
-              <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} onClick={() => setStep(1)}>
-                Continue →
-              </button>
-            </div>
-          </div>
+        {step === "setup" && <ModeStep state={state} mode={mode} embedModel={embedModel} onMode={setMode} recheck={async () => void (await recheck())} />}
+        {step === "answers" && <AnswerModelStep state={state} recheck={recheck} />}
+        {step === "agent" && <AgentChannelStep mode={mode} />}
+        {step === "source" && (
+          <SourceStep
+            state={state}
+            onSynced={async () => {
+              await recheck();
+              go("ask");
+            }}
+          />
         )}
+        {step === "ask" && <AskStep state={state} mode={mode} />}
 
-        {step === 1 && (
-          <div style={styles.body}>
-            <div style={styles.note}>
-              {llmMode === "agent"
-                ? "Agent mode: your agent writes answers from cited passages, so no answer model is needed here. Ollama below only feeds search embeddings."
-                : "Configure where AnchorCore gets its models. Ollama is local and free; or point answers at any OpenAI-compatible API. You can change this anytime in Settings."}
-            </div>
-            <div style={{ display: "grid", gap: 8 }}>
-              <label style={{ fontSize: 13, color: theme.textMuted }}>Ollama base URL (local LLM)</label>
-              <input style={styles.input} value={ollamaBaseUrl} onChange={(e) => setOllamaBaseUrl(e.target.value)} placeholder="http://localhost:11434" />
-              {llmMode !== "agent" && (<>
-              <label style={{ fontSize: 13, color: theme.textMuted }}>Answer API base URL — http://localhost:11434/v1 for Ollama, or a cloud URL</label>
-              <input style={styles.input} value={answerBaseUrl} onChange={(e) => setAnswerBaseUrl(e.target.value)} placeholder="http://localhost:11434/v1 (Ollama) or https://api.openai.com/v1 (cloud)" />
-              <div style={{ fontSize: 12, color: theme.textDim }}>
-                Local-only? Set the Ollama URL explicitly — answers never fall back to Ollama on their own.
-              </div>
-              <label style={{ fontSize: 13, color: theme.textMuted }}>Answer API key (if cloud) — stored in OS keychain</label>
-              <input
-                style={styles.input}
-                type="password"
-                value={answerApiKey}
-                onChange={(e) => setAnswerApiKey(e.target.value)}
-                placeholder={answerKeyStored ? "•••••••• (stored — type to replace, blank keeps it)" : "sk-... (not needed for local Ollama)"}
-              />
-              <label style={{ fontSize: 13, color: theme.textMuted }}>Answer model</label>
-              <input style={styles.input} value={answerModel} onChange={(e) => setAnswerModel(e.target.value)} placeholder="gpt-4o-mini or llama3.2:3b" />
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button
-                  style={{ ...styles.button, background: theme.bgHover, border: `1px solid ${theme.border}`, justifySelf: "start" }}
-                  onClick={() => {
-                    setAnswerBaseUrl("http://localhost:11434/v1");
-                    if (!answerModel.trim()) setAnswerModel("llama3.2:3b");
-                    setConfigMsg("Using Ollama for answers — Save & continue to apply.");
-                  }}
-                >
-                  Use Ollama for answers (free, local)
-                </button>
-                <button
-                  style={{ ...styles.button, background: theme.bgHover, border: `1px solid ${theme.border}`, justifySelf: "start" }}
-                  disabled={testingAnswer}
-                  onClick={testAnswerConnection}
-                  title="Checks the saved answer endpoint (save first)"
-                >
-                  {testingAnswer ? "Testing…" : "Test answer connection"}
-                </button>
-              </div>
-              </>)}
-            </div>
-            {answerTestMsg && <div style={{ fontSize: 12, color: theme.accentAlt }}>{answerTestMsg}</div>}
-            {configMsg && <div style={{ fontSize: 12, color: theme.accentAlt }}>{configMsg}</div>}
-            <div style={styles.actions}>
-              <button style={styles.button} onClick={() => setStep(0)}>← Back</button>
-              <button style={{ ...styles.button, background: "transparent", border: `1px solid ${theme.border}`, color: theme.textMuted }} onClick={() => setStep(2)}>Skip</button>
-              <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} disabled={savingConfig} onClick={saveConfig}>{savingConfig ? "Saving…" : "Save & continue →"}</button>
-            </div>
-            {llmMode !== "agent" && (
-              <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
-                Local path: install the models from step 0, then use the Ollama button above. Cloud path: paste a base URL + key.
-              </div>
-            )}
-          </div>
-        )}
-
-        {step === 2 && (
-          <div style={styles.body}>
-            <div style={styles.note}>
-              AnchorCore ingests a folder of notes, code and business docs (Markdown, source code, Office, OpenDocument, RTF, email, PDF) — cloned git repos work like any folder, honoring .gitignore.
-              {state?.sample.available ? " You can also use the bundled sample corpus to try it." : null}
-            </div>
-            {state?.sample.available && (
-              <button style={{ ...styles.button, background: theme.citeSoft, color: theme.accentAlt }} disabled={busy} onClick={connectSample}>
-                {busy ? "Syncing sample…" : "Try the sample corpus"}
-              </button>
-            )}
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <input
-                style={styles.input}
-                placeholder="Or enter a folder path, e.g. /Users/me/Documents/notes"
-                value={folderPath}
-                onChange={(e) => setFolderPath(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && connectFolder()}
-              />
-              <button style={styles.button} disabled={busy} title="Browse folders on this machine" onClick={() => setFolderPickerOpen((v) => !v)}>
-                Browse…
-              </button>
-              <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} disabled={busy} onClick={connectFolder}>
-                Connect
-              </button>
-            </div>
-            {folderPickerOpen && (
-              <FolderPicker
-                initialPath={folderPath}
-                onSelect={(p) => {
-                  setFolderPath(p);
-                  setFolderPickerOpen(false);
-                }}
-                onCancel={() => setFolderPickerOpen(false)}
-              />
-            )}
-            {busy && progress && (
-              <div style={{ marginTop: 10, fontSize: 13, color: theme.accentAlt }}>
-                {progress.total > 0 ? `Ingesting… ${progress.processed}/${progress.total}` : "Ingesting…"}
-              </div>
-            )}
-            {!busy && (
-              <div style={styles.actions}>
-                <button style={styles.button} onClick={() => setStep(1)}>← Back</button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {step === 3 && (
-          <div style={styles.body}>
-            <div style={styles.note}>Ask a question about what you just connected — the answer cites its sources.</div>
-            {state && !state.answer_ready && (
-              <div style={styles.note}>Heads up: no working answer model yet — this answer will be keyword excerpts. Go Back to step 0 to install the models.</div>
-            )}
-            <div style={{ display: "flex", gap: 8 }}>
-              <input
-                style={styles.input}
-                placeholder="e.g. What was decided about billing, and why?"
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && askSample()}
-              />
-              <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} disabled={busy} onClick={askSample}>
-                {busy ? "Asking…" : "Ask"}
-              </button>
-            </div>
-            {answer && (
-              <div style={styles.answerBox}>
-                {answer.warning ? (
-                  <div style={styles.degradedNote}>{answer.warning}</div>
-                ) : isAgentCompose(answer.mode) ? (
-                  <div style={styles.note}>{AGENT_COMPOSE_HINT}</div>
-                ) : answer.mode && answer.mode !== "composed" ? (
-                  <div style={styles.degradedNote}>
-                    Not a composed answer (mode: {answer.mode}) — go back to step 1 and configure an answer model.
-                  </div>
-                ) : null}
-                <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{answer.text}</div>
-                {answer.citations.length > 0 && (
-                  <div style={{ marginTop: 10, fontSize: 12, color: theme.textMuted }}>
-                    Sources:
-                    {answer.citations.map((c, i) => (
-                      <div key={i} style={{ marginTop: 4 }}>
-                        [{c.kind}] {c.summary} — {c.source_ref}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-            <div style={styles.actions}>
-              <button style={styles.button} onClick={() => setStep(2)}>← Back</button>
-              <button style={{ ...styles.button, background: theme.buttonBg }} onClick={onClose}>Done — open AnchorCore</button>
-              <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} onClick={() => setStep(4)}>Connect an agent →</button>
-            </div>
-          </div>
-        )}
-
-        {step === 4 && (
-          <div style={styles.body}>
-            <div style={styles.note}>
-              Optional: let Claude Code, Codex, opencode, Cursor or Claude Desktop use this memory. Connect writes that app&apos;s config (backed up first) — you can change it anytime in System.
-            </div>
-            <McpConnectCard />
-            <div style={styles.actions}>
-              <button style={styles.button} onClick={() => setStep(3)}>← Back</button>
-              <button style={{ ...styles.button, background: "transparent", border: `1px solid ${theme.border}`, color: theme.textMuted }} onClick={onClose}>Skip</button>
-              <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} onClick={onClose}>Done — open AnchorCore</button>
-            </div>
-          </div>
-        )}
+        <div style={styles.actions}>
+          {index > 0 ? (
+            <button style={styles.button} onClick={back}>
+              ← Back
+            </button>
+          ) : (
+            <button style={{ ...styles.button, ...styles.ghost }} onClick={onClose}>
+              Skip for now
+            </button>
+          )}
+          {step === "answers" || (step === "agent" && mode === "local") ? (
+            <button style={{ ...styles.button, ...styles.ghost }} onClick={next}>
+              {last ? "Skip — open AnchorCore" : "Skip"}
+            </button>
+          ) : null}
+          <button
+            style={{ ...styles.button, ...styles.primary }}
+            disabled={sourceMissing}
+            title={sourceMissing ? "Connect a folder or the sample first" : undefined}
+            onClick={next}
+          >
+            {last ? "Done — open AnchorCore" : "Continue →"}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  backdrop: {
-    position: "fixed",
-    inset: 0,
-    background: theme.overlay,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 50,
-    padding: "1rem",
-  },
-  card: {
-    background: theme.bgCard,
-    border: `1px solid ${theme.border}`,
-    borderRadius: radius,
-    padding: "1.4rem 1.6rem",
-    maxWidth: 640,
-    width: "100%",
-    boxShadow: theme.shadow,
-  },
-  header: { marginBottom: 14 },
-  steps: { display: "flex", gap: 12, fontSize: 12, color: theme.textDim, marginBottom: 14, flexWrap: "wrap" },
-  step: { padding: "0.2rem 0.6rem", borderRadius: radius, background: theme.bgElevated },
-  stepActive: { background: theme.citeSoft, color: theme.accentAlt },
-  stepDone: { color: theme.green },
-  body: { display: "grid", gap: 10 },
-  checkRow: { display: "flex", alignItems: "center", gap: 8, fontSize: 14 },
-  dot: { width: 10, height: 10, borderRadius: "50%", display: "inline-block", flexShrink: 0 },
-  note: {
-    background: theme.bgElevated,
-    border: `1px solid ${theme.border}`,
-    borderRadius: radius,
-    padding: "0.6rem 0.8rem",
-    fontSize: 13,
-    color: theme.text,
-    lineHeight: 1.5,
-  },
-  code: {
-    background: theme.bg,
-    border: `1px solid ${theme.border}`,
-    borderRadius: radius,
-    padding: "0.5rem 0.7rem",
-    fontSize: 12,
-    overflowX: "auto",
-    margin: "0.4rem 0",
-  },
-  input: {
-    flex: 1,
-    padding: "0.55rem 0.75rem",
-    borderRadius: radius,
-    border: `1px solid ${theme.border}`,
-    background: theme.bg,
-    color: theme.text,
-  },
-  button: {
-    padding: "0.5rem 1rem",
-    borderRadius: radius,
-    border: "none",
-    background: theme.buttonBg,
-    color: theme.text,
-    cursor: "pointer",
-    fontSize: 13,
-  },
-  actions: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 6 },
-  answerBox: {
-    background: theme.bgElevated,
-    border: `1px solid ${theme.border}`,
-    borderRadius: radius,
-    padding: "0.7rem 0.9rem",
-    fontSize: 14,
-    maxHeight: 260,
-    overflowY: "auto",
-  },
-  degradedNote: {
-    background: theme.amberBg,
-    color: theme.amber,
-    border: `1px solid ${theme.amber}`,
-    borderRadius: radius,
-    padding: "0.45rem 0.7rem",
-    fontSize: 12,
-    marginBottom: 10,
-  },
-};

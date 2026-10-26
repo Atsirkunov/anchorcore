@@ -107,6 +107,7 @@ export type OnboardingState = {
   };
   answer_provider: "ollama" | "configured" | "missing";
   answer_ready: boolean;
+  machine?: OnboardingMachine; // R45.6 (absent on older backends)
   sample: {
     available: boolean;
     path: string | null;
@@ -574,3 +575,18 @@ export type RecordListing<K extends string, T> = { [key in K]: T[] } & {
 
 export type DecisionFilters = { q?: string; status?: string; project_id?: number };
 export type ActionFilters = { q?: string; owner?: string; state?: "open" | "done" | "all"; overdue?: boolean; project_id?: number };
+
+/** R45.6: `GET /system/onboarding` → `machine` — RAM and an Ollama answer
+ * model sized to it, for the wizard's local-model picker. */
+export type AnswerModelOption = {
+  model: string; // explicit size tag, e.g. "qwen2.5:7b"
+  label: string;
+  download_gb: number;
+  min_ram_gb: number;
+  recommended: boolean;
+};
+export type OnboardingMachine = {
+  total_memory_bytes: number | null;
+  recommended_answer_model: string;
+  answer_models: AnswerModelOption[];
+};

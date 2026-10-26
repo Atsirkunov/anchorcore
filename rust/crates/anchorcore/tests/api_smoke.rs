@@ -645,6 +645,34 @@ async fn onboarding_state_delta_on_fresh_server() {
     assert_eq!(after["needs_wizard"], false, "{after}");
 }
 
+/// R45.6: the wizard's local-model picker reads RAM + a sized catalog from
+/// onboarding; exactly one model is recommended and it names the field.
+#[tokio::test]
+async fn onboarding_reports_ram_and_a_sized_answer_model() {
+    let srv = TestServer::start().await;
+    let v: Value = srv.get("/system/onboarding").await.json().await.expect("onboarding");
+    let machine = &v["machine"];
+    let ram = machine["total_memory_bytes"].as_u64();
+    if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
+        assert!(ram.unwrap_or(0) > 512 * 1024 * 1024, "RAM should be known here: {machine}");
+    }
+    let models = machine["answer_models"].as_array().expect("answer_models");
+    assert!(models.len() >= 3, "{machine}");
+    let recommended: Vec<&Value> = models.iter().filter(|m| m["recommended"] == true).collect();
+    assert_eq!(recommended.len(), 1, "{machine}");
+    assert_eq!(recommended[0]["model"], machine["recommended_answer_model"], "{machine}");
+    for m in models {
+        assert!(m["model"].as_str().is_some_and(|s| s.contains(':')), "explicit size tag: {m}");
+        assert!(m["download_gb"].as_f64().is_some() && m["min_ram_gb"].as_f64().is_some(), "{m}");
+        if let Some(bytes) = ram {
+            // The recommendation never needs more RAM than the machine has.
+            if m["recommended"] == true && m["min_ram_gb"].as_f64().unwrap() > 0.0 {
+                assert!(m["min_ram_gb"].as_f64().unwrap() <= bytes as f64 / 1073741824.0 + 0.5, "{m}");
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn duplicates_paginate_and_filter() {
     let srv = TestServer::start().await;

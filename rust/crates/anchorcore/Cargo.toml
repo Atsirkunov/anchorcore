@@ -82,7 +82,9 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAppl
 candle-core = { version = "0.11", features = ["metal"] }
 candle-nn = { version = "0.11", features = ["metal"] }
 candle-transformers = { version = "0.11", features = ["metal"] }
+# R45.6: total RAM (`sysctlbyname("hw.memsize")`) for the wizard's model picker.
+libc = "0.2"
 # R41.5 Windows: tray-icon's hidden window needs a message loop on the thread
 # that created it (same version tray-icon already pulls in).
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_SystemInformation"] }

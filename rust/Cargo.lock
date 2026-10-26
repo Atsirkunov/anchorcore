@@ -92,6 +92,7 @@ dependencies = [
  "ignore",
  "include_dir",
  "keyring",
+ "libc",
  "lopdf",
  "mailparse",
  "mime_guess",
