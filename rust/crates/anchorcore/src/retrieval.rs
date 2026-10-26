@@ -449,8 +449,10 @@ fn append_section_filter(
     }
 }
 
+/// Descending by score; a NaN score sorts last instead of panicking (R43.17).
 pub(crate) fn sort_hits(hits: &mut Vec<Hit>) {
-    hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    let key = |h: &Hit| if h.score.is_nan() { f64::NEG_INFINITY } else { h.score };
+    hits.sort_by(|a, b| key(b).total_cmp(&key(a)));
 }
 
 /// FTS/vec0 over-fetch multiplier: short fixture chunks crowd long live docs
@@ -3450,6 +3452,17 @@ mod tests {
         .unwrap();
         conn.last_insert_rowid()
     }
+    #[test]
+    fn sort_hits_puts_nan_last_without_panicking() {
+        let mut hits = vec![
+            mk_hit(1, 1, 1, None, "a", "a", 0.2),
+            mk_hit(2, 1, 1, None, "b", "b", f64::NAN),
+            mk_hit(3, 1, 1, None, "c", "c", 0.5),
+        ];
+        sort_hits(&mut hits);
+        assert_eq!(hits.iter().map(|h| h.chunk_id).collect::<Vec<_>>(), vec![3, 1, 2]);
+    }
+
     fn mk_hit(cid: i64, iid: i64, sid: i64, sec: Option<i64>, path: &str, content: &str, score: f64) -> Hit {
         Hit {
             chunk_id: cid,

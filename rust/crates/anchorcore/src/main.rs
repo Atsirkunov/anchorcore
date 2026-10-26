@@ -214,6 +214,26 @@ mod panic_hook_tests {
 }
 
 #[cfg(test)]
+mod bind_tests {
+    /// R43.17: a taken port must not open a browser onto the other instance.
+    #[test]
+    fn bind_then_skips_callback_when_port_is_taken() {
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = taken.local_addr().unwrap().to_string();
+        let mut called = false;
+        assert!(super::bind_then(&addr, |_| called = true).is_err());
+        assert!(!called, "callback ran after a failed bind");
+
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = free.local_addr().unwrap().to_string();
+        drop(free);
+        let mut seen = String::new();
+        let _l = super::bind_then(&addr, |a| seen = a.to_string()).unwrap();
+        assert_eq!(seen, addr);
+    }
+}
+
+#[cfg(test)]
 mod shutdown_tests {
     /// R34.1: tray Quit fires this Notify — the server must stop, not hang.
     #[tokio::test]
@@ -641,12 +661,18 @@ async fn serve(args: Args, tray_handoff: Option<TrayHandoff>) {
     let app = routes::build_router(state);
 
     let addr = format!("{}:{}", resolve_host(&args.host), args.port);
-    tracing::info!("listening on {}", addr);
-    maybe_open_browser(&addr);
     // Bind via std first: a second instance fails here before it can plant a
-    // tray icon (R41.5: the main thread builds it after this handoff).
-    let std_listener = std::net::TcpListener::bind(&addr).unwrap();
-    std_listener.set_nonblocking(true).unwrap();
+    // tray icon (R41.5: the main thread builds it after this handoff) or open
+    // a browser tab onto the instance that already owns the port (R43.17).
+    let std_listener = match bind_then(&addr, maybe_open_browser) {
+        Ok(l) => l,
+        Err(e) => {
+            let msg = format!("could not listen on {addr}: {e} (is AnchorCore already running? try --port)");
+            tracing::error!("{}", msg);
+            eprintln!("{msg}");
+            std::process::exit(1);
+        }
+    };
     let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
     // R41.5: with a tray the main thread builds it (`run_with_tray`); without
     // one this only logs why it is off.
@@ -666,6 +692,15 @@ async fn serve(args: Args, tray_handoff: Option<TrayHandoff>) {
         runtime::remove_own(&data_dir, pid);
     }
     served.unwrap();
+}
+
+/// Bind `addr`, then run `on_bound` — only after the bind succeeded (R43.17).
+fn bind_then(addr: &str, on_bound: impl FnOnce(&str)) -> std::io::Result<std::net::TcpListener> {
+    let listener = std::net::TcpListener::bind(addr)?;
+    listener.set_nonblocking(true)?;
+    tracing::info!("listening on {}", addr);
+    on_bound(addr);
+    Ok(listener)
 }
 
 /// R20.4: after a successful bind, advertise the real port in
