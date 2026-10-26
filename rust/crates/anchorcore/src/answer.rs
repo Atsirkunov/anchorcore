@@ -87,6 +87,8 @@ pub struct Citation {
     pub decay: f64,
     /// R39.1: surfaced by filename boost above the ranked list.
     pub boosted: bool,
+    /// R47.1: rich keyword evidence — pierced the authority-tier partition.
+    pub rich_match: bool,
     /// R46.9/R46.11: images on the cited chunk/section — every ask mode
     /// (agent_compose for the agent, local for the UI's source cards).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -165,6 +167,8 @@ pub struct SearchHit {
     pub decay: f64,
     /// R39.1: surfaced by filename boost above the ranked list.
     pub boosted: bool,
+    /// R47.1: rich keyword evidence — pierced the authority-tier partition.
+    pub rich_match: bool,
     /// R46.9: opt-in (`fields: images` or `all`) — absent otherwise, so the
     /// default hit shape never changes.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -581,6 +585,7 @@ fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content:
             provenance: h.provenance.clone(),
             decay: rounded_score(h.decay),
             boosted: h.boosted,
+            rich_match: h.rich_match,
             images: Some(crate::assets::refs_for_hit(&conn, h.chunk_id, h.section_id)),
         }
     }).collect()
@@ -970,6 +975,7 @@ pub async fn search(
             provenance: h.provenance.clone(),
             decay: rounded_score(h.decay),
             boosted: h.boosted,
+            rich_match: h.rich_match,
             images: want_images.then(|| crate::assets::refs_for_hit(&conn, h.chunk_id, h.section_id)),
         }
     }).collect();
@@ -1478,6 +1484,7 @@ mod tests {
             boosted: false,
             keyword_matched: false,
             cosine: None,
+            rich_match: false,
         }
     }
 

@@ -47,6 +47,7 @@ pub mod projects;
 pub mod query_expand;
 pub mod records;
 pub mod records_api;
+pub mod report;
 pub mod retrieval;
 pub mod review;
 pub mod routes;

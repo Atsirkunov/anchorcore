@@ -44,7 +44,46 @@ export function AnswerView({ turn, roots, latest }: { turn: AnswerTurn; roots: s
           </ol>
         </div>
       )}
+      <ReportButton />
     </article>
+  );
+}
+
+/** R47.0: "it's wrong" flow — downloads the redacted bundle for the last
+ *  query (ranks and counts, no document text) so it can go to support. */
+function ReportButton() {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+  const download = async () => {
+    setBusy(true);
+    setError(null);
+    setDone(false);
+    try {
+      const { api } = await import("../api");
+      const bundle = await api.getReport();
+      const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" }));
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `anchorcore-report-${stamp}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setDone(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <p style={styles.reportRow}>
+      <button onClick={download} disabled={busy} style={styles.reportLink} title="Download a redacted diagnostics bundle for this answer (no document text) to send to support">
+        {busy ? "Preparing report…" : "Report issue"}
+      </button>
+      {done && !error ? <span style={styles.reportNote}>saved — safe to share after a glance at the query text</span> : null}
+      {error ? <span style={styles.reportError}>{error}</span> : null}
+    </p>
   );
 }
 
@@ -149,4 +188,8 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 10,
   },
   agentNote: { margin: "0 0 4px", fontSize: 13, lineHeight: 1.55, color: theme.textMuted },
+  reportRow: { margin: "14px 0 0", fontSize: 12 },
+  reportLink: { background: "none", border: "none", padding: 0, fontFamily: theme.mono, fontSize: 12, color: theme.textDim, cursor: "pointer", textDecoration: "underline" },
+  reportNote: { marginLeft: 8, color: theme.textDim },
+  reportError: { marginLeft: 8, color: theme.red },
 };

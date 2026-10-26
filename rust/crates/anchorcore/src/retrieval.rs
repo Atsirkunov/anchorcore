@@ -114,7 +114,64 @@ pub fn fts_match_query_scoped(
             expanded.push(extra);
         }
     }
-    Some(expanded.iter().map(|t| format!("\"{}\"", t)).collect::<Vec<_>>().join(" OR "))
+    Some(expanded.iter().map(|t| format!("\"{t}\"")).collect::<Vec<_>>().join(" OR "))
+}
+
+/// R47.1: rich-evidence tier pierce — `ANCHOR_PIERCE_MIN_TERMS` (default 3)
+/// distinct FTS-matched surface forms plus `ANCHOR_PIERCE_MIN_BM25`
+/// (default 5.0, magnitude) both have to hold; either knob negative
+/// disables the pierce. Multi-term, high-magnitude matches surface on
+/// score order; thin single-term matches stay tiered. Calibrated between
+/// thin-max ≈ 2.3 and rich-min ≈ 7.4 (seed repro plus live-index probe2
+/// magnitudes; pessimistic big-corpus projections clear it with margin).
+pub fn pierce_min_terms() -> usize {
+    std::env::var("ANCHOR_PIERCE_MIN_TERMS").ok().and_then(|v| v.parse::<isize>().ok()).map(|v| v.max(0) as usize).unwrap_or(3)
+}
+
+/// R47.1 magnitude bar half of the tier pierce (see [`pierce_min_terms`]).
+/// Negative disables the whole pierce (tiers behave exactly as before).
+pub fn pierce_min_bm25() -> f64 {
+    std::env::var("ANCHOR_PIERCE_MIN_BM25")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .unwrap_or(5.0)
+}
+
+pub fn pierce_enabled() -> bool {
+    pierce_min_bm25() >= 0.0
+}
+
+/// R47.1 mark pair for the highlight column: control chars text never
+/// carries. The parser pairs strictly (last `\x01` before each `\x02`),
+/// so stray control bytes cost a span instead of corrupting one.
+const PIERCE_MARK_OPEN: char = '\x01';
+const PIERCE_MARK_CLOSE: char = '\x02';
+
+/// Distinct lowercased surface forms inside highlight marks. FTS-accurate
+/// (porter stemming included — the marks come from the MATCH itself), so
+/// inflections count without a Rust-side stemmer.
+fn marked_terms(marked: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut segments: Vec<&str> = marked.split(PIERCE_MARK_CLOSE).collect();
+    segments.pop(); // tail past the last close was never opened
+    for segment in segments {
+        if let Some(start) = segment.rfind(PIERCE_MARK_OPEN) {
+            let span: String =
+                segment[start + PIERCE_MARK_OPEN.len_utf8()..].to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect();
+            if !span.is_empty() {
+                out.insert(span);
+            }
+        }
+    }
+    out
+}
+
+/// R47.1 leg-time pierce verdict: rich (enough distinct matched forms) and
+/// strong (BM25 magnitude clears the bar). `bm25mag` is `-rank` (FTS5
+/// ranks run negative — lower is better).
+fn rich_keyword_match(marked: &str, bm25mag: f64) -> bool {
+    pierce_enabled() && marked_terms(marked).len() >= pierce_min_terms() && bm25mag >= pierce_min_bm25()
 }
 
 /// Earliest query-term occurrence in lowercased `hay`: byte offset + term char len.
@@ -197,6 +254,7 @@ fn fuse_one_leg(entry: &mut Hit, hit: &Hit, leg: &str, rank: usize, weight: f64)
     entry.provenance.push(LegMatch { leg: leg.to_string(), rank });
     entry.keyword_matched |= hit.keyword_matched;
     entry.cosine = max_cosine(entry.cosine, hit.cosine);
+    entry.rich_match |= hit.rich_match;
     entry.score += weight / (RRF_K + rank as f64);
 }
 
@@ -244,6 +302,10 @@ pub struct Hit {
     pub keyword_matched: bool,
     /// R39.3: raw vector cosine when a vec leg matched (fusion keeps the max).
     pub cosine: Option<f64>,
+    /// R47.1: rich keyword evidence — the leg verdict
+    /// ([`rich_keyword_match`]); fusion ORs it and the tier partition
+    /// lets flagged hits pierce thin-match tiers.
+    pub rich_match: bool,
 }
 
 impl Hit {
@@ -522,6 +584,7 @@ fn make_hit(
         boosted: false,
         keyword_matched: false,
         cosine: None,
+        rich_match: false,
     })
 }
 
@@ -605,9 +668,10 @@ fn exec_vec_search(
 }
 
 /// Shared FTS tail: bm25 ranks → hydrated, scored, sorted hits.
+/// Rows carry their highlight column for the R47.1 evidence verdict.
 fn hits_from_ranks(
     conn: &Connection,
-    rows: Vec<(i64, f64)>,
+    rows: Vec<(i64, f64, String)>,
     source_ids: Option<&HashSet<i64>>,
     section_ids: Option<&HashSet<i64>>,
     qa_exclude_disputed: bool,
@@ -615,15 +679,22 @@ fn hits_from_ranks(
     if rows.is_empty() {
         return vec![];
     }
-    let by_id: HashMap<i64, f64> = rows.into_iter().collect();
+    let by_id: HashMap<i64, (f64, bool)> = rows
+        .into_iter()
+        .map(|(id, rank, marked)| {
+            let rich = rich_keyword_match(&marked, -rank);
+            (id, (rank, rich))
+        })
+        .collect();
     let ids: Vec<i64> = by_id.keys().cloned().collect();
     let hits = load_hits_filtered(conn, &ids, source_ids, section_ids, qa_exclude_disputed);
     let mut out = Vec::new();
     for mut h in hits {
-        if let Some(rank) = by_id.get(&h.chunk_id) {
+        if let Some((rank, rich)) = by_id.get(&h.chunk_id) {
             h.score = -rank;
             // R39.3: an FTS row hit is a real BM25 match by construction.
             h.keyword_matched = true;
+            h.rich_match = *rich;
             out.push(h);
         }
     }
@@ -654,8 +725,10 @@ fn exec_fts_search(
     let limit = (top_k * CANDIDATE_MULT) as i64;
     // Same join shape as the vec0 leg (1:1 per FTS row — the LEFT JOINs
     // can't multiply rows, so ORDER BY rank LIMIT stays correct).
+    // The highlight column rides along for the R47.1 evidence verdict
+    // (matched spans, FTS-accurate — FTS5 has no matchinfo).
     let mut sql = String::from(
-        "SELECT c.id, bm25(chunks_fts) AS rank FROM chunks_fts \
+        "SELECT c.id, bm25(chunks_fts) AS rank, highlight(chunks_fts, 0, '\x01', '\x02') AS marked FROM chunks_fts \
          JOIN chunks c ON c.id=chunks_fts.rowid \
          LEFT JOIN entities e ON e.id = c.entity_id \
          LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
@@ -673,8 +746,8 @@ fn exec_fts_search(
         Ok(s) => s,
         Err(_) => return vec![],
     };
-    let rows: Vec<(i64, f64)> = match stmt
-        .query_map(rusqlite::params_from_iter(params.iter()), |r| Ok((r.get(0)?, r.get(1)?)))
+    let rows: Vec<(i64, f64, String)> = match stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .and_then(|m| m.collect())
     {
         Ok(v) => v,
@@ -2140,6 +2213,8 @@ pub fn authority_tiers_enabled() -> bool {
 /// files named, or the demote knob at 1.0) the env rank flattens and tiers
 /// refine score order alone — the partition never imposes an env order the
 /// live-first guards forbid.
+/// R47.1: rich-evidence hits pierce within their env class — the key is
+/// (env, pierced, tier), so a test-env pierce never jumps above live.
 pub fn prefer_authority_tiers(conn: &Connection, hits: &mut [Hit], query: &str) {
     if hits.len() < 2 || !authority_tiers_enabled() {
         return;
@@ -2150,13 +2225,16 @@ pub fn prefer_authority_tiers(conn: &Connection, hits: &mut [Hit], query: &str) 
     let live_first = !has_env_marker(query) && (0.0..1.0).contains(&test_env_factor());
     let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
     let env = chunk_item_env(conn, &ids);
-    hits.sort_by_key(|h| match env.get(&h.chunk_id) {
-        Some((path, head)) => {
-            let test = live_first && env_for_item(path, head) == "test";
-            (u8::from(test), authority_tier(path))
+    hits.sort_by_key(|h| {
+        let pierced = u8::from(!h.rich_match);
+        match env.get(&h.chunk_id) {
+            Some((path, head)) => {
+                let test = live_first && env_for_item(path, head) == "test";
+                (u8::from(test), pierced, authority_tier(path))
+            }
+            // No marker evidence (unknown chunk) reads as live prose, not test.
+            None => (0, pierced, AuthorityTier::Prose),
         }
-        // No marker evidence (unknown chunk) reads as live prose, not test.
-        None => (0, AuthorityTier::Prose),
     });
 }
 
@@ -2831,8 +2909,8 @@ mod tests {
 
     #[test]
     fn rrf() {
-        let h1 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, section_id: None, path: String::new(), score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None }];
-        let h2 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, section_id: None, path: String::new(), score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None }];
+        let h1 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, section_id: None, path: String::new(), score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None, rich_match: false }];
+        let h2 = vec![Hit { chunk_id: 1, entity_id: None, item_id: None, source_id: None, section_id: None, path: String::new(), score: 0.0, content: "".into(), source_ref: "".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None, rich_match: false }];
         let fused = rrf_fuse_multi(vec![h1, h2], vec![1.0, 1.0]);
         assert_eq!(fused.len(), 1);
         assert!(fused[0].score > 0.0);
@@ -2857,6 +2935,7 @@ mod tests {
             boosted: false,
             keyword_matched: false,
             cosine: None,
+            rich_match: false,
         }
     }
 
@@ -2904,6 +2983,7 @@ mod tests {
             path: String::new(), score, content: content.into(), source_ref: "ref".into(),
             is_pii: false, status: Some("unverified".into()), content_truncated: false,
             provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
+            rich_match: false,
         }
     }
 
@@ -3134,6 +3214,7 @@ mod tests {
             path: String::new(), score, content: format!("distinct content {cid}"), source_ref: "ref".into(),
             is_pii: false, status: Some("unverified".into()), content_truncated: false,
             provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
+            rich_match: false,
         };
         let out = fuse_and_rank(&conn, None, Some(vec![mk(c1, 9.0), mk(c2, 4.0)]), 1.0, 365.0, 3, 10, true, "treasury routes");
         assert_eq!(out.len(), 2);
@@ -3373,8 +3454,8 @@ mod tests {
         let c1 = insert_chunk(&conn, Some(iid), Some(e1), "content Phoenix decision");
         let c2 = insert_chunk(&conn, Some(iid), None, "document chunk Phoenix billing is stable");
         // need created_at for age decay; ensure chunks have timestamps via init_db
-        let h1 = Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "c1".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None };
-        let h2 = Hit { chunk_id: c2, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 0.5, content: "c2".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None };
+        let h1 = Hit { chunk_id: c1, entity_id: Some(e1), item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 1.0, content: "c1".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None, rich_match: false };
+        let h2 = Hit { chunk_id: c2, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 0.5, content: "c2".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None, rich_match: false };
         let fused = fuse_and_rank(&conn, Some(vec![h1]), Some(vec![h2]), 1.0, 365.0, 3, 5, true, "phoenix billing");
         assert!(!fused.is_empty());
         // RRF should have merged both; diversity cap per item should keep both since distinct chunk_ids
@@ -3388,7 +3469,7 @@ mod tests {
     }
 
     fn summary_hit(chunk_id: i64, sid: i64, item: i64, sec: Option<i64>) -> Hit {
-        Hit { chunk_id, entity_id: None, item_id: Some(item), source_id: Some(sid), section_id: sec, path: String::new(), score: 1.0, content: String::new(), source_ref: String::new(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None }
+        Hit { chunk_id, entity_id: None, item_id: Some(item), source_id: Some(sid), section_id: sec, path: String::new(), score: 1.0, content: String::new(), source_ref: String::new(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None, rich_match: false }
     }
 
     #[test]
@@ -3482,6 +3563,7 @@ mod tests {
             boosted: false,
             keyword_matched: false,
             cosine: None,
+            rich_match: false,
         }
     }
 
@@ -4080,6 +4162,7 @@ mod tests {
                 boosted: false,
                 keyword_matched: false,
                 cosine: None,
+                rich_match: false,
             }],
         );
         assert_eq!(out.len(), 1);
@@ -4130,7 +4213,7 @@ mod tests {
         conn.execute("UPDATE ingested_items SET external_id='cfg/payment-routes.test.yml' WHERE id=?1", [tst]).unwrap();
         let c_live = insert_chunk(&conn, Some(live), None, "live treasury routes content");
         let c_test = insert_chunk(&conn, Some(tst), None, "test treasury routes content");
-        let mk = |cid: i64, iid: i64| Hit { chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 10.0, content: "x".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None };
+        let mk = |cid: i64, iid: i64| Hit { chunk_id: cid, entity_id: None, item_id: Some(iid), source_id: Some(sid), section_id: None, path: String::new(), score: 10.0, content: "x".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None, rich_match: false };
         // Default: the test file sinks below the live file, scores untouched.
         let mut hits = vec![mk(c_test, tst), mk(c_live, live)];
         prefer_live_envs(&conn, &mut hits, "which treasury routes are supported");
@@ -4186,7 +4269,7 @@ mod tests {
         let matched = insert_chunk(&conn, Some(iid), None, "ACME_FEE routing table content here");
         let other = insert_item(&conn, sid, "other");
         let c_other = insert_chunk(&conn, Some(other), None, "unrelated notes");
-        let mk_other = || Hit { chunk_id: c_other, entity_id: None, item_id: Some(other), source_id: Some(sid), section_id: None, path: String::new(), score: 15.0, content: "unrelated".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None };
+        let mk_other = || Hit { chunk_id: c_other, entity_id: None, item_id: Some(other), source_id: Some(sid), section_id: None, path: String::new(), score: 15.0, content: "unrelated".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None, rich_match: false };
         let mut hits = vec![mk_other()];
         filename_boost(&conn, &mut hits, "routing-config.yml ACME_FEE");
         assert_eq!(hits.len(), 2);
@@ -4230,7 +4313,7 @@ mod tests {
         let matched = insert_chunk(&conn, Some(iid), None, "ACME_FEE routing table content here with padding words");
         let other = insert_item(&conn, sid, "other");
         let c_other = insert_chunk(&conn, Some(other), None, "unrelated notes");
-        let mut hits = vec![Hit { chunk_id: c_other, entity_id: None, item_id: Some(other), source_id: Some(sid), section_id: None, path: String::new(), score: 15.0, content: "unrelated".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None }];
+        let mut hits = vec![Hit { chunk_id: c_other, entity_id: None, item_id: Some(other), source_id: Some(sid), section_id: None, path: String::new(), score: 15.0, content: "unrelated".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None, rich_match: false }];
         filename_boost(&conn, &mut hits, "routing-config.yml ACME_FEE");
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].chunk_id, matched, "named file must surface leaf bytes, not its summary");
@@ -4260,7 +4343,7 @@ mod tests {
         };
         let (c_live, e_live) = mk_ent_chunk(live, "live direction supported");
         let (c_test, e_test) = mk_ent_chunk(tst, "test direction supported");
-        let mk = |cid: i64, eid: i64| Hit { chunk_id: cid, entity_id: Some(eid), item_id: None, source_id: Some(sid), section_id: None, path: String::new(), score: 10.0, content: "x".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None };
+        let mk = |cid: i64, eid: i64| Hit { chunk_id: cid, entity_id: Some(eid), item_id: None, source_id: Some(sid), section_id: None, path: String::new(), score: 10.0, content: "x".into(), source_ref: "ref".into(), is_pii: false, status: Some("unverified".into()), content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None, rich_match: false };
         let mut hits = vec![mk(c_test, e_test), mk(c_live, e_live)];
         prefer_live_envs(&conn, &mut hits, "which treasury routes are supported");
         assert_eq!(hits.iter().map(|h| h.chunk_id).collect::<Vec<_>>(), vec![c_live, c_test], "test entity row must sink like a document chunk");
@@ -4318,6 +4401,7 @@ mod tests {
             path: String::new(), score: 10.0, content: content.into(), source_ref: "ref".into(),
             is_pii: false, status: Some("unverified".into()), content_truncated: false,
             provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
+            rich_match: false,
         };
         let out = fuse_and_rank(&conn, None, Some(vec![mk(c_old, old, "old treasury"), mk(c_fresh, fresh, "fresh treasury")]), 1.0, 365.0, 3, 10, true, "treasury routes");
         assert_eq!(out.len(), 2);
@@ -4348,6 +4432,7 @@ mod tests {
             path: String::new(), score, content: content.into(), source_ref: "ref".into(),
             is_pii: false, status: Some("unverified".into()), content_truncated: false,
             provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
+            rich_match: false,
         };
         let run = || {
             fuse_and_rank(
@@ -4390,6 +4475,7 @@ mod tests {
             path: String::new(), score, content: content.into(), source_ref: "ref".into(),
             is_pii: false, status: Some("unverified".into()), content_truncated: false,
             provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
+            rich_match: false,
         };
         let lists = || {
             (
@@ -4581,6 +4667,7 @@ mod tests {
             path: String::new(), score, content: content.into(), source_ref: "ref".into(),
             is_pii: false, status: Some("unverified".into()), content_truncated: false,
             provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
+            rich_match: false,
         };
         let bodies = |cid: i64| match cid {
             c if c == c_adr => (adr, "adr cursor pagination decision record content"),
@@ -4604,6 +4691,91 @@ mod tests {
             let tied = fuse_and_rank(&conn, None, Some(single), 1.0, 365.0, 3, 3, true, "cursor pagination enforced");
             assert_eq!(tied.len(), 3);
             assert_eq!(tied[0].chunk_id, c_adr, "generated/lint must never beat a same-score ADR");
+        }
+    }
+
+    /// R47.1: rich-evidence Prose pierces the tier partition — sixty
+    /// one-term Code chunks must not bury a four-term Prose chunk below
+    /// the cut (the PDF burial shape: weak per-chunk scores, strong
+    /// multi-term evidence, Prose tier).
+    #[test]
+    fn pierce_rich_prose_above_thin_code_flood() {
+        let (_dir, conn) = harness_db();
+        let src = insert_source(&conn, "s", "internal");
+        for i in 0..60 {
+            let item = insert_item(&conn, src, &format!("svc{i}.go"));
+            insert_chunk(&conn, Some(item), None, "process the request queue");
+        }
+        let prose = insert_item(&conn, src, "field-manual.md");
+        insert_chunk(
+            &conn,
+            Some(prose),
+            None,
+            "quasar flux capacitor requirements for the warp drive process",
+        );
+        let hits = orchestrate_fusion(
+            &conn,
+            "quasar flux requirements process",
+            None,
+            None,
+            20,
+            1.0,
+            365.0,
+            3,
+            true,
+        );
+        assert!(
+            hits.iter().any(|h| h.item_id == Some(prose)),
+            "rich prose buried below {} code hits",
+            hits.len()
+        );
+        // Mechanism pin: the 4-term prose hit is flagged rich, the 1-term
+        // code hits are not.
+        let leg = keyword_search(&conn, "quasar flux requirements process", None, 100, true);
+        let rich: Vec<i64> = leg.iter().filter(|h| h.rich_match).filter_map(|h| h.item_id).collect();
+        assert_eq!(rich, vec![prose], "only the rich prose hit may pierce");
+    }
+
+    #[test]
+    fn marked_terms_counts_distinct_spans() {
+        assert!(marked_terms("no marks here").is_empty());
+        assert!(marked_terms("dangling \x01open").is_empty());
+        let two = marked_terms("a \x01Quasar\x02 b \x01flux\x02 c \x01QUASAR\x02");
+        assert_eq!(two.len(), 2, "case folds, duplicates merge");
+        let one = marked_terms("\x01requirements\x02");
+        assert_eq!(one.len(), 1);
+    }
+
+    /// R47.1 guard: the tiers' purpose survives the pierce — one-term Prose
+    /// still sorts below a five-term exact Config match (eval `flags-01`
+    /// shape). Both pierce here; score order keeps Config first.
+    #[test]
+    fn tiers_still_bury_thin_prose_below_exact_config() {
+        let (_dir, conn) = harness_db();
+        let src = insert_source(&conn, "s", "internal");
+        let config = insert_item(&conn, src, "routing-config.yml");
+        insert_chunk(&conn, Some(config), None, "cache key tenant identifier settle codes");
+        for i in 0..10 {
+            let item = insert_item(&conn, src, &format!("note{i}.md"));
+            insert_chunk(&conn, Some(item), None, "notes about the cache");
+        }
+        let hits = orchestrate_fusion(
+            &conn,
+            "cache key tenant identifier settle",
+            None,
+            None,
+            20,
+            1.0,
+            365.0,
+            3,
+            true,
+        );
+        let pos = |iid: i64| hits.iter().position(|h| h.item_id == Some(iid));
+        let config_pos = pos(config).expect("exact config must surface");
+        let thin_best =
+            hits.iter().enumerate().filter(|(_, h)| h.item_id != Some(config)).map(|(i, _)| i).min();
+        if let Some(thin) = thin_best {
+            assert!(config_pos < thin, "exact config must lead thin prose");
         }
     }
 
@@ -4631,6 +4803,7 @@ mod tests {
             path: String::new(), score, content: "x".into(), source_ref: "ref".into(),
             is_pii: false, status: None, content_truncated: false,
             provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
+            rich_match: false,
         };
         let mut hits = vec![mk(c_test_adr, test_adr, 9.0), mk(c_live_lint, live_lint, 8.0), mk(c_live_adr, live_adr, 7.0)];
         prefer_authority_tiers(&conn, &mut hits, "cursor pagination enforced");
@@ -4660,6 +4833,7 @@ mod tests {
             path: String::new(), score, content: "x".into(), source_ref: "ref".into(),
             is_pii: false, status: None, content_truncated: false,
             provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
+            rich_match: false,
         };
         // Default: the ADR leads despite trailing on score.
         let mut hits = vec![mk(c_lint, lint, 10.0), mk(c_adr, adr, 9.0)];
@@ -4704,6 +4878,7 @@ mod tests {
             path: String::new(), score, content: "x".into(), source_ref: "ref".into(),
             is_pii: false, status: None, content_truncated: false,
             provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None,
+            rich_match: false,
         };
         let mut hits = vec![mk(c_prose, prose, 10.0), mk(c_cfg, cfg, 9.5), mk(c_code, code, 9.0)];
         prefer_authority_tiers(&conn, &mut hits, "proration flags glossary");
@@ -4720,7 +4895,7 @@ mod tests {
         let cid = insert_chunk(&conn, Some(iid), None, "ACME_FEE routing table content here");
         let other = insert_item(&conn, sid, "other");
         let c_other = insert_chunk(&conn, Some(other), None, "unrelated notes");
-        let mk_other = || Hit { chunk_id: c_other, entity_id: None, item_id: Some(other), source_id: Some(sid), section_id: None, path: String::new(), score: 15.0, content: "unrelated".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None };
+        let mk_other = || Hit { chunk_id: c_other, entity_id: None, item_id: Some(other), source_id: Some(sid), section_id: None, path: String::new(), score: 15.0, content: "unrelated".into(), source_ref: "ref".into(), is_pii: false, status: None, content_truncated: false, provenance: Vec::new(), decay: 1.0, boosted: false, keyword_matched: false, cosine: None, rich_match: false };
         let mut hits = vec![mk_other()];
         filename_boost(&conn, &mut hits, "what is in routing-config.yml?");
         assert_eq!(hits.len(), 2);

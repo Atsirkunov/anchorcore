@@ -10,8 +10,8 @@ use axum::{
 
 use crate::{
     answer, assets_api, auth, backup, entities, frontend, fsbrowse, glossary, health, items, jobs,
-    mcp_setup, ollama, projects, records_api, review, sections, security, settings, skills_setup,
-    sources, stubs, system, tags,
+    mcp_setup, ollama, projects, records_api, report, review, sections, security, settings,
+    skills_setup, sources, stubs, system, tags,
 };
 
 pub fn build_router(state: health::AppState) -> Router {
@@ -86,6 +86,7 @@ pub fn build_router(state: health::AppState) -> Router {
         .route("/system/mcp/disconnect", post(mcp_setup::disconnect_handler))
         .route("/system/logs", get(system::logs_handler))
         .route("/system/logs/:name", get(system::log_download_handler))
+        .route("/system/report", get(report::report_handler))
         .route("/system/embed-model", get(crate::embed_model_api::status_handler))
         .route("/system/embed-model/download", post(crate::embed_model_api::download_handler))
         .route("/system/ollama/start", post(system::ollama_start_handler))
@@ -119,7 +120,10 @@ async fn qa_handler(
     axum::extract::State(state): axum::extract::State<health::AppState>,
     axum::Json(req): axum::Json<answer::AskRequest>,
 ) -> axum::Json<answer::AskResponse> {
+    let question = req.question.clone();
+    let scope = report::scope_label(req.project_id, req.public_only.unwrap_or(false));
     let resp = answer::ask(&state.settings, &state.embedder, req, &state.data_dir).await;
+    report::record_ask(&question, scope, &resp);
     axum::Json(resp)
 }
 
@@ -128,7 +132,10 @@ async fn qa_public_handler(
     axum::Json(mut req): axum::Json<answer::AskRequest>,
 ) -> axum::Json<answer::AskResponse> {
     req.public_only = Some(true);
+    let question = req.question.clone();
+    let scope = report::scope_label(req.project_id, true);
     let resp = answer::ask(&state.settings, &state.embedder, req, &state.data_dir).await;
+    report::record_ask(&question, scope, &resp);
     axum::Json(resp)
 }
 
@@ -136,6 +143,9 @@ async fn search_handler(
     axum::extract::State(state): axum::extract::State<health::AppState>,
     axum::Json(req): axum::Json<answer::SearchRequest>,
 ) -> axum::Json<answer::SearchResponse> {
+    let query = req.query.clone();
+    let scope = report::scope_label(req.project_id, req.public_only.unwrap_or(false));
     let resp = answer::search(&state.settings, &state.embedder, req, &state.data_dir).await;
+    report::record_search(&query, scope, &resp);
     axum::Json(resp)
 }
