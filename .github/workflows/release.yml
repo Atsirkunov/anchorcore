@@ -5,12 +5,19 @@ name: Release
 # Assets (Rust — frontend/dist embedded via include_dir!, no Python runtime;
 # R20.8: one executable per OS — the app and `anchorcore mcp` are the same file):
 #   AnchorCore-windows.zip  — anchorcore.exe
-#   AnchorCore-macos.zip    — AnchorCore.app bundle (ad-hoc signed)
+#   AnchorCore-macos.dmg    — AnchorCore.app + /Applications symlink (R41.2:
+#                             drag-to-Applications; app ad-hoc signed, not
+#                             notarized — the DMG itself is unsigned)
+#   AnchorCore-macos.zip    — the same signed AnchorCore.app, zipped. Kept
+#                             alongside the DMG for the in-app update card
+#                             (system.rs update_asset_name) and existing links /
+#                             setup-skill installs; drop it in a later release.
 #   AnchorCore-linux.zip    — anchorcore
 # Also publishes the Team container image (hosting/Dockerfile) to GHCR:
 #   ghcr.io/atsirkunov/anchorcore:<version> and :team
-# The website Download buttons link straight at the latest windows/macos
-# assets (website/src/main.ts); keep these file names stable.
+#   SHA256SUMS              — sha256 of every asset above
+# The website Download buttons link straight at the latest assets
+# (website/src/main.ts: macOS -> the .dmg); keep these file names stable.
 # The site itself (anchorcore.dev, Workers Static Assets) is deployed by the
 # deploy-website job below — but only when website/ changed since the previous
 # tag, so version-only releases don't churn the edge. Requires repo secrets
@@ -109,8 +116,8 @@ jobs:
       - name: Cargo build --release
         working-directory: rust
         run: cargo build --release --manifest-path Cargo.toml
-      # Same bundle layout as build.sh so local and CI zips are identical:
-      # AnchorCore.app wrapping the Rust binary (+ MCP sidecar).
+      # Same bundle layout as build.sh so local and CI builds are identical:
+      # AnchorCore.app wrapping the Rust binary (`anchorcore mcp` is a mode).
       - name: Bundle AnchorCore.app
         run: |
           VERSION="$(grep -E '^version = ' rust/Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
@@ -147,23 +154,20 @@ jobs:
           cd dist
           rm -f AnchorCore-macos.zip
           zip -rq AnchorCore-macos.zip AnchorCore.app
-      - name: Assert the MCP-capable binary (R20.5)
+      # R41.2: drag-to-Applications DMG (shared with build.sh). Packs the
+      # already-signed bundle and refuses an unsigned one.
+      - name: Pack DMG
+        run: bash scripts/make_macos_dmg.sh dist/AnchorCore.app dist/AnchorCore-macos.dmg
+      # R20.5 + R41.2: mount the DMG read-only, assert AnchorCore.app + the
+      # /Applications symlink and `codesign --verify --deep --strict`, run the
+      # MCP handshake (initialize + tools/list, 6 tools incl. search) against
+      # AnchorCore.app/Contents/MacOS/AnchorCore inside the mounted payload,
+      # detach. The zip carries the same bundle; its listing is checked too.
+      - name: Assert the MCP-capable binary in the DMG (R20.5)
         run: |
           set -e
           unzip -l dist/AnchorCore-macos.zip | grep -q 'AnchorCore.app/Contents/MacOS/AnchorCore' || { echo "FAULT: app binary missing from AnchorCore-macos.zip"; exit 1; }
-          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | ./dist/AnchorCore.app/Contents/MacOS/AnchorCore mcp > /tmp/mcp.json || echo "note: mcp exited $? after stdin closed (output is what is asserted)"
-          grep -q '"name":"ask"' /tmp/mcp.json || { echo "FAULT: MCP tool 'ask' missing from tools/list"; cat /tmp/mcp.json; exit 1; }
-
-          grep -q '"name":"search"' /tmp/mcp.json || { echo "FAULT: MCP tool 'search' missing from tools/list"; cat /tmp/mcp.json; exit 1; }
-
-          grep -q '"name":"get_entity"' /tmp/mcp.json || { echo "FAULT: MCP tool 'get_entity' missing from tools/list"; cat /tmp/mcp.json; exit 1; }
-
-          grep -q '"name":"get_source"' /tmp/mcp.json || { echo "FAULT: MCP tool 'get_source' missing from tools/list"; cat /tmp/mcp.json; exit 1; }
-
-          grep -q '"name":"list_sources"' /tmp/mcp.json || { echo "FAULT: MCP tool 'list_sources' missing from tools/list"; cat /tmp/mcp.json; exit 1; }
-
-          grep -q '"name":"memory_status"' /tmp/mcp.json || { echo "FAULT: MCP tool 'memory_status' missing from tools/list"; cat /tmp/mcp.json; exit 1; }
-          echo "ok (macos): the shipped binary runs the stdio MCP server with 6 tools incl. search"
+          bash scripts/verify_macos_dmg.sh dist/AnchorCore-macos.dmg
       - name: Assert the app-served agent skills (R23.6)
         run: |
           set -e
@@ -186,7 +190,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AnchorCore-macos
-          path: dist/AnchorCore-macos.zip
+          path: |
+            dist/AnchorCore-macos.dmg
+            dist/AnchorCore-macos.zip
 
   build-rust-windows:
     name: Rust Windows (x86_64)
@@ -383,7 +389,7 @@ jobs:
         run: |
           set -e
           cd artifacts
-          sha256sum AnchorCore-windows.zip AnchorCore-macos.zip AnchorCore-linux.zip > SHA256SUMS
+          sha256sum AnchorCore-windows.zip AnchorCore-macos.dmg AnchorCore-macos.zip AnchorCore-linux.zip > SHA256SUMS
           cat SHA256SUMS
       - name: Publish release assets
         uses: softprops/action-gh-release@v2

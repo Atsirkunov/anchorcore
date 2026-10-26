@@ -12,10 +12,10 @@ you connect a cloud model.
 Free for personal use. No account, no Docker, no setup:
 
 - [Download for Windows](https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-windows.zip)
-- [Download for macOS](https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-macos.zip)
+- [Download for macOS](https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-macos.dmg) (DMG)
 - [Download for Linux](https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-linux.zip)
 
-Unzip, run, and the app opens in your browser. Your data stays in `~/.anchorcore`
+macOS: open the DMG and drag AnchorCore onto Applications. Windows/Linux: unzip. Run it, and the app opens in your browser. Your data stays in `~/.anchorcore`
 on your machine. Connectors you enable (Drive, Jira, Linear, REST) and any cloud model
 you configure make network requests; see the
 [security notes](https://anchorcore.dev/security) for the full list.
@@ -23,7 +23,7 @@ The app keeps running in the system tray (Windows) / menu bar (macOS) — quit
 it from there; closing the browser tab doesn't stop it. Linux has no tray yet.
 Verify a download against `SHA256SUMS` on the release page.
 
-> First launch: move AnchorCore to `/Applications`. macOS: open it, then System Settings → Privacy & Security → Open Anyway (the app isn't Apple-notarized yet).
+> First launch: run AnchorCore from `/Applications`. macOS: open it, then System Settings → Privacy & Security → Open Anyway (the app isn't Apple-notarized yet).
 > Windows: SmartScreen → More info → Run anyway. (Windows and Linux builds aren't code-signed; nothing is store-signed.)
 
 ## 60-second start

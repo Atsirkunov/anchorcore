@@ -19,16 +19,18 @@ cd frontend && npm run build && cd ..
 cargo build --release      # from rust/ (or ./build.sh / .\build.ps1 from the repo root)
 ```
 
-`release.yml` builds `AnchorCore-{windows,macos,linux}.zip` on every `v*` tag (frontend → release build →
-ad-hoc `codesign` on macOS). Windows builds use the MinGW (GNU) toolchain — see `AGENTS.md`.
+`release.yml` builds `AnchorCore-{windows,macos,linux}.zip` + `AnchorCore-macos.dmg` on every `v*` tag
+(frontend → release build → ad-hoc `codesign` on macOS → DMG). Windows builds use the MinGW (GNU) toolchain — see `AGENTS.md`.
 
-macOS ships an `AnchorCore.app` bundle so Finder launches it without a Terminal window. It is ad-hoc
-signed, not notarized: first launch needs System Settings → Privacy & Security → Open Anyway. Windows and
-Linux builds are not code-signed.
+macOS ships an `AnchorCore.app` bundle so Finder launches it without a Terminal window, packed as
+`AnchorCore-macos.dmg` (the app + an `/Applications` symlink to drag onto; R41.2) and, for now, also as
+`AnchorCore-macos.zip`. It is ad-hoc signed, not notarized: first launch needs System Settings → Privacy &
+Security → Open Anyway. Windows and Linux builds are not code-signed.
 
 ## 3. First run (tester view)
 
-1. Unzip → double-click `anchorcore.exe` / `AnchorCore.app` (move the app to `/Applications` on macOS).
+1. macOS: open the DMG, drag `AnchorCore.app` onto Applications, open it from `/Applications`. Windows/Linux:
+   unzip → double-click `anchorcore.exe` / run `anchorcore`.
 2. Ollama starts if installed; the browser opens `http://127.0.0.1:8000`; the tray/menu-bar icon keeps the
    app running (`tray.md`).
 3. The onboarding wizard asks who writes answers (agent or local model), then connects a folder.
