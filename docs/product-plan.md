@@ -209,6 +209,9 @@ DONE items are one-line verdicts — full narratives lived here until 2026-10-19
 ### Open
 
 ### B16. who_knows — expertise queries (P1 — Cerebras learning)
+
+**Status (2026-10-26): CLOSED.** The who-knows leg and graph expansion were deleted in R45.9 (no production callers); ownership is answered by `GET /actions` (`Owner:` record fields, R45.8). Reopening needs a new owner decision — a ranking built from model-extracted authorship would contradict R45.18.
+
 **Problem:** a top question in every org is "who is the expert in Y?" Cerebras surfaces people with demonstrated expertise from the index.
 
 **Scope:**
@@ -403,6 +406,8 @@ ones. No stranger can verify "answers well" without trusting us.
 baseline); a release run produces the answer-quality table; adding a tester
 question as a golden case takes minutes and is documented.
 
+**Status (2026-10-26):** the deterministic half shipped — `cargo test -p anchorcore --test retrieval_eval` (golden pairs, fused recall 1.00 gate, runs in CI; fixture discipline in `tests/eval_data/README.md`). Open: only the model-judged answer eval, which matters for `local` mode alone (in `agent` mode the agent composes the answer) — P3.
+
 ### B61. Backup / export / device migration + encrypted device sync (P1 — plan 2026-10-11)
 
 **Problem:** there is no way to move AnchorCore to a new device or restore after data loss. `~/.anchorcore` holds the DB, but secrets live in the OS keychain (or a Fernet fallback whose key file sits next to the ciphertext), folder paths and source refs are machine-specific, and re-syncing cannot restore review work (verifications, disputes, merges, PII decisions). The future hosted tier promises sync between devices ("AI already knows"); without a design it becomes "upload your company memory to our servers".
@@ -449,19 +454,19 @@ Explicit order — v1 core, hardening, scale and the website are DONE (v1.0.10�
 | 1 | **B14.2 MCP HTTP transport** | **P1** | stdio shipped + tested local without UI (R12.5); HTTP + tokens unblock share links |
 | 2 | B22 Jira/Linear live validation | **P1** | sandbox fixtures; both connectors exist, need real-instance proof |
 | — | B9 Document type coverage | ✅ DONE (R24.2 + R24.3) | Business formats (Office/ODF/RTF/EML/PDF) shared by folder + Drive, plus code languages and `.gitignore`-aware repo walking; legacy `.doc`/`.ppt` = export first |
-| 4 | B16 who_knows (full) | **P1** | expertise ranking + evidence (minimal `who_knows` tool shipped in B17) |
+| — | B16 who_knows (full) | CLOSED 2026-10-26 | the who-knows leg was deleted in R45.9; ownership is `GET /actions` |
 | 5 | B29 remainder: CHANGELOG + hosted prep | **P1** | website shipped; changelog discipline + pilot prep open |
-| 6 | B28 Drive OAuth polish | **P2** | OAuth browser flow + `data/drive/<name>/` mirror |
+| 6 | B28 Drive OAuth polish | **P2** | OAuth browser flow + `data/drive/<name>/` mirror; the token-refresh half is `rust/BACKLOG.md` R43.14 |
 | 7 | B45 Slack | **P2** | export-ZIP import local (free); live connector = Teams/hosted feature |
 | — | B47 deploy website | ✅ DONE | live at anchorcore.dev (Cloudflare Workers Static Assets) |
-| 10 | B48 end-to-end test | **P1** | Windows §1 + MCP §2 PASS (simulated-clean); Mac §3 + Docker §4 await owner |
+| 10 | B48 end-to-end test | **P1** | Windows §1 + MCP §2 PASS (simulated-clean); Mac §3 rides the R41.2 DMG clean-Mac run (with backup A1–A3); Docker §4 awaits owner |
 | 11 | B49 hosted design | **P2** | owner design session → decisions in hosted-cloud-plan.md/v2v3 |
 | 12 | B50 sample corpus in releases | **P1** | wizard sample path dead on release installs (from B48) |
-| 13 | B51 console feedback for exe | **P2** | windowed exe silent in terminal runs (from B48) |
+| 13 | B51 console feedback for exe | **P2** | partial: `attach_parent_console` (`cli.rs`) covers the backup/import subcommands; a plain server run from a terminal is still silent |
 | — | B52 onboarding Ollama probe | ✅ DONE (via B54) | real probe + install guidance in wizard |
 | — | B54 dummy-proof model setup | ✅ DONE (CI gates Rust) | guided wizard + Pull button + sticky degraded banner |
 | 15 | B53 citation path cosmetics | **P3** | verbatim `\\?\` refs + empty `path` on Windows (from B48) |
-| 16 | B55 eval harness | **P1** | golden Q&A set + CI retrieval gate + release answer eval |
+| 16 | B55 answer-eval half | **P3** | retrieval gate shipped (`tests/retrieval_eval.rs`); left: model-judged answer eval, `local` mode only |
 | — | B56 watcher content edits | ✅ DONE (cargo 118/118) | mtime+size fingerprints; edits auto-sync; Obsidian promise holds |
 | — | B57 deleted-file cleanup | ✅ DONE (cargo 118/118) | hard-delete on sync; `rest`/empty guarded; job result gains `purged` |
 | — | B58 degraded-answer honesty | ✅ DONE (cargo 118/118, vitest 22/22) | `mode`+`retrieval` flags; per-answer banner; strict query embed |

@@ -199,7 +199,8 @@ Code constants (need a rebuild; change only with a failing test in hand):
   dropped every LLM row and every rule row failing the initialism check.
   Backup archives carry `vocab` records + the item's `is_glossary` mark.
 - Still open: suspect detector duplicated pending reunification (R39.13,
-  P3); cross-encoder reranker deferred (R39.11, owner call).
+  P3). The cross-encoder reranker (R39.11) was closed 2026-10-26 — no model
+  scores a chunk; in agent mode the agent reranks.
 
 ## Code pointers
 

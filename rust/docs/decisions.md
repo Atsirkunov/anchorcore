@@ -451,3 +451,10 @@ ADR log. Append newest first.
   - *Attribute images from the page resource dict* — rejected: shared resources would attach every image to every page.
   - *Decode CMYK/Indexed/JPX* — deferred: it needs color management or codecs. Skipped images stay out until real corpora show they matter (R46.14 measurement).
 * **Consequences:** `lopdf` + `png` are now direct deps (the same versions `pdf-extract` already pulls in). Overlapping prose chunks re-read the same marker, so each ref is capped at its count in the item text. Clearing a person's caption gives back the page-derived split (`embedded` or `none`) through `assets::embed_sync_attribution`. Captions on PDF images sit at `p. N > caption by a person`.
+
+---
+
+## 2026-10-26 — Backlog review: close what the model-free direction made moot
+
+* **Decision:** every open row in `rust/BACKLOG.md` and `docs/product-plan.md` was checked against the code. Closed as out of direction: R45.11 (LLM enrichment — R45.18 deleted `extract_entities=llm`), R39.11 (cross-encoder reranker — a model would score chunks again; in agent mode the agent reranks), B16 (who-knows ranking — leg deleted in R45.9; ownership is `GET /actions`). Closed as covered: R36.4 (uniform `embed_input` + extractive section summaries), R36.13 (glossary, R45.13), R36.12 (no graph-evidence consumer after R45.9), R33.7 (contract ported to `tests/api_gates.rs` by R45.16), R36.9 (into R43.12), R42.1 (into R46.14). Rescoped to what remains after R45.18: R30.2 (classify concurrency → embed batching, the measured bottleneck), R30.3, R30.5, R30.6 (answer path only), R35.2 (embed + answer, no classify), R43.17, R43.20, R43.21. R45.10 raised to P1 as the data half of R45.18.
+* **Context:** R45.18 removed every model from the ingest path, but rows written before it still assumed classify/distill calls, LLM summaries or graph evidence. Embeddings are not classification, so the built-in embedder track (R45.3/R45.4) and deterministic structure work (Phase 36) stay. Shipped rows and fully shipped phases moved verbatim to `BACKLOG-archive.md`; reasons per row are in BACKLOG.md → Closed 2026-10-26.
