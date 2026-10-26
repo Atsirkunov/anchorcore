@@ -31,7 +31,8 @@ export function McpConnectCard() {
   const env = defaultBackend ? undefined : { ANCHOR_BACKEND_URL: backendUrl };
   const command = mcp?.command ?? "";
   const args = mcp?.args ?? ["mcp"];
-  const claudeLine = command ? `claude mcp add anchorcore -- "${command}" ${args.join(" ")}` : "";
+  const shellArg = (a: string) => (/\s/.test(a) ? `"${a}"` : a);
+  const claudeLine = command ? `claude mcp add anchorcore -- "${command}" ${args.map(shellArg).join(" ")}` : "";
   const mcpServersJson = command
     ? JSON.stringify(
         {

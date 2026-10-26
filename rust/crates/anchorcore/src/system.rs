@@ -214,6 +214,8 @@ pub async fn errors_handler(
 pub async fn mcp_info_handler(State(state): State<AppState>) -> Json<Value> {
     let command = std::env::current_exe().ok().map(|p| p.to_string_lossy().to_string());
     let data_dir = state.data_dir.clone();
+    // R20.11: a non-default data dir rides along so `anchorcore mcp` finds runtime.json.
+    let args = crate::runtime::mcp_args(std::path::Path::new(&data_dir));
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
@@ -226,7 +228,7 @@ pub async fn mcp_info_handler(State(state): State<AppState>) -> Json<Value> {
         serde_json::json!({
             "mode": "bundled",
             "command": command,
-            "args": ["mcp"],
+            "args": args,
             "calls": calls,
             "last_call_at": last_call_at,
         })

@@ -125,8 +125,9 @@ resolves the backend in this order:
 
 The MCP side resolves the data dir like the app does: `anchorcore mcp --data-dir
 <dir>` → `ANCHOR_DATA_DIR` → the `ANCHOR_DATABASE_URL` parent → `~/.anchorcore`. So
-`anchorcore --port 8123` needs nothing extra; a custom `--data-dir` needs the same
-flag (or env) on the MCP entry. The discovered URL is cached until a call fails
+`anchorcore --port 8123` needs nothing extra. When the app runs on any other data
+dir (`--data-dir`, `ANCHOR_DATA_DIR`), the System card and Connect add
+`--data-dir <absolute dir>` to the MCP entry for you. The discovered URL is cached until a call fails
 to connect, then re-resolved, so restarting the app on another port needs no
 client restart. When nothing answers, tool errors say how to start the app.
 

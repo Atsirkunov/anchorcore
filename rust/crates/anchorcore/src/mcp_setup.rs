@@ -7,10 +7,13 @@
 //! `mcp add` command when the CLI is on PATH, and JSONC/hand-edited configs
 //! are never rewritten (the UI falls back to a copy-paste snippet).
 
+use axum::extract::State;
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+
+use crate::health::AppState;
 
 fn home_dir() -> Option<PathBuf> {
     std::env::var("HOME")
@@ -156,16 +159,16 @@ fn write_json_with_backup(path: &Path, doc: &Value) -> Result<Option<PathBuf>, S
 
 // --- Claude Desktop / Cursor / Claude Code user scope: `mcpServers.<name>` ---
 
-fn server_entry(exe: &str) -> Value {
-    json!({"command": exe, "args": ["mcp"]})
+fn server_entry(exe: &str, args: &[String]) -> Value {
+    json!({"command": exe, "args": args})
 }
 
-fn set_mcp_server(path: &Path, exe: &str) -> Result<Option<PathBuf>, String> {
+fn set_mcp_server(path: &Path, exe: &str, args: &[String]) -> Result<Option<PathBuf>, String> {
     let mut doc = read_json(path)?.unwrap_or_else(|| json!({}));
     let obj = doc.as_object_mut().ok_or_else(|| format!("{}: top level is not a JSON object", path.display()))?;
     let servers = obj.entry("mcpServers").or_insert_with(|| json!({}));
     let servers = servers.as_object_mut().ok_or_else(|| format!("{}: mcpServers is not a JSON object", path.display()))?;
-    servers.insert("anchorcore".to_string(), server_entry(exe));
+    servers.insert("anchorcore".to_string(), server_entry(exe, args));
     write_json_with_backup(path, &doc)
 }
 
@@ -189,14 +192,15 @@ fn json_server_connected(path: &Path, exe: &str) -> bool {
 
 // --- opencode V2: `mcp.servers.<name>` with `type: local` + `command` array ---
 
-fn set_opencode_server(path: &Path, exe: &str) -> Result<Option<PathBuf>, String> {
+fn set_opencode_server(path: &Path, exe: &str, args: &[String]) -> Result<Option<PathBuf>, String> {
     let mut doc = read_json(path)?.unwrap_or_else(|| json!({}));
     let obj = doc.as_object_mut().ok_or_else(|| format!("{}: top level is not a JSON object", path.display()))?;
     let mcp = obj.entry("mcp").or_insert_with(|| json!({}));
     let mcp = mcp.as_object_mut().ok_or_else(|| format!("{}: mcp is not a JSON object", path.display()))?;
     let servers = mcp.entry("servers").or_insert_with(|| json!({}));
     let servers = servers.as_object_mut().ok_or_else(|| format!("{}: mcp.servers is not a JSON object", path.display()))?;
-    servers.insert("anchorcore".to_string(), json!({"type": "local", "command": [exe, "mcp"]}));
+    let command: Vec<&str> = std::iter::once(exe).chain(args.iter().map(String::as_str)).collect();
+    servers.insert("anchorcore".to_string(), json!({"type": "local", "command": command}));
     write_json_with_backup(path, &doc)
 }
 
@@ -243,7 +247,7 @@ fn codex_connected(text: &str, exe: &str) -> bool {
     text.contains("[mcp_servers.anchorcore]") && text.contains(&format!("command = \"{}\"", toml_escape(exe)))
 }
 
-fn set_codex_server(path: &Path, exe: &str) -> Result<Option<PathBuf>, String> {
+fn set_codex_server(path: &Path, exe: &str, args: &[String]) -> Result<Option<PathBuf>, String> {
     let existing = if path.exists() {
         std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?
     } else {
@@ -256,7 +260,8 @@ fn set_codex_server(path: &Path, exe: &str) -> Result<Option<PathBuf>, String> {
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(&format!("\n[mcp_servers.anchorcore]\ncommand = \"{}\"\nargs = [\"mcp\"]\n", toml_escape(exe)));
+    let args: Vec<String> = args.iter().map(|a| format!("\"{}\"", toml_escape(a))).collect();
+    text.push_str(&format!("\n[mcp_servers.anchorcore]\ncommand = \"{}\"\nargs = [{}]\n", toml_escape(exe), args.join(", ")));
     write_text_with_backup(path, text)
 }
 
@@ -345,46 +350,51 @@ fn file_result(path: &Path, backup: Option<PathBuf>) -> Value {
     })
 }
 
-fn connect_claude_code(exe: &str) -> Result<Value, String> {
+fn connect_claude_code(exe: &str, args: &[String]) -> Result<Value, String> {
     if !cli_available("claude") {
         return Err("`claude` CLI not found on PATH — install Claude Code, or copy the command line from the card".to_string());
     }
-    run_cli("claude", &["mcp", "add", "-s", "user", "anchorcore", "--", exe, "mcp"])?;
+    run_cli("claude", &cli_add(&["mcp", "add", "-s", "user", "anchorcore", "--", exe], args))?;
     Ok(json!({"method": "cli"}))
 }
 
-fn connect_mcp_servers_json(path: Option<PathBuf>, exe: &str) -> Result<Value, String> {
+fn connect_mcp_servers_json(path: Option<PathBuf>, exe: &str, args: &[String]) -> Result<Value, String> {
     let path = file_target(path)?;
-    let backup = set_mcp_server(&path, exe)?;
+    let backup = set_mcp_server(&path, exe, args)?;
     Ok(file_result(&path, backup))
 }
 
-fn connect_opencode(exe: &str) -> Result<Value, String> {
+fn connect_opencode(exe: &str, args: &[String]) -> Result<Value, String> {
     if cli_available("opencode") {
-        run_cli("opencode", &["mcp", "add", "anchorcore", "--global", "--", exe, "mcp"])?;
+        run_cli("opencode", &cli_add(&["mcp", "add", "anchorcore", "--global", "--", exe], args))?;
         return Ok(json!({"method": "cli"}));
     }
     let path = file_target(opencode_path())?;
     jsonc_guard(&path)?;
-    Ok(file_result(&path, set_opencode_server(&path, exe)?))
+    Ok(file_result(&path, set_opencode_server(&path, exe, args)?))
 }
 
-fn connect_codex(exe: &str) -> Result<Value, String> {
+fn connect_codex(exe: &str, args: &[String]) -> Result<Value, String> {
     if cli_available("codex") {
-        run_cli("codex", &["mcp", "add", "anchorcore", "--", exe, "mcp"])?;
+        run_cli("codex", &cli_add(&["mcp", "add", "anchorcore", "--", exe], args))?;
         return Ok(json!({"method": "cli"}));
     }
     let path = file_target(codex_path())?;
-    Ok(file_result(&path, set_codex_server(&path, exe)?))
+    Ok(file_result(&path, set_codex_server(&path, exe, args)?))
 }
 
-fn connect_client(id: &str, exe: &str) -> Result<Value, String> {
+/// A client CLI's `add … -- <exe>` prefix followed by the entry args.
+fn cli_add<'a>(prefix: &[&'a str], args: &'a [String]) -> Vec<&'a str> {
+    prefix.iter().copied().chain(args.iter().map(String::as_str)).collect()
+}
+
+fn connect_client(id: &str, exe: &str, args: &[String]) -> Result<Value, String> {
     match id {
-        "claude-code" => connect_claude_code(exe),
-        "claude-desktop" => connect_mcp_servers_json(claude_desktop_path(), exe),
-        "cursor" => connect_mcp_servers_json(cursor_path(), exe),
-        "opencode" => connect_opencode(exe),
-        "codex" => connect_codex(exe),
+        "claude-code" => connect_claude_code(exe, args),
+        "claude-desktop" => connect_mcp_servers_json(claude_desktop_path(), exe, args),
+        "cursor" => connect_mcp_servers_json(cursor_path(), exe, args),
+        "opencode" => connect_opencode(exe, args),
+        "codex" => connect_codex(exe, args),
         _ => Err(format!("unknown client '{id}'")),
     }
 }
@@ -469,11 +479,12 @@ pub async fn clients_handler() -> Json<Value> {
 }
 
 /// POST /system/mcp/connect — explicit user action from the UI only.
-pub async fn connect_handler(Json(req): Json<ClientRequest>) -> Json<Value> {
+pub async fn connect_handler(State(state): State<AppState>, Json(req): Json<ClientRequest>) -> Json<Value> {
     let client = req.client;
+    let args = crate::runtime::mcp_args(Path::new(&state.data_dir));
     let result = tokio::task::spawn_blocking(move || {
         let exe = current_exe_str()?;
-        connect_client(&client, &exe)
+        connect_client(&client, &exe, &args)
     })
     .await
     .unwrap();
@@ -495,6 +506,10 @@ pub async fn disconnect_handler(Json(req): Json<ClientRequest>) -> Json<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mcp() -> Vec<String> {
+        vec!["mcp".to_string()]
+    }
 
     fn tmp_file(dir: &std::path::Path, name: &str) -> PathBuf {
         dir.join(name)
@@ -522,13 +537,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = tmp_file(dir.path(), "config.toml");
         std::fs::write(&path, "[other]\nkey = 1\n").unwrap();
-        set_codex_server(&path, "/usr/bin/anchorcore").unwrap();
+        let args = vec!["mcp".to_string(), "--data-dir".to_string(), "C:\\data dir".to_string()];
+        set_codex_server(&path, "/usr/bin/anchorcore", &args).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("[other]"), "existing content kept: {text}");
+        assert!(text.contains(r#"args = ["mcp", "--data-dir", "C:\\data dir"]"#), "R20.11 args: {text}");
         assert!(text.contains("[mcp_servers.anchorcore]"), "{text}");
         assert!(text.contains("command = \"/usr/bin/anchorcore\""), "{text}");
         assert!(codex_connected(&text, "/usr/bin/anchorcore"));
-        let err = set_codex_server(&path, "/usr/bin/anchorcore").unwrap_err();
+        let err = set_codex_server(&path, "/usr/bin/anchorcore", &mcp()).unwrap_err();
         assert!(err.contains("already has"), "{err}");
     }
 
@@ -554,7 +571,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = tmp_file(dir.path(), "mcp.json");
         std::fs::write(&path, r#"{"mcpServers": {"other": {"command": "x"}}, "theme": "dark"}"#).unwrap();
-        let backup = set_mcp_server(&path, "/exe/anchorcore").unwrap();
+        let backup = set_mcp_server(&path, "/exe/anchorcore", &mcp()).unwrap();
         assert_eq!(backup, Some(backup_path(&path)));
         assert!(backup.unwrap().exists(), "backup must exist");
         assert!(json_server_connected(&path, "/exe/anchorcore"));
@@ -575,14 +592,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bad = tmp_file(dir.path(), "bad.json");
         std::fs::write(&bad, "{ not json // hand-edited").unwrap();
-        let err = set_mcp_server(&bad, "/exe").unwrap_err();
+        let err = set_mcp_server(&bad, "/exe", &mcp()).unwrap_err();
         assert!(err.contains("manually"), "{err}");
         let arr = tmp_file(dir.path(), "arr.json");
         std::fs::write(&arr, "[1, 2]").unwrap();
-        assert!(set_mcp_server(&arr, "/exe").is_err());
+        assert!(set_mcp_server(&arr, "/exe", &mcp()).is_err());
         // missing file starts from an empty doc, no backup
         let fresh = tmp_file(dir.path(), "fresh.json");
-        assert_eq!(set_mcp_server(&fresh, "/exe").unwrap(), None);
+        assert_eq!(set_mcp_server(&fresh, "/exe", &mcp()).unwrap(), None);
         assert!(json_server_connected(&fresh, "/exe"));
     }
 
@@ -590,7 +607,11 @@ mod tests {
     fn opencode_nests_under_mcp_servers() {
         let dir = tempfile::tempdir().unwrap();
         let path = tmp_file(dir.path(), "opencode.json");
-        set_opencode_server(&path, "/exe/anchorcore").unwrap();
+        let dd = vec!["mcp".to_string(), "--data-dir".to_string(), "/d".to_string()];
+        set_opencode_server(&path, "/exe/anchorcore", &dd).unwrap();
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["mcp"]["servers"]["anchorcore"]["command"], json!(["/exe/anchorcore", "mcp", "--data-dir", "/d"]));
+        set_opencode_server(&path, "/exe/anchorcore", &mcp()).unwrap();
         assert!(opencode_server_connected(&path, "/exe/anchorcore"));
         let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(doc["mcp"]["servers"]["anchorcore"]["type"], "local");
@@ -626,7 +647,7 @@ mod tests {
         assert_eq!(client_spec("codex").unwrap().0, "Codex");
         assert!(client_spec("vscode").is_none());
         assert!(client_spec("").is_none());
-        assert!(connect_client("vscode", "/exe").is_err());
+        assert!(connect_client("vscode", "/exe", &mcp()).is_err());
         assert!(disconnect_client("vscode", "/exe").is_err());
     }
 

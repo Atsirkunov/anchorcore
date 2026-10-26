@@ -111,6 +111,29 @@ fn database_url_parent() -> Option<PathBuf> {
     (!parent.as_os_str().is_empty()).then(|| parent.to_path_buf())
 }
 
+/// R20.11: args for an MCP client entry. A client launches `anchorcore mcp`
+/// without our env, so it lands on `~/.anchorcore`; any other running data
+/// dir must be passed explicitly (absolute — the client's cwd is unknown).
+pub fn mcp_args(running: &Path) -> Vec<String> {
+    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok();
+    mcp_args_for(running, home.map(|h| PathBuf::from(h).join(".anchorcore")).as_deref())
+}
+
+fn mcp_args_for(running: &Path, home_default: Option<&Path>) -> Vec<String> {
+    let abs = absolute(running);
+    if home_default.map(absolute).as_ref() == Some(&abs) {
+        return vec!["mcp".to_string()];
+    }
+    vec!["mcp".to_string(), "--data-dir".to_string(), abs.to_string_lossy().to_string()]
+}
+
+fn absolute(p: &Path) -> PathBuf {
+    if let Ok(c) = p.canonicalize() {
+        return c;
+    }
+    std::env::current_dir().map(|cwd| cwd.join(p)).unwrap_or_else(|_| p.to_path_buf())
+}
+
 /// `--data-dir X` / `--data-dir=X` from an argv tail (MCP mode skips clap).
 pub fn data_dir_arg<I: IntoIterator<Item = String>>(args: I) -> String {
     let mut it = args.into_iter();
@@ -165,6 +188,21 @@ mod tests {
         assert_eq!(i.base_url(), "http://[::1]:9000");
         i.host = "localhost".into();
         assert_eq!(i.base_url(), "http://localhost:9000");
+    }
+
+    #[test]
+    fn mcp_args_add_data_dir_only_off_default() {
+        let home = tempfile::tempdir().unwrap();
+        let default = home.path().join(".anchorcore");
+        std::fs::create_dir_all(&default).unwrap();
+        assert_eq!(mcp_args_for(&default, Some(&default)), vec!["mcp"]);
+        let other = home.path().join("work");
+        std::fs::create_dir_all(&other).unwrap();
+        let want = other.canonicalize().unwrap().to_string_lossy().to_string();
+        assert_eq!(mcp_args_for(&other, Some(&default)), vec!["mcp", "--data-dir", want.as_str()]);
+        assert_eq!(mcp_args_for(&other, None)[1], "--data-dir", "no home: always explicit");
+        let rel = mcp_args_for(Path::new("rel-data"), Some(&default));
+        assert!(Path::new(&rel[2]).is_absolute(), "relative dirs are made absolute: {rel:?}");
     }
 
     #[test]
