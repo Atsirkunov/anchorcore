@@ -6,7 +6,10 @@ import { initThemeSwitch } from "./themeMode";
 
 // Direct download assets (release.yml — keep these file names in sync).
 const WIN_ZIP = "https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-windows.zip";
-const MAC_ZIP = "https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-macos.zip";
+// macOS ships a drag-to-Applications DMG (R41.2); the .zip is still attached for
+// one release but the site never links it. Needs a release built by the R41.2
+// release.yml: deploy the site only together with (or after) that tag.
+const MAC_DMG = "https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-macos.dmg";
 
 const LINUX_ZIP = "https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-linux.zip";
 
@@ -33,7 +36,7 @@ function isMacOs(): boolean {
 }
 
 const DESKTOP: Record<Exclude<Os, "mobile">, { url: string; name: string }> = {
-  mac: { url: MAC_ZIP, name: "macOS" },
+  mac: { url: MAC_DMG, name: "macOS" },
   windows: { url: WIN_ZIP, name: "Windows" },
   linux: { url: LINUX_ZIP, name: "Linux" },
 };
@@ -45,7 +48,7 @@ function personalDownload(): { url: string; label: string; altHtml: string; mobi
   return { url: DESKTOP[os].url, label: "Download, free for personal use", altHtml: `Also: ${links(os)}`, mobile: false };
 }
 
-// Phones get the email form (interest=download) instead of a zip they cannot run.
+// Phones get the email form (interest=download) instead of a download they cannot run.
 function applyDownload(a: HTMLAnchorElement, dl: ReturnType<typeof personalDownload>): void {
   a.textContent = dl.label;
   a.href = dl.url;

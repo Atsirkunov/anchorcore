@@ -254,9 +254,9 @@
         </div>
         <p id="cta-note" class="small">macOS, Windows and Linux. One download, no Docker, no account.</p>
         <h3>First launch</h3>
-        <p id="first-launch" class="small">The builds are not yet Apple-notarized or code-signed, so your OS asks once. macOS: move AnchorCore to Applications, open it, then System Settings → Privacy &amp; Security → Open Anyway. Windows: SmartScreen → More info → Run anyway.</p>
+        <p id="first-launch" class="small">The builds are not yet Apple-notarized or code-signed, so your OS asks once. macOS: open the DMG, drag AnchorCore onto Applications, open it from there, then System Settings → Privacy &amp; Security → Open Anyway. Windows: SmartScreen → More info → Run anyway.</p>
         <h3>Verify the file</h3>
-        <p class="small">Each release has a <code>SHA256SUMS</code> file next to the zips. Put it in the same folder as your download and run <code>shasum -a 256 -c SHA256SUMS --ignore-missing</code> (on Windows, compare <code>Get-FileHash</code> with the matching line). <a href="https://github.com/Atsirkunov/anchorcore/tree/main/docs/release-notes" target="_blank" rel="noopener noreferrer">Release notes</a>.</p>
+        <p class="small">Each release has a <code>SHA256SUMS</code> file next to the downloads. Put it in the same folder as your download and run <code>shasum -a 256 -c SHA256SUMS --ignore-missing</code> (on Windows, compare <code>Get-FileHash</code> with the matching line). <a href="https://github.com/Atsirkunov/anchorcore/tree/main/docs/release-notes" target="_blank" rel="noopener noreferrer">Release notes</a>.</p>
         <form class="capture" id="capture-form-2">
           <label for="email2">On a phone? Get the link by email</label>
           <input id="email2" type="email" placeholder="you@example.com" autocomplete="email" aria-describedby="capture2-msg" />

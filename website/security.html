@@ -114,7 +114,7 @@
 <p>An export is one <code>.anchorcore-backup</code> file. Source credentials are left out unless you opt in with a passphrase, which puts them in a separate encrypted bundle; provider API keys are never exported. Imports can be previewed with a dry run first. The archive itself is not encrypted, so store it as you would the data it contains. Details: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/backup.md" rel="noopener noreferrer">docs/backup.md</a>.</p>
 
 <h2 id="verify">Verify your download</h2>
-<p>Each release carries a <code>SHA256SUMS</code> file next to the three zips (generated in <code>.github/workflows/release.yml</code>). Put it in the same folder as your zip, then:</p>
+<p>Each release carries a <code>SHA256SUMS</code> file next to the downloads (the macOS DMG and the zips, generated in <code>.github/workflows/release.yml</code>). Put it in the same folder as your download, then:</p>
 <pre><code>macOS / Linux:  shasum -a 256 -c SHA256SUMS --ignore-missing
 Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
                 (compare with the matching line in SHA256SUMS)</code></pre>

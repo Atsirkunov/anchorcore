@@ -34,7 +34,7 @@ npm run build && npx wrangler deploy  # https://anchorcore.dev
 
 ## Deploy
 
-Live at anchorcore.dev via Workers Static Assets (`wrangler.jsonc`: `anchorcore-website` worker, `anchorcore.dev/*` route + custom hostname; CI auto-deploys on `v*` tags when `website/` changed since the previous tag — `release.yml` `deploy-website`, secrets set 2026-10-11; manual fallback: `wrangler login` once, then `npm run build && npx wrangler deploy`). Deploy only from a committed tree — live must never be ahead of `main` (guides are imported from `docs/` at build time, so uncommitted doc edits ship silently). `Download` buttons link straight at the latest release assets (`.../releases/latest/download/AnchorCore-{windows,macos}.zip`, OS-aware via `src/main.ts`); live since `v1.0.13`. Keep the `release.yml` asset names stable.
+Live at anchorcore.dev via Workers Static Assets (`wrangler.jsonc`: `anchorcore-website` worker, `anchorcore.dev/*` route + custom hostname; CI auto-deploys on `v*` tags when `website/` changed since the previous tag — `release.yml` `deploy-website`, secrets set 2026-10-11; manual fallback: `wrangler login` once, then `npm run build && npx wrangler deploy`). Deploy only from a committed tree — live must never be ahead of `main` (guides are imported from `docs/` at build time, so uncommitted doc edits ship silently). `Download` buttons link straight at the latest release assets (`.../releases/latest/download/AnchorCore-{windows,linux}.zip` and `AnchorCore-macos.dmg`, OS-aware via `src/main.ts`); zips live since `v1.0.13`, the macOS DMG since R41.2 — deploy a site that links the DMG only with or after the first release that attaches it. Keep the `release.yml` asset names stable.
 
 ## Guides (R44.15)
 

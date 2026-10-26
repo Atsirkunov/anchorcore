@@ -2,11 +2,15 @@
 # AnchorCore packaged build (B24 + Rust shipped 1.0.20). Run from repo root:
 #   ./build.sh
 # Produces dist/AnchorCore.app — double-click macOS app (no terminal, opens browser),
-# ad-hoc signed so Gatekeeper shows "Open" on first run. Rust binary is the shipped
-# artifact (9.9M, frontend/dist embedded via include_dir!); Python PyInstaller kept
-# as legacy `dist/AnchorCore-py.app` for hosted comparison.
-# Requires: Rust 1.97.1 ($HOME/.cargo/env), Node 20.
+# ad-hoc signed (not notarized: first launch needs Open Anyway) — then packs it the
+# same way as CI (release.yml build-rust-macos):
+#   dist/AnchorCore-macos.dmg  — AnchorCore.app + /Applications symlink (R41.2)
+#   dist/AnchorCore-macos.zip  — the same .app, zipped (kept one release)
+# Rust binary is the shipped artifact (frontend/dist embedded via include_dir!).
+# Requires: macOS (codesign, hdiutil), Rust ($HOME/.cargo/env), Node 20.
 set -euo pipefail
+
+[ "$(uname -s)" = "Darwin" ] || { echo "build.sh: macOS only (codesign + hdiutil); use build.ps1 on Windows, cargo build --release on Linux" >&2; exit 1; }
 
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
@@ -52,6 +56,7 @@ cat > "$ROOT/dist/AnchorCore.app/Contents/Info.plist" <<PLIST
   <key>LSUIElement</key><false/>
 </dict>
 </plist>
+PLIST
 
 # 4. Ad-hoc sign the .app so Gatekeeper shows "Open" instead of blocking outright
 echo "==> Ad-hoc signing dist/AnchorCore.app (Rust $VERSION)..."
@@ -64,7 +69,13 @@ echo "==> Zipping dist/AnchorCore.app..."
 rm -f "$ROOT/dist/AnchorCore-macos.zip"
 (cd "$ROOT/dist" && zip -rq AnchorCore-macos.zip AnchorCore.app)
 
+# 6. R41.2: drag-to-Applications DMG + the CI checks (layout, signature, MCP
+# handshake against the mounted payload). Shared scripts keep CI and local identical.
+echo "==> Packing dist/AnchorCore-macos.dmg..."
+bash "$ROOT/scripts/make_macos_dmg.sh" "$ROOT/dist/AnchorCore.app" "$ROOT/dist/AnchorCore-macos.dmg"
+bash "$ROOT/scripts/verify_macos_dmg.sh" "$ROOT/dist/AnchorCore-macos.dmg"
+
 echo ""
-echo "Done: $ROOT/dist/AnchorCore-macos.zip (Rust $VERSION, double-click, opens http://127.0.0.1:8000)"
-echo "Unzip it, then double-click AnchorCore.app. First run creates"
-echo "~/.anchorcore data dir and opens http://127.0.0.1:8000 (set ANCHOR_OPEN_BROWSER=0 to disable)"
+echo "Done: $ROOT/dist/AnchorCore-macos.dmg (+ .zip) (Rust $VERSION, opens http://127.0.0.1:8000)"
+echo "Open the DMG, drag AnchorCore.app onto Applications, then open it from /Applications."
+echo "First run creates ~/.anchorcore and opens http://127.0.0.1:8000 (set ANCHOR_OPEN_BROWSER=0 to disable)"

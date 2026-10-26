@@ -11,8 +11,8 @@
 `.github/workflows/release.yml`, which:
 
 1. Builds the frontend (`npm run build`)
-2. Builds Rust `AnchorCore-{windows,macos,linux}.zip` (`cargo build --release`, `frontend/dist` embedded via `include_dir!`, `codesign` on macOS)
-3. Attaches the three zips to the GitHub Release for that tag (website Download buttons link straight at the windows/macos ones — keep those file names stable)
+2. Builds Rust `AnchorCore-{windows,macos,linux}.zip` (`cargo build --release`, `frontend/dist` embedded via `include_dir!`, `codesign` on macOS) plus `AnchorCore-macos.dmg` (R41.2: the same ad-hoc-signed `AnchorCore.app` + an `/Applications` symlink, UDZO via `scripts/make_macos_dmg.sh`; `scripts/verify_macos_dmg.sh` mounts it, checks the layout + `codesign --verify --deep --strict`, runs the MCP handshake against the mounted binary, detaches)
+3. Attaches the DMG, the three zips and `SHA256SUMS` to the GitHub Release for that tag (website Download buttons link straight at `AnchorCore-macos.dmg` and the windows/linux zips — keep those file names stable). `AnchorCore-macos.zip` keeps shipping for now: the in-app update card (`system.rs` `update_asset_name`), the setup skill's unzip step and older links still point at it; drop it only after those move to the DMG
 4. Deploys `website/` to `anchorcore.dev` via wrangler — but only when `website/` changed since the previous tag (`deploy-website` job diffs `$PREV_TAG..$TAG`). Uses repo secrets `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` (set 2026-10-11; token = Account → Workers Scripts: Edit + Zone `anchorcore.dev` → Workers Routes: Edit — no Client IP filtering, GitHub runners have no stable IPs). If the job fails: rotate the token, re-set the secret, then `gh run rerun <run-id> --failed --repo Atsirkunov/anchorcore` — no re-tag needed
 
 ## Docs-only pushes skip CI
@@ -33,7 +33,7 @@
    git tag vX.Y.Z
    git push origin vX.Y.Z
    ```
-6. **Verify the Release** (github.com → Releases): `AnchorCore-windows.zip` + `AnchorCore-macos.zip` (+linux) present; download on clean machines, unzip, run, smoke `curl /health`
+6. **Verify the Release** (github.com → Releases): `AnchorCore-macos.dmg`, `AnchorCore-{windows,macos,linux}.zip` and `SHA256SUMS` present; download on clean machines (macOS: open the DMG, drag to Applications, launch from `/Applications`; others: unzip), run, smoke `curl /health`
 7. **Attach the notes** — after CI publishes the release: `gh release edit vX.Y.Z --notes-file docs/release-notes/vX.Y.Z.md` (no empty Release body — a release without notes is incomplete)
 8. **Hand off** — testers get the GitHub Release URL, not a repo checkout
 
@@ -48,7 +48,7 @@ cargo build --release
 # artifact: rust/target/release/anchorcore (9.8M, app + `anchorcore mcp` mode)
 # full zips, same layout as CI:
 .\build.ps1          # Windows: dist/AnchorCore-windows.zip (Rust)
-./build.sh           # macOS: dist/AnchorCore-macos.zip (.app, ad-hoc signed)
+./build.sh           # macOS only: dist/AnchorCore-macos.dmg + .zip (.app, ad-hoc signed; runs the same DMG checks as CI)
 ```
 
 ## Troubleshooting
