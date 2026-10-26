@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { downloadPct, embedderLine } from "./BuiltinEmbedder";
+import { downloadPct, embedderLine } from "./builtinEmbedderText";
 import type { EmbedModelStatus } from "./types";
 
 const base: EmbedModelStatus = {
