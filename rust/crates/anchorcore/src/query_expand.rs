@@ -81,26 +81,22 @@ async fn call_model(settings: &SettingsService, acronyms: &[String], timeout: Du
     }
     let api_key = settings.get("answer_api_key", None).unwrap_or_default();
     let model = settings.get("answer_model", None).unwrap_or_else(|| "gpt-4o-mini".to_string());
-    let client = reqwest::Client::builder().timeout(timeout).build().ok()?;
-    let payload = serde_json::json!({
-        "model": model,
-        "messages": [
+    let ollama_base = settings.get("ollama_base_url", None);
+    // R30.6: a local Ollama gets native `/api/chat` with `num_ctx` pinned.
+    let spec = crate::llm_chat::ChatSpec {
+        base: &base,
+        api_key: &api_key,
+        model: &model,
+        messages: serde_json::json!([
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": format!("Acronyms: {}", acronyms.join(", "))}
-        ],
-        "temperature": 0.0,
-        "max_tokens": 120
-    });
-    let mut req = client.post(format!("{}/chat/completions", base.trim_end_matches('/'))).json(&payload);
-    if !api_key.is_empty() {
-        req = req.bearer_auth(api_key);
-    }
-    let resp = req.send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let j = resp.json::<serde_json::Value>().await.ok()?;
-    j.pointer("/choices/0/message/content").and_then(|v| v.as_str()).map(str::to_string)
+        ]),
+        temperature: Some(0.0),
+        max_tokens: Some(120),
+        timeout,
+        ollama_base: ollama_base.as_deref(),
+    };
+    crate::llm_chat::chat(&spec).await.ok()
 }
 
 /// Lenient parse: the first `{…}` object; only asked-for acronyms, only

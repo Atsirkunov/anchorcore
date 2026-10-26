@@ -221,8 +221,11 @@ cargo test -p anchorcore          # MCP surface tests
 ```
 
 `rust/crates/anchorcore/src/mcp.rs` is the implementation and `AGENTS.md` has the
-full dev and release workflow. Open MCP work (CI search smoke R20.10, HTTP
-transport B14.2) is in `rust/BACKLOG.md`.
+full dev and release workflow. CI runs `scripts/ci_mcp_search_smoke.sh` on every
+push: a REST-created folder source over `sample/`, synced, then a stdio `search`
+that must return the billing documents (run it locally the same way:
+`bash scripts/ci_mcp_search_smoke.sh rust/target/debug/anchorcore`). Open MCP
+work (HTTP transport B14.2) is in `rust/BACKLOG.md`.
 
 ---
 

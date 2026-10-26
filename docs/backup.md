@@ -99,6 +99,8 @@ needs them; older files are swept on the next export.
 
 `POST /backup/import` is multipart: `file` (the archive) plus an optional
 `options` JSON field. Without `options` the call is a merge **dry run**.
+The request body may be up to 2 GiB (`IMPORT_BODY_LIMIT`); the upload streams
+to a temp file under `exports/`, never into memory.
 
 | option | default | meaning |
 |---|---|---|

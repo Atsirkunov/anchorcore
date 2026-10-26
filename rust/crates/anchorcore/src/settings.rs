@@ -548,8 +548,6 @@ async fn test_answer(settings: &SettingsService) -> Value {
         return serde_json::json!({"ok": false, "provider": "answer", "message": "API key required for this provider"});
     }
     let model = settings.get("answer_model", None).unwrap_or_else(|| "gpt-4o-mini".to_string());
-    // Python posts to {base}/chat/completions (base already includes /v1)
-    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .connect_timeout(connect_timeout())
@@ -558,18 +556,21 @@ async fn test_answer(settings: &SettingsService) -> Value {
         Ok(c) => c,
         Err(e) => return serde_json::json!({"ok": false, "provider": "answer", "message": format!("request failed: {}", e)}),
     };
-    let mut req = client.post(&url).json(&serde_json::json!({
-        "model": model,
-        "messages": [{"role":"user","content":"ping"}],
-        "max_tokens": 1
-    }));
-    if !api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {}", api_key));
-    }
-    match req.send().await {
-        Ok(r) if r.status().is_success() => serde_json::json!({"ok": true, "provider": "answer", "message": format!("model '{}' responds", model)}),
-        Ok(r) => serde_json::json!({"ok": false, "provider": "answer", "message": format!("request failed: status {}", r.status())}),
-        Err(e) => serde_json::json!({"ok": false, "provider": "answer", "message": format!("request failed: {}", e)}),
+    let ollama_base = settings.get("ollama_base_url", None);
+    // R30.6: same request shape as the answer path (native + num_ctx for a local Ollama).
+    let spec = crate::llm_chat::ChatSpec {
+        base: &base,
+        api_key: &api_key,
+        model: &model,
+        messages: serde_json::json!([{"role": "user", "content": "ping"}]),
+        temperature: None,
+        max_tokens: Some(1),
+        timeout: std::time::Duration::from_secs(15),
+        ollama_base: ollama_base.as_deref(),
+    };
+    match crate::llm_chat::ping(&spec, &client).await {
+        Ok(()) => serde_json::json!({"ok": true, "provider": "answer", "message": format!("model '{}' responds", model)}),
+        Err(message) => serde_json::json!({"ok": false, "provider": "answer", "message": message}),
     }
 }
 
