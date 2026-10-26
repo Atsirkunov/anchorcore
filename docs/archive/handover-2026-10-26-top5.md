@@ -4,6 +4,17 @@ Read root `AGENTS.md` first (gates, gotchas, owner decisions). This page holds o
 as highest-value on 2026-10-26 and what remains of them. Row text in `rust/BACKLOG.md` stays the source of truth;
 this page is context.
 
+## Outcome (same day, shipped in 1.5.0)
+
+All of the top five are done: R45.3/R45.4 (built-in embedder; owner chose
+"`auto` prefers a serving Ollama" after measuring ~5× faster bulk indexing),
+R30.2 + R43.12 (concurrency kept for remote APIs; vector reuse is the real
+re-sync win), R41.2 (owner's clean-Mac acceptance passed). The cheap bundle
+shipped too (R45.14, R45.10, R30.3, R43.17, R20.11, R41.6), plus R43.20 and
+R47.0/R47.1 from a parallel session. Evidence and numbers are in the
+backlog rows and `rust/docs/decisions.md`. Next by measurement: the tags
+phase on re-sync (R30.5).
+
 ## State of `main` at handover
 
 - Pushed to `origin/main`, **not tagged** (still 1.4.1): `db19078` Cargo.lock 1.4.1 sync · `f9259ba` merge R43.11 ·
