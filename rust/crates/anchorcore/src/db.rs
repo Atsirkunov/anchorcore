@@ -92,6 +92,13 @@ pub fn init_db(path: &Path) -> Result<Connection> {
 
     // Ensure PRAGMAs after migrations (some migrations may reset)
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    // R36.2: items an older chunker produced are rebuilt from their stored
+    // text now — after `ensure_columns` (chunks.kind/path/section_id) and
+    // `ensure_vec` (the vec_chunks sync triggers must see the deletes).
+    // Migration 28 holds the per-item marker; a no-op query when current.
+    if let Err(e) = crate::pipeline::rechunk_outdated_items(&conn) {
+        tracing::warn!("R36.2: chunker upgrade skipped: {}", e);
+    }
     // mark migrated
     migrated_paths().lock().unwrap().insert(path.to_path_buf());
     Ok(conn)
@@ -431,6 +438,8 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/26_assets.sql")),
         // R45.10: legacy entity cleanup (backup first, see `init_db`)
         M::up_with_hook(include_str!("../migrations/27_legacy_entities.sql"), cleanup_legacy_entities),
+        // R36.2: chunker generation per item (re-chunk runs in `init_db`)
+        M::up(include_str!("../migrations/28_chunker_version.sql")),
     ])
 }
 
@@ -689,6 +698,9 @@ mod tests {
                 .unwrap();
             drop_entity_record_columns(&conn);
             drop_glossary_artifacts(&conn);
+            // A real v10 DB also predates R36.2 — drop the chunker
+            // generation so migration 28 has real work to do.
+            conn.execute("ALTER TABLE ingested_items DROP COLUMN chunker_version", []).unwrap();
             // A real v10 DB also predates R46.7 — drop the asset tables (their
             // triggers go with them) so migration 26 has real work to do.
             conn.execute("DROP TABLE assets", []).unwrap();
@@ -714,7 +726,15 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         run_migrations(&mut conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 27);
+        assert_eq!(v, 28);
+        let generations: Vec<i64> = conn
+            .prepare("SELECT chunker_version FROM ingested_items")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(!generations.is_empty() && generations.iter().all(|&g| g == 1), "migration 28 (R36.2) starts existing items at generation 1: {generations:?}");
         let asset_tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('assets','asset_blobs','assets_blob_gc_delete','assets_blob_gc_update')",
@@ -828,6 +848,7 @@ mod tests {
         conn.pragma_update(None, "user_version", 20).unwrap();
         drop_entity_record_columns(&conn);
         drop_glossary_artifacts(&conn);
+        conn.execute("ALTER TABLE ingested_items DROP COLUMN chunker_version", []).unwrap();
         run_migrations(&mut conn).unwrap();
         assert!(table_exists(&conn, "vec_chunks"));
         assert_eq!(vec_trigger_sql(&conn), before);

@@ -16,6 +16,7 @@ pub mod chunking;
 pub mod classifier;
 pub mod cli;
 pub mod common;
+pub mod config_chunks;
 pub mod connectors;
 pub mod db;
 pub mod diagram;
