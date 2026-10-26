@@ -450,7 +450,7 @@ fn append_section_filter(
 }
 
 /// Descending by score; a NaN score sorts last instead of panicking (R43.17).
-pub(crate) fn sort_hits(hits: &mut Vec<Hit>) {
+pub(crate) fn sort_hits(hits: &mut [Hit]) {
     let key = |h: &Hit| if h.score.is_nan() { f64::NEG_INFINITY } else { h.score };
     hits.sort_by(|a, b| key(b).total_cmp(&key(a)));
 }
