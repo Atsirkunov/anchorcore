@@ -51,10 +51,13 @@ merging and dispute flow (Needs a look + Possible doubles).
 - "show the steps for it" — the follow-up is understood from context.
 - "and what happens if delivery fails?" — answered from the rollback note.
 
-**3. Review flows (in the Entities tab)**
-- Low confidence: an open question from the retro shows up for review.
-- Duplicates: the twice-recorded decision is there to try merging.
+**3. Decisions, actions and review (in the Entities tab)**
+- Decisions: the four decision records with their status and owner — read
+  from the files' own `Status:` / `Owner:` lines, no model involved.
+- Actions: the retro and planning action items with owners; filter to open ones.
+- Possible doubles: the twice-recorded decision is there to try merging.
 - Disputed: dispute the contradicting claim, and answers stop citing it.
+- Everything starts unverified — verifying a record is your call.
 
 **4. People & ownership**
 - "Who owns the billing provider migration?" → Sarah, cited from the decisions and notes.

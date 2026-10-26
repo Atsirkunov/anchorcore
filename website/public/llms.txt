@@ -1,6 +1,6 @@
 # AnchorCore
 
-> AnchorCore is a private AI search app. It indexes your folders, Jira, Linear, Google Drive and JSON APIs on your own machine and answers questions with cited answers that name the document and section. Models are your choice: local Ollama or your own OpenAI-compatible API; without a model, keyword search still works. Source-available; the Personal app is free for personal use.
+> AnchorCore is a private AI search app. It indexes your folders, Jira, Linear, Google Drive, Miro and JSON APIs on your own machine and answers questions with cited answers that name the document and section. Models are your choice: your coding agent can write the answers from cited passages, or a local Ollama model or your own OpenAI-compatible API can; indexing uses no chat model, and without an embedding model keyword search still works. Source-available; the Personal app is free for personal use.
 
 Key facts, each stated on the pages below:
 

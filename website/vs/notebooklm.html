@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>NotebookLM Alternative: Local, Private AI Search — AnchorCore</title>
-<meta name="description" content="Comparing AnchorCore with NotebookLM (now Gemini Notebook): a local-first alternative that indexes folders, Jira, Linear and Drive on your machine and cites the exact section. Where each fits." />
+<meta name="description" content="Comparing AnchorCore with NotebookLM (now Gemini Notebook): a local-first alternative that indexes folders, Jira, Linear, Drive and Miro on your machine and cites the exact section. Where each fits." />
 <link rel="canonical" href="https://anchorcore.dev/vs/notebooklm" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <script>
@@ -61,7 +61,7 @@
 <tr><th scope="row">Where it runs</th><td>On your computer. The index is a database in a folder on your disk. Team edition: one container you host.</td><td>A Google-hosted service: sources are uploaded or linked into a notebook (<a href="https://support.google.com/notebooklm/answer/16215270" rel="noopener noreferrer">Google's help</a>).</td></tr>
 <tr><th scope="row">Setup</th><td>Download the app, point it at a folder. For AI answers, install Ollama or add your own model key.</td><td>No install. Open it in a browser and add sources.</td></tr>
 <tr><th scope="row">Which model answers</th><td>Your choice: local Ollama, or any OpenAI-compatible API you bring. Without a model, keyword search still works.</td><td>Google's models.</td></tr>
-<tr><th scope="row">What it reads</th><td>A local folder (including an Obsidian vault) kept in sync, Jira, Linear, Google Drive, and any JSON list API with a field mapping. Documents are read as Word, PowerPoint, Excel, PDF, Markdown, HTML and plain text.</td><td>Per Google's help: Google Docs, Slides and Sheets, PDFs, Word, text and Markdown files, web URLs, public YouTube URLs, audio files, images and more. See their page for the current list.</td></tr>
+<tr><th scope="row">What it reads</th><td>A local folder (including an Obsidian vault) kept in sync, Jira, Linear, Google Drive, Miro boards, and any JSON list API with a field mapping. Documents are read as Word, PowerPoint, Excel, PDF, Markdown, HTML and plain text; draw.io, Excalidraw and Visio diagrams as text. Images in documents are stored and shown with the passage they belong to.</td><td>Per Google's help: Google Docs, Slides and Sheets, PDFs, Word, text and Markdown files, web URLs, public YouTube URLs, audio files, images and more. See their page for the current list.</td></tr>
 <tr><th scope="row">Answers cite</th><td>The document and the section, for example <code>Art 12 › 12.3</code>, in the browser and for coding agents.</td><td>Answers grounded in your sources, with citations. Check Google's documentation for their citation format.</td></tr>
 <tr><th scope="row">Sensitive data</th><td>Label a source <code>sensitive</code> or <code>pii</code> and it is withheld from any cloud model you have not approved. See the <a href="/security">security notes</a>.</td><td>Governed by Google's data-protection terms. Read the current policy for your account type.</td></tr>
 <tr><th scope="row">Use from coding agents</th><td>Yes: an MCP server (<code>ask</code>, <code>search</code>) for Claude Code, Codex, Cursor and others, with a public-only mode and a log of agent calls.</td><td>We did not find this in Google's documentation; check their docs.</td></tr>
@@ -84,7 +84,7 @@
 <ul>
 <li><strong>You want zero setup.</strong> It is a hosted service: no download, no local model.</li>
 <li><strong>You want audio overviews.</strong> AnchorCore does not generate audio.</li>
-<li><strong>Your sources are web pages, YouTube videos, audio or images.</strong> AnchorCore has no web-page, video or audio source type. It reads files in a folder and the connectors listed above.</li>
+<li><strong>Your sources are web pages, YouTube videos, audio or images.</strong> AnchorCore has no web-page, video or audio source type, and it does not read what is inside an image: pictures are kept and shown next to the text that refers to them, but answers come from text. It reads files in a folder and the connectors listed above.</li>
 <li><strong>Your material already lives in Google Docs and Slides</strong> and the content is fine to keep in Google's cloud.</li>
 <li><strong>You need heavy collaboration or SSO today.</strong> AnchorCore Team has optional password sign-in only, with no roles and no SSO.</li>
 </ul>

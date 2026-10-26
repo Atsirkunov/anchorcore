@@ -110,7 +110,7 @@
       <div class="wrap">
         <h2>How it works</h2>
         <div class="steps">
-          <div class="step"><span>1.1</span><h3>Connect what you already have</h3><p>A folder or Obsidian vault, Google Drive, Jira, Linear, or <a href="/guides/json-api">any JSON API</a>. PDFs, Word, Excel and Markdown are read as they are. It re-syncs on its own; nothing moves.</p></div>
+          <div class="step"><span>1.1</span><h3>Connect what you already have</h3><p>A folder or Obsidian vault, Google Drive, Jira, Linear, Miro, or <a href="/guides/json-api">any JSON API</a>. PDFs, Word, Excel, Markdown and diagrams are read as they are. It re-syncs on its own; nothing moves.</p></div>
           <div class="step"><span>1.2</span><h3>Indexed by section</h3><p>Documents are split at their headings, and decision records keep their owner, status and what they replace. All of it sits in one database on your disk.</p></div>
           <div class="step"><span>1.3</span><h3>Answers point at the passage</h3><p>Ask in the browser or from your coding agent. Every answer lists its sources down to the section and line range, so you can open the page and check.</p></div>
         </div>
@@ -171,8 +171,8 @@
             <ul class="trust-out">
               <li><span class="trust-when t-never">default</span><b>Nothing else.</b> No connections until you enable a connector or add a cloud key. Indexing folders, search and local answers need no network. Enabled Jira sources re-sync on a timer (default every 15 minutes), and the embedding backfill (at startup and every 15 minutes) calls only the embedding endpoint you configured.</li>
               <li><span class="trust-when t-ask">only when you click</span><b>api.github.com</b>: "Check for updates" fetches the newest release tag. Nothing about you or your knowledge is sent. An optional once-at-startup check is off by default.</li>
-              <li><span class="trust-when t-cfg">only if you connect it</span><b>Jira, Linear, Google Drive, a REST API</b>: each connector sends requests to the URL you configure for it (the REST connector to any address you enter, including local ones), with credentials you provide (kept in your OS keychain on macOS and Windows, otherwise in an encrypted file in your data folder).</li>
-              <li><span class="trust-when t-cfg">only if you add a key</span><b>A cloud model you choose</b>: an OpenAI-compatible endpoint for answers, classification or embeddings. Your question and the retrieved passages go to that provider. With no key set, no answer request is made.</li>
+              <li><span class="trust-when t-cfg">only if you connect it</span><b>Jira, Linear, Google Drive, Miro, a REST API</b>: each connector sends requests to the URL you configure for it (the REST connector to any address you enter, including local ones), with credentials you provide (kept in your OS keychain on macOS and Windows, otherwise in an encrypted file in your data folder).</li>
+              <li><span class="trust-when t-cfg">only if you add a key</span><b>A cloud model you choose</b>: an OpenAI-compatible endpoint for answers or embeddings. Your question and the retrieved passages go to that provider. With no key set, no answer request is made.</li>
               <li><span class="trust-when t-ask">only when you pull a model</span><b>Ollama's model registry</b>: your local Ollama downloads models itself; AnchorCore only talks to Ollama on your machine.</li>
             </ul>
             <figcaption id="trust-map-cap" class="cap">Every outbound HTTP client in the Rust source is one of the above. Update-check details: <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/updates.md" target="_blank" rel="noopener noreferrer">docs/updates.md</a>.</figcaption>
@@ -191,7 +191,7 @@
               <tr><th scope="row">sensitive</th><td class="y">✓</td><td class="y">✓</td><td class="n">✗ held back, audited</td></tr>
               <tr><th scope="row">pii</th><td class="y">✓</td><td class="y">✓</td><td class="n">✗ held back, audited</td></tr>
             </table>
-            <p class="small">"Approved" means a local endpoint, one you list in <code>ANCHOR_TRUSTED_PROVIDERS</code>, or <code>ANCHOR_CLOUD_TRUST=1</code>. Sensitive and pii sources also skip cloud classification and embedding. <code>pii</code> is a source label you choose; the separate per-document PII mark is manual and advisory today. Public sharing and agent <code>public_only</code> mode see only sources you marked public. Nothing is detected as PII automatically, and there is no SSO or role system in the local app.</p>
+            <p class="small">"Approved" means a local endpoint, one you list in <code>ANCHOR_TRUSTED_PROVIDERS</code>, or <code>ANCHOR_CLOUD_TRUST=1</code>. Sensitive and pii sources also skip cloud embedding. <code>pii</code> is a source label you choose; the separate per-document PII mark is manual and advisory today. Public sharing and agent <code>public_only</code> mode see only sources you marked public. Nothing is detected as PII automatically, and there is no SSO or role system in the local app.</p>
           </div>
         </div>
       </div>
@@ -225,7 +225,7 @@
         <h2>FAQ</h2>
         <div class="faq">
           <div class="qa"><h3>Do I need Ollama?</h3><p>No. Without a model you still get full-text search, and in agent mode your coding agent writes the answer from AnchorCore's cited results. Add Ollama (one install, free models) to get answers inside the app.</p></div>
-          <div class="qa"><h3>How is this different from NotebookLM or ChatGPT file search?</h3><p>Those are cloud uploads. AnchorCore runs on your machine, connects to folders, Drive, Jira, Linear and APIs, and keeps sources you marked sensitive away from AI you haven't approved. <a href="/vs/notebooklm">Full comparison with NotebookLM</a>.</p></div>
+          <div class="qa"><h3>How is this different from NotebookLM or ChatGPT file search?</h3><p>Those are cloud uploads. AnchorCore runs on your machine, connects to folders, Drive, Jira, Linear, Miro and APIs, and keeps sources you marked sensitive away from AI you haven't approved. <a href="/vs/notebooklm">Full comparison with NotebookLM</a>.</p></div>
           <div class="qa"><h3>Does it stay fast as my library grows?</h3><p>It narrows thousands of documents to the few relevant sections via tags and summaries, then searches only those. Measured at ~7ms per search on a 30k-chunk benchmark (<a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/guides/hierarchical-toc.md">results</a>, <a href="https://github.com/Atsirkunov/anchorcore/blob/main/rust/scripts/bench_retrieval.py">script</a>); larger libraries are projected, not yet measured.</p></div>
           <div class="qa"><h3>Can I move to a new computer?</h3><p>Yes. System → Backup &amp; restore exports your whole index into one portable <code>.anchorcore-backup</code> file. Credentials stay behind unless you opt into the passphrase-encrypted bundle. <a href="https://github.com/Atsirkunov/anchorcore/blob/main/docs/backup.md">Backup guide</a>.</p></div>
           <div class="qa"><h3>Is it open source?</h3><p>It is source-available: the repository is public, so you can read what the app does or build it yourself. Personal use is free; team and commercial use need a license. See <a href="https://github.com/Atsirkunov/anchorcore/blob/main/LICENSE.md">LICENSE.md</a>.</p></div>

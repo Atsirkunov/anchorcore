@@ -1,6 +1,6 @@
 # AnchorCore Website — tweakable single page
 
-> Copy-paste site, no taste required. Edit `index.html` or `src/main.ts` `copy` object, not CSS.
+> Copy-paste site, no taste required. Edit the copy in the page's `.html` file (each page is its own Vite entry), not CSS.
 
 Stack: Vite static, **Archive** palette (ink `#1F1B16` on paper `#F6F5F2`, oxblood for citations) — tokens on `:root` in `src/style.css`, shared with the app (`frontend/src/theme.css`); rules in `docs/design-system.md`.
 
