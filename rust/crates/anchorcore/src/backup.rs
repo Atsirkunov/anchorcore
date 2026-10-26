@@ -46,6 +46,10 @@ const EXPORT_DIR: &str = "exports";
 const ASSET_ENTRY_PREFIX: &str = "assets/";
 /// Cap per imported asset entry (well above any `asset_max_bytes`).
 const MAX_ASSET_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
+/// R43.15: request-body cap for `POST /backup/import`. axum's default (2 MB)
+/// refused any real archive; the upload streams to disk chunk by chunk, so
+/// this bounds disk use, not memory.
+pub const IMPORT_BODY_LIMIT: usize = 2 * 1024 * 1024 * 1024;
 /// Finished archives in `exports/` are request-scoped; sweep stragglers.
 const EXPORT_TTL_SECS: u64 = 3600;
 

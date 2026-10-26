@@ -192,6 +192,11 @@ impl TestServer {
         self.mutating(req).await
     }
 
+    pub async fn post_multipart(&self, path: &str, form: reqwest::multipart::Form) -> Response {
+        let req = self.client.post(self.url(path)).multipart(form);
+        self.mutating(req).await
+    }
+
     pub async fn put(&self, path: &str, body: &Value) -> Response {
         let req = self.client.put(self.url(path)).json(body);
         self.mutating(req).await

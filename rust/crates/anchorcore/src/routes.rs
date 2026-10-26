@@ -105,7 +105,10 @@ pub fn build_router(state: health::AppState) -> Router {
         // backup export (R25.2)
         .route("/backup/export", post(backup::export_handler))
         // backup import (R25.3)
-        .route("/backup/import", post(backup::import_handler))
+        .route(
+            "/backup/import",
+            post(backup::import_handler).layer(axum::extract::DefaultBodyLimit::max(backup::IMPORT_BODY_LIMIT)),
+        )
         // frontend (R5.1) — must be last, SPA fallback to index.html
         .fallback(frontend::handler)
         // Layers: outermost -> innermost: Host/Origin -> CORS -> CSRF -> Auth
