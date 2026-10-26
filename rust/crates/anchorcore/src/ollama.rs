@@ -76,7 +76,9 @@ fn local_base_for(settings: &SettingsService, base_key: &str) -> Option<String> 
 /// (role, model) pairs. Roles are display labels for the install UI.
 pub(crate) fn configured_local_models(settings: &SettingsService) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    if local_base_for(settings, "embed_base_url").is_some() {
+    // R45.4: the built-in engine embeds in process — Ollama needs no model.
+    let builtin = crate::embedder::active_provider_for(settings) == crate::embedder::Provider::Builtin;
+    if !builtin && local_base_for(settings, "embed_base_url").is_some() {
         let m = settings
             .get("embed_model", None)
             .unwrap_or_else(|| "nomic-embed-text".to_string());

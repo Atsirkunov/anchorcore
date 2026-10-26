@@ -39,9 +39,13 @@ Verify a download against `SHA256SUMS` on the release page.
    Claude Desktop to the same index — the app writes the client config for you, so
    there is nothing to build. The onboarding wizard's last step offers the same card.
 
-Tip: install [Ollama](https://ollama.com) and pull `nomic-embed-text` for full
-hybrid search — without it, keyword search still works. Indexing needs no chat
-model: decisions and actions are read from record structure by rules.
+Tip: for full hybrid search, press **Download built-in model** in the wizard or
+Settings (nomic-embed-text v1.5, ~550 MB download, ~275 MB on disk — runs inside
+the app, Metal on macOS) — or use [Ollama](https://ollama.com) with
+`nomic-embed-text`, which indexes large folders faster and is preferred
+whenever it runs; the vectors are identical, so switching costs nothing. Without
+either, keyword search still works. Indexing needs no chat model: decisions and
+actions are read from record structure by rules.
 
 ## Editions
 
@@ -100,7 +104,7 @@ The Python backend is archived on tag `archive/python-final` ([docs/archived-pyt
 
 | What | Local | Cloud |
 |---|---|---|
-| Embeddings (optional — keyword search works without) | Ollama `nomic-embed-text` | any OpenAI-compatible endpoint + key |
+| Embeddings (optional — keyword search works without) | built-in nomic-embed-text v1.5 (one download, no Ollama) or Ollama `nomic-embed-text` | any OpenAI-compatible endpoint + key |
 | Answers | **agent mode:** your agent writes them from cited evidence (no model here) · **local mode:** Ollama | local mode: any OpenAI-compatible endpoint + key |
 
 Settings are stored in the app (`app_settings`, overriding env defaults); secrets go to the OS keychain,

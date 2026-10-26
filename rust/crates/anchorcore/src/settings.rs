@@ -19,6 +19,7 @@ pub const SETTING_KEYS: &[&str] = &[
     "llm_mode",
     "acronym_expansion",
     "asset_max_bytes",
+    "embed_provider",
 ];
 pub const SECRET_KEYS: &[&str] = &["answer_api_key", "embed_api_key"];
 pub const ALL_KEYS: &[&str] = &[
@@ -36,6 +37,7 @@ pub const ALL_KEYS: &[&str] = &[
     "llm_mode",
     "acronym_expansion",
     "asset_max_bytes",
+    "embed_provider",
     "answer_api_key",
     "embed_api_key",
 ];
@@ -63,16 +65,23 @@ pub fn is_agent_mode(settings: &SettingsService) -> bool {
     llm_mode(settings) == LLM_MODE_AGENT
 }
 
-/// R45.2: reject values the effective-mode read would silently coerce.
+/// R45.4: `embed_provider` values (`auto` = the HTTP embedder when it
+/// serves, else the built-in model once downloaded — `embedder::resolve_provider`).
+pub const EMBED_PROVIDERS: &[&str] = &["auto", "builtin", "ollama"];
+
+/// R45.2/R45.4: reject values the effective read would silently coerce.
 fn invalid_value(key: &str, value: &Value) -> Option<String> {
-    if key != "llm_mode" {
-        return None;
-    }
+    let allowed: &[&str] = match key {
+        "llm_mode" => &[LLM_MODE_AGENT, LLM_MODE_LOCAL],
+        "embed_provider" => EMBED_PROVIDERS,
+        _ => return None,
+    };
     let v = value.as_str().map(|s| s.trim().to_lowercase()).unwrap_or_default();
-    if v.is_empty() || v == LLM_MODE_AGENT || v == LLM_MODE_LOCAL {
+    if v.is_empty() || allowed.contains(&v.as_str()) {
         return None;
     }
-    Some(format!("llm_mode must be '{}' or '{}'", LLM_MODE_AGENT, LLM_MODE_LOCAL))
+    let quoted: Vec<String> = allowed.iter().map(|a| format!("'{a}'")).collect();
+    Some(format!("{key} must be one of {}", quoted.join(", ")))
 }
 const CACHE_TTL: Duration = Duration::from_secs(3);
 
@@ -134,6 +143,7 @@ fn env_value(key: &str) -> Option<String> {
         // R45.1/R45.18: ingest never calls a chat model.
         "extract_entities" => Some("rules".to_string()),
         "llm_mode" => Some(LLM_MODE_LOCAL.to_string()),
+        "embed_provider" => Some("auto".to_string()),
         _ => None,
     }
 }

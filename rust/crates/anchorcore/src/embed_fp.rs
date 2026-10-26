@@ -17,6 +17,8 @@ use rusqlite::Connection;
 /// remote Ollama serving the same model stays comparable). R45.4's built-in
 /// engine stamps `builtin`.
 pub const PROVIDER_HTTP: &str = "ollama";
+/// R45.4: the in-process candle engine (`embed_local.rs`).
+pub const PROVIDER_BUILTIN: &str = "builtin";
 
 const NOMIC_V15: &str = "nomic-embed-text-v1.5";
 

@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::embed_fp::{fingerprint, model_family, record_active_fingerprint, PROVIDER_HTTP};
+use crate::embed_fp::{fingerprint, model_family, record_active_fingerprint, PROVIDER_BUILTIN, PROVIDER_HTTP};
 use crate::settings::SettingsService;
 
 pub const BATCH_SIZE: usize = 32;
@@ -153,18 +153,106 @@ fn place_vectors(len: usize, embeddable_idx: &[usize], vectors: Vec<Vec<f32>>) -
     Ok(out)
 }
 
+/// R45.4: which engine embeds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Provider {
+    /// In-process nomic-embed-text v1.5 (`embed_local.rs`).
+    Builtin,
+    /// Ollama or any OpenAI-compatible `/v1/embeddings` endpoint.
+    Http,
+}
+
+/// `embed_provider` → engine. `auto` (default, and anything unknown) uses
+/// the HTTP embedder whenever it is preferred — a configured cloud endpoint,
+/// or a local Ollama that serves the embed model (owner 2026-10-26: Ollama
+/// indexed ~5× faster than the built-in engine on an M2 Pro) — and the
+/// built-in engine when its model is ready and nothing better serves. Both
+/// are one vector family, so switching re-embeds nothing.
+pub fn resolve_provider(setting: Option<&str>, builtin_ready: bool, http_preferred: bool) -> Provider {
+    match setting.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("builtin") => Provider::Builtin,
+        Some("ollama") => Provider::Http,
+        _ if builtin_ready && !http_preferred => Provider::Builtin,
+        _ => Provider::Http,
+    }
+}
+
+/// R45.4: whether the local Ollama serves the embed model, cached for 60 s
+/// (`None` = never checked or stale). Read synchronously by `auto`.
+static OLLAMA_SERVING: std::sync::Mutex<Option<(std::time::Instant, bool)>> = std::sync::Mutex::new(None);
+const SERVING_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn ollama_serving_cached() -> Option<bool> {
+    let slot = OLLAMA_SERVING.lock().unwrap_or_else(|p| p.into_inner());
+    slot.filter(|(at, _)| at.elapsed() < SERVING_TTL).map(|(_, v)| v)
+}
+
+/// Re-check Ollama when the cache is stale and the answer could matter
+/// (`auto` with a ready built-in model and a local endpoint).
+pub(crate) async fn refresh_ollama_serving(settings: &SettingsService) {
+    let auto = !matches!(settings.get("embed_provider", None).as_deref().map(str::trim), Some("builtin" | "ollama"));
+    let ready = builtin_dir_for(settings).is_some_and(|d| crate::model_store::ready(&d));
+    if !auto || !ready || cloud_endpoint(settings) || ollama_serving_cached().is_some() {
+        return;
+    }
+    let base = settings.get("embed_base_url", None).or_else(|| settings.get("ollama_base_url", None)).unwrap_or_else(|| "http://localhost:11434".to_string());
+    let model = settings.get("embed_model", None).unwrap_or_else(|| "nomic-embed-text".to_string());
+    let serving = match crate::ollama::fetch_ollama_tags(&base).await {
+        Some(tags) => crate::ollama::missing_from_installed(&[model], &crate::ollama::installed_families(&tags)).is_empty(),
+        None => false,
+    };
+    *OLLAMA_SERVING.lock().unwrap_or_else(|p| p.into_inner()) = Some((std::time::Instant::now(), serving));
+}
+
+/// An explicitly configured non-local `embed_base_url` (the person chose it).
+fn cloud_endpoint(settings: &SettingsService) -> bool {
+    settings.get("embed_base_url", None).is_some_and(|b| !crate::common::provider_is_local(&b))
+}
+
+/// R45.4: the built-in model's directory (`ANCHOR_MODELS_DIR` or
+/// `{data_dir}/models`); `None` without either (unit tests).
+pub fn builtin_dir_for(settings: &SettingsService) -> Option<std::path::PathBuf> {
+    let root = match (std::env::var("ANCHOR_MODELS_DIR"), settings.data_dir()) {
+        (Ok(v), _) if !v.trim().is_empty() => std::path::PathBuf::from(v),
+        (_, Some(data)) => crate::model_store::models_root(&data),
+        _ => return None,
+    };
+    Some(crate::model_store::model_dir(&root))
+}
+
+pub fn active_provider_for(settings: &SettingsService) -> Provider {
+    let ready = builtin_dir_for(settings).is_some_and(|d| crate::model_store::ready(&d));
+    let http_preferred = cloud_endpoint(settings) || ollama_serving_cached().unwrap_or(false);
+    resolve_provider(settings.get("embed_provider", None).as_deref(), ready, http_preferred)
+}
+
 impl Embedder {
     pub fn new(settings: Arc<SettingsService>) -> Self {
         Self { settings, family_changed: Arc::new(tokio::sync::Notify::new()), chunks_pending: Arc::new(tokio::sync::Notify::new()) }
     }
 
     fn embed_model_name(&self) -> String {
+        if self.active_provider() == Provider::Builtin {
+            return crate::model_store::MODEL_NAME.to_string();
+        }
         self.settings.get("embed_model", None).unwrap_or_else(|| "nomic-embed-text".to_string())
+    }
+
+    /// R45.4: the built-in model's directory (see `builtin_dir_for`).
+    pub fn builtin_dir(&self) -> Option<std::path::PathBuf> {
+        builtin_dir_for(&self.settings)
+    }
+
+    pub fn active_provider(&self) -> Provider {
+        active_provider_for(&self.settings)
     }
 
     /// R45.5: provider tag stamped on this embedder's vectors.
     fn provider(&self) -> &'static str {
-        PROVIDER_HTTP
+        match self.active_provider() {
+            Provider::Builtin => PROVIDER_BUILTIN,
+            Provider::Http => PROVIDER_HTTP,
+        }
     }
 
     /// R45.5: dim-free family of the configured embedder — stored vectors
@@ -224,19 +312,39 @@ impl Embedder {
         crate::common::provider_is_local(&self.base_url())
     }
 
-    /// Whether a remote embedder is trusted (B39/B30). Local is always trusted.
+    /// Whether a remote embedder is trusted (B39/B30). Local — including the
+    /// built-in engine, which never leaves the process — is always trusted.
     pub(crate) fn cloud_trusted(&self) -> bool {
-        crate::common::provider_trusted(&self.base_url())
+        self.active_provider() == Provider::Builtin || crate::common::provider_trusted(&self.base_url())
     }
 
     /// Embed in `BATCH_SIZE` requests, up to `ANCHOR_EMBED_CONCURRENCY` in
     /// flight (R30.2); vectors come back in input order, and the first
     /// failed batch fails the call.
     pub async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
-        use futures_util::{StreamExt, TryStreamExt};
         if texts.is_empty() {
             return Ok(vec![]);
         }
+        refresh_ollama_serving(&self.settings).await;
+        if self.active_provider() == Provider::Builtin {
+            return self.embed_builtin(texts).await;
+        }
+        self.embed_http(texts).await
+    }
+
+    /// R45.4: in-process engine on a blocking thread (loads on first use).
+    async fn embed_builtin(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
+        let Some(dir) = self.builtin_dir().filter(|d| crate::model_store::ready(d)) else {
+            return Err(degraded("built-in embedding model is not downloaded".to_string()));
+        };
+        tokio::task::spawn_blocking(move || crate::embed_local::embed_blocking(&dir, &texts))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| degraded(format!("built-in embed failed: {e}")))
+    }
+
+    async fn embed_http(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
+        use futures_util::{StreamExt, TryStreamExt};
         let call = EmbedCall {
             url: format!("{}/v1/embeddings", self.base_url().trim_end_matches('/')),
             model: self.embed_model_name(),
@@ -453,6 +561,25 @@ mod tests {
         let svc = std::sync::Arc::new(crate::settings::SettingsService::new(store));
         let e = Embedder::new(svc);
         assert!(e.provider_is_local());
+    }
+
+    #[test]
+    fn provider_resolution() {
+        assert_eq!(resolve_provider(None, false, false), Provider::Http);
+        assert_eq!(resolve_provider(None, true, false), Provider::Builtin, "auto: ready model, nothing serving");
+        assert_eq!(resolve_provider(None, true, true), Provider::Http, "auto: a serving Ollama wins (faster bulk)");
+        assert_eq!(resolve_provider(Some("auto"), false, false), Provider::Http);
+        assert_eq!(resolve_provider(Some(" Builtin "), false, true), Provider::Builtin, "explicit builtin always");
+        assert_eq!(resolve_provider(Some("ollama"), true, false), Provider::Http, "explicit ollama always");
+    }
+
+    #[test]
+    fn builtin_vectors_share_the_ollama_family() {
+        // R45.4: switching provider must not re-embed (probe parity 0.99995+).
+        let ours = crate::embed_fp::fingerprint(PROVIDER_BUILTIN, crate::model_store::MODEL_NAME, 768);
+        let theirs = crate::embed_fp::fingerprint(PROVIDER_HTTP, "nomic-embed-text:latest", 768);
+        assert!(crate::embed_fp::same_vector_family(&ours, &theirs), "{ours} vs {theirs}");
+        assert!(uses_nomic_prefixes(crate::model_store::MODEL_NAME), "built-in inputs keep the nomic prefixes");
     }
 
     #[test]

@@ -51,6 +51,13 @@ Env vars (effective at call time, no restart):
 - `ANCHOR_MIN_RELEVANCE_COSINE` (0.50) - vector-cosine floor for evidence
   with no BM25 match; below it on every hit returns empty (R39.3).
 - `ANCHOR_AUTHORITY_TIERS` (on) - set `0`/`false` to disable the (env, tier) ordering partition (R39.7).
+- `ANCHOR_PIERCE_MIN_TERMS` (3) + `ANCHOR_PIERCE_MIN_BM25` (5.0) — rich
+  keyword evidence (that many distinct FTS-matched forms AND that BM25
+  magnitude) pierces the tier partition and sorts on score order within
+  its env class; thin matches stay tiered (R47.1). Either knob negative
+  disables the pierce. Calibrated between thin-max ≈ 2.3 and rich-min
+  ≈ 7.4 — small corpora self-disable (magnitudes can't clear the bar
+  where burial is impossible).
 - `ANCHOR_DECAY_FLOOR` (0.8) - age decay never drops below this; `0`
   restores raw decay (R39.6).
 - `ANCHOR_QA_EXCLUDE_DISPUTED` (true) — set `0`/`false` to include
@@ -161,8 +168,21 @@ Code constants (need a rebuild; change only with a failing test in hand):
   the query's *family* + dim; everything else (another model, unstamped
   vectors from old archives or raw writes) is keyword-only until re-embedded.
   Families: unknown models are their own family; Ollama `nomic-embed-text`
-  and the built-in nomic v1.5 share one (probe parity 1.00000), so a
-  provider switch between them re-embeds nothing. A model switch is
+  and the built-in nomic v1.5 share one (probe parity 1.00000; R45.4 live
+  check 0.999999 on Metal f16), so a provider switch between them re-embeds
+  nothing.
+- Embedding provider (R45.4, `embed_provider`): `auto` (default) embeds with
+  the HTTP embedder when it serves (a configured cloud endpoint, or a local
+  Ollama with the embed model — checked, cached 60 s) and otherwise with the
+  built-in candle engine (`embed_local.rs`, f16 weights from
+  `model_store.rs`, Metal on macOS, pure CPU elsewhere) once its model is
+  ready; `builtin` / `ollama` force one. Measured 2026-10-26 (M2 Pro,
+  release): built-in query 21 ms; bulk 6.8 chunks/s vs Ollama ~34/s. The
+  download is always explicit (`POST /system/embed-model/download`, the
+  wizard/Settings button, or `anchorcore embed-model fetch`), pinned to one
+  Hugging Face revision with per-file SHA-256, resumable, and adopts
+  verified files already in the directory (offline drop-in). Root:
+  `ANCHOR_MODELS_DIR` or `{data_dir}/models`; the Team image bakes it in. A model switch is
   noticed by the next query: it records a `system_events` warning and wakes
   the scheduler backfill, which re-embeds stale vectors (NULL, unstamped,
   or out-of-family; label-gated like before) in id-cursor batches. Old

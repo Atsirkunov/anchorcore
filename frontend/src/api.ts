@@ -233,6 +233,9 @@ export const api = {
     }),
 
   systemStatus: () => request<SystemStatus>("/system/status"),
+  /** R47.0: redacted bundle for the last query ("it's wrong" flow). */
+  getReport: (index = 0) =>
+    request<import("./types").ReportBundle>(`/system/report${index > 0 ? `?index=${index}` : ""}`),
   /** R29.1: `refresh` performs the GitHub request; without it this only reads the cache. */
   updateStatus: (refresh = false) => request<UpdateStatus>(`/system/update${refresh ? "?refresh=1" : ""}`),
   onboarding: () => request<OnboardingState>("/system/onboarding"),
@@ -334,6 +337,9 @@ export const api = {
       body: JSON.stringify({ models }),
     }),
   ollamaPulls: () => request<{ pulls: PullProgress[] }>("/system/ollama/pulls"),
+  embedModel: () => request<import("./types").EmbedModelStatus>("/system/embed-model"),
+  downloadEmbedModel: () =>
+    request<{ started: boolean; ready: boolean }>("/system/embed-model/download", { method: "POST" }),
 
   sections: (params?: { item_id?: number; source_id?: number }) => {
     const q = new URLSearchParams();

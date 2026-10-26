@@ -56,6 +56,51 @@ pub struct ImportArgs {
     pub remap: Vec<String>,
 }
 
+/// R45.4: `anchorcore embed-model fetch|status`.
+#[derive(clap::Args, Debug)]
+pub struct EmbedModelArgs {
+    #[command(subcommand)]
+    pub action: EmbedModelAction,
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum EmbedModelAction {
+    /// Download the pinned weights (or verify files dropped into the model
+    /// directory), convert to f16 and mark the model ready
+    Fetch {
+        /// Never touch the network: only verify + convert files already there
+        #[arg(long)]
+        offline: bool,
+    },
+    /// Print where the model lives and whether it is ready
+    Status,
+}
+
+pub async fn run_embed_model(data_dir: &Path, args: EmbedModelArgs) -> i32 {
+    attach_parent_console();
+    let dir = crate::model_store::model_dir(&crate::model_store::models_root(data_dir));
+    match args.action {
+        EmbedModelAction::Status => {
+            let state = if crate::model_store::ready(&dir) { "ready" } else { "missing" };
+            println!("{} {} ({})", crate::model_store::MODEL_NAME, state, dir.display());
+            0
+        }
+        EmbedModelAction::Fetch { offline } => {
+            crate::model_store::try_begin();
+            match crate::model_store::prepare(&dir, !offline).await {
+                Ok(()) => {
+                    println!("{} ready at {}", crate::model_store::MODEL_NAME, dir.display());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("embed-model fetch failed: {e}");
+                    1
+                }
+            }
+        }
+    }
+}
+
 #[cfg(windows)]
 fn attach_parent_console() {
     // Release builds are windowed (no console popup on double-click); a CLI run

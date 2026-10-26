@@ -135,6 +135,17 @@ configure, then **verify**. Indexing never needs a chat model either way.
    (embeddings accept the same `embed_base_url` / `embed_model` /
    `embed_api_key` keys), then `POST /settings/test-connection {"provider":"answer"}`.
 
+**Embeddings (search vectors) — independent of who writes answers.** The
+simplest local path needs no Ollama: `GET /system/embed-model` shows
+`ready`/`active`; `POST /system/embed-model/download` fetches the built-in
+nomic-embed-text v1.5 (≈550 MB, pinned + checksummed; poll the same GET for
+`progress`). `embed_provider` is `auto` (default: Ollama or a configured
+cloud endpoint when it serves — faster bulk indexing — else the built-in
+model once downloaded), `builtin`, or `ollama`. Built-in and Ollama
+`nomic-embed-text` vectors are one family — switching re-embeds nothing.
+Headless: `anchorcore embed-model fetch` (add `--offline` to only verify
+files already dropped into the model directory).
+
 **Honesty contract — never skip this.** `POST /qa` (and MCP `ask`) reports how
 the answer was produced:
 

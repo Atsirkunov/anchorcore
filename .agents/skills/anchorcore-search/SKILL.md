@@ -107,3 +107,15 @@ the `decisions` and `actions` tools.
 List each documented step. Rate the code full, simplified (say what it does
 instead) or absent, with location and confidence. Then rank the largest gaps
 and list contradictions (names, codes, states) between docs and code.
+
+## The user says the answer is wrong
+
+Generate a bug report instead of guessing: `GET /system/report` (same base
+URL and auth as above; `?index=1` for the previous query, 404 when nothing
+was asked yet). It returns a redacted bundle for the last `/qa` or
+`/qa/search` call — the query text, per-hit legs and ranks, scores, index
+counts, versions, and the embedding family. It contains no document text,
+titles, paths, settings, or secrets (titles and sources are pseudonyms plus
+hashes), so the user can send it to support as-is after a glance at the
+query text. Save it to a file when they ask for one; never paste chunk
+content alongside it.

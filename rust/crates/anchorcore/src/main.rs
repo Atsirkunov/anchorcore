@@ -41,6 +41,8 @@ enum Command {
     Export(cli::ExportArgs),
     /// Import a .anchorcore-backup archive (merge default, or replace)
     Import(cli::ImportArgs),
+    /// Built-in embedding model: fetch (or adopt dropped-in files) / status
+    EmbedModel(cli::EmbedModelArgs),
 }
 
 fn resolve_data_dir(cli: &str) -> PathBuf {
@@ -605,6 +607,7 @@ async fn serve(args: Args, tray_handoff: Option<TrayHandoff>) {
         let code = match command {
             Command::Export(export) => cli::run_export(&data_dir, args.port, export).await,
             Command::Import(import) => cli::run_import(&data_dir, args.port, import).await,
+            Command::EmbedModel(cmd) => cli::run_embed_model(&data_dir, cmd).await,
         };
         std::process::exit(code);
     }

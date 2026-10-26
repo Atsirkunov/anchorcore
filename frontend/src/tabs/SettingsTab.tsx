@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import { stripPlaceholders } from "../placeholders";
 import { theme, radius } from "../theme";
-import type { AppSettings, AskResponse, LlmMode } from "../types";
+import type { AppSettings, AskResponse, EmbedProvider, LlmMode } from "../types";
+import { BuiltinEmbedder } from "../BuiltinEmbedder";
 
 type ProbeResult = { status: "pass" | "fail" | "inconclusive"; message: string };
 
@@ -168,6 +169,19 @@ export function SettingsTab() {
       <div style={{ display: "grid", gap: 8, maxWidth: 560 }}>
         <div style={styles.section}>
           <div style={styles.sectionTitle}>Embeddings (retrieval)</div>
+          <label style={styles.label}>Engine</label>
+          <select
+            style={styles.input}
+            value={form.embed_provider ?? "auto"}
+            onChange={(e) => setForm({ ...form, embed_provider: e.target.value as EmbedProvider })}
+          >
+            <option value="auto">Automatic — Ollama/endpoint below when it serves, else the built-in model</option>
+            <option value="builtin">Built-in model (in the app, no Ollama)</option>
+            <option value="ollama">Ollama or a cloud endpoint (below)</option>
+          </select>
+          <BuiltinEmbedder />
+          {form.embed_provider !== "builtin" && (
+            <>
           {providerSelect(embedderProvider, setEmbedderProvider, "Local Ollama (free, private)", "Cloud OpenAI-compatible")}
           {keyInput("embed_api_key", embedderProvider, "API key")}
           <label style={styles.label}>Base URL</label>
@@ -187,6 +201,8 @@ export function SettingsTab() {
           <button style={styles.button} disabled={testBusy === "embedder"} onClick={() => testConnection("embedder")}>
             {testBusy === "embedder" ? "Testing…" : "Test embeddings"}
           </button>
+            </>
+          )}
         </div>
 
         <div style={styles.section}>
