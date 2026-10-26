@@ -66,6 +66,7 @@ pub fn init_db(path: &Path) -> Result<Connection> {
     // Run migrations (see `migrations()` below). If the DB already exists from
     // Python/Alembic, this will apply only missing ones; otherwise it creates all.
     // All SQL uses IF NOT EXISTS so re-running on a Python-created DB is safe.
+    backup_before_legacy_cleanup(&conn, path)?;
     if let Err(e) = run_migrations(&mut conn) {
         // Real syntax errors should surface; "already exists" is ok because
         // Python/Alembic already created tables before rusqlite_migration
@@ -428,6 +429,8 @@ fn migrations() -> Migrations<'static> {
         M::up_with_hook(include_str!("../migrations/25_drop_distilled.sql"), drop_distilled_chunks),
         // R46.7: image assets — deduped blobs + per-reference rows
         M::up(include_str!("../migrations/26_assets.sql")),
+        // R45.10: legacy entity cleanup (backup first, see `init_db`)
+        M::up_with_hook(include_str!("../migrations/27_legacy_entities.sql"), cleanup_legacy_entities),
     ])
 }
 
@@ -438,6 +441,81 @@ fn prune_vocabulary(tx: &rusqlite::Transaction) -> rusqlite_migration::HookResul
         tracing::warn!("R45.13: dropped {} vocabulary rows (LLM proposals + non-initialism rules)", n);
     }
     Ok(())
+}
+
+/// Legacy = not written by the R45.8 record parser.
+const LEGACY_ENTITY: &str = "reasoning <> ?1";
+
+/// R45.10 hook for migration 27: delete legacy entities on non-record items,
+/// demote the rest of the legacy `verified` rows, record the counts.
+fn cleanup_legacy_entities(tx: &rusqlite::Transaction) -> rusqlite_migration::HookResult {
+    let marker = crate::records::RECORD_REASONING;
+    let before: i64 = tx.query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))?;
+    let legacy: i64 =
+        tx.query_row(&format!("SELECT COUNT(*) FROM entities WHERE {LEGACY_ENTITY}"), [marker], |r| r.get(0))?;
+    if legacy == 0 {
+        return Ok(());
+    }
+    // No doc_type column yet → no item is in the record bucket.
+    let records = if column_exists(tx, "ingested_items", "doc_type") {
+        "SELECT id FROM ingested_items WHERE doc_type = 'record'"
+    } else {
+        "SELECT id FROM ingested_items WHERE 0"
+    };
+    let deleted = tx.execute(&format!("DELETE FROM entities WHERE {LEGACY_ENTITY} AND item_id NOT IN ({records})"), [marker])?;
+    let demoted = tx.execute(
+        &format!("UPDATE entities SET status = 'unverified', updated_at = datetime('now') WHERE {LEGACY_ENTITY} AND status = 'verified'"),
+        [marker],
+    )?;
+    let after = before - deleted as i64;
+    let detail = format!(r#"{{"before":{before},"legacy":{legacy},"deleted":{deleted},"demoted":{demoted},"after":{after}}}"#);
+    tracing::warn!("R45.10: legacy entities — {}", detail);
+    tx.execute(
+        "INSERT INTO system_events (component, level, message, detail) VALUES ('migration', 'info', 'R45.10 legacy entity cleanup', ?1)",
+        [detail],
+    )?;
+    Ok(())
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        [table, column],
+        |r| r.get::<_, i64>(0),
+    )
+    .unwrap_or(0)
+        > 0
+}
+
+/// R45.10: before migration 27 deletes/demotes legacy entities, copy the
+/// whole DB to `exports/safety-backup-pre-r45.10-<utc>.db` (never swept).
+/// A failed backup fails the boot rather than changing unbacked-up data.
+fn backup_before_legacy_cleanup(conn: &Connection, db_path: &Path) -> Result<()> {
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version == 0 || version >= 27 || !table_exists(conn, "entities") {
+        return Ok(());
+    }
+    let legacy: i64 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM entities WHERE {LEGACY_ENTITY}"),
+        [crate::records::RECORD_REASONING],
+        |r| r.get(0),
+    )?;
+    if legacy == 0 {
+        return Ok(());
+    }
+    let dir = db_path.parent().unwrap_or(Path::new(".")).join("exports");
+    std::fs::create_dir_all(&dir).map_err(|e| backup_error(&dir, e))?;
+    let file = dir.join(format!("safety-backup-pre-r45.10-{}.db", chrono::Utc::now().format("%Y%m%dT%H%M%SZ")));
+    conn.execute("VACUUM INTO ?1", [file.to_string_lossy()])?;
+    tracing::warn!("R45.10: {} legacy entities to clean up — backed up the database to {}", legacy, file.display());
+    Ok(())
+}
+
+fn backup_error(dir: &Path, e: std::io::Error) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(1),
+        Some(format!("R45.10 safety backup: cannot create {}: {e}", dir.display())),
+    )
 }
 
 /// R45.18 hook for migration 25: drop distilled chunks when the schema has
@@ -589,6 +667,26 @@ mod tests {
             // R45.18: one distilled chunk for migration 25 to drop.
             conn.execute("INSERT INTO chunks (item_id, kind, content) VALUES (?1, 'distilled', 'Q: a\nA: b')", [item])
                 .unwrap();
+            // R45.10: legacy rows for migration 27 — one on the unbucketed
+            // item (deleted, with its entity chunk), one on a record item
+            // (demoted), and a person-verified parser row (kept).
+            conn.execute("INSERT INTO ingested_items (source_id, content_hash, doc_type) VALUES (?1,'r','record')", [sid])
+                .unwrap();
+            let rec = conn.last_insert_rowid();
+            for (iid, summary, reasoning) in [
+                (item, "legacy on reference", "rule-based classifier"),
+                (rec, "legacy on record", "model said so"),
+                (rec, "parser row", "record parser"),
+            ] {
+                conn.execute(
+                    "INSERT INTO entities (item_id, kind, summary, reasoning, confidence, status) VALUES (?1,'decision',?2,?3,0.9,'verified')",
+                    rusqlite::params![iid, summary, reasoning],
+                )
+                .unwrap();
+            }
+            let legacy_ref: i64 = conn.query_row("SELECT id FROM entities WHERE summary='legacy on reference'", [], |r| r.get(0)).unwrap();
+            conn.execute("INSERT INTO chunks (item_id, entity_id, content) VALUES (?1, ?2, 'entity chunk')", [item, legacy_ref])
+                .unwrap();
             drop_entity_record_columns(&conn);
             drop_glossary_artifacts(&conn);
             // A real v10 DB also predates R46.7 — drop the asset tables (their
@@ -616,7 +714,7 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         run_migrations(&mut conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 26);
+        assert_eq!(v, 27);
         let asset_tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('assets','asset_blobs','assets_blob_gc_delete','assets_blob_gc_update')",
@@ -654,7 +752,23 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sqlite_master WHERE name GLOB 'vec_chunks*'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(leftovers, 0, "vec0 table + shadow tables must be dropped");
-        let adopted: String = conn.query_row("SELECT processed_hash FROM ingested_items", [], |r| r.get(0)).unwrap();
+        // R45.10 (migration 27): legacy rows deleted off-record, demoted on
+        // record items; parser rows untouched; counts recorded.
+        let status = |summary: &str| -> Option<String> {
+            conn.query_row("SELECT status FROM entities WHERE summary = ?1", [summary], |r| r.get(0)).ok()
+        };
+        assert_eq!(status("legacy on reference"), None, "legacy row on a non-record item is deleted");
+        assert_eq!(status("legacy on record").as_deref(), Some("unverified"), "legacy verified is demoted");
+        assert_eq!(status("parser row").as_deref(), Some("verified"), "a person-verified parser row stays");
+        let entity_chunks: i64 =
+            conn.query_row("SELECT COUNT(*) FROM chunks WHERE content = 'entity chunk'", [], |r| r.get(0)).unwrap();
+        assert_eq!(entity_chunks, 0, "the deleted entity's chunk cascades");
+        let detail: String = conn
+            .query_row("SELECT detail FROM system_events WHERE component = 'migration'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(detail, r#"{"before":3,"legacy":2,"deleted":1,"demoted":1,"after":2}"#);
+        let adopted: String =
+            conn.query_row("SELECT processed_hash FROM ingested_items WHERE content_hash = 'h'", [], |r| r.get(0)).unwrap();
         assert_eq!(adopted, "h", "migration 18 must backfill processed_hash=content_hash");
         let sys_sql: String = conn
             .query_row("SELECT sql FROM sqlite_master WHERE name = 'system_events'", [], |r| r.get(0))
@@ -669,6 +783,32 @@ mod tests {
         let chunk = conn.last_insert_rowid();
         conn.execute("UPDATE chunks SET embedding = x'01' WHERE id = ?1", [chunk]).unwrap();
         conn.execute("DELETE FROM chunks WHERE id = ?1", [chunk]).unwrap();
+    }
+
+    #[test]
+    fn legacy_cleanup_backs_up_first_only_when_needed() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("anchorcore.db");
+        let conn = init_db(&path).unwrap();
+        let exports = dir.path().join("exports");
+        backup_before_legacy_cleanup(&conn, &path).unwrap();
+        assert!(!exports.exists(), "at version 27 nothing is backed up");
+        conn.execute("INSERT INTO sources (name, connector) VALUES ('s','folder')", []).unwrap();
+        conn.execute("INSERT INTO ingested_items (source_id, content_hash) VALUES (1,'h')", []).unwrap();
+        conn.execute("INSERT INTO entities (item_id, kind, summary, reasoning) VALUES (1,'decision','x','record parser')", [])
+            .unwrap();
+        conn.pragma_update(None, "user_version", 26).unwrap();
+        backup_before_legacy_cleanup(&conn, &path).unwrap();
+        assert!(!exports.exists(), "parser rows alone need no backup");
+        conn.execute("INSERT INTO entities (item_id, kind, summary, reasoning) VALUES (1,'decision','y','llm')", []).unwrap();
+        backup_before_legacy_cleanup(&conn, &path).unwrap();
+        let files: Vec<_> = std::fs::read_dir(&exports).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(files.len(), 1);
+        let name = files[0].to_string_lossy().to_string();
+        assert!(name.starts_with("safety-backup-pre-r45.10-") && name.ends_with(".db"), "{name}");
+        let copy = Connection::open(exports.join(&name)).unwrap();
+        let n: i64 = copy.query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2, "the backup holds the pre-cleanup rows");
     }
 
     #[test]

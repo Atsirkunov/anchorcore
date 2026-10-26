@@ -1,0 +1,10 @@
+-- R45.10: legacy (pre-R45.8) entity cleanup, owner decision 2026-10-21
+-- §7.2.3 (a)+(b). Every entity the record parser writes carries
+-- reasoning = 'record parser' and is stored `unverified`; anything else came
+-- from the LLM extractor or the old rule classifier. The Rust hook
+-- (`cleanup_legacy_entities`, db.rs) deletes legacy rows on items that are
+-- not in the `record` bucket and demotes the remaining legacy `verified`
+-- rows to `unverified` (verified means a person confirmed it). It is Rust
+-- because `ingested_items.doc_type` may only appear after migrations
+-- (`ensure_columns`). `init_db` writes a `VACUUM INTO` safety backup to
+-- `exports/` first. Counts land in `system_events` (component 'migration').

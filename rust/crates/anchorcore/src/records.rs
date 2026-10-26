@@ -66,7 +66,8 @@ pub struct RecordFields {
     pub superseded_by: String,
 }
 
-const RECORD_REASONING: &str = "record parser";
+/// Marks parser-made entities (R45.10 tells them from legacy rows by it).
+pub(crate) const RECORD_REASONING: &str = "record parser";
 
 /// Parsed record → entity rows: one decision (title + summary) and one row
 /// per action item. Confidence 1.0 is "parsed, not guessed" — the review
