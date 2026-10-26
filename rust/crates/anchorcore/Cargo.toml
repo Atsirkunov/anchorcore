@@ -69,3 +69,7 @@ tray-icon = "0.26"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication"] }
+# R41.5 Windows: tray-icon's hidden window needs a message loop on the thread
+# that created it (same version tray-icon already pulls in).
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

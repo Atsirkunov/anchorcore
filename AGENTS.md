@@ -102,7 +102,7 @@ Local-first "company memory": connect sources (folder, Jira, Linear, Drive, Miro
 
 **Platform and tooling**
 - Logging is stdout + rotating `{data_dir}/anchorcore.log` (10 MB × 3); windowed builds only have the file.
-- macOS tray needs `NSApplication` first, on the main thread (`tray.rs`); gate with `--no-tray`/`ANCHOR_TRAY=0`. Linux tray is a stub — no tray libs in Linux CI.
+- macOS tray needs `NSApplication` first, on the main thread (`tray.rs`); with a tray the main thread runs the platform event loop and the server lives on a `server` thread (`main.rs` `run_with_tray`) — never park the main thread in async code again (the icon goes dead). Gate with `--no-tray`/`ANCHOR_TRAY=0`. Linux tray is a stub — no tray libs in Linux CI.
 - Windows builds use MinGW: `winlibs` on PATH + `cargo +stable-x86_64-pc-windows-gnu --target x86_64-pc-windows-gnu --offline` from `rust/` (MSVC can't link). Fresh worktrees lack `rust/target` and `frontend/dist` — copy or rebuild.
 - PowerShell: commit with `git commit -F <file>` (a `"` in `-m` breaks args); `curl.exe -o NUL`, not `-o $null`; end CI `pwsh` steps with `exit 0` and assert statuses via `-w "%{http_code}"`.
 - Line endings are LF — if an edit fails to match, suspect whitespace.

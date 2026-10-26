@@ -514,16 +514,58 @@ fn mcp_mode_requested() -> bool {
     stem == "anchorcore-mcp"
 }
 
-#[tokio::main]
-async fn main() {
+fn build_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("failed to start tokio runtime")
+}
+
+/// R41.5: the server hands its bound address + shutdown `Notify` to the main
+/// thread, which builds the tray there and pumps the platform event loop.
+type TrayHandoff = std::sync::mpsc::Sender<(String, std::sync::Arc<tokio::sync::Notify>)>;
+
+fn main() {
     // R20.8: stdio MCP mode — no server, no DB init, no browser.
     if mcp_mode_requested() {
-        mcp::run().await;
+        build_runtime().block_on(mcp::run());
         return;
     }
     // Parse first so `--help`/`--version` work (clap exits before logging;
     // the Team image license gate below logs to the file too).
     let args = Args::parse();
+    let rt = build_runtime();
+    if args.command.is_some() || !tray::wanted(args.no_tray) {
+        rt.block_on(serve(args, None));
+        return;
+    }
+    run_with_tray(rt, args);
+}
+
+/// R41.5: macOS/Windows with a tray — the server runs on a background thread
+/// and the main thread owns the tray + event loop (AppKit/Win32 deliver
+/// clicks only to a pumped main/creating thread; parking it in
+/// `axum::serve` left the icon dead and macOS showing "Not Responding").
+/// The server thread exits the process after its graceful drain.
+fn run_with_tray(rt: tokio::runtime::Runtime, args: Args) {
+    let no_tray = args.no_tray;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let server = std::thread::Builder::new()
+        .name("server".to_string())
+        .spawn(move || {
+            let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.block_on(serve(args, Some(tx))))).is_ok();
+            std::process::exit(if ok { 0 } else { 101 });
+        })
+        .expect("failed to start server thread");
+    // Err = the server ended before binding (gate refusal, bind failure).
+    let tray = rx.recv().ok().and_then(|(addr, shutdown)| tray::spawn_if_enabled(&addr, no_tray, shutdown));
+    match tray {
+        Some(guard) => tray::run_event_loop(guard),
+        None => {
+            let ok = server.join().is_ok();
+            std::process::exit(if ok { 0 } else { 101 });
+        }
+    }
+}
+
+async fn serve(args: Args, tray_handoff: Option<TrayHandoff>) {
     let data_dir = resolve_data_dir(&args.data_dir);
     std::fs::create_dir_all(&data_dir).ok();
     init_logging(&data_dir);
@@ -602,11 +644,19 @@ async fn main() {
     tracing::info!("listening on {}", addr);
     maybe_open_browser(&addr);
     // Bind via std first: a second instance fails here before it can plant a
-    // tray icon, and tray creation below stays on the main thread (macOS).
+    // tray icon (R41.5: the main thread builds it after this handoff).
     let std_listener = std::net::TcpListener::bind(&addr).unwrap();
     std_listener.set_nonblocking(true).unwrap();
     let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
-    let _tray = tray::spawn_if_enabled(&addr, args.no_tray, shutdown.clone());
+    // R41.5: with a tray the main thread builds it (`run_with_tray`); without
+    // one this only logs why it is off.
+    let _tray = match tray_handoff {
+        Some(tx) => {
+            let _ = tx.send((addr.clone(), shutdown.clone()));
+            None
+        }
+        None => tray::spawn_if_enabled(&addr, args.no_tray, shutdown.clone()),
+    };
     let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
     let advertised = advertise_runtime(&data_dir, &resolve_host(&args.host), &listener);
     let served = axum::serve(listener, app)

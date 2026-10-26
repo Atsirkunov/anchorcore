@@ -59,6 +59,23 @@ fn disabled_reason(no_tray_flag: bool, anchor_tray_env: Option<&str>) -> Option<
     }
 }
 
+/// R41.5: whether `main` should hand the main thread to the tray event loop
+/// (and run the server on a background thread).
+pub fn wanted(no_tray_flag: bool) -> bool {
+    let env = std::env::var("ANCHOR_TRAY").ok();
+    disabled_reason(no_tray_flag, env.as_deref()).is_none()
+}
+
+/// R41.5: pump the platform event loop on the main thread — without it the
+/// icon never receives clicks (and macOS flags the app "Not Responding").
+/// Never returns; the server thread ends the process after its drain.
+pub fn run_event_loop(guard: TrayGuard) -> ! {
+    imp::run_event_loop(&guard.0);
+    loop {
+        std::thread::park();
+    }
+}
+
 /// Create the tray icon unless disabled (flag/env/platform). Failures log and
 /// fall back to tray-less — the server must run even without a tray.
 pub fn spawn_if_enabled(
@@ -207,6 +224,28 @@ mod imp {
         }))
     }
 
+    /// macOS: `NSApplication.run` delivers status-item clicks to muda, which
+    /// forwards them to the `tray-menu` thread below.
+    #[cfg(target_os = "macos")]
+    pub(super) fn run_event_loop(guard: &Guard) {
+        guard._app.run();
+    }
+
+    /// Windows: tray-icon's hidden window lives on this thread; a plain
+    /// message pump dispatches its clicks. Returns on `WM_QUIT` or error.
+    #[cfg(target_os = "windows")]
+    pub(super) fn run_event_loop(_guard: &Guard) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, TranslateMessage, MSG};
+        // SAFETY: MSG is plain data; the pump only reads/writes our local.
+        unsafe {
+            let mut msg: MSG = std::mem::zeroed();
+            while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+
     fn event_loop(
         url: &str,
         open_id: &MenuId,
@@ -241,6 +280,8 @@ mod imp {
         // Kept as a no-op (not unreachable!()) so a future Linux tray lands here.
         None
     }
+
+    pub(super) fn run_event_loop(_guard: &Guard) {}
 }
 
 #[cfg(test)]
