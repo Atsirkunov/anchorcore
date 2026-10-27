@@ -85,52 +85,27 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
     crate::embedder::cosine_similarity(a, b)
 }
 
-fn threshold() -> f32 {
-    if let Ok(v) = std::env::var("ANCHOR_TAG_REUSE_THRESHOLD") {
-        if let Ok(f) = v.parse::<f32>() {
-            return f.clamp(0.0, 1.0);
-        }
-    }
-    // DB app_settings fallback (SettingsService persistence via PUT /settings)
-    if let Ok(data_dir) = std::env::var("ANCHOR_DATA_DIR") {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        if let Ok(conn) = crate::db::open_db(&db_path) {
-            if let Ok(val) = conn.query_row(
-                "SELECT value FROM app_settings WHERE key='tag_reuse_threshold'",
-                [],
-                |r| r.get::<_, String>(0),
-            ) {
-                if let Ok(f) = val.parse::<f32>() {
-                    return f.clamp(0.0, 1.0);
-                }
-            }
-        }
-    } else {
-        // Try default data dir locations (covers tests with temp dir via ANCHOR_DATA_DIR, else fallback to ./data)
-        for cand in ["data", &format!("{}/.anchorcore", std::env::var("HOME").unwrap_or_default())] {
-            let db_path = crate::db::resolve_db_path(cand);
-            if !db_path.exists() {
-                continue;
-            }
-            if let Ok(conn) = crate::db::open_db(&db_path) {
-                if let Ok(val) = conn.query_row(
-                    "SELECT value FROM app_settings WHERE key='tag_reuse_threshold'",
-                    [],
-                    |r| r.get::<_, String>(0),
-                ) {
-                    if let Ok(f) = val.parse::<f32>() {
-                        return f.clamp(0.0, 1.0);
-                    }
-                }
-            }
-        }
-    }
-    0.82
+const DEFAULT_THRESHOLD: f32 = 0.82;
+
+/// Cosine reuse threshold: `ANCHOR_TAG_REUSE_THRESHOLD` overrides, else the
+/// `tag_reuse_threshold` row (PUT /settings) read on the tag pass's own
+/// connection, else 0.82. R30.9: it used to open `ANCHOR_DATA_DIR`, `./data`
+/// or `~/.anchorcore` — never the running `--data-dir`.
+fn threshold(conn: &Connection) -> f32 {
+    let env = std::env::var("ANCHOR_TAG_REUSE_THRESHOLD").ok();
+    let stored = || {
+        conn.query_row("SELECT value FROM app_settings WHERE key='tag_reuse_threshold'", [], |r| r.get::<_, String>(0))
+            .ok()
+    };
+    env.and_then(|v| v.trim().parse::<f32>().ok())
+        .or_else(|| stored().and_then(|v| v.trim().parse::<f32>().ok()))
+        .map(|f| f.clamp(0.0, 1.0))
+        .unwrap_or(DEFAULT_THRESHOLD)
 }
 
 /// R30.5: tag vectors decoded once per tag pass. A miss used to re-read and
-/// unpack every tag embedding (plus a `threshold()` lookup that can open a
-/// DB connection); the pass now loads them on its first miss and keeps the
+/// unpack every tag embedding (plus a `threshold` lookup); the pass now
+/// loads them on its first miss and keeps the
 /// list current as it creates tags. Scope is one `create_tags` transaction
 /// (the write lock is held, so nothing else can change `tags` meanwhile) —
 /// a cache across documents would go stale against a concurrent sync.
@@ -193,7 +168,7 @@ impl TagVecCache {
     fn loaded(&mut self, conn: &Connection, dim: usize) -> Result<&mut LoadedTags, String> {
         if self.loaded.is_none() {
             ENSURE_SCANS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.loaded = Some(LoadedTags::new(threshold(), load_tag_vecs(conn, dim)?));
+            self.loaded = Some(LoadedTags::new(threshold(conn),load_tag_vecs(conn, dim)?));
         }
         self.loaded.as_mut().ok_or_else(|| "tag cache".to_string())
     }
@@ -422,6 +397,25 @@ mod tests {
         let distinct: std::collections::HashSet<&String> = names.iter().collect();
         let tags: i64 = cached.query_row("SELECT COUNT(*) FROM tags", [], |r| r.get(0)).unwrap();
         assert!((tags as usize) < distinct.len(), "the name set must exercise cosine reuse");
+    }
+
+    /// R30.9: the threshold comes from the connection the pass writes to —
+    /// here a temp data dir that is neither `ANCHOR_DATA_DIR`, `./data` nor
+    /// `~/.anchorcore` — and decides reuse.
+    #[test]
+    fn threshold_reads_the_pass_connection() {
+        let dir = tempdir().unwrap();
+        let conn = crate::db::init_db(&dir.path().join("custom").join("anchorcore.db")).unwrap();
+        assert_eq!(threshold(&conn), DEFAULT_THRESHOLD);
+        conn.execute("INSERT INTO app_settings (key, value) VALUES ('tag_reuse_threshold', '0.3')", []).unwrap();
+        assert!((threshold(&conn) - 0.3).abs() < 1e-6);
+        // cosine("billing migration", "billing system") = 0.5: reused at 0.3,
+        // a new tag at the 0.82 default.
+        let a = ensure_tag(&conn, "billing migration").unwrap();
+        assert_eq!(ensure_tag(&conn, "billing system").unwrap(), a);
+        let other = crate::db::init_db(&dir.path().join("default").join("anchorcore.db")).unwrap();
+        let b = ensure_tag(&other, "billing migration").unwrap();
+        assert_ne!(ensure_tag(&other, "billing system").unwrap(), b);
     }
 
     #[test]
