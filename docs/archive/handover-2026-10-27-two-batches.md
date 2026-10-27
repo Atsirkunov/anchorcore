@@ -59,8 +59,9 @@ row carries its evidence); decision entries for every choice are in `rust/docs/d
 - **R45.19 browser acceptance** on a clean `--data-dir`: local mode → RAM-sized model → sample → cited answer; agent
   mode → MCP and → skill; Ollama down → built-in embedder; two live jobs → two labeled Stops with the kept-count line;
   light + dark.
-- Decide whether 1.6.0 waits for R35.4–R35.6 (item 1). Shipping first is safe — nothing gets less gated than in
-  1.5.0 — but the release notes should not advertise per-document PII enforcement (R35.2) since it is going away or
+- Decide whether 1.6.0 waits for R35.4–R35.6 (item 1). No endpoint is less gated than in 1.5.0, but R36.15's new
+  MCP `get_item` makes the ungated whole-file read one tool call away for agents (before, only raw REST reached it) —
+  weigh that, or hold `get_item`'s whole-file form until R35.5. Either way the release notes should not advertise per-document PII enforcement (R35.2) since it is going away or
   being renamed.
 - Release notes: call out migration 28 + the boot-time config re-chunk, the 12 MCP tools, PII-mark enforcement, and
   the stricter answer-model readiness (exact size tags).
