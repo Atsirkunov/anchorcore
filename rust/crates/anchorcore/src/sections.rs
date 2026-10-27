@@ -14,6 +14,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::health::AppState;
+use crate::read_gate::ReadRefusal;
 
 #[derive(Deserialize)]
 pub struct ListQuery {
@@ -155,11 +156,21 @@ fn one_section(conn: &rusqlite::Connection, section_id: i64) -> Option<SectionNo
     conn.query_row(&format!("{NODE_SIZES_SELECT} WHERE s.id = ?1 GROUP BY s.id"), [section_id], node_from_row).ok()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct OutlineQuery {
     /// Depth cap: only nodes with `level <= depth` (huge markdown files can
     /// hold thousands of headings — walk the outline incrementally).
     pub depth: Option<i64>,
+    /// R36.15: the share-safe scope — a non-public item reads as 404.
+    pub public_only: Option<bool>,
+}
+
+/// R36.15: `public_only` scope for outline/node reads (metadata only, so
+/// no byte gate). A missing item and an out-of-scope item read the same.
+fn scope_item(conn: &rusqlite::Connection, item_id: i64, public_only: bool, not_found: &'static str) -> Result<String, ReadRefusal> {
+    let label = crate::read_gate::item_label(conn, item_id).ok_or(ReadRefusal::NotFound(not_found))?;
+    crate::read_gate::check_public(&label, public_only, not_found)?;
+    Ok(label)
 }
 
 pub async fn outline_handler(
@@ -169,9 +180,12 @@ pub async fn outline_handler(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let depth = q.depth;
+    let public_only = q.public_only.unwrap_or(false);
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
-        crate::common::require_row(&conn, "ingested_items", item_id, "Item not found")?;
+        if let Err(ReadRefusal::NotFound(d)) = scope_item(&conn, item_id, public_only, "Item not found") {
+            return Err((StatusCode::NOT_FOUND, Json(json!({"detail": d}))));
+        }
         let nodes = item_sections(&conn, item_id);
         let sections: Vec<Value> = nodes
             .iter()
@@ -189,9 +203,50 @@ pub async fn outline_handler(
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct NodeQuery {
     pub include: Option<String>,
+    /// R36.15: cap on `include=text` (chars, default `NODE_TEXT_DEFAULT_CHARS`).
+    pub max_chars: Option<usize>,
+    /// R36.15: the share-safe scope — a node of a non-public item reads as 404.
+    pub public_only: Option<bool>,
+}
+
+/// R36.15: `include=text` default and ceiling (chars).
+pub const NODE_TEXT_DEFAULT_CHARS: usize = 32_000;
+pub const NODE_TEXT_MAX_CHARS: usize = 1_000_000;
+
+/// R36.15: `text` in the `include=` list (separate from the link selector
+/// so the link triple keeps its shape).
+fn wants_text(include: Option<&str>) -> bool {
+    include.is_some_and(|list| list.split(',').any(|t| t.trim().eq_ignore_ascii_case("text")))
+}
+
+/// Same subtree rule as retrieval's parent return (`retrieval.rs`
+/// `subtree_leaf_chunks`): own + descendants' leaf chunks, document order,
+/// document and caption kinds only (never summaries or entity paraphrase).
+const NODE_SUBTREE_LEAVES: &str = "WITH RECURSIVE sub(id) AS (SELECT ?1 UNION ALL SELECT s.id FROM sections s JOIN sub ON s.parent_id = sub.id) SELECT c.content FROM chunks c WHERE c.section_id IN (SELECT id FROM sub) AND c.kind IN ('document','caption') ORDER BY c.id";
+
+fn subtree_texts(conn: &rusqlite::Connection, section_id: i64) -> Vec<String> {
+    let Ok(mut stmt) = conn.prepare(NODE_SUBTREE_LEAVES) else { return vec![] };
+    stmt.query_map([section_id], |r| r.get::<_, String>(0)).map(|m| m.filter_map(|r| r.ok()).collect()).unwrap_or_default()
+}
+
+/// R36.15: the section's ordered leaf text, joined like a parent-return
+/// hit (`\n\n`), cut at `max_chars` on a char boundary. `text_chars` is the
+/// full size so a caller can tell how much it is missing.
+fn node_text_fields(conn: &rusqlite::Connection, section_id: i64, max_chars: usize) -> Value {
+    let pieces = subtree_texts(conn, section_id);
+    let full = pieces.join("\n\n");
+    let total = full.chars().count();
+    let text: String = if total > max_chars { full.chars().take(max_chars).collect() } else { full };
+    json!({"text": text, "text_truncated": total > max_chars, "text_chars": total, "text_chunk_count": pieces.len()})
+}
+
+fn merge_text(out: &mut Value, fields: Value) {
+    if let (Some(o), Value::Object(f)) = (out.as_object_mut(), fields) {
+        o.extend(f);
+    }
 }
 
 /// `include=` embedding selector: comma list from `parent,children,siblings`
@@ -236,26 +291,37 @@ pub async fn node_handler(
     Query(q): Query<NodeQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
-    let include = q.include;
+    let trusted = crate::answer::is_answer_trusted(&state.settings);
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
-        let node = match one_section(&conn, node_id) {
-            Some(n) => n,
-            None => return Err((StatusCode::NOT_FOUND, Json(json!({"detail": "Node not found"})))),
-        };
-        let (want_parent, want_children, want_siblings) = parse_node_include(include.as_deref());
-        if !(want_parent || want_children || want_siblings) {
-            return Ok(json!({"node": node_json(&node)}));
-        }
-        let all = item_sections(&conn, node.item_id);
-        Ok(node_links(&node, &all, want_parent, want_children, want_siblings))
+        read_node(&conn, node_id, &q, trusted)
     })
     .await
     .unwrap();
     match result {
         Ok(v) => Ok(Json(v)),
-        Err(e) => Err(e),
+        Err(r) => Err(crate::read_gate::into_api_error(&state.data_dir, r).await),
     }
+}
+
+/// One node read: scope first (404), then links, then the byte-gated text.
+fn read_node(conn: &rusqlite::Connection, node_id: i64, q: &NodeQuery, trusted: bool) -> Result<Value, ReadRefusal> {
+    const NOT_FOUND: &str = "Node not found";
+    let node = one_section(conn, node_id).ok_or(ReadRefusal::NotFound(NOT_FOUND))?;
+    let label = scope_item(conn, node.item_id, q.public_only.unwrap_or(false), NOT_FOUND)?;
+    let include = q.include.as_deref();
+    let (want_parent, want_children, want_siblings) = parse_node_include(include);
+    let mut out = if want_parent || want_children || want_siblings {
+        node_links(&node, &item_sections(conn, node.item_id), want_parent, want_children, want_siblings)
+    } else {
+        json!({"node": node_json(&node)})
+    };
+    if wants_text(include) {
+        crate::read_gate::check_bytes(&label, trusted)?;
+        let cap = q.max_chars.unwrap_or(NODE_TEXT_DEFAULT_CHARS).clamp(1, NODE_TEXT_MAX_CHARS);
+        merge_text(&mut out, node_text_fields(conn, node.id, cap));
+    }
+    Ok(out)
 }
 
 pub async fn chunks_handler(
@@ -381,14 +447,14 @@ mod tests {
         let (dir, conn, iid, intro, _api, _sym) = seed_tree();
         drop(conn);
         let state = app_state(&dir);
-        let Json(v) = outline_handler(State(state.clone()), Path(iid), Query(OutlineQuery { depth: None })).await.expect("outline must succeed");
+        let Json(v) = outline_handler(State(state.clone()), Path(iid), Query(OutlineQuery { depth: None, public_only: None })).await.expect("outline must succeed");
         assert_eq!(v.get("item_id").and_then(|i| i.as_i64()), Some(iid));
         assert_eq!(v.get("section_count").and_then(|c| c.as_i64()), Some(3));
         let sections = v.get("sections").and_then(|s| s.as_array()).cloned().unwrap_or_default();
         assert_eq!(sections.len(), 3);
         assert_eq!(sections[0].get("id").and_then(|i| i.as_i64()), Some(intro));
         assert_eq!(sections[0].get("chunk_count").and_then(|c| c.as_i64()), Some(1));
-        match outline_handler(State(state), Path(iid + 99), Query(OutlineQuery { depth: None })).await {
+        match outline_handler(State(state), Path(iid + 99), Query(OutlineQuery { depth: None, public_only: None })).await {
             Err((s, _)) => assert_eq!(s, StatusCode::NOT_FOUND),
             Ok(_) => panic!("outline on missing item must 404"),
         }
@@ -401,7 +467,7 @@ mod tests {
         let (dir, conn, iid, intro, api, _sym) = seed_tree();
         drop(conn);
         let state = app_state(&dir);
-        let Json(v) = outline_handler(State(state.clone()), Path(iid), Query(OutlineQuery { depth: Some(0) })).await.expect("outline must succeed");
+        let Json(v) = outline_handler(State(state.clone()), Path(iid), Query(OutlineQuery { depth: Some(0), public_only: None })).await.expect("outline must succeed");
         assert_eq!(v.get("section_count").and_then(|c| c.as_i64()), Some(2));
         assert_eq!(ids(&v, "sections"), vec![intro, api]);
     }
@@ -412,27 +478,56 @@ mod tests {
         drop(conn);
         let state = app_state(&dir);
         // Bare lookup carries the node only (JSON:API-style include).
-        let Json(v) = node_handler(State(state.clone()), Path(sym), Query(NodeQuery { include: None })).await.expect("node must succeed");
+        let Json(v) = node_handler(State(state.clone()), Path(sym), Query(NodeQuery::default())).await.expect("node must succeed");
         assert_eq!(v.get("node").and_then(|n| n.get("id")).and_then(|i| i.as_i64()), Some(sym));
         assert!(v.get("parent").is_none() && v.get("children").is_none() && v.get("siblings").is_none());
         // Full include on the leaf: parent up, no children, no siblings.
-        let full = NodeQuery { include: Some("parent,children,siblings".to_string()) };
+        let full = NodeQuery { include: Some("parent,children,siblings".to_string()), ..Default::default() };
         let Json(v) = node_handler(State(state.clone()), Path(sym), Query(full)).await.expect("node must succeed");
         assert_eq!(v.get("parent").and_then(|n| n.get("id")).and_then(|i| i.as_i64()), Some(api));
         assert_eq!(ids(&v, "children"), Vec::<i64>::new());
         assert_eq!(ids(&v, "siblings"), Vec::<i64>::new());
         // Mid-tree: explicit null parent for roots, children + siblings lateral.
-        let Json(v) = node_handler(State(state.clone()), Path(api), Query(NodeQuery { include: Some("parent,children,siblings".to_string()) })).await.expect("node must succeed");
+        let Json(v) = node_handler(State(state.clone()), Path(api), Query(NodeQuery { include: Some("parent,children,siblings".to_string()), ..Default::default() })).await.expect("node must succeed");
         assert!(v.get("parent").is_some_and(|p| p.is_null()), "root parent is explicit null");
         assert_eq!(ids(&v, "children"), vec![sym]);
         assert_eq!(ids(&v, "siblings"), vec![intro]);
         // Partial include embeds only what was asked.
-        let Json(v) = node_handler(State(state.clone()), Path(intro), Query(NodeQuery { include: Some("siblings".to_string()) })).await.expect("node must succeed");
+        let Json(v) = node_handler(State(state.clone()), Path(intro), Query(NodeQuery { include: Some("siblings".to_string()), ..Default::default() })).await.expect("node must succeed");
         assert!(v.get("parent").is_none() && v.get("children").is_none());
         assert_eq!(ids(&v, "siblings"), vec![api]);
-        match node_handler(State(state), Path(sym + 99), Query(NodeQuery { include: None })).await {
+        match node_handler(State(state), Path(sym + 99), Query(NodeQuery::default())).await {
             Err((s, _)) => assert_eq!(s, StatusCode::NOT_FOUND),
             Ok(_) => panic!("node on missing section must 404"),
         }
+    }
+
+    #[test]
+    fn node_text_assembles_subtree_in_document_order_and_truncates() {
+        let (_dir, conn, _iid, intro, api, sym) = seed_tree();
+        let v = node_text_fields(&conn, api, 1000);
+        assert_eq!(v["text"], "aaa\n\nbbbbb", "childless parent reads its descendants' leaves");
+        assert_eq!((v["text_truncated"].as_bool(), v["text_chars"].as_u64(), v["text_chunk_count"].as_u64()), (Some(false), Some(10), Some(2)));
+        let v = node_text_fields(&conn, sym, 4);
+        assert_eq!((v["text"].as_str(), v["text_truncated"].as_bool(), v["text_chars"].as_u64()), (Some("aaa\n"), Some(true), Some(10)));
+        assert_eq!(node_text_fields(&conn, intro, 1000)["text"], "hello world");
+        assert!(wants_text(Some("parent, TEXT")) && !wants_text(Some("parent,texts")) && !wants_text(None));
+    }
+
+    #[test]
+    fn read_node_scopes_and_gates_text_only() {
+        let (_dir, conn, _iid, _intro, api, _sym) = seed_tree();
+        let q = |include: &str, public_only: Option<bool>| NodeQuery { include: Some(include.to_string()), max_chars: None, public_only };
+        let v = read_node(&conn, api, &q("text,children", None), false).ok().expect("internal source reads");
+        assert_eq!(v["text"], "aaa\n\nbbbbb");
+        assert_eq!(ids(&v, "children").len(), 1, "links and text combine");
+        assert!(matches!(read_node(&conn, api, &q("text", Some(true)), false), Err(ReadRefusal::NotFound(_))), "internal is not public");
+        conn.execute("UPDATE sources SET label = 'pii'", []).unwrap();
+        assert!(matches!(read_node(&conn, api, &q("text", None), false), Err(ReadRefusal::Gated(_))), "untrusted text gated");
+        assert!(read_node(&conn, api, &q("children", None), false).is_ok(), "metadata stays readable");
+        assert!(read_node(&conn, api, &q("text", None), true).is_ok(), "trusted provider reads");
+        conn.execute("UPDATE sources SET label = 'public'", []).unwrap();
+        assert!(read_node(&conn, api, &q("text", Some(true)), false).is_ok());
+        assert!(matches!(read_node(&conn, api + 99, &q("text", None), true), Err(ReadRefusal::NotFound(_))));
     }
 }

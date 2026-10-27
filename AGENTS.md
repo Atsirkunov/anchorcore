@@ -99,6 +99,7 @@ Local-first "company memory": connect sources (folder, Jira, Linear, Drive, Miro
 **Agent surfaces**
 - `/qa/search` hits carry provenance and opt-in verbatim content (`include_content` ≡ `fields: content`; MCP caps 4000 chars + `content_truncated`). `path` = section breadcrumb, else the item's `external_id`.
 - Item discovery is `GET /items` (metadata only), drill-down `GET /items/:id`; payloads expose `content` (`text` is an alias). Entities carry `chunk_id` next to `item_id`.
+- Byte reads by id (`?lines=` windows, `/nodes/:id?include=text`) go through `read_gate.rs` (`public_only` → 404, sensitive/pii under an untrusted provider → 403 `gated_provider`); `path_prefix` input is checked by `items::validate_path_prefix` on every surface that takes it. MCP `list_items`/`get_item`/`get_outline` forward REST keys only.
 - Cited entities attribute via their item (`conflicts_for_chunks`); relationship walks used as evidence skip `conflicts_with`.
 - Supersession resolves both ways: `supersedes` on the newer record marks the older one `superseded`.
 

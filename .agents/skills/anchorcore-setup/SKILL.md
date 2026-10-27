@@ -264,7 +264,8 @@ to the plain REST API instead of leaving the agent unconnected:
   answers `GET /health`.
 
 The fallback is the read-only `anchorcore-search` skill: ranked search,
-whole-file fetch, and section outlines over the same local REST API (same base
+whole-file fetch, line windows (`GET /items/:id?lines=a-b`), and section
+outlines and text (`GET /nodes/:id?include=parent,children,siblings,text`) over the same local REST API (same base
 URL, CSRF, and auth rules as this skill) — no MCP process needed. It never
 writes, resyncs, or reclassifies. **Either/or, never both:** with MCP tools
 *and* the search skill active, agents duplicate effort (the same query goes

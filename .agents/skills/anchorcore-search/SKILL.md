@@ -40,9 +40,10 @@ If MCP starts working later, drop this skill again.
 | POST /qa/search {"query","limit","include_content"} | ranked hits; filters: kind, symbol, path_prefix, env |
 | GET /media/:asset_id?format=json | one image to look at: `{mime, w, h, size, data_base64}`; asset ids come from `images` on hits/citations. Without `format=json` you get the raw bytes |
 | GET /items/:id | the whole file or document; text is in content (same as `text`); `assets` lists its images |
-| GET /items/:id/outline | section tree with sizes; read it before fetching a large file |
-| GET /nodes/:id?include=parent,children,siblings | section metadata + neighbours; fetch the item for the text |
-| GET /items?path_prefix=<relative prefix> | list items under a folder |
+| GET /items/:id?lines=a-b | just lines a–b (1-based, inclusive; also `a` or `a-` to the end) plus `lines: {start, end, total}`; an end past the last line clamps, a bad range or a start past the end is 400 |
+| GET /items/:id/outline | section tree with sizes and `line_start`/`line_end`; read it before fetching a large file (`depth=N` keeps the top levels) |
+| GET /nodes/:id?include=text,parent,children,siblings | one section: `include` is any mix of `parent`, `children`, `siblings` (neighbour metadata) and `text` (the section's leaf text, its subsections included, in document order, with `text_truncated` + `text_chars`; `max_chars` caps it, default 32000) |
+| GET /items?path_prefix=<relative prefix> | list items under a folder: metadata only (id, title, path), `total`, `limit`/`offset` |
 | GET /decisions?status=current&q=<text> | decision log: record_id, status (`superseded` when a newer record supersedes it), current, owner, supersedes/superseded_by, provenance (item_id, path, chunk_id). status: accepted, superseded, rejected, deferred, proposed or `current` |
 | GET /actions?owner=<name>&state=open | action tracker: task, owner, due, done, provenance. state: open (default), done or all; `overdue=true` keeps open items with an ISO due date before today; owner is case-insensitive |
 | POST /qa {"question"} | gated alternative to search: in agent mode (`llm_mode: agent`) it returns `mode: "agent_compose"` — ranked citations with content, label/PII gate applied, no server model; compose the answer yourself. In local mode the server's model answers (`composed`); `context_only`/`none` carry a `warning` — never quote that text as an answer |
@@ -52,10 +53,23 @@ preview), breadcrumb, item_title, doc_type, env, a score and a path (the
 section path, else the item's path; source_ref labels the chunk's origin).
 Scores are only comparable within one query; the response's `retrieval` flag
 tells you whether ranking was `hybrid` or `keyword_only`. Hits are pointers:
-line numbers are not returned, so count lines in the fetched text if you cite
-them. By default hits omit chunk bytes — set `include_content:true` (alias
+`line_start`/`line_end` give the hit's line range (0 when unknown). Fetch
+that window with GET /items/:item_id?lines=a-b before you cite the lines. By default hits omit chunk bytes — set `include_content:true` (alias
 for `fields:"content"`) to get them verbatim, and follow `next_cursor` for
 further pages.
+
+Reading big files: take the outline first, then read one section with
+GET /nodes/:id?include=text, or a hit's lines with GET /items/:id?lines=a-b
+(a hit's section_id is a node id). Line numbers count lines of the stored
+text, the same text GET /items/:id returns. path_prefix (on /items and
+search) is a relative path as /items lists it (`docs/`, `cfg/routing`) or an
+absolute path under a folder source's root. Wildcards, `..`, a leading `./`
+or `~`, and URLs get a 400 that names the expected form. They never get an
+empty list. All of these reads take `public_only=true`, and anything outside
+a public source then reads as 404. Section text and line windows from a
+sensitive source answer 403 `refusal: "gated_provider"` under an untrusted
+provider, like search. MCP clients get the same reads as `list_items`,
+`get_item` (with `lines`) and `get_outline` (with `node_id` + `include`).
 
 Images: add `images` to `fields` (e.g. `"fields":"content,images"`; `all`
 includes them) and each hit lists the pictures on its passage —

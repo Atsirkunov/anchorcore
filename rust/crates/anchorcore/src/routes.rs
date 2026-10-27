@@ -145,10 +145,14 @@ async fn qa_public_handler(
 async fn search_handler(
     axum::extract::State(state): axum::extract::State<health::AppState>,
     axum::Json(req): axum::Json<answer::SearchRequest>,
-) -> axum::Json<answer::SearchResponse> {
+) -> Result<axum::Json<answer::SearchResponse>, (axum::http::StatusCode, axum::Json<serde_json::Value>)> {
+    // R36.15: a malformed path_prefix is a 400 naming the expected form
+    // (same check as `GET /items`), never a silently empty hit list.
+    items::validate_path_prefix(req.path_prefix.as_deref())
+        .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({"detail": e}))))?;
     let query = req.query.clone();
     let scope = report::scope_label(req.project_id, req.public_only.unwrap_or(false));
     let resp = answer::search(&state.settings, &state.embedder, req, &state.data_dir).await;
     report::record_search(&query, scope, &resp);
-    axum::Json(resp)
+    Ok(axum::Json(resp))
 }

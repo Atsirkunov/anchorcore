@@ -72,7 +72,11 @@ jobs:
           grep -q '"name":"list_sources"' /tmp/mcp.json || { echo "FAULT: MCP tool 'list_sources' missing from tools/list"; cat /tmp/mcp.json; exit 1; }
 
           grep -q '"name":"memory_status"' /tmp/mcp.json || { echo "FAULT: MCP tool 'memory_status' missing from tools/list"; cat /tmp/mcp.json; exit 1; }
-          echo "ok (linux): the shipped binary runs the stdio MCP server with 6 tools incl. search"
+          # R36.15: the item/outline read tools.
+          for t in list_items get_item get_outline; do
+            grep -q "\"name\":\"$t\"" /tmp/mcp.json || { echo "FAULT: MCP tool '$t' missing from tools/list"; cat /tmp/mcp.json; exit 1; }
+          done
+          echo "ok (linux): the shipped binary runs the stdio MCP server with the core tools + item reads incl. search"
       - name: Assert the app-served agent skills (R23.6)
         run: |
           set -e

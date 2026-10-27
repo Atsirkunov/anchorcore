@@ -70,6 +70,11 @@ Benchmarks: hierarchical search ~7ms vs ~40ms flat on a 30k-chunk probe
 
 - `GET /sections?item_id=&source_id=` — the tree for a document or source.
 - `GET /sections/:id/chunks` — passages in one section.
+- `GET /items/:id/outline` — one item's tree with sizes and line spans;
+  `GET /nodes/:id?include=parent,children,siblings,text` — one node, its
+  neighbours, and (`text`) its ordered leaf text with a truncation flag;
+  `GET /items/:id?lines=a-b` — a line window of the item (R36.15, contract in
+  [mcp.md](../mcp.md) §2).
 - `GET /tags` — taxonomy ordered by use count.
 - `GET /tags/:id/chunks` — passages carrying one tag.
 - `GET/PUT /settings` — includes `tag_reuse_threshold` (default 0.82,
