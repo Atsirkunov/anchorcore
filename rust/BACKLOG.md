@@ -19,7 +19,7 @@ Status: `todo` | `doing` | `done` (✅). Update this file when you pick/complete
 
 ## Open work
 
-> Current focus (updated 2026-10-27 after R35.2 / R36.15 / R30.9 / R30.10 / R43.31; previously 2026-10-26 after the 1.5.0 release — R45.3/R45.4 built-in embedder, R30.2, R43.12 shipped). Shipped together 2026-10-26: R36.2, R45.6, R30.4, R30.5, R30.6, R43.15, R20.10. Next, by value: **R45.19** (browser acceptance — gate for the next release), **R36.19** (gate whole-file `GET /items/:id` for agents — closes the R36.15 partial gate), **R43.9** (slim scan), **R43.14** (Drive OAuth refresh), R36.18b (now byte offsets + backfill only). The S3 rows (R43.18–R43.24) gate any networked deploy. Keep parallel tasks file-disjoint (see Files column). Closed/merged rows: **Closed 2026-10-26** below.
+> Current focus (updated 2026-10-27 after R35.2 / R36.15 / R30.9 / R30.10 / R43.31 — handover with pending owner decisions: [`docs/archive/handover-2026-10-27-two-batches.md`](../docs/archive/handover-2026-10-27-two-batches.md); previously 2026-10-26 after the 1.5.0 release — R45.3/R45.4 built-in embedder, R30.2, R43.12 shipped). Shipped together 2026-10-26: R36.2, R45.6, R30.4, R30.5, R30.6, R43.15, R20.10. Next, by value: **R45.19** (browser acceptance — gate for the next release), **R36.19** (gate whole-file `GET /items/:id` for agents — closes the R36.15 partial gate), **R43.9** (slim scan), **R43.14** (Drive OAuth refresh), R36.18b (now byte offsets + backfill only). The S3 rows (R43.18–R43.24) gate any networked deploy. Keep parallel tasks file-disjoint (see Files column). Closed/merged rows: **Closed 2026-10-26** below.
 
 ### Phase 47 — Support flows (owner request 2026-10-26: "it's wrong" reports) + ranking (PDF burial) — 2 shipped
 
