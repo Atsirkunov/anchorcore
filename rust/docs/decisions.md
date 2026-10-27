@@ -612,3 +612,14 @@ ADR log. Append newest first.
   - *Remove the cloud gate entirely, keep only `public` for sharing* — rejected: "Sensitive" is a real UI choice people make today.
   - *Gate only when an agent channel opts in via a header* — rejected: open by default, so an agent that improvises a curl reads everything.
 * **Consequences:** R35.4 (bundle + schema cleanup; absorbs R35.3), R35.5 (one gate on every surface, `X-Anchor-Client: ui` exempts the SPA, default closed; absorbs R36.19), R35.6 (Settings switches replace env-only trust; env vars stay as admin overrides). **Per-document mark (owner, same day): keep it, derived — not copied.** `ingested_items.is_pii` becomes `sensitive_override` (nullable: `NULL` inherits from the source, `1` marks the document Sensitive; escalate-only, `0` reserved). Effective Sensitive = `sensitive_override = 1 OR source.label = 'sensitive'`, one helper in `common.rs`, read by every gate. Rejected: *copying the source label onto every item* — relabels, new syncs, backup import and future manual marks would drift, and a stored bit cannot tell "inherited" from "set by a person"; *dropping the mark* — loses the per-document hook that future writers (UI toggle, path rules, connector metadata) need, and discards R35.2's plumbing. The gate remains a guardrail against accidental leakage by well-behaved agents and providers, not a boundary against a local process that can read the SQLite file.
+
+---
+
+## 2026-10-27 — Owner answers: 1.6.0 timing, tag threshold, RAM tiers, re-chunk, public scopes
+
+* **1.6.0 ships after R35.5** (not sooner with `get_item`'s whole-file form held back). The new MCP `get_item` puts the ungated whole-file read one tool call away for agents; gating every surface first is the coherent story.
+* **`tag_reuse_threshold` kept for now** (R30.10): multi-word cosine reuse stays even though ingest exercises only exact identity. Removing the user-visible setting is a later cleanup, not pre-release churn.
+* **Answer-model RAM tiers accepted as shipped** (R45.6): llama3.2:1b any RAM, 3b ≥ 8 GB, qwen2.5:7b ≥ 16 GB, 14b ≥ 32 GB, 32b ≥ 64 GB, unknown RAM → 3b. Agent channel stays un-preselected; the wizard installs only the `search` skill.
+* **R36.2 choices accepted:** boot-time synchronous re-chunk, only depth-1/root lists count as main content, identifying values over 32 chars stay out of the breadcrumb.
+* **Public scopes drop effective-Sensitive whatever the provider** (R35.5 scope): Sensitive is Sensitive — source label or per-document override, PII or not — derived at the gate entry point from the source mark. Default closed; sensitive content can be opt-in included (R35.6 switches).
+* **Folder-picker Chromium collapse fixed** (found in R45.19 browser testing): a grid-item `<button>` with `overflow:hidden` collapses to padding height and clips its own label. Truncation moved to an inner span (`FolderPicker.tsx` `dirLabel`); regression test pins the trio off the button.
