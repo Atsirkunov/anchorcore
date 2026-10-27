@@ -64,8 +64,8 @@ carry them. When the question is about something visual (a screen, a
 diagram, a chart), fetch the image with GET /media/:asset_id?format=json and
 look at it before answering; alt/caption are hints, not the picture. The
 JSON form refuses images over 1.5 MB with 413 + `size` + the raw `url`;
-sensitive sources answer 403 `refusal: "gated_provider"` under an untrusted
-provider, like search. `url: null` means the bytes were not stored (over the
+sensitive sources and PII-marked documents answer 403 `refusal:
+"gated_provider"` under an untrusted provider, like search. `url: null` means the bytes were not stored (over the
 size cap) — say so instead of guessing. MCP clients get the same call as the
 `get_asset` tool. A hit with `kind: "caption"` (path ending `caption by a
 person`) is a person's description of an image no document links: cite it

@@ -565,13 +565,18 @@ impl Pipeline {
         })
         .await?;
         let gated = sensitive_label(&label) && !cloud_trusted(&self.settings, "embed");
+        // R35.2: PII-marked items' chunks never reach an untrusted embedder.
+        let skip_marked = !self.embedder.cloud_trusted();
+        if skip_marked {
+            note_marked_embed_skips(data_dir, source_id, None).await;
+        }
         let mut processed = 0i64;
         let mut last_id = 0i64;
         loop {
             if job_cancelled(data_dir, job_id).await? {
                 return Err("job cancelled".to_string());
             }
-            let batch = fetch_embed_batch(data_dir, source_id, last_id).await?;
+            let batch = fetch_embed_batch(data_dir, source_id, last_id, skip_marked).await?;
             let Some(last) = batch.last().map(|(id, _, _)| *id) else {
                 break;
             };
@@ -1843,25 +1848,53 @@ fn insert_doc_chunks(
 // embed (gated) — wire embedder.embed_gated + sync_vec (P0 3.2)
 /// One batch of chunks of `source_id` that still need a vector (ascending ids
 /// so iteration always advances, even when the IDF gate embeds nothing).
-async fn fetch_embed_batch(data_dir: &str, source_id: i64, last_id: i64) -> Result<Vec<(i64, String, String)>, String> {
+/// `skip_marked` (untrusted embedder, R35.2) leaves PII-marked items out.
+async fn fetch_embed_batch(data_dir: &str, source_id: i64, last_id: i64, skip_marked: bool) -> Result<Vec<(i64, String, String)>, String> {
     run_db(data_dir, move |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT id, content, path FROM chunks \
                  WHERE id > ?1 AND embedding IS NULL AND ( \
-                   item_id IN (SELECT id FROM ingested_items WHERE source_id = ?2) \
-                   OR entity_id IN (SELECT e.id FROM entities e JOIN ingested_items i ON i.id = e.item_id WHERE i.source_id = ?2)) \
+                   item_id IN (SELECT id FROM ingested_items WHERE source_id = ?2 AND (?3 = 0 OR is_pii = 0)) \
+                   OR entity_id IN (SELECT e.id FROM entities e JOIN ingested_items i ON i.id = e.item_id \
+                                    WHERE i.source_id = ?2 AND (?3 = 0 OR i.is_pii = 0))) \
                  ORDER BY id LIMIT 64",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(rusqlite::params![last_id, source_id], |r| {
+            .query_map(rusqlite::params![last_id, source_id, skip_marked as i64], |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
             })
             .map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     })
     .await
+}
+
+/// R35.2 audit: one `system_events` row when chunks of PII-marked items
+/// (one item, or the whole source) are kept from an untrusted embedder.
+async fn note_marked_embed_skips(data_dir: &str, source_id: i64, item_id: Option<i64>) {
+    let _ = run_db(data_dir, move |conn| {
+        let pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks c LEFT JOIN entities e ON e.id = c.entity_id \
+                 JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
+                 WHERE c.embedding IS NULL AND i.is_pii = 1 AND i.source_id = ?1 AND (?2 IS NULL OR i.id = ?2)",
+                rusqlite::params![source_id, item_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if pending > 0 {
+            let msg = format!("embed gate: {pending} chunk(s) of PII-marked items kept from the cloud embedder");
+            let detail = "item_pii; list the provider in ANCHOR_TRUSTED_PROVIDERS or set ANCHOR_CLOUD_TRUST=1 to allow";
+            let _ = conn.execute(
+                "INSERT INTO system_events (component, level, source_id, message, detail) VALUES ('embed','warning',?1,?2,?3)",
+                rusqlite::params![source_id, msg, detail],
+            );
+        }
+        Ok(())
+    })
+    .await;
 }
 
 /// Write embeddings + keep the vec0 index in sync (R25.3 re-embed job).
@@ -1879,15 +1912,21 @@ async fn store_embeddings(data_dir: &str, embedder: Arc<Embedder>, updates: Vec<
 
 async fn embed_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
     let embed_min_signal = embed_min_signal();
-    let gated = sensitive_label(&ctx.label) && !ctx.embed_trusted;
     let item_id = ctx.item_id;
-    let chunks: Vec<(i64, String, String)> = run_db(&ctx.data_dir, move |conn| {
+    let (chunks, item_pii): (Vec<(i64, String, String)>, bool) = run_db(&ctx.data_dir, move |conn| {
         let mut stmt = conn.prepare("SELECT id, content, path FROM chunks WHERE (item_id=?1 OR entity_id IN (SELECT id FROM entities WHERE item_id=?1)) AND embedding IS NULL").unwrap();
         let rows = stmt.query_map([item_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).unwrap().filter_map(|r| r.ok()).collect();
-        Ok(rows)
+        let marked = conn.query_row("SELECT is_pii FROM ingested_items WHERE id=?1", [item_id], |r| r.get::<_, i64>(0)).unwrap_or(0) != 0;
+        Ok((rows, marked))
     }).await?;
     if chunks.is_empty() {
         return Ok(());
+    }
+    // R35.2: a PII-marked item gates like a sensitive label (the embedder
+    // re-checks its own trust); the skip is audited.
+    let gated = (sensitive_label(&ctx.label) || item_pii) && !ctx.embed_trusted;
+    if item_pii && !ctx.embedder.cloud_trusted() {
+        note_marked_embed_skips(&ctx.data_dir, ctx.source_id, Some(item_id)).await;
     }
     let pending_ids: Vec<i64> = chunks.iter().map(|(id, _, _)| *id).collect();
     let contents: Vec<String> = chunks.iter().map(|(_, c, _)| c.clone()).collect();

@@ -796,9 +796,12 @@ pub fn refs_for_item(conn: &Connection, item_id: i64) -> Vec<Value> {
 /// One asset for `GET /media/:uid`: (mime, source label, bytes if stored, (w, h)).
 pub type Media = (String, String, Option<Vec<u8>>, (Option<i64>, Option<i64>));
 
+/// The label slot is the gate label: the source label, or
+/// `common::ITEM_PII_MARK` when a person marked the item PII (R35.2).
 pub fn load_media(conn: &Connection, uid: &str) -> Result<Option<Media>, String> {
     conn.query_row(
-        "SELECT a.mime, s.label, b.bytes, a.w, a.h FROM assets a \
+        "SELECT a.mime, CASE WHEN i.is_pii = 1 AND s.label NOT IN ('sensitive','pii') THEN 'item_pii' ELSE s.label END, \
+         b.bytes, a.w, a.h FROM assets a \
          JOIN ingested_items i ON i.id = a.item_id JOIN sources s ON s.id = i.source_id \
          LEFT JOIN asset_blobs b ON b.hash = a.bytes_hash WHERE a.uid = ?1",
         [uid],

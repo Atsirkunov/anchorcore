@@ -71,6 +71,21 @@ pub fn provider_trusted(base_url: &str) -> bool {
     std::env::var("ANCHOR_CLOUD_TRUST").as_deref() == Ok("1")
 }
 
+/// R35.2: the `blocked` entry for content withheld because a person marked
+/// its item PII (`ingested_items.is_pii`), next to the source labels.
+pub const ITEM_PII_MARK: &str = "item_pii";
+
+/// R35.2: why content may not reach an untrusted cloud provider — its
+/// source label (`sensitive`/`pii`) or a manual item PII mark. `None` =
+/// it may flow. One rule for ask, search, `/decisions`, `/actions` and
+/// `/media`; the label wins so the audit keeps naming the coarser cause.
+pub fn cloud_gate_reason(label: &str, item_pii: bool) -> Option<String> {
+    if label == "sensitive" || label == "pii" {
+        return Some(label.to_string());
+    }
+    item_pii.then(|| ITEM_PII_MARK.to_string())
+}
+
 /// Require a row in `table` (`entities`/`sources`/`chunks`) or return 404.
 /// `table` is always an internal constant, never user input.
 pub fn require_row(
@@ -163,5 +178,15 @@ mod tests {
         // global hatch still works on top of the allowlist
         let _trust = EnvGuard::set("ANCHOR_CLOUD_TRUST", "1");
         assert!(provider_trusted("https://other.example.com"));
+    }
+
+    #[test]
+    fn cloud_gate_reason_label_then_item_mark() {
+        assert_eq!(cloud_gate_reason("sensitive", false).as_deref(), Some("sensitive"));
+        assert_eq!(cloud_gate_reason("pii", true).as_deref(), Some("pii"), "label names the cause first");
+        assert_eq!(cloud_gate_reason("internal", true).as_deref(), Some(ITEM_PII_MARK));
+        assert_eq!(cloud_gate_reason("public", true).as_deref(), Some(ITEM_PII_MARK));
+        assert_eq!(cloud_gate_reason("internal", false), None);
+        assert_eq!(cloud_gate_reason("public", false), None);
     }
 }
