@@ -11,8 +11,7 @@ row carries its evidence); decision entries for every choice are in `rust/docs/d
 - Batch 1 (`8c95f93`): CI green on all 7 jobs, including both MCP smoke steps (R20.5 handshake, R20.10 end-to-end search).
 - Batch 2 (`6c6d609`): gates green on the merged tree locally — all 16 `cargo test -p anchorcore` targets, `RUSTFLAGS="-D
   warnings" cargo check` clean, lizard = the 7-warning baseline, `npm run build` + lint clean, vitest 99/99 on Node 26,
-  `scripts/ci_mcp_search_smoke.sh` passes. **CI on `6c6d609` was still running at handover** (run 40475170965) — check
-  it before tagging.
+  `scripts/ci_mcp_search_smoke.sh` passes. CI on `6c6d609` green on all 7 jobs (run 40475170965).
 - All agent worktrees (`.claude/worktrees/*`) and task branches were removed (local only, never pushed). The
   `.muse/worktrees/*` and `r40-work` worktrees predate these sessions — not touched.
 
@@ -54,7 +53,6 @@ row carries its evidence); decision entries for every choice are in `rust/docs/d
 
 ## Before tagging 1.6.0
 
-- CI green on `6c6d609` (and on this handover commit — docs-only pushes skip CI).
 - **R45.19 browser acceptance** on a clean `--data-dir`: local mode → RAM-sized model → sample → cited answer; agent
   mode → MCP and → skill; Ollama down → built-in embedder; two live jobs → two labeled Stops with the kept-count line;
   light + dark.
