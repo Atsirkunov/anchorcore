@@ -229,22 +229,44 @@ pub fn ensure_tag_cached(conn: &Connection, name: &str, cache: &mut TagVecCache)
         return bump_count(conn, id);
     }
     let new_vec = tag_vec(&norm);
+    // R30.10: a single word is its own identity — its hash vector is one
+    // bucket of 768, so cosine "reuse" between two words is a collision.
+    if is_single_word(&norm) {
+        ENSURE_MICROS.fetch_add(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
+        let id = insert_tag(conn, &norm, &new_vec)?;
+        if let Some(tags) = cache.loaded.as_mut() {
+            tags.push(id, new_vec);
+        }
+        return Ok(id);
+    }
     let tags = cache.loaded(conn, new_vec.len())?;
     if let Some(best_id) = best_match(tags, &norm, &new_vec) {
         ENSURE_MICROS.fetch_add(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
         return bump_count(conn, best_id);
     }
     ENSURE_MICROS.fetch_add(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
-    // create new
-    let emb = crate::embedder::pack_single(&new_vec);
+    let id = insert_tag(conn, &norm, &new_vec)?;
+    tags.push(id, new_vec);
+    Ok(id)
+}
+
+/// One token under the tag-vector tokenizer (`deterministic_embed` splits on
+/// `[\p{L}\p{N}]+`; a name with no such token hashes whole, also one bucket).
+/// `propose_tags` only ever proposes single words.
+fn is_single_word(norm: &str) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"[\p{L}\p{N}]+").unwrap());
+    re.find_iter(norm).nth(1).is_none()
+}
+
+fn insert_tag(conn: &Connection, norm: &str, vec: &[f32]) -> Result<i64, String> {
+    let emb = crate::embedder::pack_single(vec);
     conn.execute(
         "INSERT INTO tags (name, description, embedding, count, uid) VALUES (?1,'',?2,1,?3)",
         rusqlite::params![norm, emb, crate::db::new_uid()],
     )
     .map_err(|e| e.to_string())?;
-    let id = conn.last_insert_rowid();
-    tags.push(id, new_vec);
-    Ok(id)
+    Ok(conn.last_insert_rowid())
 }
 
 // --- API handlers ---
@@ -347,9 +369,12 @@ mod tests {
     fn cached_pass_decides_like_uncached_and_loads_once() {
         use std::sync::atomic::Ordering;
         // car/vehicle/auto and database/db/storage share a vector
-        // (`deterministic_embed` synonyms): repeated cosine reuse, never an
-        // exact hit for the reused names.
-        let names = ["car", "billing", "vehicle", "auto", "database", "storage", "car", "auto", "db", "store", "vehicle", "auto", "billing"];
+        // (`deterministic_embed` synonyms), so these two-word names reuse by
+        // cosine, never by an exact hit (single words never do — R30.10).
+        let names = [
+            "car rental", "billing", "vehicle rental", "auto rental", "database backup", "storage backup", "car rental",
+            "auto rental", "db backup", "store backup", "vehicle rental", "auto rental", "billing",
+        ];
         let dir = tempdir().unwrap();
         let plain = crate::db::init_db(&dir.path().join("plain.db")).unwrap();
         let cached = crate::db::init_db(&dir.path().join("cached.db")).unwrap();
@@ -367,26 +392,16 @@ mod tests {
             c.prepare("SELECT name, count FROM tags ORDER BY id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect()
         };
         assert_eq!(rows(&plain), rows(&cached));
-        assert_eq!(rows(&cached).len(), 3, "synonyms reuse: car, billing, database");
+        assert_eq!(rows(&cached).len(), 3, "synonyms reuse: car rental, billing, database backup");
         assert_eq!(cache.loaded.as_ref().map(|l| l.vecs.len()), Some(rows(&cached).len()), "created tags join the cache");
     }
 
     /// R30.5: the indexed cache picks exactly what the uncached full scan
-    /// picks, across enough names to force hash-bucket reuse.
+    /// picks, across enough two-word names (`a b` and `b a` share a vector)
+    /// to force cosine reuse.
     #[test]
     fn cached_pass_matches_uncached_on_many_names() {
-        let syl = ["ka", "lo", "mi", "ren", "tas", "vo", "qui", "bel", "dor", "fen"];
-        let mut x: u64 = 7;
-        let names: Vec<String> = (0..800)
-            .map(|_| {
-                (0..3)
-                    .map(|_| {
-                        x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                        syl[(x >> 33) as usize % syl.len()]
-                    })
-                    .collect()
-            })
-            .collect();
+        let names: Vec<String> = pseudo_words(1600, 2, 7).chunks(2).map(|w| w.join(" ")).collect();
         let dir = tempdir().unwrap();
         let plain = crate::db::init_db(&dir.path().join("plain.db")).unwrap();
         let cached = crate::db::init_db(&dir.path().join("cached.db")).unwrap();
@@ -397,6 +412,80 @@ mod tests {
         let distinct: std::collections::HashSet<&String> = names.iter().collect();
         let tags: i64 = cached.query_row("SELECT COUNT(*) FROM tags", [], |r| r.get(0)).unwrap();
         assert!((tags as usize) < distinct.len(), "the name set must exercise cosine reuse");
+    }
+
+    /// `n` deterministic pseudo-words of `syllables` syllables each.
+    fn pseudo_words(n: usize, syllables: usize, seed: u64) -> Vec<String> {
+        let syl = ["ka", "lo", "mi", "ren", "tas", "vo", "qui", "bel", "dor", "fen"];
+        let mut x = seed;
+        let mut next = move || {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            syl[(x >> 33) as usize % syl.len()]
+        };
+        (0..n).map(|_| (0..syllables).map(|_| next()).collect()).collect()
+    }
+
+    /// Two distinct words whose tag vectors are identical (same hash bucket).
+    fn colliding_pair(words: &[String]) -> (String, String) {
+        let mut seen: std::collections::HashMap<usize, &String> = Default::default();
+        for w in words {
+            let bucket = nonzero_dims(&tag_vec(w)).next().unwrap();
+            match seen.get(&bucket) {
+                Some(first) if *first != w => return ((*first).clone(), w.clone()),
+                _ => seen.insert(bucket, w),
+            };
+        }
+        panic!("no hash collision in the word set");
+    }
+
+    /// R30.10: every distinct single word gets its own tag — past the 768
+    /// hash buckets, across bucket collisions and `deterministic_embed`
+    /// synonyms — and repeats reuse it by exact name, cached or not.
+    #[test]
+    fn distinct_single_words_never_reuse() {
+        let mut words = pseudo_words(3000, 4, 11);
+        words.extend(["database", "storage", "store", "vehicle", "automobile"].map(String::from));
+        let mut seen = HashSet::new();
+        words.retain(|w| seen.insert(w.clone()));
+        let (a, b) = colliding_pair(&words);
+        assert_eq!(tag_vec(&a), tag_vec(&b));
+        let dir = tempdir().unwrap();
+        let conn = crate::db::init_db(&dir.path().join("t.db")).unwrap();
+        let mut cache = TagVecCache::default();
+        let ids: Vec<i64> = words.iter().map(|w| ensure_tag_cached(&conn, w, &mut cache).unwrap()).collect();
+        assert_eq!(ids.iter().collect::<HashSet<_>>().len(), words.len(), "one tag per distinct word");
+        assert!(words.len() > 768);
+        assert!(cache.loaded.is_none(), "single words never load the cosine cache");
+        let again: Vec<i64> = words.iter().map(|w| ensure_tag(&conn, w).unwrap()).collect();
+        assert_eq!(ids, again, "repeats hit their own tag");
+        let max: i64 = conn.query_row("SELECT MAX(count) FROM tags", [], |r| r.get(0)).unwrap();
+        assert_eq!(max, 2);
+    }
+
+    /// R30.10 keeps the stored vector format: tags written by the old
+    /// scheme still answer exact lookups and cosine reuse, and a word that
+    /// collides with one of them now gets its own tag.
+    #[test]
+    fn pre_existing_tags_keep_working() {
+        let (a, b) = colliding_pair(&pseudo_words(3000, 4, 13));
+        let dir = tempdir().unwrap();
+        let conn = crate::db::init_db(&dir.path().join("t.db")).unwrap();
+        let blob = |n: &str| crate::embedder::pack_single(&tag_vec(n));
+        for name in [a.as_str(), "car rental"] {
+            conn.execute(
+                "INSERT INTO tags (name, description, embedding, count, uid) VALUES (?1,'',?2,5,?3)",
+                rusqlite::params![name, blob(name), crate::db::new_uid()],
+            )
+            .unwrap();
+        }
+        let id_a: i64 = conn.query_row("SELECT id FROM tags WHERE name=?1", [&a], |r| r.get(0)).unwrap();
+        let id_car: i64 = conn.query_row("SELECT id FROM tags WHERE name='car rental'", [], |r| r.get(0)).unwrap();
+        assert_eq!(ensure_tag(&conn, &a).unwrap(), id_a);
+        assert_eq!(ensure_tag(&conn, "vehicle rental").unwrap(), id_car, "multi-word cosine reuse unchanged");
+        let id_b = ensure_tag(&conn, &b).unwrap();
+        assert_ne!(id_b, id_a, "a colliding word no longer joins the old tag");
+        let count_a: i64 = conn.query_row("SELECT count FROM tags WHERE id=?1", [id_a], |r| r.get(0)).unwrap();
+        assert_eq!(count_a, 6);
     }
 
     /// R30.9: the threshold comes from the connection the pass writes to —
