@@ -59,14 +59,16 @@ REST contract:
   schemes, drive-relative `C:x` and control characters get a 400 that names
   the expected form, never an empty result. A well-formed prefix with no
   matches is still an empty list.
-- Scope and gate: `public_only=true` on `/items`, `/items/:id`,
-  `/items/:id/outline` and `/nodes/:id` serves only public sources.
-  Anything else reads as 404, so the share-safe surface never confirms that
-  an item exists. Line windows and node `text` from `sensitive` sources
-  answer 403 `refusal: "gated_provider"` under an untrusted answer provider,
-  with a gate event, the same as `/media`. Outline and node metadata stay
-  readable. The whole-item read without `lines` keeps its earlier contract
-  (`rust/docs/decisions.md` R36.15).
+- Scope and gate (R35.5): `public_only=true` on `/items`, `/items/:id`,
+  `/items/:id/outline` and `/nodes/:id` serves only public sources minus
+  effective-Sensitive items. Anything else reads as 404, so the share-safe
+  surface never confirms that an item exists. The whole-item read, line
+  windows, node `text`, section/tag chunk lists and entity reads from
+  Sensitive items answer 403 `refusal: "gated_provider"` under an untrusted
+  answer provider (multi-item lists drop the gated rows instead), with a
+  gate event, the same as `/media`. Outline and node metadata stay
+  readable. The app itself sends `X-Anchor-Client: ui` and is never gated;
+  MCP is an agent caller and stays gated.
 
 **`decisions`/`actions` are REST first** (R45.9): the MCP tools forward only
 the REST query keys (a test pins it), so an agent on the `anchorcore-search`
@@ -131,10 +133,13 @@ writes the answers?"; default `local`, so upgrades keep today's behavior).
   is an advanced setting on this same path, not a third mode.
 
 `search` / `POST /qa/search` is identical in both modes. The Sensitive gate
-uses the same provider-trust verdict for `ask` and `search` in both modes;
-whether agent mode should treat the agent itself as an untrusted provider
-is an open owner decision (handover 2026-10-21 §7.2.5). Switching modes
-needs no re-ingest.
+uses the same caller rule for `ask` and `search` in both modes (R35.5):
+agents are gated unless the provider is trusted; the app's own UI requests
+carry `X-Anchor-Client: ui` and are never gated. Whether agent mode should
+treat the agent itself as an untrusted provider even when the answer
+provider is trusted is an open owner decision (handover 2026-10-21 §7.2.5;
+R35.6 switches will answer it per destination). Switching modes needs no
+re-ingest.
 
 ## 3. Transports
 

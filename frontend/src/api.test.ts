@@ -56,6 +56,21 @@ describe("api request plumbing", () => {
     await expect(api.health()).rejects.toThrow(/internal server error text/);
   });
 
+  it("identifies the app with the UI client header (R35.5 gate exemption)", async () => {
+    const { api } = await import("./api");
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: "ok" }),
+      blob: async () => new Blob(["x"]),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await api.health();
+    expect((fetchMock.mock.calls[0][1]?.headers as Record<string, string>)["X-Anchor-Client"]).toBe("ui");
+    await api.assetBlob("ab12");
+    expect(fetchMock.mock.calls[1][0]).toBe("/media/ab12");
+    expect((fetchMock.mock.calls[1][1]?.headers as Record<string, string>)["X-Anchor-Client"]).toBe("ui");
+  });
+
   it("builds the folder-browse query string", async () => {
     const { api } = await import("./api");
     const fetchMock = vi.fn().mockResolvedValue({

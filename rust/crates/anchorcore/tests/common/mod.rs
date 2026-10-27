@@ -175,6 +175,32 @@ impl TestServer {
         resp.json().await.expect("json body")
     }
 
+    /// R35.5: the same requests as the SPA sends — `X-Anchor-Client: ui`
+    /// exempts the person at the UI from the Sensitive gate.
+    pub async fn get_ui(&self, path: &str) -> Response {
+        self.client
+            .get(self.url(path))
+            .header("X-Anchor-Client", "ui")
+            .send()
+            .await
+            .expect("GET request")
+    }
+
+    pub async fn get_ui_json(&self, path: &str) -> Value {
+        let resp = self.get_ui(path).await;
+        assert_eq!(resp.status(), StatusCode::OK, "GET {path} (ui)");
+        resp.json().await.expect("json body")
+    }
+
+    pub async fn post_ui(&self, path: &str, body: &Value) -> Response {
+        let req = self
+            .client
+            .post(self.url(path))
+            .header("X-Anchor-Client", "ui")
+            .json(body);
+        self.mutating(req).await
+    }
+
     async fn mutating(&self, req: reqwest::RequestBuilder) -> Response {
         req.header("X-CSRF-Token", &self.csrf)
             .send()

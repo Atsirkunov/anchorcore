@@ -4,10 +4,10 @@
 //! no path to traverse. Mounted at `/media`, not `/assets`: `/assets/*` is
 //! the embedded SPA bundle directory and is public for the login page
 //! (`auth::is_public_path`), so an asset route there would bypass auth and
-//! shadow the UI's own scripts. Same label gate as `/qa/search` and the
-//! records listings: under an untrusted answer provider a Sensitive
-//! source's image, or one in an override-marked item (R35.4), is refused
-//! with `refusal: "gated_provider"`.
+//! shadow the UI's own scripts. Same caller gate as `/qa/search` and the
+//! records listings (R35.5): a Sensitive source's image, or one in an
+//! override-marked item, is refused with `refusal: "gated_provider"`
+//! unless the caller is the UI or the provider is trusted.
 //!
 //! R46.10: `?format=json` is the agent form for harnesses that can only
 //! read JSON (and what MCP `get_asset` calls): `{asset_id, mime, w, h,
@@ -24,7 +24,7 @@
 use axum::extract::{Path, Query, State};
 use base64::Engine;
 use serde::Deserialize;
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
@@ -79,10 +79,12 @@ fn agent_json(uid: &str, mime: &str, dims: (Option<i64>, Option<i64>), bytes: &[
     .into_response()
 }
 
-pub async fn media_handler(State(state): State<AppState>, Path(uid): Path<String>, Query(q): Query<MediaQuery>) -> Response {
+pub async fn media_handler(State(state): State<AppState>, Path(uid): Path<String>, Query(q): Query<MediaQuery>, headers: HeaderMap) -> Response {
     let want_json = q.format.as_deref().is_some_and(|f| f.eq_ignore_ascii_case("json"));
     let uid_for_db = uid.clone();
-    let trusted = crate::answer::is_answer_trusted(&state.settings);
+    // R35.5: the person at the UI always sees their images; other callers
+    // need a trusted provider.
+    let open = crate::read_gate::Gate::from_request(&headers, &state.settings).open();
     let data_dir = state.data_dir.clone();
     let loaded = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
@@ -94,7 +96,7 @@ pub async fn media_handler(State(state): State<AppState>, Path(uid): Path<String
         Ok(Ok(None)) => return error(StatusCode::NOT_FOUND, "Asset not found"),
         _ => return error(StatusCode::INTERNAL_SERVER_ERROR, "asset lookup failed"),
     };
-    if !trusted && gated_label(&label) {
+    if !open && gated_label(&label) {
         crate::answer::record_gate_event(&state.data_dir, std::slice::from_ref(&label)).await;
         let body = json!({"detail": "Asset withheld from an untrusted answer provider", "refusal": "gated_provider"});
         return (StatusCode::FORBIDDEN, Json(body)).into_response();

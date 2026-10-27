@@ -2,7 +2,7 @@
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     Json,
 };
 use serde::Deserialize;
@@ -82,23 +82,35 @@ fn entity_json_from_row(row: &rusqlite::Row) -> rusqlite::Result<Value> {
 /// R35.4: the shared entity column list — scalar subqueries resolve the
 /// item's doc type, its effective Sensitive state (override or source
 /// label — `common::effective_sensitive_sql`, migration 29's rule), and
-/// the entity's own chunk.
+/// the entity's own chunk. R35.5 appends the raw gate inputs (source
+/// label + override, columns 17–18) for the byte gate; the public JSON
+/// shape is unchanged.
 fn entity_select_list() -> String {
     format!(
         "SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at, \
          (SELECT doc_type FROM ingested_items WHERE ingested_items.id = entities.item_id), \
          (SELECT CASE WHEN {} THEN 1 ELSE 0 END FROM ingested_items i JOIN sources s ON s.id = i.source_id WHERE i.id = entities.item_id), \
-         (SELECT id FROM chunks WHERE entity_id = entities.id ORDER BY id LIMIT 1) FROM entities",
+         (SELECT id FROM chunks WHERE entity_id = entities.id ORDER BY id LIMIT 1), \
+         (SELECT s.label FROM ingested_items i JOIN sources s ON s.id = i.source_id WHERE i.id = entities.item_id), \
+         (SELECT i.sensitive_override FROM ingested_items i WHERE i.id = entities.item_id) FROM entities",
         crate::common::effective_sensitive_sql("i", "s.label")
     )
 }
 
-pub async fn list_handler(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Json<Value> {
+/// R35.5: one entity row's gate inputs (missing item reads as internal).
+fn entity_gate(row: &rusqlite::Row) -> (String, bool) {
+    let label = row.get::<_, Option<String>>(17).ok().flatten().unwrap_or_else(|| "internal".to_string());
+    let marked = row.get::<_, Option<i64>>(18).ok().flatten().is_some_and(|v| v == 1);
+    (label, marked)
+}
+
+pub async fn list_handler(State(state): State<AppState>, Query(q): Query<ListQuery>, headers: HeaderMap) -> Json<Value> {
     let data_dir = state.data_dir.clone();
+    let gate = crate::read_gate::Gate::from_request(&headers, &state.settings);
     let limit = q.limit.unwrap_or(500).clamp(1, 2000);
     let kind = q.kind.clone();
     let status = q.status.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let (result, blocked) = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
         let mut sql = entity_select_list();
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![];
@@ -119,37 +131,59 @@ pub async fn list_handler(State(state): State<AppState>, Query(q): Query<ListQue
         params.push(Box::new(limit));
         let mut stmt = match conn.prepare(&sql) {
             Ok(s) => s,
-            Err(_) => return Value::Array(vec![]),
+            Err(_) => return (Value::Array(vec![]), Vec::new()),
         };
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-        let rows = stmt.query_map(param_refs.as_slice(), |r| entity_json_from_row(r)).unwrap();
-        let out: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
-        Value::Array(out)
+        let rows = stmt
+            .query_map(param_refs.as_slice(), |r| Ok((entity_json_from_row(r)?, entity_gate(r))))
+            .unwrap();
+        // R35.5: the list carries window text, so a gated caller loses the
+        // Sensitive rows (not the whole list) — one audit event per request.
+        let open = gate.open();
+        let mut out = Vec::new();
+        let mut blocked = Vec::new();
+        for (row, (label, marked)) in rows.flatten() {
+            if open {
+                out.push(row);
+            } else {
+                match crate::common::cloud_gate_reason(&label, marked) {
+                    Some(reason) => blocked.push(reason),
+                    None => out.push(row),
+                }
+            }
+        }
+        (Value::Array(out), blocked)
     })
     .await
     .unwrap();
+    if !blocked.is_empty() {
+        crate::answer::record_gate_event(&state.data_dir, &blocked).await;
+    }
     Json(result)
 }
 
 pub async fn get_handler(
     State(state): State<AppState>,
     Path(entity_id): Path<i64>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
+    let gate = crate::read_gate::Gate::from_request(&headers, &state.settings);
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
         let mut stmt = conn.prepare(&format!("{} WHERE id = ?1", entity_select_list())).unwrap();
-        let v = stmt.query_row([entity_id], |r| entity_json_from_row(r));
+        // R35.5: one entity's window text is its item's bytes — one byte gate.
+        let v = stmt.query_row([entity_id], |r| Ok((entity_json_from_row(r)?, entity_gate(r))));
         match v {
-            Ok(j) => Ok(j),
-            Err(_) => Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Entity not found"})))),
+            Ok((j, (label, marked))) => gate.check_bytes(&label, marked).map(|()| j),
+            Err(_) => Err(crate::read_gate::ReadRefusal::NotFound("Entity not found")),
         }
     })
     .await
     .unwrap();
     match result {
         Ok(v) => Ok(Json(v)),
-        Err(e) => Err(e),
+        Err(r) => Err(crate::read_gate::into_api_error(&state.data_dir, r).await),
     }
 }
 
@@ -187,8 +221,10 @@ pub async fn patch_handler(
 pub async fn related_handler(
     State(state): State<AppState>,
     Path(entity_id): Path<i64>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
+    let gate = crate::read_gate::Gate::from_request(&headers, &state.settings);
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
         crate::common::require_row(&conn, "entities", entity_id, "Entity not found")?;
@@ -199,18 +235,39 @@ pub async fn related_handler(
         let mut all: Vec<i64> = out_ids;
         all.extend(in_ids);
         if all.is_empty() {
-            return Ok(Value::Array(vec![]));
+            return Ok((Value::Array(vec![]), Vec::new()));
         }
         let sql = format!("{} WHERE id IN ({})", entity_select_list(), crate::common::placeholders(all.len()));
         let mut stmt3 = conn.prepare(&sql).unwrap();
-        let rows = stmt3.query_map(rusqlite::params_from_iter(all.iter()), |r| entity_json_from_row(r)).unwrap();
-        let out: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
-        Ok(Value::Array(out))
+        let rows = stmt3
+            .query_map(rusqlite::params_from_iter(all.iter()), |r| Ok((entity_json_from_row(r)?, entity_gate(r))))
+            .unwrap();
+        // R35.5: related rows carry window text — drop the Sensitive ones
+        // for a gated caller, like the list.
+        let open = gate.open();
+        let mut out = Vec::new();
+        let mut blocked = Vec::new();
+        for (row, (label, marked)) in rows.flatten() {
+            if open {
+                out.push(row);
+            } else {
+                match crate::common::cloud_gate_reason(&label, marked) {
+                    Some(reason) => blocked.push(reason),
+                    None => out.push(row),
+                }
+            }
+        }
+        Ok((Value::Array(out), blocked))
     })
     .await
     .unwrap();
     match result {
-        Ok(v) => Ok(Json(v)),
+        Ok((v, blocked)) => {
+            if !blocked.is_empty() {
+                crate::answer::record_gate_event(&state.data_dir, &blocked).await;
+            }
+            Ok(Json(v))
+        }
         Err(e) => Err(e),
     }
 }
@@ -432,19 +489,31 @@ fn expand_context(full_text: &str, window_text: &str, window_index: Option<i64>)
     (before, after)
 }
 
+/// R35.5: the expanded context is the item's full bytes — one byte gate
+/// (a missing item reads as internal, as before).
+fn gate_context_item(conn: &rusqlite::Connection, item_id: i64, gate: &crate::read_gate::Gate) -> Result<(), crate::read_gate::ReadRefusal> {
+    if let Some((label, marked)) = crate::read_gate::item_sensitivity(conn, item_id) {
+        gate.check_bytes(&label, marked)?;
+    }
+    Ok(())
+}
+
 pub async fn context_handler(
     State(state): State<AppState>,
     Path(entity_id): Path<i64>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
+    let gate = crate::read_gate::Gate::from_request(&headers, &state.settings);
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
         let mut stmt = conn.prepare("SELECT id, item_id, source_ref, window_text, window_index, summary FROM entities WHERE id = ?1").unwrap();
         let row: Result<(i64,i64,String,String,Option<i64>,String), _> = stmt.query_row([entity_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)));
         let (eid, item_id, source_ref, window_text, window_index, summary) = match row {
             Ok(v) => v,
-            Err(_) => return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Entity not found"})))),
+            Err(_) => return Err(crate::read_gate::ReadRefusal::NotFound("Entity not found")),
         };
+        gate_context_item(&conn, item_id, &gate)?;
         // item
         let item_row: Result<(String, String, i64), _> = conn.query_row("SELECT title, text, source_id FROM ingested_items WHERE id = ?1", [item_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)));
         let (item_title, full_text, source_id) = match item_row {
@@ -479,7 +548,7 @@ pub async fn context_handler(
     }).await.unwrap();
     match result {
         Ok(v) => Ok(Json(v)),
-        Err(e) => Err(e),
+        Err(r) => Err(crate::read_gate::into_api_error(&state.data_dir, r).await),
     }
 }
 
@@ -528,25 +597,25 @@ mod tests {
         let conn = crate::db::init_db(&db_path).unwrap();
         conn.execute("UPDATE ingested_items SET doc_type='code' WHERE id=(SELECT item_id FROM entities WHERE id=?1)", [eid]).unwrap();
         drop(conn);
-        let Json(v) = get_handler(State(state.clone()), Path(eid)).await.expect("get must succeed");
+        let Json(v) = get_handler(State(state.clone()), Path(eid), HeaderMap::default()).await.expect("get must succeed");
         assert_eq!(v.get("doc_type").and_then(|d| d.as_str()), Some("code"));
         assert_eq!(v.get("item_sensitive").and_then(|b| b.as_bool()), Some(true), "sensitive label reads effective");
         // Relabel to internal: the effective state flips instantly (never copied).
         let conn2 = crate::db::init_db(&db_path).unwrap();
         conn2.execute("UPDATE sources SET label='internal' WHERE name='sen'", []).unwrap();
         drop(conn2);
-        let Json(v2) = get_handler(State(state.clone()), Path(eid)).await.expect("get must succeed");
+        let Json(v2) = get_handler(State(state.clone()), Path(eid), HeaderMap::default()).await.expect("get must succeed");
         assert_eq!(v2.get("item_sensitive").and_then(|b| b.as_bool()), Some(false));
         // The override escalates whatever the label; clearing restores inherit.
         let conn3 = crate::db::init_db(&db_path).unwrap();
         conn3.execute("UPDATE ingested_items SET sensitive_override=1 WHERE id=(SELECT item_id FROM entities WHERE id=?1)", [eid]).unwrap();
         drop(conn3);
-        let Json(v3) = get_handler(State(state.clone()), Path(eid)).await.expect("get must succeed");
+        let Json(v3) = get_handler(State(state.clone()), Path(eid), HeaderMap::default()).await.expect("get must succeed");
         assert_eq!(v3.get("item_sensitive").and_then(|b| b.as_bool()), Some(true));
         let conn4 = crate::db::init_db(&db_path).unwrap();
         conn4.execute("UPDATE ingested_items SET sensitive_override=NULL WHERE id=(SELECT item_id FROM entities WHERE id=?1)", [eid]).unwrap();
         drop(conn4);
-        let Json(v4) = get_handler(State(state), Path(eid)).await.expect("get must succeed");
+        let Json(v4) = get_handler(State(state), Path(eid), HeaderMap::default()).await.expect("get must succeed");
         assert_eq!(v4.get("item_sensitive").and_then(|b| b.as_bool()), Some(false));
     }
 
@@ -557,7 +626,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let state = gate_state(&dir, false);
         let eid = sensitive_eid(&state);
-        let Json(v) = get_handler(State(state.clone()), Path(eid)).await.expect("get must succeed");
+        let Json(v) = get_handler(State(state.clone()), Path(eid), HeaderMap::default()).await.expect("get must succeed");
         assert!(v.get("item_id").and_then(|i| i.as_i64()).is_some(), "item link always present");
         assert_eq!(v.get("chunk_id"), Some(&Value::Null), "chunk link null until stored");
         let db_path = crate::db::resolve_db_path(&state.data_dir);
@@ -565,7 +634,7 @@ mod tests {
         conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content) VALUES (?1,'entity','ref','moonvault')", [eid]).unwrap();
         let cid = conn.last_insert_rowid();
         drop(conn);
-        let Json(v2) = get_handler(State(state), Path(eid)).await.expect("get must succeed");
+        let Json(v2) = get_handler(State(state), Path(eid), HeaderMap::default()).await.expect("get must succeed");
         assert_eq!(v2.get("chunk_id").and_then(|c| c.as_i64()), Some(cid));
     }
 
@@ -632,4 +701,37 @@ mod tests {
         }
     }
 
+    fn ui_headers() -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(crate::read_gate::UI_CLIENT_HEADER, "ui".parse().unwrap());
+        h
+    }
+
+    #[tokio::test]
+    async fn entity_bytes_gate_for_agents_open_for_ui() {
+        // R35.5: untrusted provider — an agent caller is refused the
+        // sensitive entity's bytes; the UI reads them.
+        let dir = tempdir().unwrap();
+        let state = gate_state(&dir, true);
+        let eid = sensitive_eid(&state);
+        match get_handler(State(state.clone()), Path(eid), HeaderMap::default()).await {
+            Err((s, Json(v))) => {
+                assert_eq!(s, StatusCode::FORBIDDEN);
+                assert_eq!(v.get("refusal").and_then(|r| r.as_str()), Some("gated_provider"));
+            }
+            Ok(_) => panic!("agent get must be refused"),
+        }
+        match context_handler(State(state.clone()), Path(eid), HeaderMap::default()).await {
+            Err((s, _)) => assert_eq!(s, StatusCode::FORBIDDEN),
+            Ok(_) => panic!("agent context must be refused"),
+        }
+        let Json(_) = get_handler(State(state.clone()), Path(eid), ui_headers()).await.expect("UI get must succeed");
+        let Json(ctx) = context_handler(State(state.clone()), Path(eid), ui_headers()).await.expect("UI context must succeed");
+        assert!(ctx.get("full_text").and_then(|t| t.as_str()).is_some_and(|t| t.contains("moonvault")), "{ctx}");
+        // Lists drop the row for agents, keep it for the UI.
+        let Json(agent) = list_handler(State(state.clone()), Query(ListQuery { kind: None, status: None, limit: None }), HeaderMap::default()).await;
+        assert!(agent.as_array().unwrap().iter().all(|e| e["id"] != eid), "{agent}");
+        let Json(ui) = list_handler(State(state), Query(ListQuery { kind: None, status: None, limit: None }), ui_headers()).await;
+        assert!(ui.as_array().unwrap().iter().any(|e| e["id"] == eid), "{ui}");
+    }
 }

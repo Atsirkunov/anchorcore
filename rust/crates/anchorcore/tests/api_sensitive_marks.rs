@@ -4,7 +4,8 @@
 //! every path: `/qa/search` (incl. `public_only`, what MCP `search` calls),
 //! `/qa` + `/qa/public` (MCP `ask`), `/decisions`, `/actions`, `/media/:uid`,
 //! and the embed paths (ingest, startup backfill, backup re-embed job).
-//! Trusted (localhost or `ANCHOR_CLOUD_TRUST=1`) flows unchanged; unmarked
+//! Trusted (localhost or `ANCHOR_CLOUD_TRUST=1`) flows on non-public paths;
+//! public scopes drop marked items whatever the provider (R35.5). Unmarked
 //! items are never gated. Relabels flip the effective state instantly (the
 //! label is never copied onto items); an override survives them.
 //!
@@ -157,16 +158,18 @@ async fn assert_plain_flows(srv: &TestServer) {
     assert_eq!(actions["total"], 1, "{actions}");
 }
 
-/// Every read path serves marked items (trusted provider).
+/// Every non-public read path serves marked items (trusted provider).
+/// Public scopes drop them whatever the provider (R35.5).
 async fn assert_reads_flow(srv: &TestServer, c: &Corpus) {
     let body = post_json(srv, "/qa/search", json!({"query": "zorblax vault rotation"})).await;
     assert!(any_marked(&hit_items(&body, "hits"), c), "{body}");
     assert_eq!((body["blocked"].as_u64(), body["refusal"].is_null()), (Some(0), true), "{body}");
     let public = post_json(srv, "/qa/search", json!({"query": "zorblax vault rotation", "public_only": true})).await;
-    assert!(any_marked(&hit_items(&public, "hits"), c), "{public}");
+    assert!(none_marked(&hit_items(&public, "hits"), c), "{public}");
+    assert_eq!(public["refusal"], "gated_provider", "{public}");
     let asked = post_json(srv, "/qa/public", json!({"question": "How often are the zorblax vault keys rotated?"})).await;
-    assert!(asked["refusal"].is_null(), "{asked}");
-    assert!(any_marked(&hit_items(&asked, "citations"), c), "{asked}");
+    assert_eq!(asked["refusal"], "gated_provider", "{asked}");
+    assert!(none_marked(&hit_items(&asked, "citations"), c), "{asked}");
     let decisions = srv.get_json("/decisions?q=zorblax").await;
     assert!(any_marked(&record_items(&decisions, "decisions"), c), "{decisions}");
     assert_eq!(decisions["blocked"], 0, "{decisions}");

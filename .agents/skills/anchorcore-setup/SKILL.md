@@ -210,12 +210,15 @@ repo's `sample/` corpus (release zips do not include it; clone
 - Sensitive marks (people-driven, escalate-only): `PATCH /items/{id} {"sensitive_override":true}`
   marks a whole document, `null` clears it back to inheriting the source label
   (`false` is reserved); entities carry their parent item's effective state as `item_sensitive`.
-  A marked document is treated like a `sensitive` source toward an untrusted
-  cloud provider: its chunks are not sent to a cloud embedder, and ask,
-  search (incl. `public_only`), `/decisions`, `/actions` and `/media` withhold
-  it (`blocked`, `refusal: gated_provider` when nothing survives). Mark before
-  connecting a cloud embedder — vectors already sent are not recalled.
-  The auto-detect/review endpoints are retired — do not call `/pii/*`.
+  A marked document is treated like a `sensitive` source (R35.5 caller rule):
+  its chunks are never sent to an untrusted cloud embedder, and ask, search,
+  `/decisions`, `/actions`, `/media` and the read surfaces (`GET /items/:id`,
+  node text, section/tag chunks, entity reads) withhold it from every caller
+  but the app UI (`blocked`, `refusal: gated_provider` when nothing survives;
+  single-item reads answer 403). `public_only` / `/qa/public` drop it whatever
+  the provider. Mark before connecting a cloud embedder — vectors already sent
+  are not recalled. The auto-detect/review endpoints are retired — do not call
+  `/pii/*`.
 - Housekeeping: `GET /review/low-confidence`, `GET /review/duplicates`,
   `POST /review/merge {"proposal_id":…,"decision":"merge"|"dismiss"}`.
 

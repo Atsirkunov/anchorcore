@@ -5,11 +5,13 @@
 //! MCP-only. Scope and gating mirror `/qa/search` for the same caller:
 //! `project_id` + `public_only` resolve through `answer::project_scope`,
 //! stale (and, per `ANCHOR_QA_EXCLUDE_DISPUTED`, disputed) rows drop via
-//! `retrieval::status_ok`, and an untrusted answer provider withholds
-//! Sensitive rows (source label or per-document override, R35.4)
-//! (`blocked`, `refusal: "gated_provider"`).
+//! `retrieval::status_ok`, and Sensitive rows (source label or
+//! per-document override, R35.4) drop for gated callers — every caller but
+//! the UI under an untrusted provider, plus `public_only` whatever the
+//! caller or provider (R35.5) (`blocked`, `refusal: "gated_provider"`).
 
 use axum::extract::{Query, State};
+use axum::http::HeaderMap;
 use axum::Json;
 use rusqlite::Connection;
 use serde::Deserialize;
@@ -194,11 +196,11 @@ fn status_matches(r: &Row, wanted: Option<&str>) -> bool {
     }
 }
 
-/// Untrusted provider → withhold Sensitive rows (same rule as
+/// Gated caller → withhold Sensitive rows (same rule as
 /// `answer::gate_answer_hits`, R35.4). Returns the blocked labels
 /// (`item_sensitive` for an override-marked item).
-fn gate_rows(rows: &mut Vec<Row>, trusted: bool) -> Vec<String> {
-    if trusted {
+fn gate_rows(rows: &mut Vec<Row>, gated: bool) -> Vec<String> {
+    if !gated {
         return Vec::new();
     }
     let mut blocked = Vec::new();
@@ -261,11 +263,12 @@ fn page(rows: Vec<Value>, q: &RecordQuery, key: &str, blocked: &[String]) -> Val
     json!({key: items, "total": total, "blocked": blocked.len(), "refusal": refusal})
 }
 
-pub fn list_decisions(conn: &Connection, q: &RecordQuery, trusted: bool) -> Listing {
+pub fn list_decisions(conn: &Connection, q: &RecordQuery, open: bool) -> Listing {
     let mut rows = load_rows(conn, "decision", q);
     link_supersession(&mut rows);
     rows.retain(|r| status_matches(r, q.status.as_deref()));
-    let blocked = gate_rows(&mut rows, trusted);
+    // R35.5: `public_only` drops Sensitive whatever the caller or provider.
+    let blocked = gate_rows(&mut rows, !open || q.public_only.unwrap_or(false));
     rows.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
     let items = rows.iter().map(decision_json).collect();
     Listing { body: page(items, q, "decisions", &blocked), blocked }
@@ -282,20 +285,20 @@ fn is_iso_date(s: &str) -> bool {
     b.len() >= 10 && b[4] == b'-' && b[7] == b'-' && s[..4].bytes().chain(s[5..7].bytes()).chain(s[8..10].bytes()).all(|c| c.is_ascii_digit())
 }
 
-pub fn list_actions(conn: &Connection, q: &RecordQuery, trusted: bool) -> Listing {
+pub fn list_actions(conn: &Connection, q: &RecordQuery, open: bool) -> Listing {
     let mut rows = load_rows(conn, "action", q);
-    let blocked = gate_rows(&mut rows, trusted);
+    let blocked = gate_rows(&mut rows, !open || q.public_only.unwrap_or(false));
     rows.sort_by(action_order);
     let items = rows.iter().map(action_json).collect();
     Listing { body: page(items, q, "actions", &blocked), blocked }
 }
 
-async fn serve(state: AppState, q: RecordQuery, list: fn(&Connection, &RecordQuery, bool) -> Listing) -> Json<Value> {
-    let trusted = crate::answer::is_answer_trusted(&state.settings);
+async fn serve(state: AppState, q: RecordQuery, headers: HeaderMap, list: fn(&Connection, &RecordQuery, bool) -> Listing) -> Json<Value> {
+    let open = crate::read_gate::Gate::from_request(&headers, &state.settings).open();
     let data_dir = state.data_dir.clone();
     let listing = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
-        list(&conn, &q, trusted)
+        list(&conn, &q, open)
     })
     .await;
     let Ok(listing) = listing else {
@@ -307,12 +310,12 @@ async fn serve(state: AppState, q: RecordQuery, list: fn(&Connection, &RecordQue
     Json(listing.body)
 }
 
-pub async fn decisions_handler(State(state): State<AppState>, Query(q): Query<RecordQuery>) -> Json<Value> {
-    serve(state, q, list_decisions).await
+pub async fn decisions_handler(State(state): State<AppState>, Query(q): Query<RecordQuery>, headers: HeaderMap) -> Json<Value> {
+    serve(state, q, headers, list_decisions).await
 }
 
-pub async fn actions_handler(State(state): State<AppState>, Query(q): Query<RecordQuery>) -> Json<Value> {
-    serve(state, q, list_actions).await
+pub async fn actions_handler(State(state): State<AppState>, Query(q): Query<RecordQuery>, headers: HeaderMap) -> Json<Value> {
+    serve(state, q, headers, list_actions).await
 }
 
 #[cfg(test)]
@@ -392,30 +395,30 @@ mod tests {
     async fn rest_open_actions_by_owner() {
         let f = fixture(false);
         let q = RecordQuery { owner: Some("ALEX".into()), ..Default::default() };
-        let Json(v) = actions_handler(State(f.state.clone()), Query(q)).await;
+        let Json(v) = actions_handler(State(f.state.clone()), Query(q), HeaderMap::default()).await;
         assert_eq!(tasks(&v), ["draft spec", "moonvault rotate keys"], "open only, owner case-insensitive, dated first");
         let a = &v["actions"][0];
         assert_eq!(a["due"], "2000-01-02");
         assert_eq!(a["provenance"]["path"], "meetings/retro.md");
         assert!(a["provenance"]["item_id"].as_i64().is_some());
         let q = RecordQuery { owner: Some("alex".into()), state: Some("done".into()), ..Default::default() };
-        let Json(v) = actions_handler(State(f.state.clone()), Query(q)).await;
+        let Json(v) = actions_handler(State(f.state.clone()), Query(q), HeaderMap::default()).await;
         assert_eq!(tasks(&v), ["sign contract"]);
         let q = RecordQuery { overdue: Some(true), ..Default::default() };
-        let Json(v) = actions_handler(State(f.state), Query(q)).await;
+        let Json(v) = actions_handler(State(f.state), Query(q), HeaderMap::default()).await;
         assert_eq!(tasks(&v), ["draft spec"], "only ISO-dated open items before today");
     }
 
     #[tokio::test]
     async fn rest_decisions_show_supersession() {
         let f = fixture(false);
-        let Json(v) = decisions_handler(State(f.state.clone()), Query(RecordQuery::default())).await;
+        let Json(v) = decisions_handler(State(f.state.clone()), Query(RecordQuery::default()), HeaderMap::default()).await;
         let d5 = v["decisions"].as_array().unwrap().iter().find(|d| d["record_id"] == "D0005").unwrap().clone();
         assert_eq!(d5["status"], "superseded");
         assert_eq!(d5["superseded_by"], "D0012");
         assert_eq!(d5["current"], false);
         let q = RecordQuery { status: Some("current".into()), q: Some("provider".into()), ..Default::default() };
-        let Json(v) = decisions_handler(State(f.state), Query(q)).await;
+        let Json(v) = decisions_handler(State(f.state), Query(q), HeaderMap::default()).await;
         let ids: Vec<&str> = v["decisions"].as_array().unwrap().iter().map(|d| d["record_id"].as_str().unwrap()).collect();
         assert_eq!(ids, ["D0012"]);
         assert_eq!(v["decisions"][0]["supersedes"], json!(["D0005"]));
@@ -434,24 +437,30 @@ mod tests {
         // Index the sensitive item so search has something to withhold.
         let vault_item: i64 = f.conn.query_row("SELECT id FROM ingested_items WHERE external_id='vault/moonvault.md'", [], |r| r.get(0)).unwrap();
         f.conn.execute("INSERT INTO chunks (item_id, kind, source_ref, content) VALUES (?1,'document','vault/moonvault.md','moonvault sealed text')", [vault_item]).unwrap();
-        let search = crate::answer::search(&f.state.settings, &f.state.embedder, req, &f.state.data_dir).await;
+        let search = crate::answer::search(&f.state.settings, &f.state.embedder, req, &f.state.data_dir, false).await;
         assert_eq!(search.refusal.as_deref(), Some("gated_provider"));
         let q = RecordQuery { q: Some("moonvault".into()), ..Default::default() };
-        let Json(d) = decisions_handler(State(f.state.clone()), Query(q.clone())).await;
-        let Json(a) = actions_handler(State(f.state.clone()), Query(q)).await;
+        let Json(d) = decisions_handler(State(f.state.clone()), Query(q.clone()), HeaderMap::default()).await;
+        let Json(a) = actions_handler(State(f.state.clone()), Query(q), HeaderMap::default()).await;
         for v in [&d, &a] {
             assert_eq!(v["refusal"], "gated_provider", "{v}");
             assert_eq!(v["blocked"], 1);
             assert_eq!(v["total"], 0);
         }
+        // R35.5: the UI caller lists the sensitive rows on the same fixture.
+        let mut ui = HeaderMap::new();
+        ui.insert(crate::read_gate::UI_CLIENT_HEADER, "ui".parse().unwrap());
+        let Json(du) = decisions_handler(State(f.state.clone()), Query(RecordQuery { q: Some("moonvault".into()), ..Default::default() }), ui).await;
+        assert_eq!(du["total"], 1, "{du}");
+        assert!(du["refusal"].is_null(), "{du}");
         // Trusted path + explicit scope: the sensitive source is listable,
         // and a source_ids filter outside the scope yields nothing.
         let t = fixture(false);
         let q = RecordQuery { source_ids: Some(t.sensitive.to_string()), ..Default::default() };
-        let Json(v) = actions_handler(State(t.state.clone()), Query(q)).await;
+        let Json(v) = actions_handler(State(t.state.clone()), Query(q), HeaderMap::default()).await;
         assert_eq!(tasks(&v), ["moonvault rotate keys"]);
         let q = RecordQuery { source_ids: Some(t.sensitive.to_string()), public_only: Some(true), ..Default::default() };
-        let Json(v) = actions_handler(State(t.state), Query(q)).await;
+        let Json(v) = actions_handler(State(t.state), Query(q), HeaderMap::default()).await;
         assert_eq!(v["total"], 0, "public_only intersects like search");
     }
 
@@ -459,7 +468,7 @@ mod tests {
     async fn stale_rows_drop_like_search() {
         let f = fixture(false);
         f.conn.execute("UPDATE entities SET status='stale' WHERE summary='close alerting gaps'", []).unwrap();
-        let Json(v) = actions_handler(State(f.state), Query(RecordQuery { owner: Some("Mike".into()), ..Default::default() })).await;
+        let Json(v) = actions_handler(State(f.state), Query(RecordQuery { owner: Some("Mike".into()), ..Default::default() }), HeaderMap::default()).await;
         assert_eq!(v["total"], 0);
     }
 }

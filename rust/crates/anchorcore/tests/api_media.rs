@@ -136,7 +136,8 @@ async fn media_gated_for_sensitive_source_under_untrusted_provider() {
         .find(|i| i["path"] == "topology.md")
         .unwrap_or_else(|| panic!("{items}"))
         .clone();
-    let item: Value = srv.get(&format!("/items/{}", doc["id"])).await.json().await.expect("item");
+    // R35.5: the item read is setup — fetch as the UI (the agent read is gated).
+    let item: Value = srv.get_ui(&format!("/items/{}", doc["id"])).await.json().await.expect("item");
     let url = item["assets"][0]["url"].as_str().expect("asset url").to_string();
 
     for (k, v) in [("answer_base_url", "https://192.0.2.1"), ("answer_api_key", "sk-test")] {

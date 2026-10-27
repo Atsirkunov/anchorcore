@@ -66,10 +66,14 @@ search) is a relative path as /items lists it (`docs/`, `cfg/routing`) or an
 absolute path under a folder source's root. Wildcards, `..`, a leading `./`
 or `~`, and URLs get a 400 that names the expected form. They never get an
 empty list. All of these reads take `public_only=true`, and anything outside
-a public source then reads as 404. Section text and line windows from a
-sensitive source answer 403 `refusal: "gated_provider"` under an untrusted
-provider, like search. MCP clients get the same reads as `list_items`,
-`get_item` (with `lines`) and `get_outline` (with `node_id` + `include`).
+a public source — or marked Sensitive on one — then reads as 404. Whole-file
+reads, line windows, section text, section/tag chunk lists and entity reads
+from a Sensitive item answer 403 `refusal: "gated_provider"` under an
+untrusted provider (multi-item lists drop the gated rows instead), like
+search. Do not send `X-Anchor-Client: ui` (that header is the app's own UI
+exemption, not an agent channel). MCP clients get the same reads as
+`list_items`, `get_item` (with `lines`) and `get_outline` (with `node_id` +
+`include`).
 
 Images: add `images` to `fields` (e.g. `"fields":"content,images"`; `all`
 includes them) and each hit lists the pictures on its passage —

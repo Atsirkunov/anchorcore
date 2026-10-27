@@ -248,7 +248,9 @@ async fn sensitive_override_roundtrip() {
     assert_eq!(patched.status(), StatusCode::OK);
     assert_eq!(patched.json::<Value>().await.expect("patch")["sensitive_override"], true);
 
-    let fetched: Value = srv.get(&format!("/items/{item_id}")).await.json().await.expect("item");
+    // R35.5: the marked item is read back as the UI (an agent caller is
+    // gated — covered in api_client_gate.rs).
+    let fetched: Value = srv.get_ui(&format!("/items/{item_id}")).await.json().await.expect("item");
     assert_eq!(fetched["sensitive_override"], true, "{fetched}");
 
     let cleared = srv.patch(&format!("/items/{item_id}"), &json!({"sensitive_override": Value::Null})).await;

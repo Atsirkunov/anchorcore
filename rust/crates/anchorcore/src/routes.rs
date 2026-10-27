@@ -121,29 +121,34 @@ pub fn build_router(state: health::AppState) -> Router {
 
 async fn qa_handler(
     axum::extract::State(state): axum::extract::State<health::AppState>,
+    headers: axum::http::HeaderMap,
     axum::Json(req): axum::Json<answer::AskRequest>,
 ) -> axum::Json<answer::AskResponse> {
     let question = req.question.clone();
     let scope = report::scope_label(req.project_id, req.public_only.unwrap_or(false));
-    let resp = answer::ask(&state.settings, &state.embedder, req, &state.data_dir).await;
+    let ui_caller = crate::read_gate::caller_is_ui(&headers);
+    let resp = answer::ask(&state.settings, &state.embedder, req, &state.data_dir, ui_caller).await;
     report::record_ask(&question, scope, &resp);
     axum::Json(resp)
 }
 
 async fn qa_public_handler(
     axum::extract::State(state): axum::extract::State<health::AppState>,
+    headers: axum::http::HeaderMap,
     axum::Json(mut req): axum::Json<answer::AskRequest>,
 ) -> axum::Json<answer::AskResponse> {
     req.public_only = Some(true);
     let question = req.question.clone();
     let scope = report::scope_label(req.project_id, true);
-    let resp = answer::ask(&state.settings, &state.embedder, req, &state.data_dir).await;
+    let ui_caller = crate::read_gate::caller_is_ui(&headers);
+    let resp = answer::ask(&state.settings, &state.embedder, req, &state.data_dir, ui_caller).await;
     report::record_ask(&question, scope, &resp);
     axum::Json(resp)
 }
 
 async fn search_handler(
     axum::extract::State(state): axum::extract::State<health::AppState>,
+    headers: axum::http::HeaderMap,
     axum::Json(req): axum::Json<answer::SearchRequest>,
 ) -> Result<axum::Json<answer::SearchResponse>, (axum::http::StatusCode, axum::Json<serde_json::Value>)> {
     // R36.15: a malformed path_prefix is a 400 naming the expected form
@@ -152,7 +157,8 @@ async fn search_handler(
         .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({"detail": e}))))?;
     let query = req.query.clone();
     let scope = report::scope_label(req.project_id, req.public_only.unwrap_or(false));
-    let resp = answer::search(&state.settings, &state.embedder, req, &state.data_dir).await;
+    let ui_caller = crate::read_gate::caller_is_ui(&headers);
+    let resp = answer::search(&state.settings, &state.embedder, req, &state.data_dir, ui_caller).await;
     report::record_search(&query, scope, &resp);
     Ok(axum::Json(resp))
 }

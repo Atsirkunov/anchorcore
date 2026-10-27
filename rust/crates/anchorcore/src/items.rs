@@ -15,7 +15,7 @@
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     Json,
 };
 use serde::Deserialize;
@@ -371,7 +371,9 @@ pub(crate) fn item_under_prefix(
 /// start, slash-normalized so `reportdata/` also finds Windows `\` rows.
 /// Relative prefixes match the stored external id; absolute prefixes resolve
 /// through the owning folder source's root (R36.6).
-/// Metadata only (no bytes), so no provider gate — like the entities list.
+/// Metadata only (title/path, no bytes), so no caller gate — but the
+/// `public_only` scope still drops effective-Sensitive items (R35.5), like
+/// every other public scope.
 /// Listing filters (R36.15 adds `public_only`).
 struct ListFilter<'a> {
     path_prefix: Option<&'a str>,
@@ -379,7 +381,11 @@ struct ListFilter<'a> {
     public_only: bool,
 }
 
-const PUBLIC_ONLY_COND: &str = "source_id IN (SELECT id FROM sources WHERE label = 'public')";
+/// R35.5: the public scope is public sources minus effective-Sensitive
+/// items (the per-document override drops even on a public source),
+/// whatever the caller or provider.
+const PUBLIC_ONLY_COND: &str =
+    "source_id IN (SELECT id FROM sources WHERE label = 'public') AND COALESCE(sensitive_override, 0) != 1";
 
 fn base_conds(public_only: bool) -> Vec<String> {
     if public_only { vec![PUBLIC_ONLY_COND.to_string()] } else { Vec::new() }
@@ -633,20 +639,20 @@ fn apply_glossary_mark(conn: &rusqlite::Connection, item_id: i64, mark: bool) ->
     crate::vocab::store_glossary_file(conn, item_id, source_id, &pairs).map(|_| ())
 }
 
-/// R36.15: one item read under the `public_only` scope, with an optional
-/// line window. Only the window form is byte-gated here — the whole-item
-/// read keeps its pre-R36.15 contract (see `rust/docs/decisions.md`).
-fn read_item(conn: &rusqlite::Connection, item_id: i64, q: &GetQuery, trusted: bool) -> Result<Value, ReadRefusal> {
+/// R35.5: one item read under the `public_only` scope, with an optional
+/// line window. The whole-file and window forms share one byte gate on the
+/// effective Sensitive rule (absorbs R36.19); the UI caller is exempt.
+fn read_item(conn: &rusqlite::Connection, item_id: i64, q: &GetQuery, gate: &crate::read_gate::Gate) -> Result<Value, ReadRefusal> {
     const NOT_FOUND: &str = "Item not found";
-    let label = crate::read_gate::item_label(conn, item_id).ok_or(ReadRefusal::NotFound(NOT_FOUND))?;
-    crate::read_gate::check_public(&label, q.public_only.unwrap_or(false), NOT_FOUND)?;
+    let (label, marked) = crate::read_gate::item_sensitivity(conn, item_id).ok_or(ReadRefusal::NotFound(NOT_FOUND))?;
+    crate::read_gate::check_public(&label, marked, q.public_only.unwrap_or(false), NOT_FOUND)?;
+    gate.check_bytes(&label, marked)?;
     let window = match q.lines.as_deref() {
         Some(raw) => Some(parse_lines(raw).map_err(ReadRefusal::BadRequest)?),
         None => None,
     };
     let mut v = fetch_item(conn, item_id).ok_or(ReadRefusal::NotFound(NOT_FOUND))?;
     let Some(w) = window else { return Ok(v) };
-    crate::read_gate::check_bytes(&label, trusted)?;
     let text = v.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string();
     let (content, start, end, total) = window_text(&text, &w).map_err(ReadRefusal::BadRequest)?;
     v["text"] = json!(content.clone());
@@ -659,12 +665,13 @@ pub async fn get_handler(
     State(state): State<AppState>,
     Path(item_id): Path<i64>,
     Query(q): Query<GetQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
-    let trusted = crate::answer::is_answer_trusted(&state.settings);
+    let gate = crate::read_gate::Gate::from_request(&headers, &state.settings);
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
-        read_item(&conn, item_id, &q, trusted)
+        read_item(&conn, item_id, &q, &gate)
     })
     .await
     .unwrap();
@@ -1044,7 +1051,11 @@ mod tests {
             .await
             .expect("mark must succeed");
         assert_eq!(v.get("sensitive_override").and_then(|x| x.as_bool()), Some(true));
-        let Json(got) = get_handler(State(state.clone()), Path(iid), Query(GetQuery { lines: None, public_only: None })).await.expect("get must succeed");
+        // R35.5: the marked item is read back as the UI (an agent caller
+        // would be gated — the persistence assert is about the mark).
+        let mut ui = HeaderMap::new();
+        ui.insert(crate::read_gate::UI_CLIENT_HEADER, "ui".parse().unwrap());
+        let Json(got) = get_handler(State(state.clone()), Path(iid), Query(GetQuery { lines: None, public_only: None }), ui).await.expect("get must succeed");
         assert_eq!(got.get("sensitive_override").and_then(|x| x.as_bool()), Some(true), "mark persists");
         let clear = UpdateItemPayload { sensitive_override: Some(None), is_pii: false, is_glossary: None };
         let Json(v2) = patch_handler(State(state.clone()), Path(iid), Json(clear))
@@ -1215,22 +1226,34 @@ mod tests {
 
     #[test]
     fn read_item_windows_scopes_and_gates() {
+        use crate::read_gate::Gate;
         let (_dir, conn, iid) = seed_db();
         conn.execute("UPDATE ingested_items SET text = 'l1\nl2\nl3' WHERE id = ?1", [iid]).unwrap();
+        let agent = Gate { ui_caller: false, provider_trusted: false };
+        let trusted = Gate { ui_caller: false, provider_trusted: true };
+        let ui = Gate { ui_caller: true, provider_trusted: false };
         let q = |lines: Option<&str>, public_only: Option<bool>| GetQuery { lines: lines.map(str::to_string), public_only };
-        let v = read_item(&conn, iid, &q(Some("2-3"), None), false).ok().expect("internal source window");
+        let v = read_item(&conn, iid, &q(Some("2-3"), None), &agent).ok().expect("internal source window");
         assert_eq!(v["content"], "l2\nl3");
         assert_eq!(v["text"], "l2\nl3");
         assert_eq!(v["lines"], json!({"start": 2, "end": 3, "total": 3}));
-        assert!(matches!(read_item(&conn, iid, &q(Some("9"), None), false), Err(ReadRefusal::BadRequest(_))));
-        assert!(matches!(read_item(&conn, iid, &q(Some("zz"), None), false), Err(ReadRefusal::BadRequest(_))));
-        assert!(matches!(read_item(&conn, iid, &q(None, Some(true)), false), Err(ReadRefusal::NotFound(_))), "internal is not public");
-        assert!(matches!(read_item(&conn, iid + 99, &q(None, None), false), Err(ReadRefusal::NotFound(_))));
+        assert!(matches!(read_item(&conn, iid, &q(Some("9"), None), &agent), Err(ReadRefusal::BadRequest(_))));
+        assert!(matches!(read_item(&conn, iid, &q(Some("zz"), None), &agent), Err(ReadRefusal::BadRequest(_))));
+        assert!(matches!(read_item(&conn, iid, &q(None, Some(true)), &agent), Err(ReadRefusal::NotFound(_))), "internal is not public");
+        assert!(matches!(read_item(&conn, iid + 99, &q(None, None), &agent), Err(ReadRefusal::NotFound(_))));
         conn.execute("UPDATE sources SET label = 'sensitive'", []).unwrap();
-        assert!(matches!(read_item(&conn, iid, &q(Some("1"), None), false), Err(ReadRefusal::Gated(_))), "untrusted window gated");
-        assert!(read_item(&conn, iid, &q(Some("1"), None), true).is_ok(), "trusted provider reads");
+        assert!(matches!(read_item(&conn, iid, &q(Some("1"), None), &agent), Err(ReadRefusal::Gated(_))), "untrusted window gated");
+        assert!(matches!(read_item(&conn, iid, &q(None, None), &agent), Err(ReadRefusal::Gated(_))), "whole file gated too (R35.5)");
+        assert!(read_item(&conn, iid, &q(Some("1"), None), &trusted).is_ok(), "trusted provider reads");
+        assert!(read_item(&conn, iid, &q(None, None), &ui).is_ok(), "UI reads everything");
         conn.execute("UPDATE sources SET label = 'public'", []).unwrap();
-        assert!(read_item(&conn, iid, &q(Some("1"), Some(true)), false).is_ok(), "public source in public scope");
+        assert!(read_item(&conn, iid, &q(Some("1"), Some(true)), &agent).is_ok(), "public source in public scope");
+        // R35.5: the override drops the item from the public scope even for
+        // callers that are otherwise open.
+        conn.execute("UPDATE ingested_items SET sensitive_override = 1 WHERE id = ?1", [iid]).unwrap();
+        assert!(matches!(read_item(&conn, iid, &q(None, Some(true)), &trusted), Err(ReadRefusal::NotFound(_))), "marked drops from public scope");
+        assert!(matches!(read_item(&conn, iid, &q(None, Some(true)), &ui), Err(ReadRefusal::NotFound(_))), "UI preview shows the share-safe view");
+        assert!(read_item(&conn, iid, &q(None, None), &ui).is_ok(), "plain UI read unaffected");
     }
 
     #[test]

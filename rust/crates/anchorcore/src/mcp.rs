@@ -165,6 +165,8 @@ async fn http_call(method: &str, path: &str, body: Option<Value>) -> Result<Valu
     if !token.is_empty() {
         req = req.header("Authorization", format!("Bearer {}", token));
     }
+    // R35.5: the proxy never sends `X-Anchor-Client: ui` — MCP is an agent
+    // caller, so Sensitive reads stay gated exactly like a skill's curl.
     // CSRF for local POST when auth disabled (R7.1)
     if method == "POST" {
         if let Some(csrf) = get_csrf_token().await {
@@ -408,9 +410,10 @@ fn asset_content(v: &Value) -> Value {
 }
 
 async fn tool_get_entity(entity_id: i64) -> Result<Value, String> {
-    // R35.4: entity reads are ungated direct fetches. Sensitivity travels
-    // as the parent item's effective Sensitive state + source label,
-    // enforced on cloud flows.
+    // R35.5: entity reads are gated like every other byte surface — a
+    // Sensitive item under an untrusted provider fails with gated_provider
+    // (the 403 reaches the agent as a tool error). Sensitivity still rides
+    // along as the parent item's effective Sensitive state.
     let v = http_call("GET", &format!("/entities/{}", entity_id), None).await.map_err(|e| if e=="not found" { format!("entity {entity_id} not found") } else { e })?;
     Ok(json!({
         "id": v.get("id"),
@@ -584,7 +587,7 @@ fn read_tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "get_item",
-            "description": "Read one item's stored text (content) with metadata and its images (assets). lines='a-b' (1-based, inclusive), 'a' or 'a-' returns just that window plus lines {start, end, total}; an end past the last line clamps, an invalid range or a start past the end is an error. Windows are refused for Sensitive sources under an untrusted provider (gated_provider). Content over 32000 chars is cut (content_truncated, total_chars) — page with lines. Same contract as REST GET /items/{id}?lines=a-b.",
+            "description": "Read one item's stored text (content) with metadata and its images (assets). lines='a-b' (1-based, inclusive), 'a' or 'a-' returns just that window plus lines {start, end, total}; an end past the last line clamps, an invalid range or a start past the end is an error. The whole file and windows are refused for Sensitive items under an untrusted provider (gated_provider error). Content over 32000 chars is cut (content_truncated, total_chars) — page with lines. Same contract as REST GET /items/{id}?lines=a-b.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -688,7 +691,7 @@ fn tool_defs() -> Value {
         },
         {
             "name": "get_entity",
-            "description": "Fetch one entity with provenance (summary, confidence, status, window_text, source_ref, parent item's Sensitive state).",
+            "description": "Fetch one entity with provenance (summary, confidence, status, window_text, source_ref, parent item's Sensitive state). Refused with a gated_provider error when its item is Sensitive and the provider is untrusted.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

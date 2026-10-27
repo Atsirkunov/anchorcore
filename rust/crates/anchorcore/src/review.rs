@@ -2,6 +2,7 @@
 
 use axum::{
     extract::{Query, State},
+    http::HeaderMap,
     Json,
 };
 use serde::Deserialize;
@@ -58,17 +59,39 @@ fn low_conf_row(r: &rusqlite::Row) -> rusqlite::Result<Value> {
     }))
 }
 
-pub async fn low_confidence_handler(State(state): State<AppState>) -> Json<Value> {
+pub async fn low_confidence_handler(State(state): State<AppState>, headers: HeaderMap) -> Json<Value> {
     let data_dir = state.data_dir.clone();
+    let gate = crate::read_gate::Gate::from_request(&headers, &state.settings);
     let threshold: f64 = std::env::var("ANCHOR_LOW_CONFIDENCE_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(0.6);
-    let result = tokio::task::spawn_blocking(move || {
+    let (result, blocked) = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at, (SELECT doc_type FROM ingested_items WHERE ingested_items.id = entities.item_id) FROM entities WHERE confidence < ?1 AND status = 'unverified' ORDER BY confidence ASC LIMIT 100").unwrap();
-        let rows = stmt.query_map([threshold], low_conf_row).unwrap();
-        let out: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
-        Value::Array(out)
+        let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at, (SELECT doc_type FROM ingested_items WHERE ingested_items.id = entities.item_id), (SELECT s.label FROM ingested_items i JOIN sources s ON s.id = i.source_id WHERE i.id = entities.item_id), (SELECT i.sensitive_override FROM ingested_items i WHERE i.id = entities.item_id) FROM entities WHERE confidence < ?1 AND status = 'unverified' ORDER BY confidence ASC LIMIT 100").unwrap();
+        let rows = stmt.query_map([threshold], |r| {
+            let label = r.get::<_, Option<String>>(15).ok().flatten().unwrap_or_else(|| "internal".to_string());
+            let marked = r.get::<_, Option<i64>>(16).ok().flatten().is_some_and(|v| v == 1);
+            Ok((low_conf_row(r)?, label, marked))
+        }).unwrap();
+        // R35.5: review rows carry window text — drop the Sensitive ones
+        // for a gated caller, like the entities list.
+        let open = gate.open();
+        let mut out = Vec::new();
+        let mut blocked = Vec::new();
+        for (row, label, marked) in rows.flatten() {
+            if open {
+                out.push(row);
+            } else {
+                match crate::common::cloud_gate_reason(&label, marked) {
+                    Some(reason) => blocked.push(reason),
+                    None => out.push(row),
+                }
+            }
+        }
+        (Value::Array(out), blocked)
     }).await.unwrap();
+    if !blocked.is_empty() {
+        crate::answer::record_gate_event(&state.data_dir, &blocked).await;
+    }
     Json(result)
 }
 

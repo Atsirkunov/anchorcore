@@ -45,7 +45,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   const mergedInit: RequestInit = {
     ...init,
-    headers: { ...(init?.headers as Record<string, string> | undefined), ...csrfHeaders },
+    // R35.5: the app identifies itself so the Sensitive gate exempts the
+    // person at the UI (agents send no such header and stay gated).
+    headers: { "X-Anchor-Client": "ui", ...(init?.headers as Record<string, string> | undefined), ...csrfHeaders },
     signal: controller.signal,
   };
   let res: Response;
@@ -77,6 +79,26 @@ async function errorMessage(res: Response): Promise<string> {
     // not JSON — fall through
   }
   return text.slice(0, 500);
+}
+
+/** R35.5: raw bytes with the UI client header (`<img>` can't set headers,
+ *  so thumbnails fetch through here and render a blob URL). */
+async function requestBlob(path: string): Promise<Blob> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(path, { headers: { "X-Anchor-Client": "ui" }, signal: controller.signal });
+  } catch (e) {
+    if (controller.signal.aborted) throw new RequestAbortedError();
+    throw e;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+  if (!res.ok) {
+    throw new Error(await errorMessage(res));
+  }
+  return res.blob();
 }
 
 /** R45.9: filters → query string, dropping empty values. */
@@ -368,6 +390,10 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
     }),
+  /** R35.5: one image's bytes (UI client header — Sensitive images stay
+   *  visible to the person at the UI). */
+  assetBlob: async (assetId: string): Promise<Blob> => requestBlob(`/media/${encodeURIComponent(assetId)}`),
+
   /** R46.11: one item with its `assets` (image refs; bytes via /media). */
   item: (itemId: number) => request<import("./types").ItemDetail>(`/items/${itemId}`),
   listItems: (params?: { path_prefix?: string; source_id?: number; limit?: number; offset?: number }) => {

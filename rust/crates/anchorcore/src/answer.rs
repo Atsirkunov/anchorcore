@@ -596,6 +596,7 @@ pub async fn ask(
     embedder: &Arc<Embedder>,
     req: AskRequest,
     data_dir: &str,
+    ui_caller: bool,
 ) -> AskResponse {
     // R45.2: agent mode runs no chat model — not even the follow-up
     // rewrite (the agent already sends standalone questions).
@@ -636,47 +637,112 @@ pub async fn ask(
         };
     }
 
-    let trusted = is_answer_trusted(settings);
-    let mut hits = hits;
-    if !trusted {
-        let hits_for_gate = hits.clone();
-        let data_dir_gate = data_dir_string.clone();
-        let (filtered, blocked) = tokio::task::spawn_blocking(move || {
-            let db_path = crate::db::resolve_db_path(&data_dir_gate);
-            let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
-            gate_answer_hits(&conn, &hits_for_gate)
-        }).await.unwrap_or((vec![], vec![]));
-        if !blocked.is_empty() {
-            record_gate_event(&data_dir_string, &blocked).await;
-            if filtered.is_empty() {
-                return AskResponse {
-                    answer: "Relevant knowledge was found but it is Sensitive and the answer provider is not approved for it. Enable a local provider, list it in ANCHOR_TRUSTED_PROVIDERS, or set ANCHOR_CLOUD_TRUST=1 to answer.".to_string(),
-                    citations: vec![],
-                    refusal: Some("gated_provider".to_string()),
-                    mode: "none".to_string(),
-                    retrieval: retrieval.to_string(),
-                    warning: degraded_warning("none", Some("gated_provider")),
-                };
-            }
-        }
-        hits = filtered;
-    }
+    // R35.5: generation input and response citations are gated
+    // separately. Sensitive bytes never reach an untrusted provider for
+    // generation (they would leave the machine), while the person at the
+    // UI sees every citation. Public scopes drop Sensitive from both,
+    // whatever the caller or provider.
+    let provider_trusted = is_answer_trusted(settings);
+    let gate_generation = !provider_trusted || public_only;
+    let gate_response = !(ui_caller || provider_trusted) || public_only;
+    let (gen_hits, resp_hits) = match gate_ask_hits(&data_dir_string, hits, gate_generation, gate_response, public_only, retrieval).await {
+        Ok(pair) => pair,
+        Err(refusal) => return refusal,
+    };
 
     if agent_mode {
-        return agent_compose_response(&hits, &data_dir_string, &question, retrieval);
+        return agent_compose_response(&resp_hits, &data_dir_string, &question, retrieval);
     }
 
     // Build context and generate (no DB borrow across await) — R10.6 UTF-8 safe (was byte slice).
     // R36.3: parent hits center the window on the match mark (a head cut
     // could drop the match); unmarked hits keep the byte-identical head.
     // R43.7: whole-section assembly under a token budget (rank order kept).
-    let context = build_answer_context(&hits);
+    let context = build_answer_context(&gen_hits);
     let (answer, composed) = generate_answer(settings, &question, &context, &history_for_gen).await;
     let want_content = req.include_content.unwrap_or(false);
-    let citations = build_citations(&hits, &data_dir_string, want_content, citations_limit(), &question);
+    let citations = build_citations(&resp_hits, &data_dir_string, want_content, citations_limit(), &question);
     let mode = if composed { "composed" } else { "context_only" };
     let warning = degraded_warning(mode, None);
     AskResponse { answer, citations, refusal: None, mode: mode.to_string(), retrieval: retrieval.to_string(), warning }
+}
+
+/// R35.5: the search response gate — drops Sensitive hits for gated
+/// callers and public scopes. Returns (hits, blocked, refusal).
+async fn gate_search_hits(data_dir: &str, hits: Vec<crate::retrieval::Hit>, gated: bool) -> (Vec<crate::retrieval::Hit>, usize, Option<String>) {
+    if !gated || hits.is_empty() {
+        return (hits, 0, None);
+    }
+    let hits_for_gate = hits.clone();
+    let data_dir_gate = data_dir.to_string();
+    let (filtered, blocked) = tokio::task::spawn_blocking(move || {
+        let db_path = crate::db::resolve_db_path(&data_dir_gate);
+        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        gate_answer_hits(&conn, &hits_for_gate)
+    })
+    .await
+    .unwrap_or((vec![], vec![]));
+    let count = blocked.len();
+    if blocked.is_empty() {
+        return (filtered, count, None);
+    }
+    record_gate_event(data_dir, &blocked).await;
+    let refusal = filtered.is_empty().then_some("gated_provider".to_string());
+    (filtered, count, refusal)
+}
+
+/// R35.5: split retrieval hits into generation input (provider-trust
+/// gate) and response citations (caller gate). `Err` is the
+/// nothing-survived response for the caller.
+async fn gate_ask_hits(
+    data_dir: &str,
+    hits: Vec<crate::retrieval::Hit>,
+    gate_generation: bool,
+    gate_response: bool,
+    public_only: bool,
+    retrieval: &str,
+) -> Result<(Vec<crate::retrieval::Hit>, Vec<crate::retrieval::Hit>), AskResponse> {
+    if !(gate_generation || gate_response) {
+        return Ok((hits.clone(), hits));
+    }
+    let hits_for_gate = hits.clone();
+    let data_dir_gate = data_dir.to_string();
+    let (filtered, blocked) = tokio::task::spawn_blocking(move || {
+        let db_path = crate::db::resolve_db_path(&data_dir_gate);
+        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        gate_answer_hits(&conn, &hits_for_gate)
+    })
+    .await
+    .unwrap_or((vec![], vec![]));
+    if !blocked.is_empty() {
+        record_gate_event(data_dir, &blocked).await;
+    }
+    let gen_hits = if gate_generation { filtered.clone() } else { hits.clone() };
+    if !gate_response {
+        return Ok((gen_hits, hits));
+    }
+    if filtered.is_empty() {
+        return Err(gated_refusal(public_only, retrieval));
+    }
+    Ok((gen_hits, filtered))
+}
+
+/// R35.5: the nothing-survived response. The machine contract stays
+/// `refusal: "gated_provider"`; the human text names the public scope when
+/// that is what excluded the hits (the provider may be fully approved).
+fn gated_refusal(public_only: bool, retrieval: &str) -> AskResponse {
+    let (answer, warning) = if public_only {
+        (
+            "Relevant knowledge was found but it is Sensitive, so the public scope excludes it.".to_string(),
+            Some("Relevant knowledge exists but it is Sensitive, so the public scope excludes it. Do not treat this as an answer.".to_string()),
+        )
+    } else {
+        (
+            "Relevant knowledge was found but it is Sensitive and the answer provider is not approved for it. Enable a local provider, list it in ANCHOR_TRUSTED_PROVIDERS, or set ANCHOR_CLOUD_TRUST=1 to answer.".to_string(),
+            degraded_warning("none", Some("gated_provider")),
+        )
+    };
+    AskResponse { answer, citations: vec![], refusal: Some("gated_provider".to_string()), mode: "none".to_string(), retrieval: retrieval.to_string(), warning }
 }
 
 /// R45.2: one-line instruction carried as `answer` in `agent_compose` mode.
@@ -895,6 +961,7 @@ pub async fn search(
     embedder: &Arc<Embedder>,
     req: SearchRequest,
     data_dir: &str,
+    ui_caller: bool,
 ) -> SearchResponse {
     // R33.5: exact mode skips the embedding call entirely (nothing to
     // rank) and reports its own leg — never hybrid/keyword_only.
@@ -942,30 +1009,11 @@ pub async fn search(
     })
     .await
     .unwrap_or_default();
-    // Same provider-trust gate as ask — an untrusted provider must not
-    // receive Sensitive-source content through the deterministic read path.
-    let mut hits = hits;
-    let mut blocked_count = 0usize;
-    let mut refusal: Option<String> = None;
-    if !is_answer_trusted(settings) && !hits.is_empty() {
-        let hits_for_gate = hits.clone();
-        let data_dir_gate = data_dir_string.clone();
-        let (filtered, blocked) = tokio::task::spawn_blocking(move || {
-            let db_path = crate::db::resolve_db_path(&data_dir_gate);
-            let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
-            gate_answer_hits(&conn, &hits_for_gate)
-        })
-        .await
-        .unwrap_or((vec![], vec![]));
-        blocked_count = blocked.len();
-        if !blocked.is_empty() {
-            record_gate_event(&data_dir_string, &blocked).await;
-            if filtered.is_empty() {
-                refusal = Some("gated_provider".to_string());
-            }
-        }
-        hits = filtered;
-    }
+    // R35.5: same response gate as ask — the UI sees everything, other
+    // callers need a trusted provider, and public scopes drop Sensitive
+    // whatever the caller or provider.
+    let response_open = ui_caller || is_answer_trusted(settings);
+    let (hits, blocked_count, refusal) = gate_search_hits(&data_dir_string, hits, public_only || !response_open).await;
     // Paginate after gating so a harness sees a stable walk of exactly what
     // it may read; blocked/refusal still describe the whole gated set.
     let total_allowed = hits.len();
@@ -1621,7 +1669,7 @@ mod tests {
         // Default settings: example remote base is untrusted (no ANCHOR_CLOUD_TRUST here).
         settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
         let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
-        let res = search(&settings, &embedder, req, &data_dir).await;
+        let res = search(&settings, &embedder, req, &data_dir, false).await;
         assert!(res.hits.is_empty(), "sensitive hit must be withheld, got {:?}", res.hits.len());
         assert_eq!(res.refusal.as_deref(), Some("gated_provider"));
         assert!(res.blocked >= 1);
@@ -1636,7 +1684,7 @@ mod tests {
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         assert!(is_answer_trusted(&settings));
         let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
-        let res = search(&settings, &embedder, req, &data_dir).await;
+        let res = search(&settings, &embedder, req, &data_dir, false).await;
         assert!(!res.hits.is_empty(), "trusted provider must see the sensitive hit");
         assert!(res.refusal.is_none());
         assert_eq!(res.blocked, 0);
@@ -1656,18 +1704,18 @@ mod tests {
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         let base = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
-        let compact = search(&settings, &embedder, base, &data_dir).await;
+        let compact = search(&settings, &embedder, base, &data_dir, false).await;
         assert!(!compact.hits.is_empty());
         assert!(compact.hits.iter().all(|h| h.content.is_empty()), "default must omit chunk bytes");
         assert!(compact.hits.iter().all(|h| !h.summary.is_empty() && !h.source_ref.is_empty()));
         assert!(compact.hits.iter().all(|h| !h.item_title.is_empty()), "item_title must carry provenance");
         assert!(compact.hits.iter().all(|h| h.path == "docs/f.md"), "flat docs fall back to the item path");
         let full_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("summary,source_ref,score,content".to_string()), cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
-        let full = search(&settings, &embedder, full_req, &data_dir).await;
+        let full = search(&settings, &embedder, full_req, &data_dir, false).await;
         assert!(full.hits.iter().all(|h| !h.content.is_empty()), "fields incl. content must return bytes");
         // agent-friendly alias: include_content=true is fields=content
         let alias_req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: Some(true), env: None, kind: None, path_prefix: None, symbol: None, mode: None };
-        let alias = search(&settings, &embedder, alias_req, &data_dir).await;
+        let alias = search(&settings, &embedder, alias_req, &data_dir, false).await;
         assert!(alias.hits.iter().all(|h| !h.content.is_empty()), "include_content=true must return bytes");
     }
 
@@ -1679,10 +1727,10 @@ mod tests {
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         // Both seeded chunks share these words, so one page of 1 must leave a next cursor.
         let mk = |cursor: Option<usize>| SearchRequest { query: "quarterly report numbers".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("all".to_string()), cursor, limit: Some(1), include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
-        let p1 = search(&settings, &embedder, mk(None), &data_dir).await;
+        let p1 = search(&settings, &embedder, mk(None), &data_dir, false).await;
         assert_eq!(p1.hits.len(), 1, "page size 1 must return exactly one hit");
         let next = p1.next_cursor.expect("first page must carry a cursor when hits remain");
-        let p2 = search(&settings, &embedder, mk(Some(next)), &data_dir).await;
+        let p2 = search(&settings, &embedder, mk(Some(next)), &data_dir, false).await;
         assert_eq!(p2.hits.len(), 1);
         assert!(p2.next_cursor.is_none(), "second page must exhaust the two seeded hits");
         let mut ids: Vec<Option<i64>> = vec![p1.hits[0].chunk_id, p2.hits[0].chunk_id];
@@ -1726,11 +1774,11 @@ mod tests {
             fields: None, cursor, limit, include_content: None, env: None, kind: None,
             path_prefix: None, symbol: None, mode: None,
         };
-        let res = search(&settings, &embedder, mk(None, None, Some(20)), &data_dir).await;
+        let res = search(&settings, &embedder, mk(None, None, Some(20)), &data_dir, false).await;
         assert_eq!(res.hits.len(), 12, "bare limit=20 must see all 12 matches, got {}", res.hits.len());
         assert!(res.next_cursor.is_none());
         // Cursor + limit widen together: page [10..15) of the same 12.
-        let page = search(&settings, &embedder, mk(None, Some(10), Some(5)), &data_dir).await;
+        let page = search(&settings, &embedder, mk(None, Some(10), Some(5)), &data_dir, false).await;
         assert_eq!(page.hits.len(), 2, "cursor=10 limit=5 over 12 hits must return 2, got {}", page.hits.len());
     }
 
@@ -1743,7 +1791,7 @@ mod tests {
         // model can compose — the response must say so (B58).
         settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
         let req = AskRequest { question: "sunshine".to_string(), history: None, project_id: None, public_only: None, include_content: None };
-        let res = ask(&settings, &embedder, req, &data_dir).await;
+        let res = ask(&settings, &embedder, req, &data_dir, false).await;
         assert!(!res.citations.is_empty(), "keyword hit on ordinary source must survive");
         assert_eq!(res.mode, "context_only");
         assert_eq!(res.retrieval, "keyword_only");
@@ -1768,7 +1816,7 @@ mod tests {
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("embed_base_url", "http://127.0.0.1:9", &conn).unwrap();
         let req = AskRequest { question: "xqzt blorpt wumpus".to_string(), history: None, project_id: None, public_only: None, include_content: None };
-        let res = ask(&settings, &embedder, req, &data_dir).await;
+        let res = ask(&settings, &embedder, req, &data_dir, false).await;
         assert_eq!(res.mode, "none");
         assert!(res.citations.is_empty(), "no-match ask must cite nothing");
         assert_eq!(res.retrieval, "keyword_only");
@@ -1776,7 +1824,7 @@ mod tests {
         let warning = res.warning.clone().unwrap_or_default();
         assert!(warning.contains("No relevant knowledge was found"), "warning: {warning}");
         let sreq = SearchRequest { query: "xqzt blorpt wumpus".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
-        let sres = search(&settings, &embedder, sreq, &data_dir).await;
+        let sres = search(&settings, &embedder, sreq, &data_dir, false).await;
         assert!(sres.hits.is_empty(), "no-match search must return no hits");
     }
 
@@ -1802,7 +1850,7 @@ mod tests {
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
         let req = AskRequest { question: "moonvault".to_string(), history: None, project_id: None, public_only: None, include_content: None };
-        let res = ask(&settings, &embedder, req, &data_dir).await;
+        let res = ask(&settings, &embedder, req, &data_dir, false).await;
         assert_eq!(res.mode, "none");
         assert_eq!(res.refusal.as_deref(), Some("gated_provider"));
         assert!(res.citations.is_empty());
@@ -1832,7 +1880,7 @@ mod tests {
         });
         settings.set("answer_base_url", &format!("http://127.0.0.1:{}", port), &conn).unwrap();
         let req = AskRequest { question: "sunshine".to_string(), history: None, project_id: None, public_only: None, include_content: None };
-        let res = ask(&settings, &embedder, req, &data_dir).await;
+        let res = ask(&settings, &embedder, req, &data_dir, false).await;
         assert_eq!(res.mode, "composed");
         assert!(res.warning.is_none(), "composed must not warn, got {:?}", res.warning);
         assert_eq!(res.answer, "mocked answer");
@@ -1950,13 +1998,13 @@ mod tests {
         // mock's canned text and miss retrieval.
         let mut plain = followup_req("sunshine", None);
         plain.history = None;
-        let local = ask(&settings, &embedder, plain, &data_dir).await;
+        let local = ask(&settings, &embedder, plain, &data_dir, false).await;
         assert_eq!(local.mode, "composed");
         let local_calls = mock.calls();
         assert!(local_calls >= 1, "local mode must reach the mock, got {local_calls}");
 
         settings.set("llm_mode", "agent", &conn).unwrap();
-        let res = ask(&settings, &embedder, followup_req("sunshine numbers for it", None), &data_dir).await;
+        let res = ask(&settings, &embedder, followup_req("sunshine numbers for it", None), &data_dir, false).await;
         assert_eq!(mock.calls(), local_calls, "agent mode must make zero chat calls");
         assert_eq!(res.mode, "agent_compose");
         assert!(res.warning.is_none(), "agent_compose must not warn: {:?}", res.warning);
@@ -1984,7 +2032,7 @@ mod tests {
         conn.execute("INSERT INTO chunks (item_id, source_ref, content) VALUES (?1,'p.md','sunshine public digest')", [item]).unwrap();
         settings.set("llm_mode", "agent", &conn).unwrap();
         let req = AskRequest { question: "sunshine".to_string(), history: None, project_id: None, public_only: Some(true), include_content: None };
-        let res = ask(&settings, &embedder, req, &data_dir).await;
+        let res = ask(&settings, &embedder, req, &data_dir, false).await;
         assert_eq!(res.mode, "agent_compose");
         assert!(!res.citations.is_empty());
         assert!(res.citations.iter().all(|c| c.content.contains("public")), "only public sources may be cited");
@@ -2000,11 +2048,49 @@ mod tests {
         settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
         settings.set("llm_mode", "agent", &conn).unwrap();
         let req = AskRequest { question: "moonvault".to_string(), history: None, project_id: None, public_only: None, include_content: None };
-        let res = ask(&settings, &embedder, req, &data_dir).await;
+        let res = ask(&settings, &embedder, req, &data_dir, false).await;
         assert_eq!(res.mode, "none");
         assert_eq!(res.refusal.as_deref(), Some("gated_provider"));
         assert!(res.citations.is_empty());
         assert!(res.warning.unwrap_or_default().contains("not approved"));
+    }
+
+    #[tokio::test]
+    async fn ask_ui_caller_sees_citations_but_generation_stays_gated() {
+        // R35.5: untrusted provider, UI caller — the response cites the
+        // Sensitive hit, but the generation input excludes it (no model key
+        // here, so the fallback echoes the allowed context only).
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
+        let req = AskRequest { question: "quarterly report numbers".to_string(), history: None, project_id: None, public_only: None, include_content: None };
+        let res = ask(&settings, &embedder, req, &data_dir, true).await;
+        assert!(res.refusal.is_none(), "the UI is never refused: {:?}", res.refusal);
+        assert!(res.citations.iter().any(|c| c.summary.contains("moonvault") || c.snippet.contains("moonvault")), "UI cites the Sensitive hit");
+        assert!(res.answer.contains("sunshine"), "allowed context still generates: {}", res.answer);
+        assert!(!res.answer.contains("moonvault"), "generation input stays gated: {}", res.answer);
+    }
+
+    #[tokio::test]
+    async fn ask_public_scope_refusal_names_the_scope() {
+        // R35.5: trusted provider, but the only public hit is marked — the
+        // public scope drops it and the text says so (not "not approved").
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        conn.execute("INSERT INTO sources (connector, name, label) VALUES ('folder','pub','public')", []).unwrap();
+        let pubsid: i64 = conn.query_row("SELECT id FROM sources WHERE name='pub'", [], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO ingested_items (source_id, content_hash, title, external_id, text, sensitive_override) VALUES (?1,'h2','p','docs/p.md','moonvault public digest',1)", [pubsid]).unwrap();
+        let item: i64 = conn.query_row("SELECT id FROM ingested_items WHERE source_id=?1", [pubsid], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO chunks (item_id, source_ref, content) VALUES (?1,'p.md','moonvault public digest')", [item]).unwrap();
+        let req = AskRequest { question: "moonvault".to_string(), history: None, project_id: None, public_only: Some(true), include_content: None };
+        let res = ask(&settings, &embedder, req, &data_dir, false).await;
+        assert_eq!(res.refusal.as_deref(), Some("gated_provider"));
+        assert!(res.citations.is_empty());
+        assert!(res.answer.contains("public scope"), "{}", res.answer);
+        assert!(res.warning.unwrap_or_default().contains("public scope"));
     }
 
     #[tokio::test]
@@ -2019,9 +2105,9 @@ mod tests {
             kind: None, path_prefix: None, symbol: None, mode: None,
         };
         let ids = |r: &SearchResponse| r.hits.iter().map(|h| (h.chunk_id, h.content.clone())).collect::<Vec<_>>();
-        let local = search(&settings, &embedder, mk(), &data_dir).await;
+        let local = search(&settings, &embedder, mk(), &data_dir, false).await;
         settings.set("llm_mode", "agent", &conn).unwrap();
-        let agent = search(&settings, &embedder, mk(), &data_dir).await;
+        let agent = search(&settings, &embedder, mk(), &data_dir, false).await;
         assert!(!local.hits.is_empty());
         assert_eq!(ids(&local), ids(&agent));
         assert_eq!(local.blocked, agent.blocked);
@@ -2044,7 +2130,7 @@ mod tests {
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         let req = SearchRequest { query: "sunshine".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
-        let res = search(&settings, &embedder, req, &data_dir).await;
+        let res = search(&settings, &embedder, req, &data_dir, false).await;
         assert!(!res.hits.is_empty(), "keyword search must find the seeded chunk");
         assert_eq!(res.retrieval, "keyword_only");
     }
@@ -2070,7 +2156,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
-        let res = search(&settings, &embedder, exact_req("moonvault"), &data_dir).await;
+        let res = search(&settings, &embedder, exact_req("moonvault"), &data_dir, false).await;
         assert_eq!(res.hits.len(), 1, "only the sensitive chunk holds the needle");
         assert_eq!(res.retrieval, "exact");
         let h = &res.hits[0];
@@ -2081,7 +2167,7 @@ mod tests {
         assert!(h.item_id.is_some() && h.chunk_id.is_some(), "exact hits drill down like ranked ones");
         assert!(res.refusal.is_none() && res.blocked == 0);
         // Case-sensitive at the API boundary too.
-        let miss = search(&settings, &embedder, exact_req("Moonvault"), &data_dir).await;
+        let miss = search(&settings, &embedder, exact_req("Moonvault"), &data_dir, false).await;
         assert!(miss.hits.is_empty(), "Moonvault (capital M) is absent verbatim");
         assert_eq!(miss.retrieval, "exact");
     }
@@ -2093,13 +2179,13 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
-        let res = search(&settings, &embedder, exact_req("moonvault"), &data_dir).await;
+        let res = search(&settings, &embedder, exact_req("moonvault"), &data_dir, false).await;
         assert!(res.hits.is_empty(), "sensitive hit must be withheld, got {:?}", res.hits.len());
         assert_eq!(res.refusal.as_deref(), Some("gated_provider"));
         assert!(res.blocked >= 1);
         assert_eq!(res.retrieval, "exact");
         // The ordinary-source needle still reads through the same gate.
-        let ok = search(&settings, &embedder, exact_req("sunshine"), &data_dir).await;
+        let ok = search(&settings, &embedder, exact_req("sunshine"), &data_dir, false).await;
         assert_eq!(ok.hits.len(), 1);
         assert!(ok.refusal.is_none());
     }
@@ -2118,14 +2204,14 @@ mod tests {
         // Both seeded chunks hold "quarterly"; the project holds one source.
         let mut scoped = exact_req("quarterly");
         scoped.project_id = Some(pid);
-        let res = search(&settings, &embedder, scoped, &data_dir).await;
+        let res = search(&settings, &embedder, scoped, &data_dir, false).await;
         assert_eq!(res.hits.len(), 1);
         assert!(res.hits[0].content.contains("sunshine"));
         // No public sources seeded: public_only empties without a refusal
         // (empty scope, not a gate — same as ranked).
         let mut pub_only = exact_req("quarterly");
         pub_only.public_only = Some(true);
-        let pub_res = search(&settings, &embedder, pub_only, &data_dir).await;
+        let pub_res = search(&settings, &embedder, pub_only, &data_dir, false).await;
         assert!(pub_res.hits.is_empty());
         assert!(pub_res.refusal.is_none());
     }
@@ -2138,7 +2224,7 @@ mod tests {
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         let mut req = exact_req("sunshine");
         req.mode = Some("fuzzy".to_string());
-        let res = search(&settings, &embedder, req, &data_dir).await;
+        let res = search(&settings, &embedder, req, &data_dir, false).await;
         assert_eq!(res.retrieval, "keyword_only", "unknown mode falls back to the ranked leg");
         assert!(!res.hits.is_empty());
     }
@@ -2152,19 +2238,19 @@ mod tests {
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         let mut capped = exact_req("quarterly");
         capped.k = Some(1);
-        let cap = search(&settings, &embedder, capped, &data_dir).await;
+        let cap = search(&settings, &embedder, capped, &data_dir, false).await;
         assert_eq!(cap.hits.len(), 1, "k caps the exact leg like the ranked one");
         assert!(cap.next_cursor.is_none(), "a capped fetch has no second page");
         // Fetch-wide, then walk one per page.
         let mut p1req = exact_req("quarterly");
         p1req.limit = Some(1);
-        let p1 = search(&settings, &embedder, p1req, &data_dir).await;
+        let p1 = search(&settings, &embedder, p1req, &data_dir, false).await;
         assert_eq!(p1.hits.len(), 1);
         let next = p1.next_cursor.expect("one more exact hit remains");
         let mut page2 = exact_req("quarterly");
         page2.cursor = Some(next);
         page2.limit = Some(1);
-        let p2 = search(&settings, &embedder, page2, &data_dir).await;
+        let p2 = search(&settings, &embedder, page2, &data_dir, false).await;
         assert_eq!(p2.hits.len(), 1);
         assert!(p2.next_cursor.is_none(), "second page exhausts the two exact hits");
         assert_ne!(p1.hits[0].chunk_id, p2.hits[0].chunk_id);
@@ -2344,11 +2430,11 @@ mod tests {
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "https://untrusted.example.invalid/v1", &conn).unwrap();
         let req = AskRequest { question: "sunshine".to_string(), history: None, project_id: None, public_only: None, include_content: Some(true) };
-        let res = ask(&settings, &embedder, req, &data_dir).await;
+        let res = ask(&settings, &embedder, req, &data_dir, false).await;
         assert!(!res.citations.is_empty());
         assert!(res.citations.iter().all(|c| !c.content.is_empty()), "opt-in ask must carry chunk bytes");
         let req2 = AskRequest { question: "sunshine".to_string(), history: None, project_id: None, public_only: None, include_content: None };
-        let res2 = ask(&settings, &embedder, req2, &data_dir).await;
+        let res2 = ask(&settings, &embedder, req2, &data_dir, false).await;
         assert!(res2.citations.iter().all(|c| c.content.is_empty()), "default ask stays compact");
     }
 
@@ -2431,7 +2517,7 @@ mod tests {
             symbol: None,
             mode: None,
         };
-        let plain = search(&settings, &embedder, mk(None), &data_dir).await;
+        let plain = search(&settings, &embedder, mk(None), &data_dir, false).await;
         assert_eq!(plain.hits.len(), 2, "both classes match the shared terms; the entity row stays out");
         assert!(plain.hits.iter().all(|h| h.item_id.is_some()), "every hit drills into its item");
         assert!(plain.hits.iter().all(|h| h.entity_id.is_none()), "no entity rows in retrieval");
@@ -2440,12 +2526,12 @@ mod tests {
         assert_eq!(plain.hits[1].env, "test");
         assert_eq!(plain.hits[1].item_id, Some(test_iid));
 
-        let live_only = search(&settings, &embedder, mk(Some("live")), &data_dir).await;
+        let live_only = search(&settings, &embedder, mk(Some("live")), &data_dir, false).await;
         assert_eq!(live_only.hits.len(), 1);
         assert_eq!(live_only.hits[0].item_id, Some(live_iid));
         assert_eq!(live_only.hits[0].env, "live");
 
-        let test_only = search(&settings, &embedder, mk(Some("TEST")), &data_dir).await;
+        let test_only = search(&settings, &embedder, mk(Some("TEST")), &data_dir, false).await;
         assert_eq!(test_only.hits.len(), 1);
         assert_eq!(test_only.hits[0].item_id, Some(test_iid));
         assert_eq!(test_only.hits[0].env, "test");
@@ -2595,18 +2681,18 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
-        let plain = search(&settings, &embedder, filter_req("acme ledger", None, None, None), &data_dir).await;
+        let plain = search(&settings, &embedder, filter_req("acme ledger", None, None, None), &data_dir, false).await;
         assert_eq!(plain.hits.len(), 5, "five document chunks match; the seeded entity chunk stays out");
-        let docs = search(&settings, &embedder, filter_req("acme ledger", Some("document"), None, None), &data_dir).await;
+        let docs = search(&settings, &embedder, filter_req("acme ledger", Some("document"), None, None), &data_dir, false).await;
         assert_eq!(docs.hits.len(), 5);
         assert!(docs.hits.iter().all(|h| h.entity_id.is_none()));
-        let ents = search(&settings, &embedder, filter_req("acme ledger", Some("ENTITY"), None, None), &data_dir).await;
+        let ents = search(&settings, &embedder, filter_req("acme ledger", Some("ENTITY"), None, None), &data_dir, false).await;
         assert!(ents.hits.is_empty(), "R33.3: entities never enter retrieval, so kind=entity matches nothing");
-        let both = search(&settings, &embedder, filter_req("acme ledger", Some("document,entity"), None, None), &data_dir).await;
+        let both = search(&settings, &embedder, filter_req("acme ledger", Some("document,entity"), None, None), &data_dir, false).await;
         assert_eq!(both.hits.len(), 5, "comma list unions over the document pool");
-        let bogus = search(&settings, &embedder, filter_req("acme ledger", Some("banana"), None, None), &data_dir).await;
+        let bogus = search(&settings, &embedder, filter_req("acme ledger", Some("banana"), None, None), &data_dir, false).await;
         assert_eq!(bogus.hits.len(), 5, "unknown kind means unfiltered, like env");
-        let summaries = search(&settings, &embedder, filter_req("acme ledger", Some("section_summary"), None, None), &data_dir).await;
+        let summaries = search(&settings, &embedder, filter_req("acme ledger", Some("section_summary"), None, None), &data_dir, false).await;
         assert!(summaries.hits.is_empty(), "known-but-absent kind matches nothing");
     }
 
@@ -2618,14 +2704,14 @@ mod tests {
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         // Relative: the cfg item's doc chunk only (its entity chunk stays
         // out of retrieval since R33.3).
-        let rel = search(&settings, &embedder, filter_req("acme ledger", None, Some("cfg/"), None), &data_dir).await;
+        let rel = search(&settings, &embedder, filter_req("acme ledger", None, Some("cfg/"), None), &data_dir, false).await;
         assert_eq!(rel.hits.len(), 1);
         assert!(rel.hits.iter().all(|h| h.item_title == "cfg/a.yml"));
         // Absolute through the folder root spells the same cut.
-        let abs = search(&settings, &embedder, filter_req("acme ledger", None, Some(&format!("{root}/cfg")), None), &data_dir).await;
+        let abs = search(&settings, &embedder, filter_req("acme ledger", None, Some(&format!("{root}/cfg")), None), &data_dir, false).await;
         assert_eq!(abs.hits.len(), 1);
         assert!(abs.hits.iter().all(|h| h.item_title == "cfg/a.yml"));
-        let none = search(&settings, &embedder, filter_req("acme ledger", None, Some("/no/such/root"), None), &data_dir).await;
+        let none = search(&settings, &embedder, filter_req("acme ledger", None, Some("/no/such/root"), None), &data_dir, false).await;
         assert!(none.hits.is_empty());
     }
 
@@ -2635,13 +2721,13 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
-        let sym = search(&settings, &embedder, filter_req("acme ledger", None, None, Some("fetch_user")), &data_dir).await;
+        let sym = search(&settings, &embedder, filter_req("acme ledger", None, None, Some("fetch_user")), &data_dir, false).await;
         assert_eq!(sym.hits.len(), 1);
         assert_eq!(sym.hits[0].item_title, "src/code.py");
         assert!(sym.hits[0].path.contains("fetch_user"), "hit path carries the section: {}", sym.hits[0].path);
-        let upper = search(&settings, &embedder, filter_req("acme ledger", None, None, Some("FETCH_USER")), &data_dir).await;
+        let upper = search(&settings, &embedder, filter_req("acme ledger", None, None, Some("FETCH_USER")), &data_dir, false).await;
         assert_eq!(upper.hits.len(), 1, "symbol match is case-insensitive");
-        let miss = search(&settings, &embedder, filter_req("acme ledger", None, None, Some("no_such_symbol")), &data_dir).await;
+        let miss = search(&settings, &embedder, filter_req("acme ledger", None, None, Some("no_such_symbol")), &data_dir, false).await;
         assert!(miss.hits.is_empty(), "section-less chunks drop out of a symbol cut");
     }
 
@@ -2652,14 +2738,14 @@ mod tests {
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         // doc ∩ symbol: only the symbol-section chunk survives.
-        let both = search(&settings, &embedder, filter_req("acme ledger", Some("document"), None, Some("fetch_user")), &data_dir).await;
+        let both = search(&settings, &embedder, filter_req("acme ledger", Some("document"), None, Some("fetch_user")), &data_dir, false).await;
         assert_eq!(both.hits.len(), 1);
         assert!(both.hits[0].entity_id.is_none());
         // entity ∩ symbol: entities never enter retrieval — empty intersection.
-        let empty = search(&settings, &embedder, filter_req("acme ledger", Some("entity"), None, Some("fetch_user")), &data_dir).await;
+        let empty = search(&settings, &embedder, filter_req("acme ledger", Some("entity"), None, Some("fetch_user")), &data_dir, false).await;
         assert!(empty.hits.is_empty());
         // kind ∩ path: kind=entity matches nothing anywhere since R33.3.
-        let cfg_ent = search(&settings, &embedder, filter_req("acme ledger", Some("entity"), Some("cfg/"), None), &data_dir).await;
+        let cfg_ent = search(&settings, &embedder, filter_req("acme ledger", Some("entity"), Some("cfg/"), None), &data_dir, false).await;
         assert!(cfg_ent.hits.is_empty());
         // Absolute prefix ∩ symbol: the symbol chunk lives under src/.
         let abs_sym = search(
@@ -2667,11 +2753,12 @@ mod tests {
             &embedder,
             filter_req("acme ledger", None, Some(&format!("{root}/src")), Some("fetch_user")),
             &data_dir,
+            false,
         )
         .await;
         assert_eq!(abs_sym.hits.len(), 1);
         // Scores survive filtering untouched (score-neutral cuts).
-        let plain = search(&settings, &embedder, filter_req("acme ledger", None, None, None), &data_dir).await;
+        let plain = search(&settings, &embedder, filter_req("acme ledger", None, None, None), &data_dir, false).await;
         let plain_score = plain.hits.iter().find(|h| h.summary.contains("delta symbol")).map(|h| h.score);
         assert_eq!(both.hits[0].score, plain_score.unwrap_or(-1.0), "a cut must not rescore");
     }
@@ -2701,18 +2788,18 @@ mod tests {
             mode: None,
         };
         // Four-way: only the live doc chunk under src/ in the symbol section.
-        let four = search(&settings, &embedder, req(Some("live"), Some("document"), Some("src/"), Some("fetch_user")), &data_dir).await;
+        let four = search(&settings, &embedder, req(Some("live"), Some("document"), Some("src/"), Some("fetch_user")), &data_dir, false).await;
         assert_eq!(four.hits.len(), 1);
         assert_eq!(four.hits[0].item_title, "src/code.py");
         assert!(four.hits[0].content.contains("[match "), "surviving hit is parent-shaped");
         // Same combo with an absolute prefix spells the same cut.
-        let abs = search(&settings, &embedder, req(Some("live"), Some("document"), Some(&format!("{root}/src")), Some("fetch_user")), &data_dir).await;
+        let abs = search(&settings, &embedder, req(Some("live"), Some("document"), Some(&format!("{root}/src")), Some("fetch_user")), &data_dir, false).await;
         assert_eq!(abs.hits.len(), 1);
         // env=test empties the all-live seed under any combination.
-        let tst = search(&settings, &embedder, req(Some("test"), Some("document"), None, None), &data_dir).await;
+        let tst = search(&settings, &embedder, req(Some("test"), Some("document"), None, None), &data_dir, false).await;
         assert!(tst.hits.is_empty());
         // kind ∩ env: kind=entity matches nothing since R33.3.
-        let ent = search(&settings, &embedder, req(Some("live"), Some("entity"), None, None), &data_dir).await;
+        let ent = search(&settings, &embedder, req(Some("live"), Some("entity"), None, None), &data_dir, false).await;
         assert!(ent.hits.is_empty());
     }
 
@@ -2762,7 +2849,7 @@ mod tests {
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
         let req = SearchRequest { query: "tungsten invoice".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("all".to_string()), cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
-        let res = search(&settings, &embedder, req, &data_dir).await;
+        let res = search(&settings, &embedder, req, &data_dir, false).await;
         assert_eq!(res.hits.len(), 2, "two Billing matches merge into one parent");
         let bill = res.hits.iter().find(|h| h.breadcrumb == "Billing").expect("billing parent");
         assert!(bill.chunk_id.is_some() && bill.item_id.is_some() && bill.section_id.is_some(), "ids carried");

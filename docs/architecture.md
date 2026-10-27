@@ -165,8 +165,10 @@ Migrations are in `rust/crates/anchorcore/migrations/` (registered in `db.rs`).
   binds `0.0.0.0` behind a Host/Origin allowlist and `ANCHOR_AUTH_SECRET` logins.
 - Secrets live in the OS keychain (per-key encrypted-file fallback), never in the DB, configs or logs;
   API responses mask them as `***set***`.
-- **Labels:** `sensitive` sources never go to an untrusted cloud provider (embed or answer); the
-  refusal is recorded in `system_events`. `/qa/public` and MCP `public_only` see `public` sources only.
+- **Labels (R35.5):** Sensitive content (source label or per-document override) never goes to an
+  untrusted cloud provider (embed or answer) or to any caller but the app UI (which sends
+  `X-Anchor-Client: ui`); refusals are recorded in `system_events`. `/qa/public` and `public_only`
+  see `public` sources minus Sensitive items, whatever the caller or provider.
 - **PII** is a manual whole-document mark (R35.1); there is no auto-detection.
 - `GET /media/:uid` serves image bytes from the DB only, label-gated and CSP-sandboxed.
 

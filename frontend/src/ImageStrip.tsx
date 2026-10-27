@@ -27,25 +27,49 @@ function LockGlyph() {
   );
 }
 
-/** One thumbnail. Bytes come from `GET /media/:uid` (DB only); a null url
- *  (not stored — over the size cap) or a failed load (403 gated_provider,
- *  missing) renders a labelled lock tile, never a broken image. */
+/** One thumbnail. Bytes come from `GET /media/:uid` (DB only), fetched
+ *  through `api.assetBlob` because `<img>` can't send the UI client header
+ *  (R35.5) — the blob URL feeds both the thumbnail and the open-in-tab
+ *  link. A null url (not stored — over the size cap) or a failed load
+ *  (missing) renders a labelled lock tile, never a broken image. */
 export function Thumb({ a }: { a: AssetRef }) {
+  const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const width = thumbWidth(a);
+  useEffect(() => {
+    if (!a.url) return;
+    let live = true;
+    let objectUrl: string | null = null;
+    api
+      .assetBlob(a.asset_id)
+      .then((blob) => {
+        if (!live) return;
+        objectUrl = URL.createObjectURL(blob);
+        setSrc(objectUrl);
+      })
+      .catch(() => live && setFailed(true));
+    return () => {
+      live = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [a.asset_id, a.url]);
   const blocked = !a.url || failed;
   const reason = !a.url ? "Not stored (over the size cap)" : "Withheld or unavailable";
   return (
     <figure style={{ ...styles.figure, width }}>
-      {blocked ? (
-        <div style={{ ...styles.tile, ...styles.locked, width, height: THUMB_H }} title={`${label(a)} — ${reason}`} role="img" aria-label={`${label(a)} (${reason})`}>
-          <LockGlyph />
-          <span style={styles.lockText}>{!a.url ? "not stored" : "withheld"}</span>
-        </div>
+      {blocked || !src ? (
+        blocked ? (
+          <div style={{ ...styles.tile, ...styles.locked, width, height: THUMB_H }} title={`${label(a)} — ${reason}`} role="img" aria-label={`${label(a)} (${reason})`}>
+            <LockGlyph />
+            <span style={styles.lockText}>{!a.url ? "not stored" : "withheld"}</span>
+          </div>
+        ) : (
+          <div style={{ ...styles.tile, width, height: THUMB_H }} role="img" aria-label={`${label(a)} (loading)`} />
+        )
       ) : (
-        <a href={a.url ?? undefined} target="_blank" rel="noopener noreferrer" title={`Open ${label(a)}`}>
+        <a href={src} target="_blank" rel="noopener noreferrer" title={`Open ${label(a)}`}>
           <img
-            src={a.url ?? undefined}
+            src={src}
             alt={a.alt || a.caption || "image"}
             loading="lazy"
             width={width}

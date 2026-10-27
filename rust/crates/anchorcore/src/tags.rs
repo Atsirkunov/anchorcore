@@ -271,7 +271,7 @@ fn insert_tag(conn: &Connection, norm: &str, vec: &[f32]) -> Result<i64, String>
 
 // --- API handlers ---
 
-use axum::{extract::State, Json};
+use axum::{extract::State, http::HeaderMap, Json};
 use serde_json::{json, Value};
 
 use crate::health::AppState;
@@ -304,36 +304,67 @@ pub async fn list_handler(State(state): State<AppState>) -> Json<Value> {
     result
 }
 
-pub async fn chunks_handler(State(state): State<AppState>, axum::extract::Path(tag_id): axum::extract::Path<i64>) -> Json<Value> {
+/// One tag-chunk row plus its gate inputs (source label + override).
+fn tag_chunk_row(r: &rusqlite::Row) -> rusqlite::Result<(Value, String, bool)> {
+    Ok((
+        json!({
+            "id": r.get::<_, i64>(0)?,
+            "item_id": r.get::<_, Option<i64>>(1)?,
+            "section_id": r.get::<_, Option<i64>>(2)?,
+            "kind": r.get::<_, String>(3)?,
+            "source_ref": r.get::<_, String>(4)?,
+            "content": r.get::<_, String>(5)?,
+            "path": r.get::<_, String>(6)?,
+            "created_at": r.get::<_, Option<String>>(7)?,
+        }),
+        r.get::<_, String>(8)?,
+        r.get::<_, i64>(9)? == 1,
+    ))
+}
+
+pub async fn chunks_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(tag_id): axum::extract::Path<i64>,
+    headers: HeaderMap,
+) -> Json<Value> {
     let data_dir = state.data_dir.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let gate = crate::read_gate::Gate::from_request(&headers, &state.settings);
+    let (result, blocked) = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
         let mut stmt = match conn.prepare(
-            "SELECT c.id, c.item_id, c.section_id, c.kind, c.source_ref, c.content, c.path, c.created_at FROM chunks c JOIN chunk_tags ct ON ct.chunk_id=c.id WHERE ct.tag_id=?1 ORDER BY c.id",
+            "SELECT c.id, c.item_id, c.section_id, c.kind, c.source_ref, c.content, c.path, c.created_at, \
+             COALESCE(s.label, 'internal'), COALESCE(i.sensitive_override, 0) \
+             FROM chunks c JOIN chunk_tags ct ON ct.chunk_id=c.id \
+             LEFT JOIN ingested_items i ON i.id = c.item_id LEFT JOIN sources s ON s.id = i.source_id \
+             WHERE ct.tag_id=?1 ORDER BY c.id",
         ) {
             Ok(s) => s,
-            Err(e) => return Json(json!({"error": e.to_string()})),
+            Err(e) => return (Json(json!({"error": e.to_string()})), Vec::new()),
         };
-        let rows = stmt
-            .query_map([tag_id], |r| {
-                Ok(json!({
-                    "id": r.get::<_, i64>(0)?,
-                    "item_id": r.get::<_, Option<i64>>(1)?,
-                    "section_id": r.get::<_, Option<i64>>(2)?,
-                    "kind": r.get::<_, String>(3)?,
-                    "source_ref": r.get::<_, String>(4)?,
-                    "content": r.get::<_, String>(5)?,
-                    "path": r.get::<_, String>(6)?,
-                    "created_at": r.get::<_, Option<String>>(7)?,
-                }))
-            })
-            .unwrap();
-        let out: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
-        Json(Value::Array(out))
+        let mut out = Vec::new();
+        let mut blocked = Vec::new();
+        let rows = stmt.query_map([tag_id], tag_chunk_row).unwrap();
+        // R35.5: one tag spans many items, so a gated caller loses the
+        // Sensitive rows (not the whole list) — one audit event per request.
+        let open = gate.open();
+        for (row, label, marked) in rows.flatten() {
+            if open {
+                out.push(row);
+            } else {
+                match crate::common::cloud_gate_reason(&label, marked) {
+                    Some(reason) => blocked.push(reason),
+                    None => out.push(row),
+                }
+            }
+        }
+        (Json(Value::Array(out)), blocked)
     })
     .await
     .unwrap();
+    if !blocked.is_empty() {
+        crate::answer::record_gate_event(&state.data_dir, &blocked).await;
+    }
     result
 }
 
