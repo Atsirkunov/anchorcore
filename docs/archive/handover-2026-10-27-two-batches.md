@@ -35,14 +35,17 @@ row carries its evidence); decision entries for every choice are in `rust/docs/d
 
 ## Waiting on the owner
 
-1. **R36.19 — how to gate the whole-file read (P1, security).** An agent can omit `lines` and read a sensitive/pii or
-   PII-marked file in full; the UI item detail + image strip use the same endpoint. Options: gate only agent-facing
-   reads (MCP `get_item`, skill path) vs. gate the endpoint and exempt the UI. Implementation is one `read_gate` call
-   in `items::read_item` + tests. Do this before tagging 1.6.0.
-2. **R35.2 — PII-marked docs in public scopes.** Today a marked doc in a `public` source is withheld only under an
-   untrusted provider; with a trusted one it still appears in `/qa/public` / MCP `public_only` (a `sensitive` source
-   never does). If marked docs should never appear in public scopes: small filter in `answer::project_scope` +
-   `records_api::resolve_scope` (change both together).
+1. **Sensitive content — decided 2026-10-27, not implemented (R35.4 → R35.5 → R35.6).** Owner: bundle PII into
+   one **Sensitive** label (the source-form choice — the only marking UI that exists; the `pii` label and per-document
+   PII toggle were removed from the UI on 2026-10-13), **gated by default on every surface, opt in to avoid** via
+   per-destination Settings switches (cloud embedder / cloud answer provider / AI agents). R36.19 is closed into
+   R35.5; R35.3 into R35.4. Decision entry at the end of `rust/docs/decisions.md`. Still open before R35.4 starts:
+   **drop the per-document mark (default) or keep it as a per-document Sensitive mark.** Note: R35.2 (shipped in this
+   batch) enforces that per-document mark — R35.4 either removes that branch or renames it. The read surfaces that
+   are ungated today: `GET /items/:id` (whole file), `/sections/:id/chunks`, `/tags/:id/chunks`, `/entities/:id`
+   (`window_text`), `/entities/:id/context`.
+2. **Copy that still says "PII":** the R45.6 wizard hint (`AnswerModelStep.tsx`) and `AGENTS.md` (owner-decision PII
+   line, label-gate line) describe the pre-bundle state — fixed by R35.4, leave until then.
 3. **R30.10 — retire `tag_reuse_threshold`?** Ingest proposes single words only, so the setting now affects
    multi-word names only. Kept for now.
 4. **R45.6 — answer-model RAM tiers** (`machine.rs`): llama3.2:1b any, llama3.2:3b ≥ 8 GB, qwen2.5:7b ≥ 16 GB,
@@ -56,7 +59,9 @@ row carries its evidence); decision entries for every choice are in `rust/docs/d
 - **R45.19 browser acceptance** on a clean `--data-dir`: local mode → RAM-sized model → sample → cited answer; agent
   mode → MCP and → skill; Ollama down → built-in embedder; two live jobs → two labeled Stops with the kept-count line;
   light + dark.
-- R36.19 closed (item 1 above).
+- Decide whether 1.6.0 waits for R35.4–R35.6 (item 1). Shipping first is safe — nothing gets less gated than in
+  1.5.0 — but the release notes should not advertise per-document PII enforcement (R35.2) since it is going away or
+  being renamed.
 - Release notes: call out migration 28 + the boot-time config re-chunk, the 12 MCP tools, PII-mark enforcement, and
   the stricter answer-model readiness (exact size tags).
 

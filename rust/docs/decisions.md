@@ -600,3 +600,15 @@ ADR log. Append newest first.
   - *Strip a leading `./` instead of rejecting* — rejected. The row asks for errors that teach the expected form, and silent rewriting hides the mistake from the agent's next call.
   - *Separate `get_node` MCP tool* — rejected per the owner call (nodes fold into the outline).
 * **Consequences:** score-neutral — no retrieval code changed, so the golden eval is unchanged. Prose line spans count the cleaned text and can drift from stored-text windows by a few lines. Config, code and markdown spans index the stored text exactly (pinned by the config-span test in `tests/api_read.rs`).
+
+---
+
+## 2026-10-27 — Sensitive content: PII bundled into one Sensitive label, gated by default, opt in to avoid (owner; not implemented — R35.4–R35.6)
+
+* **Decision:** sensitive and PII are one concept, **Sensitive**, chosen per source in the source form. Sensitive content is gated by default on every path where it would leave the machine or reach an agent (cloud embed, cloud answer/rewrite, search/ask/agent compose, `/decisions`/`/actions`, `/media`, and every agent read surface). A person opts in to avoid the gate explicitly in the app, per destination (cloud embedder, cloud answer provider, AI agents). The person at the UI always sees everything.
+* **Context:** On 2026-10-13 the owner removed both PII affordances from the UI (the `pii` source label and the per-document PII toggle; `api.ts setItemPii` became a hidden shim). That removal was never recorded here, and `AGENTS.md` kept describing the per-document mark as live, so R35.2 (2026-10-27) enforced a mark nobody can set from the app. R36.15 then showed the read surfaces gate unevenly: line windows and node text are gated, while the whole-file read, section/tag chunk lists and entity windows are not. Agent trust is inferred from `answer_base_url`, which describes the local-mode answer provider, not the agent. The only bypass is two env vars.
+* **Alternatives considered:**
+  - *Keep three layers (source labels + per-document mark + read gates) and patch R36.19 on top* — rejected: complexity with no UI to drive it.
+  - *Remove the cloud gate entirely, keep only `public` for sharing* — rejected: "Sensitive" is a real UI choice people make today.
+  - *Gate only when an agent channel opts in via a header* — rejected: open by default, so an agent that improvises a curl reads everything.
+* **Consequences:** R35.4 (bundle + schema cleanup; absorbs R35.3), R35.5 (one gate on every surface, `X-Anchor-Client: ui` exempts the SPA, default closed; absorbs R36.19), R35.6 (Settings switches replace env-only trust; env vars stay as admin overrides). **Open sub-decision for R35.4:** drop the per-document mark (default) or keep it as a per-document Sensitive mark. The gate remains a guardrail against accidental leakage by well-behaved agents and providers, not a boundary against a local process that can read the SQLite file.
