@@ -1,5 +1,5 @@
-/** Source labels offered in the UI. "pii" was removed 2026-10-13 (owner decision);
- * the backend still accepts it, so LabelSelect renders a legacy fallback for it. */
+/** Source labels offered in the UI. R35.4: "pii" was bundled into
+ * "sensitive" (migration 29); the API rejects it. */
 export const LABEL_OPTIONS = [
   { value: "internal", label: "Internal" },
   { value: "public", label: "Public" },

@@ -53,16 +53,9 @@ afterEach(async () => {
   container = null;
 });
 
-describe("source labels (PII deprecated 2026-10-13)", () => {
+describe("source labels (R35.4: pii bundled into sensitive)", () => {
   it("offers only internal/public/sensitive — no pii option", () => {
     expect(LABEL_OPTIONS.map((o) => o.value)).toEqual(["internal", "public", "sensitive"]);
-  });
-
-  it("renders a legacy pii source with a deprecation note, never undefined", async () => {
-    const host = await renderRow("pii");
-    expect(host.textContent).toContain("deprecated");
-    expect(host.textContent).toContain("behaves like sensitive");
-    expect(host.textContent).not.toContain("undefined");
   });
 
   it("renders a sensitive source with its hint", async () => {

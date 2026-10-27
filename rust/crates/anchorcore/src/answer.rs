@@ -256,7 +256,7 @@ pub(crate) async fn record_gate_event(data_dir: &str, blocked: &[String]) {
     let _ = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         if let Ok(conn) = crate::db::init_db(&db_path) {
-            let msg = format!("answer gate: {} hit(s) excluded from cloud answer (sensitive/pii source or PII-marked item)", blocked_len);
+            let msg = format!("answer gate: {} hit(s) excluded from cloud answer (Sensitive source or Sensitive-marked item)", blocked_len);
             let detail = format!("labels={:?}; set ANCHOR_CLOUD_TRUST=1 to allow", labels);
             let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning',?1,?2)", rusqlite::params![msg, detail]);
         }
@@ -650,7 +650,7 @@ pub async fn ask(
             record_gate_event(&data_dir_string, &blocked).await;
             if filtered.is_empty() {
                 return AskResponse {
-                    answer: "Relevant knowledge was found but it is sensitive/PII and the answer provider is not approved for it. Enable a local provider, list it in ANCHOR_TRUSTED_PROVIDERS, or set ANCHOR_CLOUD_TRUST=1 to answer.".to_string(),
+                    answer: "Relevant knowledge was found but it is Sensitive and the answer provider is not approved for it. Enable a local provider, list it in ANCHOR_TRUSTED_PROVIDERS, or set ANCHOR_CLOUD_TRUST=1 to answer.".to_string(),
                     citations: vec![],
                     refusal: Some("gated_provider".to_string()),
                     mode: "none".to_string(),
@@ -707,7 +707,7 @@ fn degraded_warning(mode: &str, refusal: Option<&str>) -> Option<String> {
         return None;
     }
     if refusal == Some("gated_provider") {
-        return Some("Relevant knowledge exists but is sensitive/PII and the answer provider is not approved for it, so no answer was composed. Do not treat this as an answer.".to_string());
+        return Some("Relevant knowledge exists but is Sensitive and the answer provider is not approved for it, so no answer was composed. Do not treat this as an answer.".to_string());
     }
     if mode == "none" {
         return Some("No relevant knowledge was found, so no answer was composed. Do not treat this as an answer.".to_string());
@@ -816,12 +816,13 @@ fn public_source_ids(conn: &Connection) -> HashSet<i64> {
 
 fn gate_answer_hits(conn: &Connection, hits: &[retrieval::Hit]) -> (Vec<retrieval::Hit>, Vec<String>) {
     let labels = hit_source_labels(conn, hits);
-    let marked = pii_marked_chunks(conn, hits);
+    let marked = sensitive_marked_chunks(conn, hits);
     let mut allowed = Vec::new();
     let mut blocked = Vec::new();
     for h in hits {
-        // R35.1 dropped the chunk-`is_pii` half; R35.2: the manual item mark
-        // gates like a sensitive label (chunks resolve via their item).
+        // R35.4: the per-document override gates like a `sensitive` label
+        // (chunks resolve via their item); `cloud_gate_reason` reads the
+        // effective value.
         let label = h.source_id.and_then(|id| labels.get(&id).cloned()).unwrap_or_else(|| "internal".to_string());
         match crate::common::cloud_gate_reason(&label, marked.contains(&h.chunk_id)) {
             Some(reason) => blocked.push(reason),
@@ -846,9 +847,9 @@ fn hit_source_labels(conn: &Connection, hits: &[retrieval::Hit]) -> std::collect
     labels
 }
 
-/// R35.2: hit chunk ids whose item carries the manual PII mark — the hit's
-/// own `item_id`, else the chunk's item (entity chunks via their entity).
-fn pii_marked_chunks(conn: &Connection, hits: &[retrieval::Hit]) -> HashSet<i64> {
+/// R35.4: hit chunk ids whose item carries the Sensitive override — the
+/// hit's own `item_id`, else the chunk's item (entity chunks via entity).
+fn sensitive_marked_chunks(conn: &Connection, hits: &[retrieval::Hit]) -> HashSet<i64> {
     if hits.is_empty() {
         return HashSet::new();
     }
@@ -856,7 +857,7 @@ fn pii_marked_chunks(conn: &Connection, hits: &[retrieval::Hit]) -> HashSet<i64>
     let sql = format!(
         "SELECT c.id FROM chunks c LEFT JOIN entities e ON e.id = c.entity_id \
          JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
-         WHERE c.id IN ({}) AND i.is_pii = 1",
+         WHERE c.id IN ({}) AND i.sensitive_override = 1",
         crate::common::placeholders(ids.len())
     );
     let mut out: HashSet<i64> = HashSet::new();
@@ -869,7 +870,7 @@ fn pii_marked_chunks(conn: &Connection, hits: &[retrieval::Hit]) -> HashSet<i64>
     if item_ids.is_empty() {
         return out;
     }
-    let sql = format!("SELECT id FROM ingested_items WHERE is_pii = 1 AND id IN ({})", crate::common::placeholders(item_ids.len()));
+    let sql = format!("SELECT id FROM ingested_items WHERE sensitive_override = 1 AND id IN ({})", crate::common::placeholders(item_ids.len()));
     let marked_items: HashSet<i64> = conn
         .prepare(&sql)
         .and_then(|mut stmt| stmt.query_map(rusqlite::params_from_iter(item_ids.iter()), |r| r.get::<_, i64>(0)).map(|rows| rows.flatten().collect()))
@@ -942,7 +943,7 @@ pub async fn search(
     .await
     .unwrap_or_default();
     // Same provider-trust gate as ask — an untrusted provider must not
-    // receive sensitive/pii-source content through the deterministic read path.
+    // receive Sensitive-source content through the deterministic read path.
     let mut hits = hits;
     let mut blocked_count = 0usize;
     let mut refusal: Option<String> = None;
@@ -1488,7 +1489,7 @@ mod tests {
         (dir, conn, settings)
     }
 
-    fn mk_hit(source_id: i64, pii: bool) -> crate::retrieval::Hit {
+    fn mk_hit(source_id: i64) -> crate::retrieval::Hit {
         crate::retrieval::Hit {
             chunk_id: 1,
             entity_id: None,
@@ -1499,7 +1500,6 @@ mod tests {
             score: 1.0,
             content: "x".to_string(),
             source_ref: "f.md".to_string(),
-            is_pii: pii,
             status: None,
             content_truncated: false,
             provenance: Vec::new(),
@@ -1582,34 +1582,34 @@ mod tests {
 
     #[test]
     fn gate_answer_hits_filters_by_source_label_only() {
-        // R35.1: the chunk-`is_pii` half is gone with auto-detect — a flagged
-        // chunk on an ordinary source no longer blocks (the manual item mark
-        // does, see `gate_answer_hits_withholds_pii_marked_items`).
+        // R35.4: with no per-document override set, only the source label
+        // gates (the override half is covered below).
         let (_dir, conn, _settings) = seed_gate_db();
         let ord: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
         let sen: i64 = conn.query_row("SELECT id FROM sources WHERE name='secret'", [], |r| r.get(0)).unwrap();
-        let (allowed, blocked) = gate_answer_hits(&conn, &[mk_hit(ord, false), mk_hit(sen, false), mk_hit(ord, true)]);
-        assert_eq!(allowed.len(), 2);
+        let (allowed, blocked) = gate_answer_hits(&conn, &[mk_hit(ord), mk_hit(sen)]);
+        assert_eq!(allowed.len(), 1);
         assert_eq!(blocked, vec!["sensitive".to_string()]);
     }
 
     #[test]
-    fn gate_answer_hits_withholds_pii_marked_items() {
-        // R35.2: the manual item mark gates like a sensitive label, resolved
-        // via the chunk's item (no `item_id` on the hit) or the hit's own.
+    fn gate_answer_hits_withholds_sensitive_marked_items() {
+        // R35.4: the Sensitive override gates like a sensitive label,
+        // resolved via the chunk's item (no `item_id` on the hit) or the
+        // hit's own.
         let (_dir, conn, _settings) = seed_gate_db();
         let ord: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
         let (chunk, item): (i64, i64) = conn
             .query_row("SELECT c.id, c.item_id FROM chunks c JOIN ingested_items i ON i.id=c.item_id WHERE i.source_id=?1", [ord], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
-        let hit = || crate::retrieval::Hit { chunk_id: chunk, ..mk_hit(ord, false) };
+        let hit = || crate::retrieval::Hit { chunk_id: chunk, ..mk_hit(ord) };
         let (allowed, blocked) = gate_answer_hits(&conn, &[hit()]);
         assert_eq!((allowed.len(), blocked.len()), (1, 0), "unmarked flows");
-        conn.execute("UPDATE ingested_items SET is_pii=1 WHERE id=?1", [item]).unwrap();
+        conn.execute("UPDATE ingested_items SET sensitive_override=1 WHERE id=?1", [item]).unwrap();
         let (allowed, blocked) = gate_answer_hits(&conn, &[hit()]);
         assert!(allowed.is_empty());
-        assert_eq!(blocked, vec![crate::common::ITEM_PII_MARK.to_string()]);
-        let via_item = crate::retrieval::Hit { chunk_id: 999_999, item_id: Some(item), ..mk_hit(ord, false) };
+        assert_eq!(blocked, vec![crate::common::ITEM_SENSITIVE_MARK.to_string()]);
+        let via_item = crate::retrieval::Hit { chunk_id: 999_999, item_id: Some(item), ..mk_hit(ord) };
         assert!(gate_answer_hits(&conn, &[via_item]).0.is_empty(), "hit item_id alone resolves the mark");
     }
 
@@ -2251,7 +2251,7 @@ mod tests {
 
     #[test]
     fn build_answer_context_drops_match_marks() {
-        let mut h = mk_hit(1, false);
+        let mut h = mk_hit(1);
         h.content = "intro\n[match 7]\nOwner: Sarah.\n[/match 7]\ntail".to_string();
         let ctx = build_answer_context(&[h]);
         assert_eq!(ctx, "[S1] intro\nOwner: Sarah.\ntail");
@@ -2263,15 +2263,15 @@ mod tests {
         // R43.7: short hits assemble verbatim in rank order; past the
         // 6000-token (24000-char) budget, trailing sections drop while
         // numbering stays contiguous from S1.
-        let mut short = mk_hit(1, false);
+        let mut short = mk_hit(1);
         short.content = "alpha".to_string();
-        let mut short2 = mk_hit(1, false);
+        let mut short2 = mk_hit(1);
         short2.content = "beta".to_string();
         assert_eq!(build_answer_context(&[short, short2]), "[S1] alpha\n\n[S2] beta");
         assert!(build_answer_context(&[]).is_empty());
         let long: Vec<crate::retrieval::Hit> = (0..15)
             .map(|_| {
-                let mut h = mk_hit(1, false);
+                let mut h = mk_hit(1);
                 h.content = "w".repeat(5000);
                 h
             })
@@ -2288,7 +2288,7 @@ mod tests {
     fn build_citations_content_opt_in_and_snippet_floor() {
         let (dir, _conn, _settings) = seed_gate_db();
         let data_dir = dir.path().to_string_lossy().to_string();
-        let mut hit = mk_hit(1, false);
+        let mut hit = mk_hit(1);
         hit.content = "lorem ipsum dolor ".repeat(60); // ~1000 chars
         let compact = build_citations(std::slice::from_ref(&hit), &data_dir, false, 5, "");
         assert_eq!(compact.len(), 1);
@@ -2306,7 +2306,7 @@ mod tests {
         // summary + snippet must window on the query terms instead.
         let (dir, _conn, _settings) = seed_gate_db();
         let data_dir = dir.path().to_string_lossy().to_string();
-        let mut hit = mk_hit(1, false);
+        let mut hit = mk_hit(1);
         hit.content = format!("{}moonvault{}", "ab ".repeat(400), " cd".repeat(400));
         let cites = build_citations(std::slice::from_ref(&hit), &data_dir, false, 5, "moonvault");
         assert_eq!(cites.len(), 1);
@@ -2318,7 +2318,7 @@ mod tests {
     fn build_citations_respects_limit() {
         let (dir, _conn, _settings) = seed_gate_db();
         let data_dir = dir.path().to_string_lossy().to_string();
-        let hits = vec![mk_hit(1, false), mk_hit(1, false), mk_hit(1, false)];
+        let hits = vec![mk_hit(1), mk_hit(1), mk_hit(1)];
         assert_eq!(build_citations(&hits, &data_dir, false, 2, "").len(), 2);
         assert_eq!(build_citations(&hits, &data_dir, false, 9, "").len(), 3);
     }
@@ -2368,7 +2368,7 @@ mod tests {
         let (cid, iid): (i64, i64) = conn
             .query_row("SELECT id, item_id FROM chunks WHERE content LIKE 'quarterly sunshine%'", [], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
-        let mut hit = mk_hit(1, false);
+        let mut hit = mk_hit(1);
         hit.chunk_id = cid;
         hit.item_id = Some(iid);
         hit.content = "quarterly sunshine report numbers".to_string();
@@ -2946,7 +2946,7 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
-        let mut hit = mk_hit(1, false);
+        let mut hit = mk_hit(1);
         hit.chunk_id = cid;
         hit.item_id = Some(iid);
         hit.section_id = Some(sec);

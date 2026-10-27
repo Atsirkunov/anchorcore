@@ -20,7 +20,6 @@ function LabelSelect({
           {o.label}
         </option>
       ))}
-      {value === "pii" && <option value="pii">PII (deprecated — pick a new label to change it)</option>}
     </select>
   );
 }

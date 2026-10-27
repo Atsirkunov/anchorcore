@@ -29,7 +29,7 @@ function mkEntity(over: Partial<Entity> & { id: number }): Entity {
   };
 }
 
-const ENT = mkEntity({ id: 7, kind: "decision", summary: "Adopt SQLite for local storage", reasoning: "Single file, zero ops.", item_is_pii: true });
+const ENT = mkEntity({ id: 7, kind: "decision", summary: "Adopt SQLite for local storage", reasoning: "Single file, zero ops.", item_sensitive: true });
 
 async function renderTab(entities: Entity[], dupes: MergeProposal[] = [], grouped = true) {
   localStorage.setItem("entities-grouped", grouped ? "1" : "0");
@@ -75,8 +75,8 @@ afterEach(async () => {
   container = null;
 });
 
-describe("EntitiesTab (PII deprecated 2026-10-13)", () => {
-  it("shows no PII affordance even when the backend sends the mark", async () => {
+describe("EntitiesTab (no per-document Sensitive affordance in the UI)", () => {
+  it("shows no Sensitive affordance even when the backend sends the mark", async () => {
     const host = await renderTab([ENT]);
     expect(host.textContent).toContain("Adopt SQLite");
     expect(host.textContent).not.toMatch(/PII/i);
@@ -84,7 +84,7 @@ describe("EntitiesTab (PII deprecated 2026-10-13)", () => {
     expect(buttons.join(" ")).not.toMatch(/PII/i);
   });
 
-  it("shows no PII affordance when empty", async () => {
+  it("shows no Sensitive affordance when empty", async () => {
     const host = await renderTab([]);
     expect(host.textContent).not.toMatch(/PII/i);
   });

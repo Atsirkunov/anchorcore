@@ -144,7 +144,7 @@ sequenceDiagram
 | Table | Holds |
 |---|---|
 | `sources` | connector, config (no secrets), label `internal\|public\|sensitive`, sync cursor |
-| `ingested_items` | one row per document: text, content/processed hashes, stat fingerprint, bucket (`doc_type`), manual `is_pii` / `is_glossary` marks, `chunker_version` |
+| `ingested_items` | one row per document: text, content/processed hashes, stat fingerprint, bucket (`doc_type`), `sensitive_override` / `is_glossary` marks, `chunker_version` |
 | `sections` | heading tree per item: parent, level, path, extractive summary, line range |
 | `chunks` | `document` / `entity` / `caption` leaves + `section_summary` / `doc_summary`; path, line range, embedding + `embed_fp` |
 | `chunks_fts`, `vec_chunks` | FTS5 index; plain embeddings table (no `sqlite-vec` linked — retrieval scans) |

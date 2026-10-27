@@ -45,7 +45,7 @@ pub fn check_public(label: &str, public_only: bool, not_found: &'static str) -> 
     Ok(())
 }
 
-/// Byte gate: sensitive/pii bytes never go to an untrusted provider's agent.
+/// Byte gate: Sensitive bytes never go to an untrusted provider's agent.
 pub fn check_bytes(label: &str, trusted: bool) -> Result<(), ReadRefusal> {
     if !trusted && gated_label(label) {
         return Err(ReadRefusal::Gated(label.to_string()));
@@ -60,7 +60,7 @@ pub async fn into_api_error(data_dir: &str, refusal: ReadRefusal) -> ApiError {
         ReadRefusal::BadRequest(detail) => (StatusCode::BAD_REQUEST, Json(json!({"detail": detail}))),
         ReadRefusal::Gated(label) => {
             crate::answer::record_gate_event(data_dir, std::slice::from_ref(&label)).await;
-            let body = json!({"detail": "Content withheld from an untrusted answer provider (sensitive/pii source)", "refusal": "gated_provider"});
+            let body = json!({"detail": "Content withheld from an untrusted answer provider (Sensitive source)", "refusal": "gated_provider"});
             (StatusCode::FORBIDDEN, Json(body))
         }
     }

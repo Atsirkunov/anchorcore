@@ -425,7 +425,7 @@ impl Embedder {
             }
             embeddable_idx.push(i);
         }
-        // Label gate: sensitive/pii sources skip an untrusted remote embedder.
+        // Label gate: Sensitive sources skip an untrusted remote embedder.
         if gated && !self.cloud_trusted() {
             tracing::info!("embed gate: sensitive source skipped remote embedder");
             return Ok(vec![None; contents.len()]);

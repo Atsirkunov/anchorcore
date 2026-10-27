@@ -23,8 +23,6 @@ function jobLabel(job: Job): string {
 const LABEL_ALLOWS: Record<string, string> = {
   public: "answerable in shared/public scope",
   sensitive: "local models only · never shared",
-  // "pii" deliberately absent (deprecated 2026-10-13): legacy pii sources fall
-  // back to the sensitive hint below instead of rendering "undefined".
 };
 
 /** B37: one source row — status, every active job with its own Stop
@@ -126,8 +124,8 @@ export function SourceRow({
           {configSummary()}
         </div>
         {source.label !== "internal" && (
-          <div style={{ fontSize: 11, color: source.label === "sensitive" || source.label === "pii" ? theme.amber : theme.textMuted, marginTop: 2 }}>
-            label: {source.label === "pii" ? "pii (deprecated — behaves like sensitive)" : source.label} — {LABEL_ALLOWS[source.label] ?? LABEL_ALLOWS.sensitive}
+          <div style={{ fontSize: 11, color: source.label === "sensitive" ? theme.amber : theme.textMuted, marginTop: 2 }}>
+            label: {source.label} — {LABEL_ALLOWS[source.label] ?? LABEL_ALLOWS.sensitive}
           </div>
         )}
           {jobs.map((job) => (

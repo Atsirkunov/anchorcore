@@ -46,7 +46,7 @@ If MCP starts working later, drop this skill again.
 | GET /items?path_prefix=<relative prefix> | list items under a folder: metadata only (id, title, path), `total`, `limit`/`offset` |
 | GET /decisions?status=current&q=<text> | decision log: record_id, status (`superseded` when a newer record supersedes it), current, owner, supersedes/superseded_by, provenance (item_id, path, chunk_id). status: accepted, superseded, rejected, deferred, proposed or `current` |
 | GET /actions?owner=<name>&state=open | action tracker: task, owner, due, done, provenance. state: open (default), done or all; `overdue=true` keeps open items with an ISO due date before today; owner is case-insensitive |
-| POST /qa {"question"} | gated alternative to search: in agent mode (`llm_mode: agent`) it returns `mode: "agent_compose"` — ranked citations with content, label/PII gate applied, no server model; compose the answer yourself. In local mode the server's model answers (`composed`); `context_only`/`none` carry a `warning` — never quote that text as an answer |
+| POST /qa {"question"} | gated alternative to search: in agent mode (`llm_mode: agent`) it returns `mode: "agent_compose"` — ranked citations with content, Sensitive gate applied, no server model; compose the answer yourself. In local mode the server's model answers (`composed`); `context_only`/`none` carry a `warning` — never quote that text as an answer |
 
 A hit carries chunk_id, item_id, section_id, kind, summary (a match-centered
 preview), breadcrumb, item_title, doc_type, env, a score and a path (the
@@ -78,7 +78,7 @@ carry them. When the question is about something visual (a screen, a
 diagram, a chart), fetch the image with GET /media/:asset_id?format=json and
 look at it before answering; alt/caption are hints, not the picture. The
 JSON form refuses images over 1.5 MB with 413 + `size` + the raw `url`;
-sensitive sources and PII-marked documents answer 403 `refusal:
+Sensitive sources and Sensitive-marked documents answer 403 `refusal:
 "gated_provider"` under an untrusted provider, like search. `url: null` means the bytes were not stored (over the
 size cap) — say so instead of guessing. MCP clients get the same call as the
 `get_asset` tool. A hit with `kind: "caption"` (path ending `caption by a

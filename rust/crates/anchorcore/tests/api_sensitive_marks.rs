@@ -1,11 +1,12 @@
-//! API contract (R35.2): a manual whole-document PII mark
-//! (`ingested_items.is_pii`, `PATCH /items/:id`) is enforced like a
-//! `sensitive` source label toward an untrusted cloud provider, on every
-//! path: `/qa/search` (incl. `public_only`, what MCP `search` calls),
+//! API contract (R35.4): a per-document Sensitive override
+//! (`ingested_items.sensitive_override`, `PATCH /items/:id`) is enforced
+//! like a `sensitive` source label toward an untrusted cloud provider, on
+//! every path: `/qa/search` (incl. `public_only`, what MCP `search` calls),
 //! `/qa` + `/qa/public` (MCP `ask`), `/decisions`, `/actions`, `/media/:uid`,
 //! and the embed paths (ingest, startup backfill, backup re-embed job).
 //! Trusted (localhost or `ANCHOR_CLOUD_TRUST=1`) flows unchanged; unmarked
-//! items are never gated.
+//! items are never gated. Relabels flip the effective state instantly (the
+//! label is never copied onto items); an override survives them.
 //!
 //! The untrusted embedder is a local mock reached as `http://0.0.0.0:<port>`:
 //! the trust check only blesses `localhost`/`127.0.0.1`/`::1`, so the server
@@ -69,11 +70,11 @@ async fn corpus(srv: &TestServer, name: &str, label: Option<&str>) -> (i64, Vec<
     (sid, items)
 }
 
-/// Mark every `zorblax-*` item PII through the public API.
+/// Mark every `zorblax-*` item Sensitive through the public API.
 async fn mark(srv: &TestServer, items: &[(String, i64)]) -> Corpus {
     let mut marked = Vec::new();
     for (path, id) in items.iter().filter(|(p, _)| p.starts_with(MARK)) {
-        let resp = srv.patch(&format!("/items/{id}"), &json!({"is_pii": true})).await;
+        let resp = srv.patch(&format!("/items/{id}"), &json!({"sensitive_override": true})).await;
         assert_eq!(resp.status(), StatusCode::OK, "mark {path}");
         marked.push(*id);
     }
@@ -179,7 +180,7 @@ async fn events(srv: &TestServer, component: &str) -> Vec<Value> {
 }
 
 #[tokio::test]
-async fn pii_mark_gates_every_read_path_under_untrusted_cloud() {
+async fn sensitive_override_gates_every_read_path_under_untrusted_cloud() {
     let srv = TestServer::start().await;
     let (_, items) = corpus(&srv, "marks", Some("public")).await;
     set(&srv, &[("answer_base_url", CLOUD_URL), ("answer_api_key", "sk-test"), ("answer_timeout", "3")]).await;
@@ -201,20 +202,20 @@ async fn pii_mark_gates_every_read_path_under_untrusted_cloud() {
     let qa = events(&srv, "qa").await;
     assert!(
         qa.iter().any(|e| e["message"].as_str().unwrap_or_default().contains("answer gate")
-            && e["detail"].as_str().unwrap_or_default().contains("item_pii")),
+            && e["detail"].as_str().unwrap_or_default().contains("item_sensitive")),
         "{qa:?}"
     );
 
     // Clearing the mark lifts the gate.
     for id in &c.marked {
-        srv.patch(&format!("/items/{id}"), &json!({"is_pii": false})).await;
+        srv.patch(&format!("/items/{id}"), &json!({"sensitive_override": Value::Null})).await;
     }
     let after = post_json(&srv, "/qa/search", json!({"query": "zorblax vault rotation"})).await;
     assert!(any_marked(&hit_items(&after, "hits"), &c), "{after}");
 }
 
 #[tokio::test]
-async fn pii_mark_flows_to_localhost_answer_provider() {
+async fn sensitive_override_flows_to_localhost_answer_provider() {
     let srv = TestServer::start().await;
     let (_, items) = corpus(&srv, "local", Some("public")).await;
     // Localhost is always trusted (closed port: generation fails fast).
@@ -224,12 +225,34 @@ async fn pii_mark_flows_to_localhost_answer_provider() {
 }
 
 #[tokio::test]
-async fn pii_mark_flows_with_cloud_trust_flag() {
+async fn sensitive_override_flows_with_cloud_trust_flag() {
     let srv = TestServer::start_with_env(&[("ANCHOR_CLOUD_TRUST", "1")]).await;
     let (_, items) = corpus(&srv, "trusted", Some("public")).await;
     set(&srv, &[("answer_base_url", CLOUD_URL), ("answer_api_key", "sk-test"), ("answer_timeout", "3")]).await;
     let c = mark(&srv, &items).await;
     assert_reads_flow(&srv, &c).await;
+}
+
+#[tokio::test]
+async fn relabel_flips_effective_state_but_override_survives() {
+    // R35.4: the label is never copied onto items — relabelling flips the
+    // effective state instantly, and an override outlives the relabel.
+    let srv = TestServer::start().await;
+    let (sid, items) = corpus(&srv, "relabel", Some("sensitive")).await;
+    set(&srv, &[("answer_base_url", CLOUD_URL), ("answer_api_key", "sk-test"), ("answer_timeout", "3")]).await;
+    let gated = post_json(&srv, "/qa/search", json!({"query": "zorblax vault rotation"})).await;
+    assert_eq!(gated["refusal"], "gated_provider", "sensitive label gates: {gated}");
+
+    // Mark one doc, relabel to internal: siblings flow, the marked one stays out.
+    let decision = items.iter().find(|(p, _)| p.contains("zorblax-decision")).expect("decision item").1;
+    let marked = srv.patch(&format!("/items/{decision}"), &json!({"sensitive_override": true})).await;
+    assert_eq!(marked.status(), StatusCode::OK);
+    let relabeled = srv.put(&format!("/sources/{sid}"), &json!({"label": "internal"})).await;
+    assert_eq!(relabeled.status(), StatusCode::OK);
+    let body = post_json(&srv, "/qa/search", json!({"query": "zorblax vault rotation"})).await;
+    let ids = hit_items(&body, "hits");
+    assert!(!ids.is_empty(), "unmarked siblings flow after the relabel: {body}");
+    assert!(!ids.contains(&decision), "the override survives the relabel: {body}");
 }
 
 // ---- embed paths ----------------------------------------------------------
@@ -266,14 +289,17 @@ fn saw_mark(seen: &Arc<Mutex<Vec<String>>>) -> bool {
     seen.lock().unwrap().iter().any(|s| s.to_lowercase().contains(MARK))
 }
 
-/// Chunks still without a vector, for marked (`1`) or unmarked (`0`) items.
-fn pending(srv: &TestServer, is_pii: i64) -> i64 {
+/// Chunks still without a vector, for override-marked or unmarked items.
+fn pending(srv: &TestServer, marked: bool) -> i64 {
+    let pred = if marked { "i.sensitive_override = 1" } else { "COALESCE(i.sensitive_override, 0) = 0" };
     srv.db()
         .query_row(
-            "SELECT COUNT(*) FROM chunks c LEFT JOIN entities e ON e.id = c.entity_id \
-             JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
-             WHERE c.embedding IS NULL AND i.is_pii = ?1",
-            [is_pii],
+            &format!(
+                "SELECT COUNT(*) FROM chunks c LEFT JOIN entities e ON e.id = c.entity_id \
+                 JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
+                 WHERE c.embedding IS NULL AND {pred}"
+            ),
+            [],
             |r| r.get(0),
         )
         .expect("pending count")
@@ -296,19 +322,19 @@ fn as_env<'a>(v: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a str)> {
 }
 
 #[tokio::test]
-async fn pii_mark_skips_untrusted_embedder_on_backfill_and_ingest() {
+async fn sensitive_override_skips_untrusted_embedder_on_backfill_and_ingest() {
     // First sync with no reachable embedder: every chunk stays pending.
     let mut srv = TestServer::start().await;
     let (sid, items) = corpus(&srv, "embed", None).await;
     mark(&srv, &items).await;
-    assert!(pending(&srv, 1) > 0 && pending(&srv, 0) > 0);
+    assert!(pending(&srv, true) > 0 && pending(&srv, false) > 0);
 
     // Startup backfill against the untrusted mock: unmarked drains, marked stays.
     let (base, seen) = recording_embedder().await;
     let env = embed_env(&base);
     srv.restart(&as_env(&env)).await;
-    wait_until("unmarked chunks embedded by the backfill", || pending(&srv, 0) == 0).await;
-    assert!(pending(&srv, 1) > 0, "marked chunks must stay pending");
+    wait_until("unmarked chunks embedded by the backfill", || pending(&srv, false) == 0).await;
+    assert!(pending(&srv, true) > 0, "marked chunks must stay pending");
     assert!(!saw_mark(&seen), "the untrusted embedder received marked text");
 
     // Ingest: edit both kinds and re-sync — new marked chunks stay pending.
@@ -319,9 +345,9 @@ async fn pii_mark_skips_untrusted_embedder_on_backfill_and_ingest() {
     std::fs::write(root.join("quillfeather.md"), plain).unwrap();
     let calls_before = seen.lock().unwrap().len();
     assert_eq!(srv.sync_and_wait(sid, "sync").await["status"], "done");
-    wait_until("the edited unmarked doc embedded", || pending(&srv, 0) == 0).await;
+    wait_until("the edited unmarked doc embedded", || pending(&srv, false) == 0).await;
     assert!(seen.lock().unwrap().len() > calls_before, "unmarked edits still embed");
-    assert!(pending(&srv, 1) > 0, "marked chunks must stay pending after re-sync");
+    assert!(pending(&srv, true) > 0, "marked chunks must stay pending after re-sync");
     assert!(!saw_mark(&seen), "the untrusted embedder received marked text on ingest");
     let audit = events(&srv, "embed").await;
     assert!(audit.iter().any(|e| e["message"].as_str().unwrap_or_default().contains("embed gate")), "{audit:?}");
@@ -330,12 +356,12 @@ async fn pii_mark_skips_untrusted_embedder_on_backfill_and_ingest() {
     let mut trusted = env.clone();
     trusted.push(("ANCHOR_CLOUD_TRUST", "1".to_string()));
     srv.restart(&as_env(&trusted)).await;
-    wait_until("marked chunks embedded once trusted", || pending(&srv, 1) == 0).await;
+    wait_until("marked chunks embedded once trusted", || pending(&srv, true) == 0).await;
     assert!(saw_mark(&seen));
 }
 
 #[tokio::test]
-async fn pii_mark_skips_untrusted_embedder_on_backup_reembed() {
+async fn sensitive_override_skips_untrusted_embedder_on_backup_reembed() {
     // Archive with marked items and no vectors (the default export).
     let origin = TestServer::start().await;
     let (_, items) = corpus(&origin, "archived", None).await;
@@ -358,8 +384,8 @@ async fn pii_mark_skips_untrusted_embedder_on_backup_reembed() {
         let done = srv.wait_job(job.as_i64().unwrap()).await;
         assert_eq!(done["status"], "done", "{done}");
     }
-    wait_until("unmarked chunks re-embedded", || pending(&srv, 0) == 0).await;
-    assert!(pending(&srv, 1) > 0, "marked chunks must stay pending");
+    wait_until("unmarked chunks re-embedded", || pending(&srv, false) == 0).await;
+    assert!(pending(&srv, true) > 0, "marked chunks must stay pending");
     assert!(!saw_mark(&seen), "the untrusted embedder received marked text on re-embed");
     let audit = events(&srv, "embed").await;
     assert!(audit.iter().any(|e| e["message"].as_str().unwrap_or_default().contains("embed gate")), "{audit:?}");

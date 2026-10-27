@@ -6,7 +6,7 @@
 //! `project_id` + `public_only` resolve through `answer::project_scope`,
 //! stale (and, per `ANCHOR_QA_EXCLUDE_DISPUTED`, disputed) rows drop via
 //! `retrieval::status_ok`, and an untrusted answer provider withholds
-//! sensitive/pii-source rows and rows of PII-marked items (R35.2)
+//! Sensitive rows (source label or per-document override, R35.4)
 //! (`blocked`, `refusal: "gated_provider"`).
 
 use axum::extract::{Query, State};
@@ -61,8 +61,8 @@ struct Row {
     label: String,
     chunk_id: Option<i64>,
     created_at: String,
-    /// R35.2: the row's item carries the manual PII mark.
-    item_pii: bool,
+    /// R35.4: the row's item carries the Sensitive override.
+    sensitive_override: bool,
 }
 
 /// Text column, NULL/absent read as empty (record columns default to '').
@@ -89,13 +89,13 @@ fn row_from_sql(r: &rusqlite::Row) -> rusqlite::Result<Row> {
         label: text(r, 14),
         chunk_id: r.get::<_, Option<i64>>(15).ok().flatten(),
         created_at: text(r, 16),
-        item_pii: r.get::<_, Option<i64>>(17).ok().flatten().unwrap_or(0) != 0,
+        sensitive_override: r.get::<_, Option<i64>>(17).ok().flatten().is_some_and(|v| v == 1),
     })
 }
 
 const BASE_SQL: &str = "SELECT e.id, e.summary, e.status, e.owner, e.record_id, e.record_status, e.due, e.done, \
      e.supersedes, e.superseded_by, e.item_id, i.external_id, i.title, i.source_id, s.label, \
-     (SELECT c.id FROM chunks c WHERE c.entity_id = e.id ORDER BY c.id LIMIT 1), e.created_at, i.is_pii \
+     (SELECT c.id FROM chunks c WHERE c.entity_id = e.id ORDER BY c.id LIMIT 1), e.created_at, i.sensitive_override \
      FROM entities e JOIN ingested_items i ON i.id = e.item_id JOIN sources s ON s.id = i.source_id \
      WHERE e.kind = ?";
 
@@ -194,15 +194,15 @@ fn status_matches(r: &Row, wanted: Option<&str>) -> bool {
     }
 }
 
-/// Untrusted provider → withhold sensitive/pii-source rows and rows of
-/// PII-marked items (same rule as `answer::gate_answer_hits`, R35.2).
-/// Returns the blocked labels (`item_pii` for a marked item).
+/// Untrusted provider → withhold Sensitive rows (same rule as
+/// `answer::gate_answer_hits`, R35.4). Returns the blocked labels
+/// (`item_sensitive` for an override-marked item).
 fn gate_rows(rows: &mut Vec<Row>, trusted: bool) -> Vec<String> {
     if trusted {
         return Vec::new();
     }
     let mut blocked = Vec::new();
-    rows.retain(|r| match crate::common::cloud_gate_reason(&r.label, r.item_pii) {
+    rows.retain(|r| match crate::common::cloud_gate_reason(&r.label, r.sensitive_override) {
         Some(reason) => {
             blocked.push(reason);
             false

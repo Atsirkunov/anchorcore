@@ -66,7 +66,7 @@ describe("GlossaryPanel", () => {
 
   it("marks a found file as a glossary", async () => {
     vi.spyOn(api, "glossary").mockResolvedValue([]);
-    vi.spyOn(api, "listItems").mockResolvedValue({ items: [{ id: 9, source_id: 1, title: "terms.csv", path: "docs/terms.csv", is_pii: false, is_glossary: false }], total: 1 });
+    vi.spyOn(api, "listItems").mockResolvedValue({ items: [{ id: 9, source_id: 1, title: "terms.csv", path: "docs/terms.csv", sensitive_override: null, is_glossary: false }], total: 1 });
     const mark = vi.spyOn(api, "setItemGlossary").mockResolvedValue({ id: 9, is_glossary: true });
     const host = await render();
     await act(async () => button(host, "Glossary").click());

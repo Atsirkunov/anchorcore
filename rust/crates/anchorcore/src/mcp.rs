@@ -408,15 +408,15 @@ fn asset_content(v: &Value) -> Value {
 }
 
 async fn tool_get_entity(entity_id: i64) -> Result<Value, String> {
-    // R35.1: entity reads are ungated direct fetches (the `?gate=provider`
-    // honor system is gone with auto-detect). Sensitivity travels with the
-    // parent item's manual PII mark + source label, enforced on cloud flows.
+    // R35.4: entity reads are ungated direct fetches. Sensitivity travels
+    // as the parent item's effective Sensitive state + source label,
+    // enforced on cloud flows.
     let v = http_call("GET", &format!("/entities/{}", entity_id), None).await.map_err(|e| if e=="not found" { format!("entity {entity_id} not found") } else { e })?;
     Ok(json!({
         "id": v.get("id"),
         "item_id": v.get("item_id"),
         "chunk_id": v.get("chunk_id"),
-        "item_is_pii": v.get("item_is_pii"),
+        "item_sensitive": v.get("item_sensitive"),
         "kind": v.get("kind").and_then(|x| x.as_str()).unwrap_or(""),
         "summary": v.get("summary").and_then(|x| x.as_str()).unwrap_or("").chars().take(1000).collect::<String>(),
         "reasoning": v.get("reasoning").and_then(|x| x.as_str()).unwrap_or("").chars().take(1000).collect::<String>(),
@@ -570,7 +570,7 @@ fn read_tool_defs() -> Vec<Value> {
     vec![
         json!({
             "name": "list_items",
-            "description": "List indexed items (files/documents) — metadata only: id, source_id, title, path, is_pii, is_glossary, pdf_quality, plus total. Use to find a file by folder before reading it. A malformed path_prefix (wildcards, '..', './', '~', URLs) is an error naming the expected form, never an empty list. Same contract as REST GET /items.",
+            "description": "List indexed items (files/documents) — metadata only: id, source_id, title, path, sensitive_override, is_glossary, pdf_quality, plus total. Use to find a file by folder before reading it. A malformed path_prefix (wildcards, '..', './', '~', URLs) is an error naming the expected form, never an empty list. Same contract as REST GET /items.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -584,7 +584,7 @@ fn read_tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "get_item",
-            "description": "Read one item's stored text (content) with metadata and its images (assets). lines='a-b' (1-based, inclusive), 'a' or 'a-' returns just that window plus lines {start, end, total}; an end past the last line clamps, an invalid range or a start past the end is an error. Windows are refused for sensitive/pii sources under an untrusted provider (gated_provider). Content over 32000 chars is cut (content_truncated, total_chars) — page with lines. Same contract as REST GET /items/{id}?lines=a-b.",
+            "description": "Read one item's stored text (content) with metadata and its images (assets). lines='a-b' (1-based, inclusive), 'a' or 'a-' returns just that window plus lines {start, end, total}; an end past the last line clamps, an invalid range or a start past the end is an error. Windows are refused for Sensitive sources under an untrusted provider (gated_provider). Content over 32000 chars is cut (content_truncated, total_chars) — page with lines. Same contract as REST GET /items/{id}?lines=a-b.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -644,7 +644,7 @@ fn tool_defs() -> Value {
     json!([
         {
             "name": "ask",
-            "description": "Policy-gated answer from AnchorCore memory, with citations. In local LLM mode the server's configured answer model (the user's own — local Ollama or their OpenAI-compatible endpoint) writes it (mode=composed). In agent mode no server model runs: mode=agent_compose, the citations carry content, and you compose the answer from them yourself — by design, no warning. Use when the material may be sensitive/PII or you want the server to enforce PII/provider policy before you see bytes. Otherwise prefer search so your own model composes from verbatim cited chunks. Any other mode (context_only, none) carries a plain-language warning — never quote warned text as an answer.",
+            "description": "Policy-gated answer from AnchorCore memory, with citations. In local LLM mode the server's configured answer model (the user's own — local Ollama or their OpenAI-compatible endpoint) writes it (mode=composed). In agent mode no server model runs: mode=agent_compose, the citations carry content, and you compose the answer from them yourself — by design, no warning. Use when the material may be Sensitive or you want the server to enforce Sensitive/provider policy before you see bytes. Otherwise prefer search so your own model composes from verbatim cited chunks. Any other mode (context_only, none) carries a plain-language warning — never quote warned text as an answer.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -688,7 +688,7 @@ fn tool_defs() -> Value {
         },
         {
             "name": "get_entity",
-            "description": "Fetch one entity with provenance (summary, confidence, status, window_text, source_ref, parent item's manual PII mark).",
+            "description": "Fetch one entity with provenance (summary, confidence, status, window_text, source_ref, parent item's Sensitive state).",
             "inputSchema": {
                 "type": "object",
                 "properties": {

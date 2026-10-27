@@ -52,15 +52,16 @@ fn entity_json_from_row(row: &rusqlite::Row) -> rusqlite::Result<Value> {
     let created_at: Option<String> = row.get(12)?;
     let updated_at: Option<String> = row.get(13)?;
     let doc_type: String = row.get(14).unwrap_or_default();
-    // R35.1: the manual whole-doc PII mark, for UI toggles (no extra round trip).
-    let item_is_pii: bool = row.get::<_, i64>(15).map(|v| v != 0).unwrap_or(false);
+    // R35.4: the item's effective Sensitive state (override or source
+    // label), so one read answers the gate without a second round trip.
+    let item_sensitive: bool = row.get::<_, i64>(15).map(|v| v != 0).unwrap_or(false);
     // R32.13: the entity's own chunk (first by id; null when none was
     // stored) — entity rows always link to parent item AND chunk.
     let chunk_id: Option<i64> = row.get(16).unwrap_or(None);
     Ok(serde_json::json!({
         "id": id,
         "item_id": item_id,
-        "item_is_pii": item_is_pii,
+        "item_sensitive": item_sensitive,
         "chunk_id": chunk_id,
         "kind": kind,
         "summary": summary,
@@ -78,6 +79,20 @@ fn entity_json_from_row(row: &rusqlite::Row) -> rusqlite::Result<Value> {
     }))
 }
 
+/// R35.4: the shared entity column list — scalar subqueries resolve the
+/// item's doc type, its effective Sensitive state (override or source
+/// label — `common::effective_sensitive_sql`, migration 29's rule), and
+/// the entity's own chunk.
+fn entity_select_list() -> String {
+    format!(
+        "SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at, \
+         (SELECT doc_type FROM ingested_items WHERE ingested_items.id = entities.item_id), \
+         (SELECT CASE WHEN {} THEN 1 ELSE 0 END FROM ingested_items i JOIN sources s ON s.id = i.source_id WHERE i.id = entities.item_id), \
+         (SELECT id FROM chunks WHERE entity_id = entities.id ORDER BY id LIMIT 1) FROM entities",
+        crate::common::effective_sensitive_sql("i", "s.label")
+    )
+}
+
 pub async fn list_handler(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let limit = q.limit.unwrap_or(500).clamp(1, 2000);
@@ -85,7 +100,7 @@ pub async fn list_handler(State(state): State<AppState>, Query(q): Query<ListQue
     let status = q.status.clone();
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
-        let mut sql = "SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at, (SELECT doc_type FROM ingested_items WHERE ingested_items.id = entities.item_id), (SELECT is_pii FROM ingested_items WHERE ingested_items.id = entities.item_id), (SELECT id FROM chunks WHERE entity_id = entities.id ORDER BY id LIMIT 1) FROM entities".to_string();
+        let mut sql = entity_select_list();
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![];
         let mut clauses = vec![];
         if let Some(k) = kind {
@@ -123,7 +138,7 @@ pub async fn get_handler(
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
-        let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at, (SELECT doc_type FROM ingested_items WHERE ingested_items.id = entities.item_id), (SELECT is_pii FROM ingested_items WHERE ingested_items.id = entities.item_id), (SELECT id FROM chunks WHERE entity_id = entities.id ORDER BY id LIMIT 1) FROM entities WHERE id = ?1").unwrap();
+        let mut stmt = conn.prepare(&format!("{} WHERE id = ?1", entity_select_list())).unwrap();
         let v = stmt.query_row([entity_id], |r| entity_json_from_row(r));
         match v {
             Ok(j) => Ok(j),
@@ -157,7 +172,7 @@ pub async fn patch_handler(
             let _ = conn.execute("UPDATE entities SET owner = ?1 WHERE id = ?2", rusqlite::params![o, entity_id]);
         }
         let _ = conn.execute("UPDATE entities SET updated_at = datetime('now') WHERE id = ?1", [entity_id]);
-        let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at, (SELECT doc_type FROM ingested_items WHERE ingested_items.id = entities.item_id), (SELECT is_pii FROM ingested_items WHERE ingested_items.id = entities.item_id), (SELECT id FROM chunks WHERE entity_id = entities.id ORDER BY id LIMIT 1) FROM entities WHERE id = ?1").unwrap();
+        let mut stmt = conn.prepare(&format!("{} WHERE id = ?1", entity_select_list())).unwrap();
         let v = stmt.query_row([entity_id], |r| entity_json_from_row(r)).unwrap();
         Ok(v)
     })
@@ -186,7 +201,7 @@ pub async fn related_handler(
         if all.is_empty() {
             return Ok(Value::Array(vec![]));
         }
-        let sql = format!("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at, (SELECT doc_type FROM ingested_items WHERE ingested_items.id = entities.item_id), (SELECT is_pii FROM ingested_items WHERE ingested_items.id = entities.item_id), (SELECT id FROM chunks WHERE entity_id = entities.id ORDER BY id LIMIT 1) FROM entities WHERE id IN ({})", crate::common::placeholders(all.len()));
+        let sql = format!("{} WHERE id IN ({})", entity_select_list(), crate::common::placeholders(all.len()));
         let mut stmt3 = conn.prepare(&sql).unwrap();
         let rows = stmt3.query_map(rusqlite::params_from_iter(all.iter()), |r| entity_json_from_row(r)).unwrap();
         let out: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
@@ -213,7 +228,7 @@ pub async fn dispute_handler(
         crate::common::require_row(&conn, "entities", entity_id, "Entity not found")?;
         let _ = conn.execute("INSERT INTO disputes (entity_id, reason, user) VALUES (?1, ?2, ?3)", rusqlite::params![entity_id, reason, user]);
         let _ = conn.execute("UPDATE entities SET dispute_count = COALESCE(dispute_count,0)+1, status='disputed', updated_at=datetime('now') WHERE id=?1", [entity_id]);
-        let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at, (SELECT doc_type FROM ingested_items WHERE ingested_items.id = entities.item_id), (SELECT is_pii FROM ingested_items WHERE ingested_items.id = entities.item_id), (SELECT id FROM chunks WHERE entity_id = entities.id ORDER BY id LIMIT 1) FROM entities WHERE id = ?1").unwrap();
+        let mut stmt = conn.prepare(&format!("{} WHERE id = ?1", entity_select_list())).unwrap();
         let v = stmt.query_row([entity_id], |r| entity_json_from_row(r)).unwrap();
         Ok(v)
     })
@@ -505,7 +520,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn entity_json_carries_parent_doc_type_and_pii_mark() {
+    async fn entity_json_carries_effective_sensitive_state() {
         let dir = tempdir().unwrap();
         let state = gate_state(&dir, false);
         let eid = sensitive_eid(&state);
@@ -515,14 +530,24 @@ mod tests {
         drop(conn);
         let Json(v) = get_handler(State(state.clone()), Path(eid)).await.expect("get must succeed");
         assert_eq!(v.get("doc_type").and_then(|d| d.as_str()), Some("code"));
-        assert_eq!(v.get("item_is_pii").and_then(|b| b.as_bool()), Some(false), "default unmarked");
-        // Flip the manual mark on the parent item — the entity JSON follows.
-        let db_path2 = crate::db::resolve_db_path(&state.data_dir);
-        let conn2 = crate::db::init_db(&db_path2).unwrap();
-        conn2.execute("UPDATE ingested_items SET is_pii=1 WHERE id=(SELECT item_id FROM entities WHERE id=?1)", [eid]).unwrap();
+        assert_eq!(v.get("item_sensitive").and_then(|b| b.as_bool()), Some(true), "sensitive label reads effective");
+        // Relabel to internal: the effective state flips instantly (never copied).
+        let conn2 = crate::db::init_db(&db_path).unwrap();
+        conn2.execute("UPDATE sources SET label='internal' WHERE name='sen'", []).unwrap();
         drop(conn2);
-        let Json(v2) = get_handler(State(state), Path(eid)).await.expect("get must succeed");
-        assert_eq!(v2.get("item_is_pii").and_then(|b| b.as_bool()), Some(true));
+        let Json(v2) = get_handler(State(state.clone()), Path(eid)).await.expect("get must succeed");
+        assert_eq!(v2.get("item_sensitive").and_then(|b| b.as_bool()), Some(false));
+        // The override escalates whatever the label; clearing restores inherit.
+        let conn3 = crate::db::init_db(&db_path).unwrap();
+        conn3.execute("UPDATE ingested_items SET sensitive_override=1 WHERE id=(SELECT item_id FROM entities WHERE id=?1)", [eid]).unwrap();
+        drop(conn3);
+        let Json(v3) = get_handler(State(state.clone()), Path(eid)).await.expect("get must succeed");
+        assert_eq!(v3.get("item_sensitive").and_then(|b| b.as_bool()), Some(true));
+        let conn4 = crate::db::init_db(&db_path).unwrap();
+        conn4.execute("UPDATE ingested_items SET sensitive_override=NULL WHERE id=(SELECT item_id FROM entities WHERE id=?1)", [eid]).unwrap();
+        drop(conn4);
+        let Json(v4) = get_handler(State(state), Path(eid)).await.expect("get must succeed");
+        assert_eq!(v4.get("item_sensitive").and_then(|b| b.as_bool()), Some(false));
     }
 
     #[tokio::test]

@@ -1,0 +1,10 @@
+-- R35.4: bundle PII into one Sensitive label (absorbs R35.3).
+-- Legacy `sources.label = 'pii'` becomes 'sensitive'; the label set is now
+-- internal|public|sensitive. `ingested_items.is_pii` becomes the tri-state
+-- `sensitive_override` (NULL = inherit from the source, 1 = this document is
+-- Sensitive; 0 reserved for a future loosening decision, never written):
+-- explicit marks survive as 1, unmarked rows become NULL. The dead chunk
+-- columns `is_pii`/`pii_categories` (unwritten since R35.1) are dropped.
+-- It is Rust (`bundle_sensitive`, db.rs) because every step needs a
+-- column-existence guard: straggler DBs may miss `try_add_column` columns
+-- until `ensure_columns` runs after migrations (same reason as R45.10).

@@ -623,3 +623,16 @@ ADR log. Append newest first.
 * **R36.2 choices accepted:** boot-time synchronous re-chunk, only depth-1/root lists count as main content, identifying values over 32 chars stay out of the breadcrumb.
 * **Public scopes drop effective-Sensitive whatever the provider** (R35.5 scope): Sensitive is Sensitive — source label or per-document override, PII or not — derived at the gate entry point from the source mark. Default closed; sensitive content can be opt-in included (R35.6 switches).
 * **Folder-picker Chromium collapse fixed** (found in R45.19 browser testing): a grid-item `<button>` with `overflow:hidden` collapses to padding height and clips its own label. Truncation moved to an inner span (`FolderPicker.tsx` `dirLabel`); regression test pins the trio off the button.
+
+---
+
+## 2026-10-27 — R35.4: PII bundled into Sensitive (implementation)
+
+* **Decision:** migration 29 (`bundle_sensitive` hook) converts legacy `pii` labels to `sensitive`, renames `ingested_items.is_pii` to the tri-state `sensitive_override`, and drops the dead chunk PII columns (absorbs R35.3). One rule in `common.rs`: `effective_sensitive` (override OR label, derived at read time) + its SQL twin `effective_sensitive_sql`, with `cloud_gate_reason` gating on the effective value. `Hit.is_pii` and its chunk-column reads are gone. API: `PATCH /items/:id` takes `sensitive_override` (`true` sets, `null` clears, `false` is a 400 — 0 reserved); a present `is_pii` key is a 400 naming the new field; `pii` labels are a 400 naming `sensitive` on create/update. Item JSON carries `sensitive_override` (true|null), entity JSON `item_sensitive` (effective); the audit `blocked` entry for an override is `item_sensitive`. Old backup archives import with `pii`→`sensitive` and `is_pii: true`→override.
+* **Context:** the owner decision fixed the shape (bundle, derive-don't-copy, escalate-only); what it left open was the fate of existing marks and the exact contract edges.
+* **Alternatives considered:**
+  - *NULL every existing row (the row's letter: "migrate to NULL")* — rejected for marked rows: `PATCH is_pii` existed since R35.1 and the setup skill documented it, so API-set marks may exist; NULLing them would silently unenforce real marks. Explicit `1`s survive as the override (escalate-only semantics), unmarked rows become NULL — the asserted common case lands exactly where the row says.
+  - *Pure-SQL migration* — rejected: migrations run before `ensure_columns`, so `is_pii`/`label` may be missing on straggler DBs (same reason as R45.10). The hook guards every step on column existence.
+  - *One `blocked` entry (`sensitive`) for both causes* — rejected: the audit keeps naming where the mark lives (label vs override), as R35.2 did.
+  - *Item JSON as bool (false for inherit)* — rejected: true|null mirrors the column tri-state and the PATCH contract, and stays honest if 0 ever gains meaning.
+* **Consequences:** `read_gate.rs` still matches `pii` (dead after migration 29) — R35.5 owns that file and rewrites the gate. Public-scope filtering of overrides stays out (R35.5 scope per the owner's 2026-10-27 answers).

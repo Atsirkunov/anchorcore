@@ -140,6 +140,23 @@ pub async fn get_handler(State(state): State<AppState>, Path(source_id): Path<i6
     result
 }
 
+/// R35.4: labels are internal|public|sensitive. `pii` was bundled into
+/// `sensitive` (migration 29) and names its replacement; anything else
+/// keeps the historical 422.
+fn check_label(label: &str) -> Result<(), (StatusCode, Json<Value>)> {
+    if label == "pii" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"detail": "label 'pii' was bundled into 'sensitive' — use 'sensitive'"})),
+        ));
+    }
+    let valid = ["internal", "public", "sensitive"];
+    if !valid.contains(&label) {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"detail": format!("label must be one of {:?}", valid)}))));
+    }
+    Ok(())
+}
+
 // POST /sources — minimal create for tests (not full pipeline)
 pub async fn create_handler(State(state): State<AppState>, Json(payload): Json<Value>) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
@@ -152,10 +169,7 @@ pub async fn create_handler(State(state): State<AppState>, Json(payload): Json<V
     let mut config_val = payload.get("config").cloned().unwrap_or(Value::Object(Default::default()));
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
-        let valid_labels = ["internal","public","sensitive","pii"];
-        if !valid_labels.contains(&label.as_str()) {
-            return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"detail": format!("label must be one of {:?}", valid_labels)}))));
-        }
+        check_label(&label)?;
         // initial insert with safe config (without secrets) – we need id first to store secrets
         // Insert with empty config first, then update with safe config after storing secrets
         let initial_str = serde_json::to_string(&Value::Object(Default::default())).unwrap();
@@ -199,10 +213,7 @@ pub async fn update_handler(State(state): State<AppState>, Path(source_id): Path
             let _ = conn.execute("UPDATE sources SET enabled=?1 WHERE id=?2", rusqlite::params![if enabled {1} else {0}, source_id]);
         }
         if let Some(label) = payload.label {
-            let valid = ["internal","public","sensitive","pii"];
-            if !valid.contains(&label.as_str()) {
-                return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"detail": format!("label must be one of {:?}", valid)}))));
-            }
+            check_label(&label)?;
             let _ = conn.execute("UPDATE sources SET label=?1 WHERE id=?2", rusqlite::params![label, source_id]);
         }
         if let Some(new_cfg) = payload.config {

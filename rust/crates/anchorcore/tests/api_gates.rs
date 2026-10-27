@@ -21,18 +21,28 @@ const CLOUD_URL: &str = "https://192.0.2.1";
 async fn source_label_plumbed_through_api() {
     let srv = TestServer::start().await;
     let doc = decision_doc("Internal note", "A plain internal note", "Ivy");
-    let root = srv.work.path().join("pii-source");
+    let root = srv.work.path().join("label-source");
     std::fs::create_dir_all(&root).expect("corpus");
     std::fs::write(root.join("a.md"), &doc).expect("file");
     let created = srv.post(
         "/sources",
-        &json!({"connector": "folder", "name": "pii-source", "label": "pii",
+        &json!({"connector": "folder", "name": "label-source", "label": "sensitive",
                 "config": {"path": root.to_string_lossy()}}),
     ).await;
     assert_eq!(created.status(), StatusCode::CREATED, "POST /sources");
     let mine: Value = created.json().await.expect("source");
-    assert_eq!(mine["label"], "pii", "{mine}");
+    assert_eq!(mine["label"], "sensitive", "{mine}");
     let sid = mine["id"].as_i64().unwrap();
+    // R35.4: `pii` was bundled into `sensitive` — a 400 naming the replacement.
+    let legacy = srv.post(
+        "/sources",
+        &json!({"connector": "folder", "name": "legacy-pii", "label": "pii", "config": {}}),
+    ).await;
+    assert_eq!(legacy.status(), StatusCode::BAD_REQUEST, "pii label must 400");
+    let detail: Value = legacy.json().await.expect("detail");
+    assert!(detail["detail"].as_str().unwrap_or_default().contains("sensitive"), "{detail}");
+    let legacy_update = srv.put(&format!("/sources/{sid}"), &json!({"label": "pii"})).await;
+    assert_eq!(legacy_update.status(), StatusCode::BAD_REQUEST, "pii relabel must 400");
 
     let updated: Value = srv
         .put(&format!("/sources/{sid}"), &json!({"label": "public"}))
@@ -57,13 +67,13 @@ async fn source_label_plumbed_through_api() {
 #[tokio::test]
 async fn sensitive_source_still_ingests_with_rules() {
     let srv = TestServer::start().await;
-    // Local providers are trusted: a pii-labelled source ingests fine.
+    // Local providers are trusted: a sensitive-labelled source ingests fine.
     let doc = decision_doc(
         "Redact personal details",
         "We decided to redact personal details in the customer report",
         "Rita",
     );
-    let source = srv.mk_folder_source("pii-ingest", &[("p.md", &doc)], Some("pii")).await;
+    let source = srv.mk_folder_source("sen-ingest", &[("p.md", &doc)], Some("sensitive")).await;
     let sid = source["id"].as_i64().unwrap();
     let job = srv.sync_and_wait(sid, "sync").await;
     assert_eq!(job["status"], "done", "{job}");
@@ -187,7 +197,7 @@ async fn cloud_trust_flag_allows_sensitive() {
 async fn answer_gate_records_system_event() {
     let srv = TestServer::start().await;
     let doc = decision_doc("CEO phone", "The CEO phone number is 555-123-4567", "Pam");
-    let sens = srv.mk_folder_source("audit", &[("audit.md", &doc)], Some("pii")).await;
+    let sens = srv.mk_folder_source("audit", &[("audit.md", &doc)], Some("sensitive")).await;
     srv.sync_and_wait(sens["id"].as_i64().unwrap(), "sync").await;
     with_cloud_answer(&srv).await;
 
@@ -220,11 +230,13 @@ async fn search_reports_gated_provider() {
 }
 
 #[tokio::test]
-async fn manual_pii_mark_roundtrip() {
-    // R35.1: PII is people-driven — one manual whole-document mark.
+async fn sensitive_override_roundtrip() {
+    // R35.4: the per-document Sensitive override — true sets, null clears
+    // (inherit), false is reserved, and the removed `is_pii` key names the
+    // new field.
     let srv = TestServer::start().await;
     let doc = decision_doc("Finance contact", "The finance contact is finance@example.com", "Finn");
-    let source = srv.mk_folder_source("pii-doc", &[("p.md", &doc)], None).await;
+    let source = srv.mk_folder_source("marked-doc", &[("p.md", &doc)], None).await;
     let sid = source["id"].as_i64().unwrap();
     srv.sync_and_wait(sid, "sync").await;
 
@@ -232,12 +244,23 @@ async fn manual_pii_mark_roundtrip() {
         .db()
         .query_row("SELECT id FROM ingested_items WHERE source_id = ?1", [sid], |r| r.get(0))
         .expect("item");
-    let patched = srv.patch(&format!("/items/{item_id}"), &json!({"is_pii": true})).await;
+    let patched = srv.patch(&format!("/items/{item_id}"), &json!({"sensitive_override": true})).await;
     assert_eq!(patched.status(), StatusCode::OK);
-    assert_eq!(patched.json::<Value>().await.expect("patch")["is_pii"], true);
+    assert_eq!(patched.json::<Value>().await.expect("patch")["sensitive_override"], true);
 
     let fetched: Value = srv.get(&format!("/items/{item_id}")).await.json().await.expect("item");
-    assert_eq!(fetched["is_pii"], true, "{fetched}");
+    assert_eq!(fetched["sensitive_override"], true, "{fetched}");
+
+    let cleared = srv.patch(&format!("/items/{item_id}"), &json!({"sensitive_override": Value::Null})).await;
+    assert_eq!(cleared.status(), StatusCode::OK);
+    assert!(cleared.json::<Value>().await.expect("clear")["sensitive_override"].is_null());
+
+    let reserved = srv.patch(&format!("/items/{item_id}"), &json!({"sensitive_override": false})).await;
+    assert_eq!(reserved.status(), StatusCode::BAD_REQUEST, "false is reserved");
+    let legacy = srv.patch(&format!("/items/{item_id}"), &json!({"is_pii": true})).await;
+    assert_eq!(legacy.status(), StatusCode::BAD_REQUEST, "removed key must 400");
+    let detail: Value = legacy.json().await.expect("detail");
+    assert!(detail["detail"].as_str().unwrap_or_default().contains("sensitive_override"), "{detail}");
 }
 
 #[tokio::test]

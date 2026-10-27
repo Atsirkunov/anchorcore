@@ -195,10 +195,10 @@ Record types (`data.jsonl`):
 | `type` | carries |
 |---|---|
 | `source` | `uid`, connector, name, label, enabled, non-secret `config`, `needs_secret`, `created_at` |
-| `item` | `uid`, `source_uid`, external_id, title, doc_type, text, content_hash, author, updated_at, stale |
+| `item` | `uid`, `source_uid`, external_id, title, doc_type, text, content_hash, author, updated_at, stale, `sensitive_override` |
 | `entity` | `uid`, `item_uid`, kind, summary, reasoning, confidence, author, source_ref, window_text, window_index, status, owner, dispute_count, timestamps |
 | `relationship` | `from_uid`, `to_uid`, kind, confidence, source_ref |
-| `chunk` | `uid`, `item_uid`/`entity_uid`/`section_uid`, kind, source_ref, content, level, path, is_pii, pii_categories |
+| `chunk` | `uid`, `item_uid`/`entity_uid`/`section_uid`, kind, source_ref, content, level, path, line spans |
 | `chunk_embedding` / `section_embedding` / `tag_embedding` | `uid` + `embedding_b64` — only with `include_embeddings` |
 | `section` | `uid`, `item_uid`, `parent_uid`, level, title, path, chunk_range, summary, summary_hash |
 | `tag` / `chunk_tag` | name, description, count / `chunk_uid` + `tag_uid` |

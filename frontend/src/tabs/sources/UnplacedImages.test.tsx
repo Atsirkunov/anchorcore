@@ -68,7 +68,7 @@ describe("Unplaced images (R46.12)", () => {
 
   it("shows the badge and saves a person's caption + target", async () => {
     vi.spyOn(api, "media").mockImplementation(async (p) => (p?.attribution === "ignored" ? list([]) : list([row], 3)));
-    vi.spyOn(api, "listItems").mockResolvedValue({ items: [{ id: 9, source_id: 1, title: "Guide", path: "guide.md", is_pii: false }], total: 1 });
+    vi.spyOn(api, "listItems").mockResolvedValue({ items: [{ id: 9, source_id: 1, title: "Guide", path: "guide.md", sensitive_override: null }], total: 1 });
     const patch = vi.spyOn(api, "patchMedia").mockResolvedValue({ ...row, attribution: "manual" });
     const el = await render();
     expect(el.querySelector('[aria-label="3 unplaced"]')?.textContent).toBe("3");

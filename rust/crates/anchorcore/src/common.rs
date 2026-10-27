@@ -27,7 +27,7 @@ pub fn placeholders(count: usize) -> String {
     std::iter::repeat_n("?", count).collect::<Vec<_>>().join(",")
 }
 
-/// Whether a model/embed provider may receive sensitive/PII content.
+/// Whether a model/embed provider may receive Sensitive content.
 /// Local endpoints are always trusted. Otherwise the provider must be listed in
 /// `ANCHOR_TRUSTED_PROVIDERS` (comma-separated base-URL prefixes, e.g.
 /// `https://llm-eu.corp.example.com,https://api.vendor.example.com`) or the
@@ -71,19 +71,37 @@ pub fn provider_trusted(base_url: &str) -> bool {
     std::env::var("ANCHOR_CLOUD_TRUST").as_deref() == Ok("1")
 }
 
-/// R35.2: the `blocked` entry for content withheld because a person marked
-/// its item PII (`ingested_items.is_pii`), next to the source labels.
-pub const ITEM_PII_MARK: &str = "item_pii";
+/// R35.4: the `blocked` entry for content withheld because a person marked
+/// its item Sensitive (`ingested_items.sensitive_override`), next to the
+/// source labels.
+pub const ITEM_SENSITIVE_MARK: &str = "item_sensitive";
 
-/// R35.2: why content may not reach an untrusted cloud provider — its
-/// source label (`sensitive`/`pii`) or a manual item PII mark. `None` =
-/// it may flow. One rule for ask, search, `/decisions`, `/actions` and
+/// R35.4: effective Sensitive — the per-document override or the source
+/// label, derived at read time and never stored on the item (relabels, new
+/// syncs and imports cannot drift).
+pub fn effective_sensitive(source_label: &str, sensitive_override: bool) -> bool {
+    sensitive_override || source_label == "sensitive"
+}
+
+/// SQL twin of `effective_sensitive` for gate predicates: `item` is the
+/// `ingested_items` alias exposing `sensitive_override`, `label` a source
+/// label expression. Parenthesised for AND/OR chains.
+pub fn effective_sensitive_sql(item: &str, label: &str) -> String {
+    format!("(COALESCE({item}.sensitive_override, 0) = 1 OR COALESCE({label}, '') = 'sensitive')")
+}
+
+/// R35.4: why content may not reach an untrusted cloud provider — its
+/// effective Sensitive state (override or `sensitive` label). `None` = it
+/// may flow. One rule for ask, search, `/decisions`, `/actions` and
 /// `/media`; the label wins so the audit keeps naming the coarser cause.
-pub fn cloud_gate_reason(label: &str, item_pii: bool) -> Option<String> {
-    if label == "sensitive" || label == "pii" {
+pub fn cloud_gate_reason(label: &str, sensitive_override: bool) -> Option<String> {
+    if !effective_sensitive(label, sensitive_override) {
+        return None;
+    }
+    if label == "sensitive" {
         return Some(label.to_string());
     }
-    item_pii.then(|| ITEM_PII_MARK.to_string())
+    Some(ITEM_SENSITIVE_MARK.to_string())
 }
 
 /// Require a row in `table` (`entities`/`sources`/`chunks`) or return 404.
@@ -183,10 +201,12 @@ mod tests {
     #[test]
     fn cloud_gate_reason_label_then_item_mark() {
         assert_eq!(cloud_gate_reason("sensitive", false).as_deref(), Some("sensitive"));
-        assert_eq!(cloud_gate_reason("pii", true).as_deref(), Some("pii"), "label names the cause first");
-        assert_eq!(cloud_gate_reason("internal", true).as_deref(), Some(ITEM_PII_MARK));
-        assert_eq!(cloud_gate_reason("public", true).as_deref(), Some(ITEM_PII_MARK));
+        assert_eq!(cloud_gate_reason("sensitive", true).as_deref(), Some("sensitive"), "label names the cause first");
+        assert_eq!(cloud_gate_reason("internal", true).as_deref(), Some(ITEM_SENSITIVE_MARK));
+        assert_eq!(cloud_gate_reason("public", true).as_deref(), Some(ITEM_SENSITIVE_MARK));
         assert_eq!(cloud_gate_reason("internal", false), None);
         assert_eq!(cloud_gate_reason("public", false), None);
+        assert!(effective_sensitive("internal", true), "override escalates whatever the label");
+        assert!(!effective_sensitive("public", false), "unmarked public flows");
     }
 }

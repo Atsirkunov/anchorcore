@@ -292,6 +292,12 @@ fn json_bool(col: &str) -> String {
     format!("CASE WHEN {col} THEN json('true') ELSE json('false') END")
 }
 
+/// R35.4: tri-state override export — JSON `true` when set, else `null`
+/// (inherit); never `false` (0 is reserved, never written).
+fn json_override(col: &str) -> String {
+    format!("CASE WHEN {col} = 1 THEN json('true') ELSE json('null') END")
+}
+
 fn write_str(zip: &mut ArchiveWriter, text: &str) -> Result<(), String> {
     zip.write_all(text.as_bytes()).map_err(|e| e.to_string())
 }
@@ -463,12 +469,12 @@ fn export_items(conn: &Connection, zip: &mut ArchiveWriter, opts: &ExportOptions
         "SELECT json_object('type','item','uid',i.uid,'source_uid',s.uid,'external_id',i.external_id, \
             'title',i.title,'doc_type',i.doc_type,'text',i.text,'content_hash',i.content_hash, \
             'processed_hash',i.processed_hash,'chunker_version',i.chunker_version, \
-            'author',i.author,'updated_at',i.updated_at,'stale',{stale},'is_pii',{is_pii}, \
+            'author',i.author,'updated_at',i.updated_at,'stale',{stale},'sensitive_override',{sensitive_override}, \
             'is_glossary',{is_glossary},'created_at',i.created_at) \
          FROM ingested_items i JOIN sources s ON s.id = i.source_id WHERE 1=1{} ORDER BY i.id",
         scope,
         stale = json_bool("i.stale"),
-        is_pii = json_bool("i.is_pii"),
+        sensitive_override = json_override("i.sensitive_override"),
         is_glossary = json_bool("i.is_glossary")
     );
     write_jsonl_query(conn, zip, &sql)
@@ -521,15 +527,13 @@ fn export_chunks(conn: &Connection, zip: &mut ArchiveWriter, opts: &ExportOption
         "SELECT json_object('type','chunk','uid',c.uid,'item_uid',i.uid,'entity_uid',en.uid, \
             'section_uid',sec.uid,'kind',c.kind,'source_ref',c.source_ref,'content',c.content, \
             'level',c.level,'path',c.path,'line_start',c.line_start,'line_end',c.line_end, \
-            'is_pii',{pii},'pii_categories',json(c.pii_categories), \
             'created_at',c.created_at) \
          FROM chunks c \
          LEFT JOIN ingested_items i ON i.id = c.item_id \
          LEFT JOIN entities en ON en.id = c.entity_id \
          LEFT JOIN sections sec ON sec.id = c.section_id \
          WHERE 1=1{} ORDER BY c.id",
-        scope,
-        pii = json_bool("c.is_pii")
+        scope
     );
     write_jsonl_query(conn, zip, &sql)
 }
@@ -1251,7 +1255,14 @@ fn apply_source(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let connector = str_field(rec, "connector");
     let label = {
         let l = str_field(rec, "label");
-        if l.is_empty() { "internal".to_string() } else { l }
+        // R35.4: old archives carry `pii` labels — migration 29's twin.
+        if l == "pii" {
+            "sensitive".to_string()
+        } else if l.is_empty() {
+            "internal".to_string()
+        } else {
+            l
+        }
     };
     let enabled = bool_int(rec, "enabled");
     let config = ctx.remap_config(&uid, rec.get("config").cloned().unwrap_or_else(|| json!({})));
@@ -1297,9 +1308,15 @@ fn apply_item(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let author = str_field(rec, "author");
     let doc_type = str_field(rec, "doc_type");
     let stale = bool_int(rec, "stale");
-    // R35.1: manual PII mark round-trips with the item (missing in old
-    // archives reads as unmarked).
-    let is_pii = bool_int(rec, "is_pii");
+    // R35.4: the override round-trips with the item; old archives carry
+    // `is_pii` instead (true survives as the override, like migration 29;
+    // missing reads as unmarked).
+    let marked = rec
+        .get("sensitive_override")
+        .and_then(|v| v.as_bool())
+        .or_else(|| rec.get("is_pii").and_then(|v| v.as_bool()))
+        .unwrap_or(false);
+    let sensitive_override: Option<i64> = marked.then_some(1);
     // F-03: the completion marker round-trips too. Old archives lack it —
     // adopt the stored hash (an archive is a snapshot of processed state),
     // so a restore doesn't reclassify the whole corpus on the next sync.
@@ -1307,9 +1324,9 @@ fn apply_item(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     if action == Action::Insert {
         ctx.conn
             .execute(
-                "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, processed_hash, author, doc_type, stale, is_pii, uid, created_at) \
+                "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, processed_hash, author, doc_type, stale, sensitive_override, uid, created_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'))",
-                rusqlite::params![source_id, external_id, title, text, hash, processed, author, doc_type, stale, is_pii, uid],
+                rusqlite::params![source_id, external_id, title, text, hash, processed, author, doc_type, stale, sensitive_override, uid],
             )
             .map_err(|e| e.to_string())?;
         let id = ctx.conn.last_insert_rowid();
@@ -1319,8 +1336,8 @@ fn apply_item(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let id = existing.unwrap();
     ctx.conn
         .execute(
-            "UPDATE ingested_items SET external_id=?2, title=?3, text=?4, content_hash=?5, processed_hash=?6, author=?7, doc_type=?8, stale=?9, is_pii=?10, updated_at=datetime('now') WHERE id=?1",
-            rusqlite::params![id, external_id, title, text, hash, processed, author, doc_type, stale, is_pii],
+            "UPDATE ingested_items SET external_id=?2, title=?3, text=?4, content_hash=?5, processed_hash=?6, author=?7, doc_type=?8, stale=?9, sensitive_override=?10, updated_at=datetime('now') WHERE id=?1",
+            rusqlite::params![id, external_id, title, text, hash, processed, author, doc_type, stale, sensitive_override],
         )
         .map_err(|e| e.to_string())?;
     ctx.remember("ingested_items", &uid, id);
@@ -1619,15 +1636,15 @@ fn apply_chunk(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let path = str_field(rec, "path");
     let line_start = i64_field(rec, "line_start").unwrap_or(0);
     let line_end = i64_field(rec, "line_end").unwrap_or(0);
-    let is_pii = bool_int(rec, "is_pii");
-    let pii_categories = rec.get("pii_categories").map(|v| v.to_string()).unwrap_or_else(|| "[]".to_string());
+    // R35.4 absorbs R35.3: chunk `is_pii`/`pii_categories` keys in old
+    // archives are ignored — the columns are gone (migration 29).
     let embedding = embedding_field(ctx, rec, "embedding_b64", "chunk");
     if action == Action::Insert {
         ctx.conn
             .execute(
-                "INSERT INTO chunks (item_id, entity_id, section_id, kind, source_ref, content, level, path, line_start, line_end, is_pii, pii_categories, embedding, uid, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now'))",
-                rusqlite::params![item_id, entity_id, section_id, kind, source_ref, content, level, path, line_start, line_end, is_pii, pii_categories, embedding, uid],
+                "INSERT INTO chunks (item_id, entity_id, section_id, kind, source_ref, content, level, path, line_start, line_end, embedding, uid, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'))",
+                rusqlite::params![item_id, entity_id, section_id, kind, source_ref, content, level, path, line_start, line_end, embedding, uid],
             )
             .map_err(|e| e.to_string())?;
         let id = ctx.conn.last_insert_rowid();
@@ -1637,8 +1654,8 @@ fn apply_chunk(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let id = existing.unwrap();
     ctx.conn
         .execute(
-            "UPDATE chunks SET item_id=?2, entity_id=?3, section_id=?4, kind=?5, source_ref=?6, content=?7, level=?8, path=?9, line_start=?10, line_end=?11, is_pii=?12, pii_categories=?13 WHERE id=?1",
-            rusqlite::params![id, item_id, entity_id, section_id, kind, source_ref, content, level, path, line_start, line_end, is_pii, pii_categories],
+            "UPDATE chunks SET item_id=?2, entity_id=?3, section_id=?4, kind=?5, source_ref=?6, content=?7, level=?8, path=?9, line_start=?10, line_end=?11 WHERE id=?1",
+            rusqlite::params![id, item_id, entity_id, section_id, kind, source_ref, content, level, path, line_start, line_end],
         )
         .map_err(|e| e.to_string())?;
     if let Some(blob) = embedding {
@@ -2947,19 +2964,87 @@ mod tests {
     }
 
     #[test]
-    fn item_pii_mark_survives_export_import() {
-        // R35.1: the manual whole-doc mark travels with the item.
+    fn item_sensitive_override_survives_export_import() {
+        // R35.4: the override travels with the item; unmarked stays NULL.
         let _env = EnvGuard::file_only();
         let src = tempdir().unwrap();
         let sid = seed(src.path());
         let conn = db(src.path());
-        conn.execute("UPDATE ingested_items SET is_pii = 1 WHERE source_id = ?1", [sid]).unwrap();
+        conn.execute("UPDATE ingested_items SET sensitive_override = 1 WHERE source_id = ?1", [sid]).unwrap();
         drop(conn);
         let archive = exported(src.path(), ExportOptions::default());
         let dst = tempdir().unwrap();
         import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
         let conn = db(dst.path());
-        assert_eq!(one::<i64>(&conn, "SELECT is_pii FROM ingested_items"), 1);
+        let got: Option<i64> =
+            conn.query_row("SELECT sensitive_override FROM ingested_items", [], |r| r.get(0)).unwrap();
+        assert_eq!(got, Some(1));
+    }
+
+    /// Rewrite an export into the pre-R35.4 record shape: `pii` source
+    /// labels, item `is_pii` instead of `sensitive_override`, chunk PII keys.
+    fn rewrite_records_as_old_shape(src: &Path, dst: &Path) {
+        let raw = std::fs::read(src).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(raw)).unwrap();
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(dst).unwrap());
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).unwrap();
+            let name = entry.name().map(|n| n.to_string()).unwrap_or_default();
+            let mut buf = Vec::new();
+            entry.read_to_end(&mut buf).unwrap();
+            drop(entry);
+            if name == "data.jsonl" {
+                let text = String::from_utf8(buf).unwrap();
+                let mut out = String::new();
+                for line in text.lines() {
+                    let mut rec: Value = serde_json::from_str(line).unwrap();
+                    match rec.get("type").and_then(|t| t.as_str()) {
+                        Some("source") => rec["label"] = json!("pii"),
+                        Some("item") => {
+                            let marked = rec.get("sensitive_override").and_then(|v| v.as_bool()).unwrap_or(false);
+                            rec.as_object_mut().unwrap().remove("sensitive_override");
+                            rec["is_pii"] = json!(marked);
+                        }
+                        Some("chunk") => {
+                            rec["is_pii"] = json!(false);
+                            rec["pii_categories"] = json!([]);
+                        }
+                        _ => {}
+                    }
+                    out.push_str(&serde_json::to_string(&rec).unwrap());
+                    out.push('\n');
+                }
+                buf = out.into_bytes();
+            }
+            writer.start_file(name, options).unwrap();
+            writer.write_all(&buf).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn old_archive_maps_pii_shape_to_sensitive() {
+        // R35.4: `pii` labels arrive as `sensitive`, item `is_pii: true`
+        // arrives as the override (like migration 29), and chunk PII keys
+        // import clean.
+        let _env = EnvGuard::file_only();
+        let src = tempdir().unwrap();
+        let sid = seed(src.path());
+        let conn = db(src.path());
+        conn.execute("UPDATE ingested_items SET sensitive_override = 1 WHERE source_id = ?1", [sid]).unwrap();
+        drop(conn);
+        let archive = exported(src.path(), ExportOptions::default());
+        let old = src.path().join("old-shape.anchorcore-backup");
+        rewrite_records_as_old_shape(&archive.path, &old);
+        let dst = tempdir().unwrap();
+        import_archive(dst.path(), &old, &ImportOptions::default()).unwrap();
+        let conn = db(dst.path());
+        assert_eq!(one::<String>(&conn, "SELECT label FROM sources"), "sensitive");
+        let got: Option<i64> =
+            conn.query_row("SELECT sensitive_override FROM ingested_items", [], |r| r.get(0)).unwrap();
+        assert_eq!(got, Some(1));
+        assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM chunks"), 2, "chunk rows import clean");
     }
 
     #[test]

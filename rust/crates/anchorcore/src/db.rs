@@ -121,8 +121,8 @@ fn ensure_columns(conn: &Connection) -> Result<()> {
     try_add_column(conn, "ALTER TABLE ingested_items ADD COLUMN doc_type VARCHAR(50) NOT NULL DEFAULT ''");
     try_add_column(conn, "ALTER TABLE ingested_items ADD COLUMN window_hashes TEXT NOT NULL DEFAULT '{}'");
     try_add_column(conn, "ALTER TABLE ingested_items ADD COLUMN distill_hashes TEXT NOT NULL DEFAULT '{}'");
-    // R35.1: manual PII mark (whole document)
-    try_add_column(conn, "ALTER TABLE ingested_items ADD COLUMN is_pii INTEGER NOT NULL DEFAULT 0");
+    // R35.4: per-document Sensitive override (NULL = inherit from source)
+    try_add_column(conn, "ALTER TABLE ingested_items ADD COLUMN sensitive_override INTEGER");
     // Incremental folder sync: stat fingerprint (NULL = unknown, always extract)
     try_add_column(conn, "ALTER TABLE ingested_items ADD COLUMN file_mtime_ms INTEGER");
     try_add_column(conn, "ALTER TABLE ingested_items ADD COLUMN file_size INTEGER");
@@ -134,8 +134,8 @@ fn ensure_columns(conn: &Connection) -> Result<()> {
     try_add_column(conn, "ALTER TABLE entities ADD COLUMN dispute_count INTEGER NOT NULL DEFAULT 0");
     // chunks additions (B30, B18)
     try_add_column(conn, "ALTER TABLE chunks ADD COLUMN kind VARCHAR(20) NOT NULL DEFAULT 'document'");
-    try_add_column(conn, "ALTER TABLE chunks ADD COLUMN is_pii BOOLEAN NOT NULL DEFAULT 0");
-    try_add_column(conn, "ALTER TABLE chunks ADD COLUMN pii_categories TEXT NOT NULL DEFAULT '[]'");
+    // R35.4 absorbs R35.3: the chunk PII columns are dropped by migration 29
+    // and must never be re-added here.
     // R14.1 hierarchical TOC
     try_add_column(conn, "ALTER TABLE chunks ADD COLUMN section_id INTEGER REFERENCES sections(id) ON DELETE SET NULL");
     try_add_column(conn, "ALTER TABLE chunks ADD COLUMN level INTEGER NOT NULL DEFAULT 0");
@@ -440,6 +440,7 @@ fn migrations() -> Migrations<'static> {
         M::up_with_hook(include_str!("../migrations/27_legacy_entities.sql"), cleanup_legacy_entities),
         // R36.2: chunker generation per item (re-chunk runs in `init_db`)
         M::up(include_str!("../migrations/28_chunker_version.sql")),
+        M::up_with_hook(include_str!("../migrations/29_sensitive_bundle.sql"), bundle_sensitive),
     ])
 }
 
@@ -540,6 +541,30 @@ fn drop_distilled_chunks(tx: &rusqlite::Transaction) -> rusqlite_migration::Hook
     let n = tx.execute("DELETE FROM chunks WHERE kind = 'distilled'", [])?;
     if n > 0 {
         tracing::info!("R45.18: dropped {} distilled chunks", n);
+    }
+    Ok(())
+}
+
+/// R35.4 hook for migration 29: bundle PII into one Sensitive label.
+/// Legacy `pii` source labels become `sensitive`; `ingested_items.is_pii`
+/// becomes the tri-state `sensitive_override` (explicit marks survive as 1,
+/// unmarked rows become NULL = inherit); dead chunk PII columns are dropped.
+/// Every step guards on column existence: straggler DBs may miss
+/// `try_add_column` columns until `ensure_columns` runs after migrations.
+fn bundle_sensitive(tx: &rusqlite::Transaction) -> rusqlite_migration::HookResult {
+    if column_exists(tx, "sources", "label") {
+        tx.execute("UPDATE sources SET label = 'sensitive' WHERE label = 'pii'", [])?;
+    }
+    if column_exists(tx, "ingested_items", "is_pii") && !column_exists(tx, "ingested_items", "sensitive_override") {
+        tx.execute("ALTER TABLE ingested_items RENAME COLUMN is_pii TO sensitive_override", [])?;
+    }
+    if column_exists(tx, "ingested_items", "sensitive_override") {
+        tx.execute("UPDATE ingested_items SET sensitive_override = NULL WHERE COALESCE(sensitive_override, 0) = 0", [])?;
+    }
+    for col in ["is_pii", "pii_categories"] {
+        if column_exists(tx, "chunks", col) {
+            tx.execute(&format!("ALTER TABLE chunks DROP COLUMN {col}"), [])?;
+        }
     }
     Ok(())
 }
@@ -701,6 +726,14 @@ mod tests {
             // A real v10 DB also predates R36.2 — drop the chunker
             // generation so migration 28 has real work to do.
             conn.execute("ALTER TABLE ingested_items DROP COLUMN chunker_version", []).unwrap();
+            // A real v10 DB also predates R35.4 — the per-document mark is
+            // still `is_pii`, the chunk PII columns exist, and a source may
+            // carry the `pii` label, so migration 29 has real work to do.
+            conn.execute("ALTER TABLE ingested_items RENAME COLUMN sensitive_override TO is_pii", []).unwrap();
+            conn.execute("ALTER TABLE chunks ADD COLUMN is_pii BOOLEAN NOT NULL DEFAULT 0", []).unwrap();
+            conn.execute("ALTER TABLE chunks ADD COLUMN pii_categories TEXT NOT NULL DEFAULT '[]'", []).unwrap();
+            conn.execute("UPDATE sources SET label = 'pii'", []).unwrap();
+            conn.execute("UPDATE ingested_items SET is_pii = 1 WHERE content_hash = 'h'", []).unwrap();
             // A real v10 DB also predates R46.7 — drop the asset tables (their
             // triggers go with them) so migration 26 has real work to do.
             conn.execute("DROP TABLE assets", []).unwrap();
@@ -726,7 +759,26 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         run_migrations(&mut conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 28);
+        assert_eq!(v, 29);
+        // R35.4 (migration 29): legacy `pii` labels bundle into `sensitive`,
+        // `is_pii` becomes the tri-state override, chunk PII columns go.
+        let pii_labels: i64 = conn.query_row("SELECT COUNT(*) FROM sources WHERE label = 'pii'", [], |r| r.get(0)).unwrap();
+        assert_eq!(pii_labels, 0, "migration 29 must bundle pii labels into sensitive");
+        assert_eq!(
+            conn.query_row("SELECT label FROM sources WHERE name = 's'", [], |r| r.get::<_, String>(0)).unwrap(),
+            "sensitive"
+        );
+        let is_pii_col: i64 =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('ingested_items') WHERE name = 'is_pii'", [], |r| r.get(0)).unwrap();
+        assert_eq!(is_pii_col, 0, "is_pii must be renamed to sensitive_override");
+        let kept: Option<i64> =
+            conn.query_row("SELECT sensitive_override FROM ingested_items WHERE content_hash = 'h'", [], |r| r.get(0)).unwrap();
+        assert_eq!(kept, Some(1), "an explicit mark survives as the override");
+        let cleared: i64 = conn.query_row("SELECT COUNT(*) FROM ingested_items WHERE sensitive_override IS NULL", [], |r| r.get(0)).unwrap();
+        assert!(cleared >= 1, "unmarked rows become NULL (inherit)");
+        let chunk_pii: i64 =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('chunks') WHERE name IN ('is_pii','pii_categories')", [], |r| r.get(0)).unwrap();
+        assert_eq!(chunk_pii, 0, "migration 29 must drop the chunk PII columns");
         let generations: Vec<i64> = conn
             .prepare("SELECT chunker_version FROM ingested_items")
             .unwrap()

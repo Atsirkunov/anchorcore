@@ -4,9 +4,10 @@
 //! says when expansion drops siblings); `GET /items/:id` is the drill-down
 //! that returns the complete ingested text.
 //!
-//! R35.1: items carry the manual PII mark (whole document, people-driven).
-//! `PATCH /items/:id {"is_pii": bool}` sets/clears it. The old
-//! `?gate=provider` honor system is gone with the auto-detect machinery.
+//! R35.4: items carry the Sensitive override (whole document, people-driven,
+//! escalate-only). `PATCH /items/:id {"sensitive_override": true}` sets it,
+//! `null` clears it back to inheriting the source label; `false` is reserved
+//! (400), and the removed `is_pii` key is a 400 naming the new field.
 //!
 //! R45.13: `PATCH /items/:id {"is_glossary": bool}` marks a file as a
 //! glossary — its rows (CSV/TSV, Markdown tables, `CODE - x`, `Term: x`)
@@ -25,9 +26,30 @@ use crate::read_gate::ReadRefusal;
 
 #[derive(Deserialize)]
 pub struct UpdateItemPayload {
-    pub is_pii: Option<bool>,
+    /// R35.4: tri-state write — true sets the override, null clears it
+    /// (inherit), false is a 400 (0 is reserved). Absent = no change.
+    /// Stock `Option<Option<bool>>` reads explicit null as absent, so a
+    /// custom deserializer keeps present-null distinct from missing.
+    #[serde(default, deserialize_with = "de_tri_state")]
+    pub sensitive_override: Option<Option<bool>>,
+    /// Removed in R35.4: any present `is_pii` key is a 400 naming the new
+    /// field (presence, not value, is the error — even explicit null).
+    #[serde(default, deserialize_with = "de_present_flag")]
+    pub is_pii: bool,
     #[serde(default)]
     pub is_glossary: Option<bool>,
+}
+
+/// Presence detector for removed keys: missing reads false (default), any
+/// present value — including null — reads true.
+fn de_present_flag<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    serde::de::IgnoredAny::deserialize(d).map(|_| true)
+}
+
+/// Tri-state write: this runs only when the key is present, so null reads
+/// `Some(None)` (clear) instead of collapsing to absent.
+fn de_tri_state<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<bool>>, D::Error> {
+    Option::<bool>::deserialize(d).map(Some)
 }
 
 #[derive(Deserialize)]
@@ -136,12 +158,13 @@ pub fn window_text(text: &str, w: &LineWindow) -> Result<(String, usize, usize, 
     Ok((lines[w.start - 1..end].join("\n"), w.start, end, total))
 }
 
-fn item_json(id: i64, source_id: i64, title: String, path: String, text: String, is_pii: bool, pdf_quality: Option<String>) -> Value {
+fn item_json(id: i64, source_id: i64, title: String, path: String, text: String, sensitive_override: Option<bool>, pdf_quality: Option<String>) -> Value {
     // `content` aliases `text`: every content-carrying payload exposes
     // `content` (search hits, citations), so item reads do too (1.0.24
     // retest #8). `text` stays the canonical key for backward compat.
     // `pdf_quality` (R36.10) is null for every non-PDF and clean PDF.
-    json!({"id": id, "source_id": source_id, "title": title, "path": path, "text": text.clone(), "content": text, "is_pii": is_pii, "pdf_quality": pdf_quality})
+    // `sensitive_override` (R35.4) mirrors the column: true or null.
+    json!({"id": id, "source_id": source_id, "title": title, "path": path, "text": text.clone(), "content": text, "sensitive_override": sensitive_override, "pdf_quality": pdf_quality})
 }
 
 /// R36.10 item-level PDF quality flag: `suspect` when the stored text trips
@@ -442,7 +465,7 @@ fn run_list_query(
         )
         .unwrap_or(0);
     let sql = format!(
-        "SELECT id, source_id, title, external_id, is_pii, is_glossary FROM ingested_items {} ORDER BY external_id, id LIMIT ? OFFSET ?",
+        "SELECT id, source_id, title, external_id, sensitive_override, is_glossary FROM ingested_items {} ORDER BY external_id, id LIMIT ? OFFSET ?",
         filter
     );
     params.push(rusqlite::types::Value::Integer(limit));
@@ -458,7 +481,7 @@ fn run_list_query(
                 r.get::<_, i64>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
-                r.get::<_, i64>(4)? != 0,
+                r.get::<_, Option<i64>>(4)?.is_some_and(|v| v == 1).then_some(true),
                 r.get::<_, i64>(5)? != 0,
             ))
         })
@@ -470,13 +493,13 @@ fn run_list_query(
     let flags = pdf_flags_for_page(conn, &tuples);
     let rows = tuples
         .into_iter()
-        .map(|(id, sid, title, path, is_pii, is_glossary)| {
+        .map(|(id, sid, title, path, sensitive_override, is_glossary)| {
             json!({
                 "id": id,
                 "source_id": sid,
                 "title": title,
                 "path": path,
-                "is_pii": is_pii,
+                "sensitive_override": sensitive_override,
                 "is_glossary": is_glossary,
                 "pdf_quality": flags.get(&id).cloned(),
             })
@@ -488,8 +511,8 @@ fn run_list_query(
 /// Listing-page flags in three batched queries (texts, roots, repair
 /// events) over the page's PDF rows only. Same precedence as the detail
 /// view: current-state `suspect` wins over a historical `repaired`.
-/// Listing row: id, source_id, title, path, is_pii, is_glossary.
-type ListRow = (i64, i64, String, String, bool, bool);
+/// Listing row: id, source_id, title, path, sensitive_override, is_glossary.
+type ListRow = (i64, i64, String, String, Option<bool>, bool);
 
 fn pdf_flags_for_page(
     conn: &rusqlite::Connection,
@@ -566,7 +589,7 @@ pub async fn list_handler(
 fn fetch_item(conn: &rusqlite::Connection, item_id: i64) -> Option<Value> {
     let row: Option<(i64, i64, String, String, String, bool)> = conn
         .query_row(
-            "SELECT id, source_id, title, external_id, text, is_pii FROM ingested_items WHERE id = ?1",
+            "SELECT id, source_id, title, external_id, text, sensitive_override FROM ingested_items WHERE id = ?1",
             [item_id],
             |r| {
                 Ok((
@@ -575,7 +598,7 @@ fn fetch_item(conn: &rusqlite::Connection, item_id: i64) -> Option<Value> {
                     r.get(2)?,
                     r.get(3)?,
                     r.get::<_, Option<String>>(4)?.unwrap_or_default(),
-                    r.get::<_, i64>(5)? != 0,
+                    r.get::<_, Option<i64>>(5).ok().flatten().is_some_and(|v| v == 1),
                 ))
             },
         )
@@ -583,9 +606,9 @@ fn fetch_item(conn: &rusqlite::Connection, item_id: i64) -> Option<Value> {
     let is_glossary: bool = conn
         .query_row("SELECT is_glossary FROM ingested_items WHERE id = ?1", [item_id], |r| r.get(0))
         .unwrap_or(false);
-    row.map(|(id, sid, title, path, text, is_pii)| {
+    row.map(|(id, sid, title, path, text, marked)| {
         let pdf_quality = pdf_quality_for(conn, sid, &title, &path, &text);
-        let mut v = item_json(id, sid, title, path, text, is_pii, pdf_quality);
+        let mut v = item_json(id, sid, title, path, text, marked.then_some(true), pdf_quality);
         v["is_glossary"] = json!(is_glossary);
         // R46.9: the item's images (embeds + its own file), bytes via /media.
         v["assets"] = json!(crate::assets::refs_for_item(conn, id));
@@ -660,11 +683,27 @@ pub async fn patch_handler(
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
         crate::common::require_row(&conn, "ingested_items", item_id, "Item not found")?;
-        if let Some(mark) = payload.is_pii {
-            let _ = conn.execute(
-                "UPDATE ingested_items SET is_pii = ?1, updated_at = datetime('now') WHERE id = ?2",
-                rusqlite::params![i64::from(mark), item_id],
-            );
+        if payload.is_pii {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"detail": "is_pii is removed; use sensitive_override (true to mark Sensitive, null to clear)"})),
+            ));
+        }
+        if let Some(write) = payload.sensitive_override {
+            match write {
+                Some(true) => {
+                    let _ = conn.execute("UPDATE ingested_items SET sensitive_override = 1, updated_at = datetime('now') WHERE id = ?1", [item_id]);
+                }
+                None => {
+                    let _ = conn.execute("UPDATE ingested_items SET sensitive_override = NULL, updated_at = datetime('now') WHERE id = ?1", [item_id]);
+                }
+                Some(false) => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"detail": "sensitive_override false is reserved; send true to mark Sensitive or null to clear"})),
+                    ));
+                }
+            }
         }
         if let Some(mark) = payload.is_glossary {
             apply_glossary_mark(&conn, item_id, mark)
@@ -730,7 +769,7 @@ mod tests {
         .unwrap();
         let gid = conn.last_insert_rowid();
         let st = app_state(&dir);
-        let mark = UpdateItemPayload { is_pii: None, is_glossary: Some(true) };
+        let mark = UpdateItemPayload { sensitive_override: None, is_pii: false, is_glossary: Some(true) };
         let Json(v) = patch_handler(State(st.clone()), Path(gid), Json(mark)).await.unwrap();
         assert_eq!(v["is_glossary"], true);
         let n = |c: &rusqlite::Connection| -> i64 {
@@ -739,7 +778,7 @@ mod tests {
         assert_eq!(n(&conn), 2, "rows active right away");
         let terms = vec!["kyc".to_string()];
         assert_eq!(crate::vocab::vocab_expansion_terms(&conn, &terms, None), ["know your customer"]);
-        let clear = UpdateItemPayload { is_pii: None, is_glossary: Some(false) };
+        let clear = UpdateItemPayload { sensitive_override: None, is_pii: false, is_glossary: Some(false) };
         let Json(v) = patch_handler(State(st), Path(gid), Json(clear)).await.unwrap();
         assert_eq!(v["is_glossary"], false);
         assert_eq!(n(&conn), 0, "unmark clears the rows");
@@ -752,7 +791,7 @@ mod tests {
         assert_eq!(v.get("path").and_then(|x| x.as_str()), Some("cfg/routing-config.yml"));
         assert_eq!(v.get("text").and_then(|x| x.as_str()), Some("ACME_FEE: x"));
         assert_eq!(v.get("content").and_then(|x| x.as_str()), Some("ACME_FEE: x"), "`content` aliases `text` (hits/citations parity)");
-        assert_eq!(v.get("is_pii").and_then(|x| x.as_bool()), Some(false), "new items default unmarked");
+        assert!(v.get("sensitive_override").is_some_and(|x| x.is_null()), "new items default unmarked (inherit): {v}");
         assert!(fetch_item(&conn, iid + 99).is_none(), "missing item reads as None (404)");
         assert!(v.get("pdf_quality").is_some_and(|q| q.is_null()), "non-PDF rows carry a null flag");
     }
@@ -972,8 +1011,21 @@ mod tests {
         assert_eq!(list_paths(&items), vec!["reportdata/b.yml", "reportdata/other.yml"]);
     }
 
+    #[test]
+    fn update_payload_parses_tri_state_and_removed_key() {
+        let absent: UpdateItemPayload = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(absent.sensitive_override, None);
+        assert!(!absent.is_pii);
+        let clear: UpdateItemPayload = serde_json::from_value(json!({"sensitive_override": Value::Null})).unwrap();
+        assert_eq!(clear.sensitive_override, Some(None), "present null clears, not no-ops");
+        let set: UpdateItemPayload = serde_json::from_value(json!({"sensitive_override": true})).unwrap();
+        assert_eq!(set.sensitive_override, Some(Some(true)));
+        let legacy_null: UpdateItemPayload = serde_json::from_value(json!({"is_pii": Value::Null})).unwrap();
+        assert!(legacy_null.is_pii, "even explicit null trips the removed key");
+    }
+
     #[tokio::test]
-    async fn patch_item_pii_mark_round_trip() {
+    async fn patch_item_sensitive_override_round_trip() {
         let dir = tempdir().unwrap();
         let db_path = crate::db::resolve_db_path(&dir.path().to_string_lossy().to_string());
         let conn = crate::db::init_db(&db_path).unwrap();
@@ -987,20 +1039,37 @@ mod tests {
         let iid = conn.last_insert_rowid();
         drop(conn);
         let state = app_state(&dir);
-        let mark = UpdateItemPayload { is_pii: Some(true), is_glossary: None };
+        let mark = UpdateItemPayload { sensitive_override: Some(Some(true)), is_pii: false, is_glossary: None };
         let Json(v) = patch_handler(State(state.clone()), Path(iid), Json(mark))
             .await
             .expect("mark must succeed");
-        assert_eq!(v.get("is_pii").and_then(|x| x.as_bool()), Some(true));
+        assert_eq!(v.get("sensitive_override").and_then(|x| x.as_bool()), Some(true));
         let Json(got) = get_handler(State(state.clone()), Path(iid), Query(GetQuery { lines: None, public_only: None })).await.expect("get must succeed");
-        assert_eq!(got.get("is_pii").and_then(|x| x.as_bool()), Some(true), "mark persists");
-        let clear = UpdateItemPayload { is_pii: Some(false), is_glossary: None };
+        assert_eq!(got.get("sensitive_override").and_then(|x| x.as_bool()), Some(true), "mark persists");
+        let clear = UpdateItemPayload { sensitive_override: Some(None), is_pii: false, is_glossary: None };
         let Json(v2) = patch_handler(State(state.clone()), Path(iid), Json(clear))
             .await
             .expect("clear must succeed");
-        assert_eq!(v2.get("is_pii").and_then(|x| x.as_bool()), Some(false));
+        assert!(v2.get("sensitive_override").is_some_and(|x| x.is_null()), "clear restores inherit: {v2}");
+        // Reserved false and the removed key are 400s naming the contract.
+        let reserved = UpdateItemPayload { sensitive_override: Some(Some(false)), is_pii: false, is_glossary: None };
+        match patch_handler(State(state.clone()), Path(iid), Json(reserved)).await {
+            Err((s, Json(e))) => {
+                assert_eq!(s, StatusCode::BAD_REQUEST);
+                assert!(e["detail"].as_str().unwrap_or_default().contains("reserved"), "{e}");
+            }
+            Ok(_) => panic!("false must be a 400"),
+        }
+        let legacy: UpdateItemPayload = serde_json::from_value(json!({"is_pii": true})).expect("removed key still parses");
+        match patch_handler(State(state.clone()), Path(iid), Json(legacy)).await {
+            Err((s, Json(e))) => {
+                assert_eq!(s, StatusCode::BAD_REQUEST);
+                assert!(e["detail"].as_str().unwrap_or_default().contains("sensitive_override"), "{e}");
+            }
+            Ok(_) => panic!("is_pii must be a 400"),
+        }
         // Missing item → 404, not a silent no-op.
-        let miss = UpdateItemPayload { is_pii: Some(true), is_glossary: None };
+        let miss = UpdateItemPayload { sensitive_override: Some(Some(true)), is_pii: false, is_glossary: None };
         match patch_handler(State(state), Path(iid + 99), Json(miss)).await {
             Err((s, _)) => assert_eq!(s, StatusCode::NOT_FOUND),
             Ok(_) => panic!("patch on missing item must 404"),

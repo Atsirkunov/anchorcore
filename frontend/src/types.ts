@@ -53,8 +53,8 @@ export type Source = {
   connector: string;
   name: string;
   enabled: boolean;
-  /** "pii" is deprecated (hidden from the UI since 2026-10-13) but the backend still accepts it for existing sources. */
-  label: "internal" | "public" | "sensitive" | "pii";
+  /** R35.4: `pii` was bundled into `sensitive` (migration 29); the API rejects it. */
+  label: "internal" | "public" | "sensitive";
   last_synced_at: string | null;
   last_error: string | null;
   error_count: number;
@@ -215,8 +215,8 @@ export type Entity = {
   window_text: string;
   dispute_count: number;
   doc_type?: string;
-  /** @deprecated PII marking was removed from the UI (owner decision 2026-10-13); the backend still sends this for compat. Optional — review endpoints don't send it. */
-  item_is_pii?: boolean;
+  /** R35.4: the parent item's effective Sensitive state (override or source label). Optional — review endpoints don't send it. */
+  item_sensitive?: boolean;
   /** R32.13: the entity's own chunk (first by id); null when none stored. */
   chunk_id?: number | null;
   created_at: string;
@@ -229,8 +229,8 @@ export type ItemMeta = {
   source_id: number;
   title: string;
   path: string;
-  /** @deprecated PII marking was removed from the UI (owner decision 2026-10-13); the backend still sends this for compat. */
-  is_pii: boolean;
+  /** R35.4: the per-document Sensitive override — true when set, null when the item inherits its source label. */
+  sensitive_override: boolean | null;
   /** R45.13: the file is used as a glossary (its rows teach search). */
   is_glossary?: boolean;
 };

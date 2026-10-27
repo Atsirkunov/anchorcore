@@ -24,13 +24,13 @@ same retrieval the UI uses. Agents that prefer plain HTTP use the REST skill.
 | `ask` | `question` (required), `project_id?`, `public_only?`, `include_content?` | composed answer (local mode) or `agent_compose` evidence (agent mode, §2.2) + citations with provenance (item id + file path + title + env class on every citation; full chunk bytes on opt-in — always in agent mode — capped at 4000 chars with `content_truncated`) + `mode`/`warning` flags (§2.1) | `POST /qa`, `POST /qa/public` |
 | `search` | `query` (required), `k` (default 8, max 50), `project_id?`, `public_only?`, `env?` (`live`/`test`) | cited chunks with provenance (item id/title/path, env class, source ref, score); summaries/snippets window on the match; test fixtures rank below live hits unless the query names them; long chunks capped at 4000 chars with `content_truncated` flagged; `images` (asset refs on the passage, R46.10 — fetch with `get_asset`) | `POST /qa/search` |
 | `get_asset` | `asset_id` (from `images` on a hit/citation) | the image as an MCP image block + metadata (`mime`, `w`, `h`, `size`, `url`); SVG returns as markup text; over 1.5 MB → error with size + raw url; sensitive sources gated like `search` (R46.10) | `GET /media/:uid?format=json` |
-| `get_entity` | `entity_id` | entity + parent item/chunk links (`item_id`, `chunk_id`) + legacy item PII flag (deprecated) | Entity graph |
+| `get_entity` | `entity_id` | entity + parent item/chunk links (`item_id`, `chunk_id`) + parent item's Sensitive state (`item_sensitive`) | Entity graph |
 | `get_source` | `source_id` | source details (no config/secrets) | Sources |
 | `list_sources` | — | names, connectors, last sync | Sources |
 | `memory_status` | — | version, model availability, pending embeddings | `/system/status` |
 | `decisions` | `q?`, `status?` (`accepted`/`superseded`/`rejected`/`deferred`/`proposed`/`current`), `source_ids?`, `project_id?`, `public_only?`, `limit?`, `offset?` | decision log parsed from record structure: `record_id`, effective `status`, `current`, `owner`, `supersedes`/`superseded_by` (inverse links resolved), `provenance` (item id, source id, path, title, chunk id) + `total`/`blocked`/`refusal` | `GET /decisions` (R45.9) |
 | `actions` | `owner?`, `state?` (`open` default/`done`/`all`), `overdue?`, `q?`, `source_ids?`, `project_id?`, `public_only?`, `limit?`, `offset?` | action items: `task`, `owner`, `due`, `done`, `provenance` + `total`/`blocked`/`refusal`; ISO-dated first | `GET /actions` (R45.9) |
-| `list_items` | `path_prefix?`, `source_id?`, `public_only?`, `limit?` (default 100, max 1000), `offset?` | item metadata (no bytes): `id`, `source_id`, `title`, `path`, `is_pii`, `is_glossary`, `pdf_quality` + `total`; a malformed `path_prefix` is an error naming the expected form (R36.15) | `GET /items` |
+| `list_items` | `path_prefix?`, `source_id?`, `public_only?`, `limit?` (default 100, max 1000), `offset?` | item metadata (no bytes): `id`, `source_id`, `title`, `path`, `sensitive_override`, `is_glossary`, `pdf_quality` + `total`; a malformed `path_prefix` is an error naming the expected form (R36.15) | `GET /items` |
 | `get_item` | `item_id` (required), `lines?` (`a-b`, `a`, `a-`), `public_only?` | the item's stored text as `content` + metadata + `assets`; with `lines` only that window plus `lines: {start, end, total}`; content over 32000 chars is cut (`content_truncated`, `total_chars`) — page with `lines` (R36.15) | `GET /items/:id?lines=a-b` |
 | `get_outline` | `item_id` or `node_id`; `depth?` (outline); `include?` (`parent,children,siblings,text`), `max_chars?` (node); `public_only?` | with `item_id`: the section tree with sizes + line spans; with `node_id`: one node with the requested links and/or its ordered leaf text (`text`, `text_truncated`, `text_chars`, `text_chunk_count`) (R36.15) | `GET /items/:id/outline`, `GET /nodes/:id?include=` |
 
@@ -62,7 +62,7 @@ REST contract:
 - Scope and gate: `public_only=true` on `/items`, `/items/:id`,
   `/items/:id/outline` and `/nodes/:id` serves only public sources.
   Anything else reads as 404, so the share-safe surface never confirms that
-  an item exists. Line windows and node `text` from `sensitive`/`pii` sources
+  an item exists. Line windows and node `text` from `sensitive` sources
   answer 403 `refusal: "gated_provider"` under an untrusted answer provider,
   with a gate event, the same as `/media`. Outline and node metadata stay
   readable. The whole-item read without `lines` keeps its earlier contract
@@ -73,8 +73,8 @@ the REST query keys (a test pins it), so an agent on the `anchorcore-search`
 skill gets the same answers without MCP. Scope and gating mirror `search` for
 the same caller: `project_id` + `public_only` resolve the same way, stale (and
 disputed, per `ANCHOR_QA_EXCLUDE_DISPUTED`) rows drop, and an untrusted answer
-provider withholds sensitive/pii-source rows and rows of PII-marked items
-(R35.2) (`blocked`, plus `refusal: "gated_provider"` when nothing survives).
+provider withholds Sensitive rows (source label or per-document override,
+R35.4) (`blocked`, plus `refusal: "gated_provider"` when nothing survives).
 
 **`search` is the workhorse for harnesses.** Harnesses don't want a final
 answer they can't inspect; they want raw context (entities, chunks, refs) to
@@ -121,7 +121,7 @@ writes the answers?"; default `local`, so upgrades keep today's behavior).
 - **`agent`** — the user's AI agent writes answers, over **MCP or the REST
   `anchorcore-search` skill** (equal channels; no feature is MCP-only).
   AnchorCore runs no chat model on the answer path: `ask` / `POST /qa` /
-  `POST /qa/public` do scope + `public_only` + the label/PII gate + fusion,
+  `POST /qa/public` do scope + `public_only` + the Sensitive gate + fusion,
   skip the follow-up rewrite and generation, and return
   `mode: "agent_compose"` — `answer` is a one-line "compose from the cited
   passages" instruction, citations always carry `content`, and there is
@@ -130,7 +130,7 @@ writes the answers?"; default `local`, so upgrades keep today's behavior).
   `context_only` + warning when it can't). A BYO OpenAI-compatible endpoint
   is an advanced setting on this same path, not a third mode.
 
-`search` / `POST /qa/search` is identical in both modes. The label/PII gate
+`search` / `POST /qa/search` is identical in both modes. The Sensitive gate
 uses the same provider-trust verdict for `ask` and `search` in both modes;
 whether agent mode should treat the agent itself as an untrusted provider
 is an open owner decision (handover 2026-10-21 §7.2.5). Switching modes

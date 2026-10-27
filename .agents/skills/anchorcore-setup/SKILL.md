@@ -1,6 +1,6 @@
 ---
 name: anchorcore-setup
-description: Install, update, launch, connect, and fully configure AnchorCore (local-first company memory) through its local REST API — always check the installed build and any installer copy on the PC against the newest GitHub release and update when stale, first-run setup on Windows/macOS/Linux, who writes answers (the user's agent, local Ollama, or the user's own OpenAI-compatible AI), embedding models, sources (folder, Jira, Linear, Google Drive, generic REST), source labels and cloud-trust rules, projects, manual PII marking, MCP agent connection (REST-API fallback when MCP can't be installed), and end-to-end verification of cited answers. Use when the user asks to set up, configure, install, update, upgrade, connect, audit, or troubleshoot AnchorCore; add their documents or trackers to it; point its answers at their own model; or asks why answers are context-only, keyword-only, or uncited.
+description: Install, update, launch, connect, and fully configure AnchorCore (local-first company memory) through its local REST API — always check the installed build and any installer copy on the PC against the newest GitHub release and update when stale, first-run setup on Windows/macOS/Linux, who writes answers (the user's agent, local Ollama, or the user's own OpenAI-compatible AI), embedding models, sources (folder, Jira, Linear, Google Drive, generic REST), source labels and cloud-trust rules, projects, per-document Sensitive marking, MCP agent connection (REST-API fallback when MCP can't be installed), and end-to-end verification of cited answers. Use when the user asks to set up, configure, install, update, upgrade, connect, audit, or troubleshoot AnchorCore; add their documents or trackers to it; point its answers at their own model; or asks why answers are context-only, keyword-only, or uncited.
 ---
 
 # AnchorCore setup
@@ -35,7 +35,7 @@ command or action and wait.
    value; to keep one, send `***set***` or omit the field; an explicit `""`
    clears it. Never echo secrets into chat, logs, or shell history.
 6. **Never:** edit the SQLite file, set `ANCHOR_CSRF_DISABLE=1`, delete the data
-   dir to "fix" things, or send `sensitive`/`pii` content to an untrusted cloud
+   dir to "fix" things, or send `sensitive` content to an untrusted cloud
    provider — the app gates that for a reason.
 
 ## 1. Install / update — newest release first
@@ -166,7 +166,7 @@ name the cause** (`/system/status` → `answer.provider` is `ollama|configured|m
 `context_only` output as a model answer — and never let a harness degrade
 silently to a model the user did not choose.
 
-Cloud providers are trusted for `sensitive`/`pii` sources and PII-marked
+Cloud providers are trusted for `sensitive` sources and Sensitive-marked
 documents only when the host is in `ANCHOR_TRUSTED_PROVIDERS` or `ANCHOR_CLOUD_TRUST=1`
 (both env vars — restart needed); localhost is always trusted. If the user is
 not comfortable with that, use a local model.
@@ -193,7 +193,7 @@ mapped docs without saving. Fix the mapping, then create.
 
 **Labels decide trust — ask, don't guess:** `internal` (default), `public`
 (only these serve `/qa/public` and `public_only` MCP calls),
-`sensitive`, `pii` (never sent to untrusted cloud providers). Change later with
+`sensitive` (never sent to untrusted cloud providers). Change later with
 `PUT /sources/{id} {"label":"…"}`; rename/enable via the same endpoint.
 
 Then sync: `POST /sources/{id}/sync` → poll `GET /sources/jobs/{id}` until
@@ -203,12 +203,13 @@ repo's `sample/` corpus (release zips do not include it; clone
 `--depth 1 --filter=blob:none --sparse`, `sparse-checkout set sample`) and ask
 "what was decided about instant payments, and why?".
 
-## 4. Projects, PII, review (as needed)
+## 4. Projects, Sensitive marks, review (as needed)
 
 - Projects scope Ask: `POST /projects {"name":"Payments","source_ids":[1,2]}`;
   `PATCH /projects/{id} {"source_ids":[…],"is_default":true}`.
-- PII marks (people-driven): `PATCH /items/{id} {"is_pii":true|false}` marks
-  a whole document; entities carry their parent item's mark as `item_is_pii`.
+- Sensitive marks (people-driven, escalate-only): `PATCH /items/{id} {"sensitive_override":true}`
+  marks a whole document, `null` clears it back to inheriting the source label
+  (`false` is reserved); entities carry their parent item's effective state as `item_sensitive`.
   A marked document is treated like a `sensitive` source toward an untrusted
   cloud provider: its chunks are not sent to a cloud embedder, and ask,
   search (incl. `public_only`), `/decisions`, `/actions` and `/media` withhold
@@ -308,7 +309,7 @@ Report back: what you configured, what you verified, what is degraded and why.
 | `401` | auth enabled | `POST /auth/login`, use `Authorization: Bearer` |
 | `retrieval: keyword_only` | embed model/base unreachable or unset | pull `nomic-embed-text` or set `embed_base_url`, then sync/reclassify to re-embed |
 | `mode: context_only` | answer provider missing or broken | configure step 2, `test-connection`, re-probe |
-| `refusal: gated_provider` | sensitive/pii-labelled or PII-marked content + untrusted cloud | local model, `ANCHOR_TRUSTED_PROVIDERS`, or user-approved `ANCHOR_CLOUD_TRUST=1` |
+| `refusal: gated_provider` | Sensitive-labelled or Sensitive-marked content + untrusted cloud | local model, `ANCHOR_TRUSTED_PROVIDERS`, or user-approved `ANCHOR_CLOUD_TRUST=1` |
 | job `failed` | connector/auth error | `GET /sources/jobs/{id}`, `/system/errors`, fix config, re-sync |
 | settings seem ignored | empty string means "unset" (falls back to env/default) | set real values; confirm via `/system/status` |
 

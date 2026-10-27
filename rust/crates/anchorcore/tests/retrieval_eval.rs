@@ -249,7 +249,7 @@ fn insert_chunk(
 ) -> i64 {
     let embedding = embedder::pack_single(&hash_embed(embed_text));
     conn.execute(
-        "INSERT INTO chunks (item_id, entity_id, source_ref, content, embedding, kind, section_id, level, path, is_pii, created_at) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, 0, '', 0, datetime('now'))",
+        "INSERT INTO chunks (item_id, entity_id, source_ref, content, embedding, kind, section_id, level, path, created_at) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, 0, '', datetime('now'))",
         params![item_id, source_ref, content, embedding, kind, section_id],
     )
     .expect("insert chunk");
@@ -267,7 +267,7 @@ fn insert_captioned_image(conn: &Connection, source_id: i64, doc: &EvalDoc, capt
     let path = anchorcore::captions::CAPTION_CRUMB;
     let embedding = embedder::pack_single(&hash_embed(&format!("{path}\n{caption}")));
     conn.execute(
-        "INSERT INTO chunks (item_id, source_ref, content, embedding, kind, section_id, level, path, is_pii, created_at) VALUES (?1, ?2, ?3, ?4, 'caption', NULL, 0, ?5, 0, datetime('now'))",
+        "INSERT INTO chunks (item_id, source_ref, content, embedding, kind, section_id, level, path, created_at) VALUES (?1, ?2, ?3, ?4, 'caption', NULL, 0, ?5, datetime('now'))",
         params![item_id, doc.file, caption, embedding, path],
     )
     .expect("insert caption chunk");
