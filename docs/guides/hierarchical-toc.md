@@ -19,10 +19,12 @@ ranked the whole pile. The chunker already knew the document's structure
   (`Art 12 › 12.3`), a short summary, and the summary's embedding.
 - **`chunks`** — every passage points at its section (`section_id`, `level`,
   `path`), so siblings and breadcrumbs are one query away.
-- **`tags` + `chunk_tags`** — a topic taxonomy built as documents arrive. A
-  proposed topic reuses an existing tag when close enough (similarity 0.82,
-  tunable via `tag_reuse_threshold` in Settings), otherwise a new tag is
-  created. Tags are lowercase-normalized with usage counts.
+- **`tags` + `chunk_tags`** — a topic taxonomy built as documents arrive.
+  Ingest proposes single words, and a single word is its own tag: it reuses
+  only a tag with exactly that name. A multi-word name reuses an existing tag
+  when close enough (similarity 0.82, tunable via `tag_reuse_threshold` in
+  Settings), otherwise a new tag is created. Tags are lowercase-normalized
+  with usage counts.
 
 Migrations: `rust/crates/anchorcore/migrations/11_sections.sql`,
 `12_tags.sql`; tag logic in `src/tags.rs`.
