@@ -208,7 +208,7 @@ impl Scheduler {
         let mut embedded = 0usize;
         let mut failed = false;
         if !self.embedder.cloud_trusted() {
-            tracing::info!("embedding backfill: provider untrusted — label-gated chunks stay pending");
+            tracing::info!("embedding backfill: provider untrusted — label-gated and PII-marked chunks stay pending");
         }
         let mut cursor = 0i64;
         loop {
@@ -235,7 +235,7 @@ impl Scheduler {
 
     /// Batch-selection SQL (F-02): a trusted provider drains every chunk
     /// that needs a vector; an untrusted one excludes sensitive/pii-labeled
-    /// chunks via the item→source join (unlabeled/orphan chunks still drain,
+    /// chunks and chunks of PII-marked items (R35.2) via the item→source join (unlabeled/orphan chunks still drain,
     /// matching ingest, where only a sensitive label gates).
     ///
     /// R45.5: "needs a vector" = NULL vector, an unstamped vector (unknown
@@ -258,7 +258,8 @@ impl Scheduler {
              LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
              LEFT JOIN sources s ON s.id = i.source_id "
         };
-        let label = if trusted { "" } else { " AND COALESCE(s.label,'') NOT IN ('sensitive','pii')" };
+        // R35.2: a PII-marked item stays pending like a sensitive label.
+        let label = if trusted { "" } else { " AND COALESCE(s.label,'') NOT IN ('sensitive','pii') AND COALESCE(i.is_pii,0) = 0" };
         format!(
             "SELECT c.id, c.content, c.path FROM chunks c {gate}\
              WHERE c.id > ?1 AND {need}{label} ORDER BY c.id LIMIT ?2"
@@ -493,6 +494,10 @@ mod tests {
         let sen_chunk: i64 = conn.query_row("SELECT c.id FROM chunks c JOIN ingested_items i ON i.id=c.item_id WHERE i.source_id=?1", [sen], |r| r.get(0)).unwrap();
         assert_eq!(run(false), vec![ord_chunk]);
         assert_eq!(run(true), vec![ord_chunk, sen_chunk]);
+        // R35.2: a PII-marked item on the ordinary source stays pending too.
+        conn.execute("UPDATE ingested_items SET is_pii=1 WHERE source_id=?1", [ord]).unwrap();
+        assert!(run(false).is_empty(), "marked item withheld from an untrusted embedder");
+        assert_eq!(run(true), vec![ord_chunk, sen_chunk], "trusted drains marked items");
     }
 
     #[tokio::test]

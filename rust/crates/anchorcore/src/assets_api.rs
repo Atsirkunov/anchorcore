@@ -6,7 +6,8 @@
 //! (`auth::is_public_path`), so an asset route there would bypass auth and
 //! shadow the UI's own scripts. Same label gate as `/qa/search` and the
 //! records listings: under an untrusted answer provider a sensitive/pii
-//! source's image is refused with `refusal: "gated_provider"`.
+//! source's image, or one in a PII-marked item (R35.2), is refused with
+//! `refusal: "gated_provider"`.
 //!
 //! R46.10: `?format=json` is the agent form for harnesses that can only
 //! read JSON (and what MCP `get_asset` calls): `{asset_id, mime, w, h,
@@ -39,8 +40,9 @@ pub struct MediaQuery {
     pub format: Option<String>,
 }
 
+/// `label` is `load_media`'s gate label (source label or the item mark).
 fn gated_label(label: &str) -> bool {
-    label == "sensitive" || label == "pii"
+    crate::common::cloud_gate_reason(label, label == crate::common::ITEM_PII_MARK).is_some()
 }
 
 fn error(status: StatusCode, detail: &str) -> Response {

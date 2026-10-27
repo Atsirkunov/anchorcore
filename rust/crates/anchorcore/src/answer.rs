@@ -256,7 +256,7 @@ pub(crate) async fn record_gate_event(data_dir: &str, blocked: &[String]) {
     let _ = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         if let Ok(conn) = crate::db::init_db(&db_path) {
-            let msg = format!("answer gate: {} hit(s) excluded from cloud answer (sensitive/pii source)", blocked_len);
+            let msg = format!("answer gate: {} hit(s) excluded from cloud answer (sensitive/pii source or PII-marked item)", blocked_len);
             let detail = format!("labels={:?}; set ANCHOR_CLOUD_TRUST=1 to allow", labels);
             let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning',?1,?2)", rusqlite::params![msg, detail]);
         }
@@ -815,29 +815,67 @@ fn public_source_ids(conn: &Connection) -> HashSet<i64> {
 }
 
 fn gate_answer_hits(conn: &Connection, hits: &[retrieval::Hit]) -> (Vec<retrieval::Hit>, Vec<String>) {
-    let sids: HashSet<i64> = hits.iter().filter_map(|h| h.source_id).collect();
-    let mut labels: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
-    if !sids.is_empty() {
-        let sql = format!("SELECT id, label FROM sources WHERE id IN ({})", crate::common::placeholders(sids.len()));
-        if let Ok(mut stmt) = conn.prepare(&sql) {
-            for row in stmt.query_map(rusqlite::params_from_iter(sids.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).unwrap().flatten() {
-                labels.insert(row.0, row.1);
-            }
-        }
-    }
+    let labels = hit_source_labels(conn, hits);
+    let marked = pii_marked_chunks(conn, hits);
     let mut allowed = Vec::new();
     let mut blocked = Vec::new();
     for h in hits {
-        // R35.1: label-only — the chunk-`is_pii` half is gone with auto-detect.
-        // Manual item marks gate cloud flows via a follow-up (R35.2).
+        // R35.1 dropped the chunk-`is_pii` half; R35.2: the manual item mark
+        // gates like a sensitive label (chunks resolve via their item).
         let label = h.source_id.and_then(|id| labels.get(&id).cloned()).unwrap_or_else(|| "internal".to_string());
-        if label == "sensitive" || label == "pii" {
-            blocked.push(label);
-        } else {
-            allowed.push(h.clone());
+        match crate::common::cloud_gate_reason(&label, marked.contains(&h.chunk_id)) {
+            Some(reason) => blocked.push(reason),
+            None => allowed.push(h.clone()),
         }
     }
     (allowed, blocked)
+}
+
+fn hit_source_labels(conn: &Connection, hits: &[retrieval::Hit]) -> std::collections::HashMap<i64, String> {
+    let sids: HashSet<i64> = hits.iter().filter_map(|h| h.source_id).collect();
+    let mut labels = std::collections::HashMap::new();
+    if sids.is_empty() {
+        return labels;
+    }
+    let sql = format!("SELECT id, label FROM sources WHERE id IN ({})", crate::common::placeholders(sids.len()));
+    if let Ok(mut stmt) = conn.prepare(&sql) {
+        if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(sids.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))) {
+            labels.extend(rows.flatten());
+        }
+    }
+    labels
+}
+
+/// R35.2: hit chunk ids whose item carries the manual PII mark — the hit's
+/// own `item_id`, else the chunk's item (entity chunks via their entity).
+fn pii_marked_chunks(conn: &Connection, hits: &[retrieval::Hit]) -> HashSet<i64> {
+    if hits.is_empty() {
+        return HashSet::new();
+    }
+    let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+    let sql = format!(
+        "SELECT c.id FROM chunks c LEFT JOIN entities e ON e.id = c.entity_id \
+         JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
+         WHERE c.id IN ({}) AND i.is_pii = 1",
+        crate::common::placeholders(ids.len())
+    );
+    let mut out: HashSet<i64> = HashSet::new();
+    if let Ok(mut stmt) = conn.prepare(&sql) {
+        if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| r.get::<_, i64>(0)) {
+            out.extend(rows.flatten());
+        }
+    }
+    let item_ids: HashSet<i64> = hits.iter().filter_map(|h| h.item_id).collect();
+    if item_ids.is_empty() {
+        return out;
+    }
+    let sql = format!("SELECT id FROM ingested_items WHERE is_pii = 1 AND id IN ({})", crate::common::placeholders(item_ids.len()));
+    let marked_items: HashSet<i64> = conn
+        .prepare(&sql)
+        .and_then(|mut stmt| stmt.query_map(rusqlite::params_from_iter(item_ids.iter()), |r| r.get::<_, i64>(0)).map(|rows| rows.flatten().collect()))
+        .unwrap_or_default();
+    out.extend(hits.iter().filter(|h| h.item_id.is_some_and(|i| marked_items.contains(&i))).map(|h| h.chunk_id));
+    out
 }
 
 /// R45.2: answers are ready in agent mode with no model at all — the agent
@@ -1545,14 +1583,34 @@ mod tests {
     #[test]
     fn gate_answer_hits_filters_by_source_label_only() {
         // R35.1: the chunk-`is_pii` half is gone with auto-detect — a flagged
-        // chunk on an ordinary source no longer blocks (manual marks gate
-        // cloud flows via R35.2).
+        // chunk on an ordinary source no longer blocks (the manual item mark
+        // does, see `gate_answer_hits_withholds_pii_marked_items`).
         let (_dir, conn, _settings) = seed_gate_db();
         let ord: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
         let sen: i64 = conn.query_row("SELECT id FROM sources WHERE name='secret'", [], |r| r.get(0)).unwrap();
         let (allowed, blocked) = gate_answer_hits(&conn, &[mk_hit(ord, false), mk_hit(sen, false), mk_hit(ord, true)]);
         assert_eq!(allowed.len(), 2);
         assert_eq!(blocked, vec!["sensitive".to_string()]);
+    }
+
+    #[test]
+    fn gate_answer_hits_withholds_pii_marked_items() {
+        // R35.2: the manual item mark gates like a sensitive label, resolved
+        // via the chunk's item (no `item_id` on the hit) or the hit's own.
+        let (_dir, conn, _settings) = seed_gate_db();
+        let ord: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
+        let (chunk, item): (i64, i64) = conn
+            .query_row("SELECT c.id, c.item_id FROM chunks c JOIN ingested_items i ON i.id=c.item_id WHERE i.source_id=?1", [ord], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        let hit = || crate::retrieval::Hit { chunk_id: chunk, ..mk_hit(ord, false) };
+        let (allowed, blocked) = gate_answer_hits(&conn, &[hit()]);
+        assert_eq!((allowed.len(), blocked.len()), (1, 0), "unmarked flows");
+        conn.execute("UPDATE ingested_items SET is_pii=1 WHERE id=?1", [item]).unwrap();
+        let (allowed, blocked) = gate_answer_hits(&conn, &[hit()]);
+        assert!(allowed.is_empty());
+        assert_eq!(blocked, vec![crate::common::ITEM_PII_MARK.to_string()]);
+        let via_item = crate::retrieval::Hit { chunk_id: 999_999, item_id: Some(item), ..mk_hit(ord, false) };
+        assert!(gate_answer_hits(&conn, &[via_item]).0.is_empty(), "hit item_id alone resolves the mark");
     }
 
     #[tokio::test]

@@ -36,8 +36,8 @@ the REST query keys (a test pins it), so an agent on the `anchorcore-search`
 skill gets the same answers without MCP. Scope and gating mirror `search` for
 the same caller: `project_id` + `public_only` resolve the same way, stale (and
 disputed, per `ANCHOR_QA_EXCLUDE_DISPUTED`) rows drop, and an untrusted answer
-provider withholds sensitive/pii-source rows (`blocked`, plus `refusal:
-"gated_provider"` when nothing survives).
+provider withholds sensitive/pii-source rows and rows of PII-marked items
+(R35.2) (`blocked`, plus `refusal: "gated_provider"` when nothing survives).
 
 **`search` is the workhorse for harnesses.** Harnesses don't want a final
 answer they can't inspect; they want raw context (entities, chunks, refs) to

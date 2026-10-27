@@ -166,8 +166,8 @@ name the cause** (`/system/status` → `answer.provider` is `ollama|configured|m
 `context_only` output as a model answer — and never let a harness degrade
 silently to a model the user did not choose.
 
-Cloud providers are trusted for `sensitive`/`pii` sources
-only when the host is in `ANCHOR_TRUSTED_PROVIDERS` or `ANCHOR_CLOUD_TRUST=1`
+Cloud providers are trusted for `sensitive`/`pii` sources and PII-marked
+documents only when the host is in `ANCHOR_TRUSTED_PROVIDERS` or `ANCHOR_CLOUD_TRUST=1`
 (both env vars — restart needed); localhost is always trusted. If the user is
 not comfortable with that, use a local model.
 
@@ -209,6 +209,11 @@ repo's `sample/` corpus (release zips do not include it; clone
   `PATCH /projects/{id} {"source_ids":[…],"is_default":true}`.
 - PII marks (people-driven): `PATCH /items/{id} {"is_pii":true|false}` marks
   a whole document; entities carry their parent item's mark as `item_is_pii`.
+  A marked document is treated like a `sensitive` source toward an untrusted
+  cloud provider: its chunks are not sent to a cloud embedder, and ask,
+  search (incl. `public_only`), `/decisions`, `/actions` and `/media` withhold
+  it (`blocked`, `refusal: gated_provider` when nothing survives). Mark before
+  connecting a cloud embedder — vectors already sent are not recalled.
   The auto-detect/review endpoints are retired — do not call `/pii/*`.
 - Housekeeping: `GET /review/low-confidence`, `GET /review/duplicates`,
   `POST /review/merge {"proposal_id":…,"decision":"merge"|"dismiss"}`.
@@ -302,7 +307,7 @@ Report back: what you configured, what you verified, what is degraded and why.
 | `401` | auth enabled | `POST /auth/login`, use `Authorization: Bearer` |
 | `retrieval: keyword_only` | embed model/base unreachable or unset | pull `nomic-embed-text` or set `embed_base_url`, then sync/reclassify to re-embed |
 | `mode: context_only` | answer provider missing or broken | configure step 2, `test-connection`, re-probe |
-| `refusal: gated_provider` | sensitive/pii-labelled content + untrusted cloud | local model, `ANCHOR_TRUSTED_PROVIDERS`, or user-approved `ANCHOR_CLOUD_TRUST=1` |
+| `refusal: gated_provider` | sensitive/pii-labelled or PII-marked content + untrusted cloud | local model, `ANCHOR_TRUSTED_PROVIDERS`, or user-approved `ANCHOR_CLOUD_TRUST=1` |
 | job `failed` | connector/auth error | `GET /sources/jobs/{id}`, `/system/errors`, fix config, re-sync |
 | settings seem ignored | empty string means "unset" (falls back to env/default) | set real values; confirm via `/system/status` |
 
