@@ -125,7 +125,7 @@ export function FolderPicker({
           <>
             {dirs.map((d) => (
               <button key={d.path} type="button" style={styles.dir} title={d.path} disabled={loading} onClick={() => go(d.path)}>
-                {d.name}/
+                <span style={styles.dirLabel}>{d.name}/</span>
               </button>
             ))}
             {dirs.length === 0 && <div style={styles.hint}>No subfolders — you can select this folder.</div>}
@@ -188,6 +188,9 @@ const styles: Record<string, React.CSSProperties> = {
     background: theme.bg,
     padding: 4,
   },
+  // Truncation lives on dirLabel, not here: a grid-item <button> with
+  // overflow:hidden collapses to padding height in Chromium and clips its
+  // own label, leaving the list as empty stripes.
   dir: {
     textAlign: "left",
     background: theme.bgCard,
@@ -197,6 +200,9 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "0.35rem 0.6rem",
     fontSize: 13,
     cursor: "pointer",
+  },
+  dirLabel: {
+    display: "block",
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",

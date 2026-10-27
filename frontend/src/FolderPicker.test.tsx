@@ -143,6 +143,24 @@ describe("FolderPicker", () => {
     expect(onCancel).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps truncation off the dir buttons so rows keep their height", async () => {
+    // A grid-item <button> with overflow:hidden collapses to padding height in
+    // Chromium and clips its own label; the truncation trio must live on the
+    // inner span, never on the button.
+    vi.spyOn(api, "browseFolders").mockResolvedValue(HOME);
+    const host = await renderPicker({});
+    const row = buttons(host).find((b) => b.textContent === "docs/");
+    expect(row).toBeDefined();
+    expect(row!.style.overflow).toBe("");
+    expect(row!.style.whiteSpace).toBe("");
+    const label = row!.querySelector("span");
+    expect(label?.textContent).toBe("docs/");
+    expect(label!.style.display).toBe("block");
+    expect(label!.style.overflow).toBe("hidden");
+    expect(label!.style.textOverflow).toBe("ellipsis");
+    expect(label!.style.whiteSpace).toBe("nowrap");
+  });
+
   it("surfaces browse failures instead of hanging on Loading", async () => {
     vi.spyOn(api, "browseFolders").mockRejectedValue(new Error("fs offline"));
     const host = await renderPicker({});
