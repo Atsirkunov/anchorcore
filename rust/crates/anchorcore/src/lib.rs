@@ -48,6 +48,7 @@ pub mod pdf_images;
 pub mod pipeline;
 pub mod projects;
 pub mod query_expand;
+pub mod read_gate;
 pub mod records;
 pub mod records_api;
 pub mod report;

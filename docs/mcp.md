@@ -3,7 +3,7 @@
 > Goal: let any AI harness (Claude Code, Codex, opencode, Cursor, …) connect
 > to AnchorCore's memory — locally or against a shared instance — and
 > consume it with full provenance.
-> Status: **shipped** — `anchorcore mcp` (same binary, stdio, 9 read-only
+> Status: **shipped** — `anchorcore mcp` (same binary, stdio, 12 read-only
 > tools, `public_only` gate, ask/search audit). Every tool has a REST
 > equivalent (the `anchorcore-search` skill), so no feature is MCP-only. HTTP
 > transport and write-back are planned (B14.2/B14.3).
@@ -30,6 +30,43 @@ same retrieval the UI uses. Agents that prefer plain HTTP use the REST skill.
 | `memory_status` | — | version, model availability, pending embeddings | `/system/status` |
 | `decisions` | `q?`, `status?` (`accepted`/`superseded`/`rejected`/`deferred`/`proposed`/`current`), `source_ids?`, `project_id?`, `public_only?`, `limit?`, `offset?` | decision log parsed from record structure: `record_id`, effective `status`, `current`, `owner`, `supersedes`/`superseded_by` (inverse links resolved), `provenance` (item id, source id, path, title, chunk id) + `total`/`blocked`/`refusal` | `GET /decisions` (R45.9) |
 | `actions` | `owner?`, `state?` (`open` default/`done`/`all`), `overdue?`, `q?`, `source_ids?`, `project_id?`, `public_only?`, `limit?`, `offset?` | action items: `task`, `owner`, `due`, `done`, `provenance` + `total`/`blocked`/`refusal`; ISO-dated first | `GET /actions` (R45.9) |
+| `list_items` | `path_prefix?`, `source_id?`, `public_only?`, `limit?` (default 100, max 1000), `offset?` | item metadata (no bytes): `id`, `source_id`, `title`, `path`, `is_pii`, `is_glossary`, `pdf_quality` + `total`; a malformed `path_prefix` is an error naming the expected form (R36.15) | `GET /items` |
+| `get_item` | `item_id` (required), `lines?` (`a-b`, `a`, `a-`), `public_only?` | the item's stored text as `content` + metadata + `assets`; with `lines` only that window plus `lines: {start, end, total}`; content over 32000 chars is cut (`content_truncated`, `total_chars`) — page with `lines` (R36.15) | `GET /items/:id?lines=a-b` |
+| `get_outline` | `item_id` or `node_id`; `depth?` (outline); `include?` (`parent,children,siblings,text`), `max_chars?` (node); `public_only?` | with `item_id`: the section tree with sizes + line spans; with `node_id`: one node with the requested links and/or its ordered leaf text (`text`, `text_truncated`, `text_chars`, `text_chunk_count`) (R36.15) | `GET /items/:id/outline`, `GET /nodes/:id?include=` |
+
+**Item reads are REST first too** (R36.15). `list_items`, `get_item` and
+`get_outline` forward only the REST query keys (a test pins it). Nodes fold
+into `get_outline` through `node_id`, following the owner call of 2026-10-19.
+REST contract:
+
+- `GET /items/:id?lines=a-b` serves a line window: 1-based and inclusive,
+  also `a` (one line) or `a-` (to the end). Lines count the stored item text,
+  the same text the whole-item read returns. Config, code and markdown
+  section spans (`line_start`/`line_end` on hits and outline entries) index
+  that text directly. Prose spans count the cleaned text and can be off by a
+  few lines. An end past the last line clamps. A malformed range, `a > b`
+  or a start past the end is a 400 whose `detail` names the accepted forms
+  or the line count.
+- `GET /nodes/:id?include=` takes any mix of `parent`, `children`,
+  `siblings` and `text`. Unknown tokens are ignored. `text` is the
+  section's own leaf chunks plus its descendants', in document order,
+  joined like a search parent-return. It comes with `text_truncated`,
+  `text_chars` (the full size) and `text_chunk_count`, capped by
+  `max_chars` (default 32000, max 1000000).
+- `path_prefix` on `GET /items` and `POST /qa/search` (both modes) must be a
+  relative item path as listed or an absolute path under a folder source's
+  root. Wildcards (`*`, `?`), `..` segments, a leading `./` or `~`, URL
+  schemes, drive-relative `C:x` and control characters get a 400 that names
+  the expected form, never an empty result. A well-formed prefix with no
+  matches is still an empty list.
+- Scope and gate: `public_only=true` on `/items`, `/items/:id`,
+  `/items/:id/outline` and `/nodes/:id` serves only public sources.
+  Anything else reads as 404, so the share-safe surface never confirms that
+  an item exists. Line windows and node `text` from `sensitive`/`pii` sources
+  answer 403 `refusal: "gated_provider"` under an untrusted answer provider,
+  with a gate event, the same as `/media`. Outline and node metadata stay
+  readable. The whole-item read without `lines` keeps its earlier contract
+  (`rust/docs/decisions.md` R36.15).
 
 **`decisions`/`actions` are REST first** (R45.9): the MCP tools forward only
 the REST query keys (a test pins it), so an agent on the `anchorcore-search`

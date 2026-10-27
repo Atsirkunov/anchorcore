@@ -21,6 +21,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::health::AppState;
+use crate::read_gate::ReadRefusal;
 
 #[derive(Deserialize)]
 pub struct UpdateItemPayload {
@@ -35,6 +36,104 @@ pub struct ListQuery {
     pub source_id: Option<i64>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    /// R36.15: only items of `public`-labelled sources (the share-safe scope).
+    pub public_only: Option<bool>,
+}
+
+/// R36.15: `GET /items/:id` read options.
+#[derive(Deserialize)]
+pub struct GetQuery {
+    /// Line window `a-b` (1-based, inclusive), `a` (one line) or `a-` (to
+    /// the end) over the stored item text.
+    pub lines: Option<String>,
+    pub public_only: Option<bool>,
+}
+
+/// R36.15: the accepted `path_prefix` forms, named in every rejection.
+const PREFIX_FORM: &str = "Expected a relative item path as GET /items lists it (e.g. \"docs/\" or \"cfg/routing\") or an absolute path under a folder source's root (e.g. \"/data/corpus/cfg\" or \"C:/corpus/cfg\"); no wildcards, \"..\" segments, leading \"./\" or \"~\", or URL schemes";
+
+/// R36.15: why a `path_prefix` can never match a stored item path, if it
+/// can't. Prefixes are literal (LIKE-escaped), so these inputs used to
+/// return an empty list that read as "nothing there".
+fn prefix_defect(p: &str) -> Option<&'static str> {
+    let n = p.replace('\\', "/");
+    if p.chars().any(|c| c.is_control()) {
+        return Some("it contains control characters");
+    }
+    if p.contains('*') || p.contains('?') {
+        return Some("wildcards are not supported (prefixes match literally)");
+    }
+    if n.contains("://") {
+        return Some("URLs are not item paths");
+    }
+    if n.split('/').any(|seg| seg == "..") {
+        return Some("\"..\" segments never occur in stored paths");
+    }
+    if n.starts_with("./") || n.starts_with('~') {
+        return Some("stored paths have no leading \"./\" or \"~\" (use the relative path, or the absolute path)");
+    }
+    let b = n.as_bytes();
+    if b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic() && b.get(2) != Some(&b'/') {
+        return Some("drive-relative paths (\"C:x\") are ambiguous");
+    }
+    None
+}
+
+/// R36.15: shared by `GET /items` and `POST /qa/search` — a malformed
+/// prefix is a 400 naming the expected form, never an empty result. Empty
+/// or whitespace-only prefixes stay "unfiltered".
+pub fn validate_path_prefix(prefix: Option<&str>) -> Result<(), String> {
+    let Some(p) = prefix else { return Ok(()) };
+    if p.trim().is_empty() {
+        return Ok(());
+    }
+    match prefix_defect(p) {
+        Some(why) => Err(format!("path_prefix {p:?} is malformed: {why}. {PREFIX_FORM}.")),
+        None => Ok(()),
+    }
+}
+
+/// R36.15: a parsed `?lines=` window (1-based, inclusive; `end: None` = EOF).
+#[derive(Debug, PartialEq)]
+pub struct LineWindow {
+    pub start: usize,
+    pub end: Option<usize>,
+}
+
+const LINES_FORM: &str = "lines must be \"a-b\" (1-based, inclusive, a <= b), \"a\" (one line) or \"a-\" (line a to the end)";
+
+fn parse_line_no(s: &str) -> Option<usize> {
+    s.trim().parse::<usize>().ok().filter(|n| *n >= 1)
+}
+
+pub fn parse_lines(raw: &str) -> Result<LineWindow, String> {
+    let bad = || format!("{LINES_FORM} — got {raw:?}");
+    let Some((a, b)) = raw.split_once('-') else {
+        let n = parse_line_no(raw).ok_or_else(bad)?;
+        return Ok(LineWindow { start: n, end: Some(n) });
+    };
+    let start = parse_line_no(a).ok_or_else(bad)?;
+    if b.trim().is_empty() {
+        return Ok(LineWindow { start, end: None });
+    }
+    let end = parse_line_no(b).ok_or_else(bad)?;
+    if end < start {
+        return Err(bad());
+    }
+    Ok(LineWindow { start, end: Some(end) })
+}
+
+/// Apply a window to the item text: `(content, start, end, total)`. A start
+/// past the last line is a 400 naming the line count; an end past it clamps
+/// (`sed -n` semantics), and the response reports the served end.
+pub fn window_text(text: &str, w: &LineWindow) -> Result<(String, usize, usize, usize), String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let total = lines.len();
+    if w.start > total {
+        return Err(format!("lines start {} is past the end: the item has {total} line(s)", w.start));
+    }
+    let end = w.end.unwrap_or(total).min(total);
+    Ok((lines[w.start - 1..end].join("\n"), w.start, end, total))
 }
 
 fn item_json(id: i64, source_id: i64, title: String, path: String, text: String, is_pii: bool, pdf_quality: Option<String>) -> Value {
@@ -250,19 +349,31 @@ pub(crate) fn item_under_prefix(
 /// Relative prefixes match the stored external id; absolute prefixes resolve
 /// through the owning folder source's root (R36.6).
 /// Metadata only (no bytes), so no provider gate — like the entities list.
-fn list_items(
-    conn: &rusqlite::Connection,
-    path_prefix: Option<&str>,
+/// Listing filters (R36.15 adds `public_only`).
+struct ListFilter<'a> {
+    path_prefix: Option<&'a str>,
     source_id: Option<i64>,
-    limit: i64,
-    offset: i64,
-) -> (Vec<Value>, i64) {
+    public_only: bool,
+}
+
+const PUBLIC_ONLY_COND: &str = "source_id IN (SELECT id FROM sources WHERE label = 'public')";
+
+fn base_conds(public_only: bool) -> Vec<String> {
+    if public_only { vec![PUBLIC_ONLY_COND.to_string()] } else { Vec::new() }
+}
+
+fn list_items(conn: &rusqlite::Connection, path_prefix: Option<&str>, source_id: Option<i64>, limit: i64, offset: i64) -> (Vec<Value>, i64) {
+    list_items_filtered(conn, &ListFilter { path_prefix, source_id, public_only: false }, limit, offset)
+}
+
+fn list_items_filtered(conn: &rusqlite::Connection, f: &ListFilter, limit: i64, offset: i64) -> (Vec<Value>, i64) {
+    let (path_prefix, source_id) = (f.path_prefix, f.source_id);
     if let Some(p) = path_prefix {
         if is_absolute_prefix(p) {
-            return list_items_absolute(conn, p, source_id, limit, offset);
+            return list_items_absolute(conn, p, f, limit, offset);
         }
     }
-    let mut conds: Vec<String> = Vec::new();
+    let mut conds: Vec<String> = base_conds(f.public_only);
     let mut params: Vec<rusqlite::types::Value> = Vec::new();
     if let Some(p) = path_prefix {
         let norm = p.replace('\\', "/");
@@ -282,14 +393,15 @@ fn list_items(
 fn list_items_absolute(
     conn: &rusqlite::Connection,
     prefix: &str,
-    source_id: Option<i64>,
+    f: &ListFilter,
     limit: i64,
     offset: i64,
 ) -> (Vec<Value>, i64) {
     let roots = folder_roots(conn);
     let mut ors: Vec<String> = Vec::new();
     let mut params: Vec<rusqlite::types::Value> = Vec::new();
-    for (sid, rel) in absolute_remainders(&roots, prefix, source_id) {
+    let mut conds = base_conds(f.public_only);
+    for (sid, rel) in absolute_remainders(&roots, prefix, f.source_id) {
         match rel {
             None => {
                 ors.push("source_id = ?".to_string());
@@ -303,9 +415,11 @@ fn list_items_absolute(
         }
     }
     if ors.is_empty() {
-        return run_list_query(conn, vec!["1 = 0".to_string()], params, limit, offset);
+        conds.push("1 = 0".to_string());
+        return run_list_query(conn, conds, params, limit, offset);
     }
-    run_list_query(conn, vec![format!("({})", ors.join(" OR "))], params, limit, offset)
+    conds.push(format!("({})", ors.join(" OR ")));
+    run_list_query(conn, conds, params, limit, offset)
 }
 
 fn run_list_query(
@@ -430,18 +544,23 @@ fn pdf_texts_for(conn: &rusqlite::Connection, ids: &[i64]) -> std::collections::
     out
 }
 
-pub async fn list_handler(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Json<Value> {
+pub async fn list_handler(
+    State(state): State<AppState>,
+    Query(q): Query<ListQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    validate_path_prefix(q.path_prefix.as_deref()).map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({"detail": e}))))?;
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
         let limit = q.limit.unwrap_or(100).clamp(1, 1000);
         let offset = q.offset.unwrap_or(0).max(0);
-        let (items, total) = list_items(&conn, q.path_prefix.as_deref(), q.source_id, limit, offset);
+        let filter = ListFilter { path_prefix: q.path_prefix.as_deref(), source_id: q.source_id, public_only: q.public_only.unwrap_or(false) };
+        let (items, total) = list_items_filtered(&conn, &filter, limit, offset);
         json!({"items": items, "total": total})
     })
     .await
     .unwrap();
-    Json(result)
+    Ok(Json(result))
 }
 
 fn fetch_item(conn: &rusqlite::Connection, item_id: i64) -> Option<Value> {
@@ -491,23 +610,44 @@ fn apply_glossary_mark(conn: &rusqlite::Connection, item_id: i64, mark: bool) ->
     crate::vocab::store_glossary_file(conn, item_id, source_id, &pairs).map(|_| ())
 }
 
+/// R36.15: one item read under the `public_only` scope, with an optional
+/// line window. Only the window form is byte-gated here — the whole-item
+/// read keeps its pre-R36.15 contract (see `rust/docs/decisions.md`).
+fn read_item(conn: &rusqlite::Connection, item_id: i64, q: &GetQuery, trusted: bool) -> Result<Value, ReadRefusal> {
+    const NOT_FOUND: &str = "Item not found";
+    let label = crate::read_gate::item_label(conn, item_id).ok_or(ReadRefusal::NotFound(NOT_FOUND))?;
+    crate::read_gate::check_public(&label, q.public_only.unwrap_or(false), NOT_FOUND)?;
+    let window = match q.lines.as_deref() {
+        Some(raw) => Some(parse_lines(raw).map_err(ReadRefusal::BadRequest)?),
+        None => None,
+    };
+    let mut v = fetch_item(conn, item_id).ok_or(ReadRefusal::NotFound(NOT_FOUND))?;
+    let Some(w) = window else { return Ok(v) };
+    crate::read_gate::check_bytes(&label, trusted)?;
+    let text = v.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string();
+    let (content, start, end, total) = window_text(&text, &w).map_err(ReadRefusal::BadRequest)?;
+    v["text"] = json!(content.clone());
+    v["content"] = json!(content);
+    v["lines"] = json!({"start": start, "end": end, "total": total});
+    Ok(v)
+}
+
 pub async fn get_handler(
     State(state): State<AppState>,
     Path(item_id): Path<i64>,
+    Query(q): Query<GetQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
+    let trusted = crate::answer::is_answer_trusted(&state.settings);
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
-        match fetch_item(&conn, item_id) {
-            Some(v) => Ok(v),
-            None => Err((StatusCode::NOT_FOUND, Json(json!({"detail": "Item not found"})))),
-        }
+        read_item(&conn, item_id, &q, trusted)
     })
     .await
     .unwrap();
     match result {
         Ok(v) => Ok(Json(v)),
-        Err(e) => Err(e),
+        Err(r) => Err(crate::read_gate::into_api_error(&state.data_dir, r).await),
     }
 }
 
@@ -825,8 +965,8 @@ mod tests {
         let (dir, conn, _sa, _sb) = seed_list_db();
         drop(conn);
         let state = app_state(&dir);
-        let q = ListQuery { path_prefix: Some("reportdata/".to_string()), source_id: None, limit: Some(2), offset: Some(1) };
-        let Json(v) = list_handler(State(state), Query(q)).await;
+        let q = ListQuery { path_prefix: Some("reportdata/".to_string()), source_id: None, limit: Some(2), offset: Some(1), public_only: None };
+        let Json(v) = list_handler(State(state), Query(q)).await.expect("well-formed prefix lists");
         assert_eq!(v.get("total").and_then(|t| t.as_i64()), Some(4));
         let items = v.get("items").and_then(|i| i.as_array()).cloned().unwrap_or_default();
         assert_eq!(list_paths(&items), vec!["reportdata/b.yml", "reportdata/other.yml"]);
@@ -852,7 +992,7 @@ mod tests {
             .await
             .expect("mark must succeed");
         assert_eq!(v.get("is_pii").and_then(|x| x.as_bool()), Some(true));
-        let Json(got) = get_handler(State(state.clone()), Path(iid)).await.expect("get must succeed");
+        let Json(got) = get_handler(State(state.clone()), Path(iid), Query(GetQuery { lines: None, public_only: None })).await.expect("get must succeed");
         assert_eq!(got.get("is_pii").and_then(|x| x.as_bool()), Some(true), "mark persists");
         let clear = UpdateItemPayload { is_pii: Some(false), is_glossary: None };
         let Json(v2) = patch_handler(State(state.clone()), Path(iid), Json(clear))
@@ -967,5 +1107,73 @@ mod tests {
         assert!(item_under_prefix("ReportData/a.yml", Some(1), &roots, "reportdata/"));
         assert!(!item_under_prefix("reportdata/a.yml", Some(9), &roots, "/data/corpus/reportdata"));
         assert!(!item_under_prefix("reportdata/a.yml", None, &roots, "/data/corpus/reportdata"));
+    }
+
+    #[test]
+    fn parse_lines_accepts_the_three_forms_and_names_them_on_error() {
+        assert_eq!(parse_lines("3-7"), Ok(LineWindow { start: 3, end: Some(7) }));
+        assert_eq!(parse_lines(" 4 "), Ok(LineWindow { start: 4, end: Some(4) }));
+        assert_eq!(parse_lines("5-"), Ok(LineWindow { start: 5, end: None }));
+        assert_eq!(parse_lines("2-2"), Ok(LineWindow { start: 2, end: Some(2) }));
+        for bad in ["", "0-3", "7-3", "a-b", "-4", "1-2-3", "1..4", "x"] {
+            let err = parse_lines(bad).unwrap_err();
+            assert!(err.contains("\"a-b\""), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn window_text_slices_clamps_end_and_rejects_start_past_eof() {
+        let text = "one\ntwo\nthree\nfour\n";
+        assert_eq!(window_text(text, &LineWindow { start: 2, end: Some(3) }).unwrap(), ("two\nthree".to_string(), 2, 3, 4));
+        assert_eq!(window_text(text, &LineWindow { start: 3, end: None }).unwrap(), ("three\nfour".to_string(), 3, 4, 4));
+        assert_eq!(window_text(text, &LineWindow { start: 4, end: Some(99) }).unwrap(), ("four".to_string(), 4, 4, 4), "end clamps");
+        let err = window_text(text, &LineWindow { start: 5, end: Some(6) }).unwrap_err();
+        assert!(err.contains("4 line(s)"), "{err}");
+        assert!(window_text("", &LineWindow { start: 1, end: None }).is_err(), "empty text has no line 1");
+        assert_eq!(window_text("a\r\nb", &LineWindow { start: 2, end: None }).unwrap().0, "b", "CRLF lines");
+    }
+
+    #[test]
+    fn validate_path_prefix_rejects_malformed_forms_with_the_expected_form() {
+        for ok in [None, Some(""), Some("  "), Some("docs/"), Some("cfg/routing"), Some("reportdata\\a"), Some("/data/corpus/cfg"), Some("C:/corpus/cfg"), Some("C:\\corpus"), Some("report%"), Some("a b/[draft]/")] {
+            assert!(validate_path_prefix(ok).is_ok(), "{ok:?}");
+        }
+        for bad in ["docs/*.md", "cfg/?", "file:///data/x", "../etc", "docs/../x", "./docs", "~/notes", "C:docs", "a\u{0}b"] {
+            let err = validate_path_prefix(Some(bad)).unwrap_err();
+            assert!(err.contains("malformed") && err.contains("Expected a relative item path"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn read_item_windows_scopes_and_gates() {
+        let (_dir, conn, iid) = seed_db();
+        conn.execute("UPDATE ingested_items SET text = 'l1\nl2\nl3' WHERE id = ?1", [iid]).unwrap();
+        let q = |lines: Option<&str>, public_only: Option<bool>| GetQuery { lines: lines.map(str::to_string), public_only };
+        let v = read_item(&conn, iid, &q(Some("2-3"), None), false).ok().expect("internal source window");
+        assert_eq!(v["content"], "l2\nl3");
+        assert_eq!(v["text"], "l2\nl3");
+        assert_eq!(v["lines"], json!({"start": 2, "end": 3, "total": 3}));
+        assert!(matches!(read_item(&conn, iid, &q(Some("9"), None), false), Err(ReadRefusal::BadRequest(_))));
+        assert!(matches!(read_item(&conn, iid, &q(Some("zz"), None), false), Err(ReadRefusal::BadRequest(_))));
+        assert!(matches!(read_item(&conn, iid, &q(None, Some(true)), false), Err(ReadRefusal::NotFound(_))), "internal is not public");
+        assert!(matches!(read_item(&conn, iid + 99, &q(None, None), false), Err(ReadRefusal::NotFound(_))));
+        conn.execute("UPDATE sources SET label = 'sensitive'", []).unwrap();
+        assert!(matches!(read_item(&conn, iid, &q(Some("1"), None), false), Err(ReadRefusal::Gated(_))), "untrusted window gated");
+        assert!(read_item(&conn, iid, &q(Some("1"), None), true).is_ok(), "trusted provider reads");
+        conn.execute("UPDATE sources SET label = 'public'", []).unwrap();
+        assert!(read_item(&conn, iid, &q(Some("1"), Some(true)), false).is_ok(), "public source in public scope");
+    }
+
+    #[test]
+    fn listing_public_only_keeps_public_sources() {
+        let (_dir, conn, sa, sb) = seed_list_db();
+        conn.execute("UPDATE sources SET label = 'public' WHERE id = ?1", [sb]).unwrap();
+        let all = list_items(&conn, None, None, 100, 0).1;
+        let f = ListFilter { path_prefix: None, source_id: None, public_only: true };
+        let (items, total) = list_items_filtered(&conn, &f, 100, 0);
+        assert!(total > 0 && total < all, "{total} of {all}");
+        assert!(items.iter().all(|i| i["source_id"] == sb), "{items:?}");
+        let f = ListFilter { path_prefix: None, source_id: Some(sa), public_only: true };
+        assert_eq!(list_items_filtered(&conn, &f, 100, 0).1, 0);
     }
 }

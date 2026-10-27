@@ -500,6 +500,126 @@ async fn tool_actions(args: &Value) -> Result<Value, String> {
     http_call("GET", &record_query_path("/actions", args, ACTION_KEYS), None).await
 }
 
+// --- R36.15: item + outline reads (REST first: each tool forwards only the
+// REST query keys, so the anchorcore-search skill reaches the same data) ---
+
+const LIST_ITEMS_KEYS: &[&str] = &["path_prefix", "source_id", "public_only", "limit", "offset"];
+const GET_ITEM_KEYS: &[&str] = &["lines", "public_only"];
+const OUTLINE_KEYS: &[&str] = &["depth", "public_only"];
+const NODE_KEYS: &[&str] = &["include", "max_chars", "public_only"];
+
+/// MCP cap on one `get_item` result: a whole large file would flood the
+/// agent's context. Over it the content is cut and `content_truncated` +
+/// `total_chars` say so — page with `lines` instead.
+const GET_ITEM_MAX_CHARS: usize = 32_000;
+
+fn positive_id(args: &Value, key: &str) -> Result<i64, String> {
+    match args.get(key).and_then(|v| v.as_i64()) {
+        Some(id) if id > 0 => Ok(id),
+        _ => Err(format!("{key} must be a positive integer")),
+    }
+}
+
+fn not_found_as(what: String) -> impl Fn(String) -> String {
+    move |e| if e == "not found" { format!("{what} not found") } else { e }
+}
+
+async fn tool_list_items(args: &Value) -> Result<Value, String> {
+    http_call("GET", &record_query_path("/items", args, LIST_ITEMS_KEYS), None).await
+}
+
+/// Item read for MCP: `text` (the REST alias) is dropped so the bytes travel
+/// once; long content is capped (see `GET_ITEM_MAX_CHARS`).
+fn item_for_mcp(mut v: Value) -> Value {
+    let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
+    let total = content.chars().count();
+    if let Some(o) = v.as_object_mut() {
+        o.remove("text");
+        o.insert("total_chars".to_string(), json!(total));
+        o.insert("content_truncated".to_string(), json!(total > GET_ITEM_MAX_CHARS));
+        if total > GET_ITEM_MAX_CHARS {
+            o.insert("content".to_string(), json!(content.chars().take(GET_ITEM_MAX_CHARS).collect::<String>()));
+        }
+    }
+    v
+}
+
+async fn tool_get_item(args: &Value) -> Result<Value, String> {
+    let id = positive_id(args, "item_id")?;
+    let path = record_query_path(&format!("/items/{id}"), args, GET_ITEM_KEYS);
+    let v = http_call("GET", &path, None).await.map_err(not_found_as(format!("item {id}")))?;
+    audit_mcp("get_item", &format!("item={id} lines={}", args.get("lines").and_then(|l| l.as_str()).unwrap_or("-")));
+    Ok(item_for_mcp(v))
+}
+
+/// Owner call 2026-10-19: nodes fold into the outline tool — `node_id`
+/// reads one node (`GET /nodes/:id`, with `include` links/text), otherwise
+/// the item's tree (`GET /items/:id/outline`).
+async fn tool_get_outline(args: &Value) -> Result<Value, String> {
+    if args.get("node_id").is_some() {
+        let nid = positive_id(args, "node_id")?;
+        let path = record_query_path(&format!("/nodes/{nid}"), args, NODE_KEYS);
+        return http_call("GET", &path, None).await.map_err(not_found_as(format!("node {nid}")));
+    }
+    let id = positive_id(args, "item_id").map_err(|_| "item_id (or node_id) must be a positive integer".to_string())?;
+    let path = record_query_path(&format!("/items/{id}/outline"), args, OUTLINE_KEYS);
+    http_call("GET", &path, None).await.map_err(not_found_as(format!("item {id}")))
+}
+
+fn read_tool_defs() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "list_items",
+            "description": "List indexed items (files/documents) — metadata only: id, source_id, title, path, is_pii, is_glossary, pdf_quality, plus total. Use to find a file by folder before reading it. A malformed path_prefix (wildcards, '..', './', '~', URLs) is an error naming the expected form, never an empty list. Same contract as REST GET /items.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path_prefix": {"type": "string", "description": "Relative item path prefix as listed (docs/, cfg/routing) or an absolute path under a folder source's root"},
+                    "source_id": {"type": "integer"},
+                    "public_only": {"type": "boolean", "description": "If true, only items of public sources"},
+                    "limit": {"type": "integer", "default": 100, "minimum": 1, "maximum": 1000},
+                    "offset": {"type": "integer", "default": 0}
+                }
+            }
+        }),
+        json!({
+            "name": "get_item",
+            "description": "Read one item's stored text (content) with metadata and its images (assets). lines='a-b' (1-based, inclusive), 'a' or 'a-' returns just that window plus lines {start, end, total}; an end past the last line clamps, an invalid range or a start past the end is an error. Windows are refused for sensitive/pii sources under an untrusted provider (gated_provider). Content over 32000 chars is cut (content_truncated, total_chars) — page with lines. Same contract as REST GET /items/{id}?lines=a-b.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "item_id": {"type": "integer", "description": "item_id from a search hit or list_items"},
+                    "lines": {"type": "string", "description": "Line window: 'a-b', 'a' or 'a-'"},
+                    "public_only": {"type": "boolean", "description": "If true, items of non-public sources read as not found"}
+                },
+                "required": ["item_id"]
+            }
+        }),
+        json!({
+            "name": "get_outline",
+            "description": "Section structure before bytes. With item_id: the item's section tree (id, parent_id, level, title, path, chunk_count, total_chars, line_start/line_end) — REST GET /items/{id}/outline. With node_id (a section id from the outline or a hit's section_id): that node, plus include= any of parent, children, siblings, text — text is the section's ordered leaf text (own + descendants) with text_truncated, text_chars, capped by max_chars (default 32000); text is gated like search (gated_provider) — REST GET /nodes/{id}?include=...",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "item_id": {"type": "integer"},
+                    "depth": {"type": "integer", "description": "Outline only: keep sections with level <= depth"},
+                    "node_id": {"type": "integer", "description": "Read one node instead of the whole outline"},
+                    "include": {"type": "string", "description": "Node only: comma list from parent,children,siblings,text"},
+                    "max_chars": {"type": "integer", "description": "Node text cap (default 32000)"},
+                    "public_only": {"type": "boolean"}
+                }
+            }
+        }),
+    ]
+}
+
+/// Everything `tools/list` advertises: the core set plus the R36.15 reads.
+fn all_tool_defs() -> Value {
+    let mut defs = tool_defs().as_array().cloned().unwrap_or_default();
+    defs.extend(read_tool_defs());
+    Value::Array(defs)
+}
+
 // --- MCP JSON-RPC handling ---
 
 #[derive(Deserialize)]
@@ -656,7 +776,7 @@ async fn handle_request(req: Request) -> Option<Response> {
         "notifications/initialized" | "initialized" => None,
         "ping" => Some(Response { jsonrpc: "2.0".to_string(), id, result: Some(json!({})), error: None }),
         "tools/list" => {
-            let result = json!({"tools": tool_defs()});
+            let result = json!({"tools": all_tool_defs()});
             Some(Response { jsonrpc: "2.0".to_string(), id, result: Some(result), error: None })
         }
         "tools/call" => {
@@ -698,6 +818,9 @@ async fn handle_request(req: Request) -> Option<Response> {
                 "memory_status" => tool_memory_status().await,
                 "decisions" => tool_decisions(&args).await,
                 "actions" => tool_actions(&args).await,
+                "list_items" => tool_list_items(&args).await,
+                "get_item" => tool_get_item(&args).await,
+                "get_outline" => tool_get_outline(&args).await,
                 _ => Err(format!("unknown tool {name}")),
             };
             match res {
@@ -1187,5 +1310,83 @@ mod tests {
         assert!(msg.contains("runtime.json"), "{msg}");
         assert!(msg.contains("ANCHOR_BACKEND_URL"), "{msg}");
         assert!(!msg.contains("secret"), "{msg}");
+    }
+
+    // --- R36.15: read tools ride the REST endpoints ---
+
+    async fn with_backend(base: &str, tool: &str, args: Value) -> Result<Value, String> {
+        let saved_url = std::env::var("ANCHOR_BACKEND_URL").ok();
+        std::env::set_var("ANCHOR_BACKEND_URL", base);
+        let v = match tool {
+            "tool_list_items" => tool_list_items(&args).await,
+            "tool_get_item" => tool_get_item(&args).await,
+            _ => tool_get_outline(&args).await,
+        };
+        match saved_url {
+            Some(u) => std::env::set_var("ANCHOR_BACKEND_URL", u),
+            None => std::env::remove_var("ANCHOR_BACKEND_URL"),
+        }
+        v
+    }
+
+    #[tokio::test]
+    async fn read_tools_call_the_rest_paths_with_only_rest_keys() {
+        let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
+        let mock = spawn_path_echo_mock().await;
+        let base = mock.base.clone();
+        let path = |v: Result<Value, String>| v.expect("tool ok")["path"].as_str().unwrap_or_default().to_string();
+        let v = with_backend(&base, "tool_list_items", json!({"path_prefix": "cfg/", "public_only": true, "bogus": 1})).await;
+        assert_eq!(path(v), "/items?path_prefix=cfg%2F&public_only=true");
+        let v = with_backend(&base, "tool_get_item", json!({"item_id": 7, "lines": "3-9"})).await;
+        assert_eq!(path(v), "/items/7?lines=3-9");
+        let v = with_backend(&base, "tool_get_outline", json!({"item_id": 7, "depth": 1, "include": "text"})).await;
+        assert_eq!(path(v), "/items/7/outline?depth=1", "outline forwards outline keys only");
+        let v = with_backend(&base, "tool_get_outline", json!({"item_id": 7, "node_id": 12, "include": "text,parent", "max_chars": 500})).await;
+        assert_eq!(path(v), "/nodes/12?include=text%2Cparent&max_chars=500", "node_id folds nodes into the outline tool");
+        let err = with_backend(&base, "tool_get_item", json!({"item_id": 0})).await.unwrap_err();
+        assert!(err.contains("item_id"), "{err}");
+        let err = with_backend(&base, "tool_get_outline", json!({})).await.unwrap_err();
+        assert!(err.contains("node_id"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn get_item_forwards_rest_errors_and_404s() {
+        let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
+        let bad = spawn_fixed_mock("400 Bad Request", json!({"detail": "lines must be \"a-b\" (1-based, inclusive, a <= b)"}).to_string()).await;
+        let err = with_backend(&bad.base.clone(), "tool_get_item", json!({"item_id": 3, "lines": "9-2"})).await.unwrap_err();
+        assert!(err.contains("400") && err.contains("a-b"), "{err}");
+        let gated = spawn_fixed_mock("403 Forbidden", json!({"detail": "withheld", "refusal": "gated_provider"}).to_string()).await;
+        let err = with_backend(&gated.base.clone(), "tool_get_item", json!({"item_id": 3, "lines": "1"})).await.unwrap_err();
+        assert!(err.contains("gated_provider"), "{err}");
+        let missing = spawn_fixed_mock("404 Not Found", json!({"detail": "Item not found"}).to_string()).await;
+        let err = with_backend(&missing.base.clone(), "tool_get_item", json!({"item_id": 3})).await.unwrap_err();
+        assert_eq!(err, "item 3 not found");
+    }
+
+    #[test]
+    fn item_for_mcp_drops_the_alias_and_caps_content() {
+        let small = item_for_mcp(json!({"id": 1, "text": "abc", "content": "abc"}));
+        assert!(small.get("text").is_none());
+        assert_eq!((small["content"].as_str(), small["content_truncated"].as_bool(), small["total_chars"].as_u64()), (Some("abc"), Some(false), Some(3)));
+        let big = "x".repeat(GET_ITEM_MAX_CHARS + 5);
+        let v = item_for_mcp(json!({"text": big.clone(), "content": big}));
+        assert_eq!(v["content"].as_str().map(|c| c.len()), Some(GET_ITEM_MAX_CHARS));
+        assert_eq!((v["content_truncated"].as_bool(), v["total_chars"].as_u64()), (Some(true), Some((GET_ITEM_MAX_CHARS + 5) as u64)));
+    }
+
+    #[test]
+    fn tools_list_advertises_the_read_tools_after_the_core_set() {
+        let defs = all_tool_defs();
+        let names: Vec<&str> = defs.as_array().unwrap().iter().filter_map(|d| d["name"].as_str()).collect();
+        assert_eq!(names.len(), 12, "{names:?}");
+        for t in ["ask", "search", "get_entity", "get_source", "list_sources", "memory_status", "list_items", "get_item", "get_outline"] {
+            assert!(names.contains(&t), "{t} missing: {names:?}");
+        }
+        let get_item = defs.as_array().unwrap().iter().find(|d| d["name"] == "get_item").unwrap();
+        assert_eq!(get_item["inputSchema"]["required"], json!(["item_id"]));
+        let outline = defs.as_array().unwrap().iter().find(|d| d["name"] == "get_outline").unwrap();
+        for key in ["item_id", "node_id", "include", "max_chars", "depth", "public_only"] {
+            assert!(outline["inputSchema"]["properties"].get(key).is_some(), "{key}");
+        }
     }
 }
