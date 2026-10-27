@@ -1,12 +1,12 @@
-# Handover 2026-10-27 — two parallel batches after 1.5.0, owner decisions pending
+# Handover 2026-10-27 — two parallel batches after 1.5.0, Sensitive-content decision recorded
 
 Read root `AGENTS.md` first (gates, gotchas, owner decisions). This page holds only the state after the two batches
-run on 2026-10-26/27 and what is waiting on the owner. Row text in `rust/BACKLOG.md` stays the source of truth (each
+run on 2026-10-26/27 the Sensitive-content decision, and what is still waiting on the owner. Row text in `rust/BACKLOG.md` stays the source of truth (each
 row carries its evidence); decision entries for every choice are in `rust/docs/decisions.md`.
 
 ## State of `main` at handover
 
-- Pushed to `origin/main`, **not tagged** (last tag `v1.5.0`). `6c6d609` + this handover. The next tag (1.6.0, bump per
+- Pushed to `origin/main`, **not tagged** (last tag `v1.5.0`). `6c6d609` + docs-only commits (backlog, decisions, this handover). The next tag (1.6.0, bump per
   `docs/releasing.md`) ships everything below.
 - Batch 1 (`8c95f93`): CI green on all 7 jobs, including both MCP smoke steps (R20.5 handshake, R20.10 end-to-end search).
 - Batch 2 (`6c6d609`): gates green on the merged tree locally — all 16 `cargo test -p anchorcore` targets, `RUSTFLAGS="-D
@@ -30,28 +30,39 @@ row carries its evidence); decision entries for every choice are in `rust/docs/d
 | R43.31 | `frontend/src/test/setup.ts` points `localStorage`/`sessionStorage` at jsdom's (Node ≥ 25 global shadowed it). Green on Node 20/22/26 | — |
 | R30.9 | `tags::threshold(conn)` reads the pass's own DB | — |
 | R30.10 | Single-word tag names get their own tag unless the exact name exists (every past single-word "reuse" was a hash collision). Flat corpus 768 (saturated) → 17,377 tags | Old colliding links stay until re-processed → R30.12 |
-| R35.2 | Manual PII marks gated like `sensitive` toward untrusted cloud on ask, search, `/qa/public`/`public_only`, `/decisions`, `/actions`, `/media`, sync embed, backfill, backup re-embed (`common::cloud_gate_reason`). `refusal: "gated_provider"` when nothing survives | Already-sent vectors can't be recalled (skill says mark before connecting a cloud embedder). Mock-cloud embed tests don't work on Windows (CI runs the suite on Linux only) |
+| R35.2 | Manual PII marks gated like `sensitive` toward untrusted cloud on ask, search, `/qa/public`/`public_only`, `/decisions`, `/actions`, `/media`, sync embed, backfill, backup re-embed (`common::cloud_gate_reason`). `refusal: "gated_provider"` when nothing survives | Enforces a mark no UI can set — becomes the derived `sensitive_override` in R35.4 (plumbing kept). Already-sent vectors can't be recalled (skill says mark before connecting a cloud embedder). Mock-cloud embed tests don't work on Windows (CI runs the suite on Linux only) |
 | R36.15 | `GET /items/:id?lines=a-b`, `GET /nodes/:id?include=text`, 400s on malformed `path_prefix`, `read_gate.rs` (`public_only` → 404; windows/node text gated → 403). MCP `list_items`, `get_item`, `get_outline` (9 → 12 tools); skill + `docs/mcp.md` updated | **Whole-file `GET /items/:id` is still ungated** → R36.19. macOS/Windows release smoke only checks `search` |
 
-## Waiting on the owner
+## Decided 2026-10-27 — Sensitive content (not implemented; next up)
 
-1. **Sensitive content — decided 2026-10-27, not implemented (R35.4 → R35.5 → R35.6).** Owner: bundle PII into
-   one **Sensitive** label (the source-form choice — the only marking UI that exists; the `pii` label and per-document
-   PII toggle were removed from the UI on 2026-10-13), **gated by default on every surface, opt in to avoid** via
-   per-destination Settings switches (cloud embedder / cloud answer provider / AI agents). R36.19 is closed into
-   R35.5; R35.3 into R35.4. Decision entry at the end of `rust/docs/decisions.md`. Still open before R35.4 starts:
-   **drop the per-document mark (default) or keep it as a per-document Sensitive mark.** Note: R35.2 (shipped in this
-   batch) enforces that per-document mark — R35.4 either removes that branch or renames it. The read surfaces that
-   are ungated today: `GET /items/:id` (whole file), `/sections/:id/chunks`, `/tags/:id/chunks`, `/entities/:id`
-   (`window_text`), `/entities/:id/context`.
-2. **Copy that still says "PII":** the R45.6 wizard hint (`AnswerModelStep.tsx`) and `AGENTS.md` (owner-decision PII
-   line, label-gate line) describe the pre-bundle state — fixed by R35.4, leave until then.
-3. **R30.10 — retire `tag_reuse_threshold`?** Ingest proposes single words only, so the setting now affects
+Rows R35.4 → R35.5 → R35.6 in `rust/BACKLOG.md` (Phase 35, renamed); decision entry at the end of
+`rust/docs/decisions.md`. Nothing left to decide before R35.4 starts.
+
+- **One concept, Sensitive.** PII is bundled into the Sensitive source label (the source-form choice — the only
+  marking UI that exists; the `pii` label and per-document PII toggle were removed from the UI on 2026-10-13, now
+  recorded). Legacy `pii` labels migrate to `sensitive`.
+- **Per-document mark: keep it, derived — never copied.** `ingested_items.is_pii` → `sensitive_override` (NULL =
+  inherit from source, 1 = Sensitive, escalate-only, 0 reserved). Effective Sensitive = `sensitive_override = 1 OR
+  source.label = 'sensitive'`, one helper in `common.rs`, read by every gate. R35.2's per-document plumbing stays and
+  reads the effective rule. Future writers (UI toggle, path rules, connector metadata) are separate rows.
+- **Gated by default on every surface (R35.5).** Includes the read surfaces that are ungated today: `GET /items/:id`
+  (whole file), `/sections/:id/chunks`, `/tags/:id/chunks`, `/entities/:id` (`window_text`), `/entities/:id/context`.
+  The SPA sends `X-Anchor-Client: ui` and is never gated; every other caller is. R36.19 is closed into R35.5, R35.3
+  into R35.4. It is a guardrail against accidental leakage, not a boundary against a local process.
+- **Opt in to avoid (R35.6).** Settings card "Sensitive sources" with per-destination switches (cloud embedder /
+  cloud answer provider / AI agents), all off by default; agent trust stops being inferred from `answer_base_url`;
+  env vars stay as admin overrides.
+- Until R35.4 lands, the R45.6 wizard hint (`AnswerModelStep.tsx`) and `AGENTS.md` (owner-decision PII line,
+  label-gate line) still describe the pre-bundle state — leave them; R35.4 fixes them.
+
+## Still waiting on the owner (low stakes — current behaviour is fine meanwhile)
+
+1. **R30.10 — retire `tag_reuse_threshold`?** Ingest proposes single words only, so the setting now affects
    multi-word names only. Kept for now.
-4. **R45.6 — answer-model RAM tiers** (`machine.rs`): llama3.2:1b any, llama3.2:3b ≥ 8 GB, qwen2.5:7b ≥ 16 GB,
+2. **R45.6 — answer-model RAM tiers** (`machine.rs`): llama3.2:1b any, llama3.2:3b ≥ 8 GB, qwen2.5:7b ≥ 16 GB,
    qwen2.5:14b ≥ 32 GB, qwen2.5:32b ≥ 64 GB; unknown RAM → llama3.2:3b. Also: neither agent channel preselected;
    wizard installs only the `search` skill.
-5. **R36.2 choices:** boot-time synchronous re-chunk (not next sync); only depth-1/root lists count as main content;
+3. **R36.2 choices:** boot-time synchronous re-chunk (not next sync); only depth-1/root lists count as main content;
    identifying values > 32 chars (UUIDs) stay out of the breadcrumb.
 
 ## Before tagging 1.6.0
@@ -59,17 +70,20 @@ row carries its evidence); decision entries for every choice are in `rust/docs/d
 - **R45.19 browser acceptance** on a clean `--data-dir`: local mode → RAM-sized model → sample → cited answer; agent
   mode → MCP and → skill; Ollama down → built-in embedder; two live jobs → two labeled Stops with the kept-count line;
   light + dark.
-- Decide whether 1.6.0 waits for R35.4–R35.6 (item 1). No endpoint is less gated than in 1.5.0, but R36.15's new
-  MCP `get_item` makes the ungated whole-file read one tool call away for agents (before, only raw REST reached it) —
-  weigh that, or hold `get_item`'s whole-file form until R35.5. Either way the release notes should not advertise per-document PII enforcement (R35.2) since it is going away or
-  being renamed.
-- Release notes: call out migration 28 + the boot-time config re-chunk, the 12 MCP tools, PII-mark enforcement, and
-  the stricter answer-model readiness (exact size tags).
+- **Timing vs. R35.4–R35.6.** No endpoint is less gated than in 1.5.0, but R36.15's new MCP `get_item` makes the
+  ungated whole-file read one tool call away for agents (before, only raw REST reached it). Either ship 1.6.0 after
+  R35.5, or hold `get_item`'s whole-file form until then.
+- **Release notes:** migration 28 + the boot-time config re-chunk, the 12 MCP tools, the wizard rework, per-job Stop,
+  the tag fixes, and the stricter answer-model readiness (exact size tags). Do **not** advertise per-document PII
+  enforcement (R35.2) — it becomes the Sensitive override in R35.4.
 
-## Next, by value (after the above)
+## Next, by value
 
-R43.9 (slim scan), R43.14 (Drive OAuth refresh), R36.5, R36.8, R36.18b (byte offsets only), then the S3 group
-(R43.18 / R43.19 / R43.23) that gates any networked deploy. Cheap: R45.20, R30.12, R30.11, R41.1.
+1. **R35.4 → R35.5 → R35.6** (sequential: schema/rule → gate everywhere → opt-in UI). R35.5 and R35.6 touch the
+   frontend `api.ts` and Settings; keep them in one agent or strictly ordered.
+2. R45.19 (owner or a browser-driving agent), then tag 1.6.0.
+3. R43.9 (slim scan), R43.14 (Drive OAuth refresh), R36.5, R36.8, R36.18b (byte offsets only), then the S3 group
+   (R43.18 / R43.19 / R43.23) that gates any networked deploy. Cheap: R45.20, R30.12, R30.11, R41.1.
 
 ## Process notes
 
