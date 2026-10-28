@@ -19,7 +19,13 @@ command or action and wait.
    set, else the `port` in `~/.anchorcore/runtime.json` (the running app writes
    it; use `http://127.0.0.1:<port>`), else `http://127.0.0.1:8000`. Probe
    `GET /health`; expected `{"status":"ok"}`.
-   Anything else means the app is not up — see step 1.
+   Anything else means the app is not up — see step 1. Exception: when the
+   harness reports a sandbox, permission or network-policy denial (not a
+   refused connection), the app may be fine and your sandbox is blocking
+   localhost. Ask once for the narrowest access ("allow 127.0.0.1:<port>, or
+   run this one request outside the sandbox?"), never bypass the sandbox
+   unasked, and on a no give the user the command to run themselves
+   (`! curl -s http://127.0.0.1:<port>/health` in Claude Code).
 2. **Newest version first.** Before configuring anything, check the installed
    build (and any installer copy you are about to use) against the newest GitHub
    release — step 1. If it is older, update it first. Never set up, launch, or

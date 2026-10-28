@@ -1,6 +1,6 @@
 ---
 name: anchorcore-search
-description: Read-only retrieval over the user's indexed AnchorCore sources through its local REST API when MCP is unavailable, blocked, or can't be installed — ranked search, whole-file fetch, section outlines. Never writes, resyncs, or reclassifies. Use when the user asks to search, look up, or answer from their AnchorCore knowledge base and MCP is not installed, blocked, or unreachable; or to check "is it implemented as documented" against indexed code and docs.
+description: Answer questions from the user's own or team's indexed documents, code, tickets and notes (AnchorCore, their local company memory) through its local REST API, read-only, with citations. Use whenever the user asks about their own material in any words, without naming AnchorCore — what did we decide about X and does it still hold, who owns X, what's open or overdue, where is X documented, what do our docs, specs, ADRs, notes or tickets say, how does our system handle X, is it implemented as documented — or invokes this skill with a question. Not for general knowledge. If AnchorCore MCP tools are available and working, use those instead.
 ---
 
 # AnchorCore search
@@ -8,30 +8,63 @@ description: Read-only retrieval over the user's indexed AnchorCore sources thro
 Read-only retrieval over the user's indexed sources. Never write, resync or
 reclassify; that changes the user's index.
 
-MCP-first: use the anchorcore MCP tools when they work — this skill is the
-fallback for when MCP can't be used (install/verify: anchorcore-setup skill,
-step 5). Either/or, never both: with MCP tools *and* this skill active,
-agents duplicate effort.
+MCP-first, either/or: when anchorcore MCP tools are listed and answer, use
+them and not this skill (both at once duplicates effort). This skill is for
+when MCP can't be installed, can't start (no anchorcore tools after a
+restart), or errors while the app still answers `GET /health`.
 
-Use this skill's HTTP API when any of these holds:
-- MCP can't be installed (the harness has no MCP support, or no way to add
-  a server entry).
-- MCP is blocked (the harness can't spawn the local `anchorcore mcp`
-  process, or `tools/list` still shows no anchorcore tools after a restart).
-- MCP is not reachable (its tools error or time out) while the app itself
-  answers `GET /health` — talk to the app directly.
-If MCP starts working later, drop this skill again.
+## Answering a question
+
+People ask in their own words and rarely say "AnchorCore". Treat any
+question about their own or their team's material as yours.
+
+1. The question is whatever text came with the invocation
+   (`/anchorcore-search what did we decide about refunds?`) or the user's
+   message. If there is none, ask what to look up.
+2. Connect (below). If a call fails, follow "When the app can't be reached"
+   before anything else.
+3. Route by shape: "what did we decide / is it still current" → GET
+   /decisions?q=; "who owns / what's open / what's overdue" → GET /actions;
+   everything else → POST /qa/search with short domain terms (Method, step 1).
+4. Read before you state: fetch the hit's lines or section, not just the
+   preview.
+5. Answer in the user's terms and cite path plus lines or section for each
+   claim. If nothing indexed matches, say so and name what you searched;
+   never fill the gap from general knowledge as if it came from their
+   documents.
 
 ## Connect
 
-- Base URL: ANCHOR_BACKEND_URL env, else http://127.0.0.1:8000. Probe GET /health (expect `{"status":"ok"}`).
+- Base URL: ANCHOR_BACKEND_URL env, else `http://127.0.0.1:<port>` with the
+  `port` from `~/.anchorcore/runtime.json` (the running app writes it), else
+  http://127.0.0.1:8000. Probe GET /health (expect `{"status":"ok"}`).
 - Search is a POST: first GET /csrf, then send its csrf_token as
   X-CSRF-Token with Content-Type: application/json. (No CSRF header needed
   when you authenticate with a Bearer token instead.)
 - If GET /auth/status says auth is enabled, log in as described in the
   anchorcore-setup skill.
-- If requests to 127.0.0.1 are blocked by your sandbox, ask the user to allow
-  localhost access.
+- If a call fails, see "When the app can't be reached".
+
+## When the app can't be reached
+
+Tell the two failures apart before you say anything:
+
+- **AnchorCore isn't running:** connection refused, nothing listening on the
+  port. Ask the user to open AnchorCore, then retry. Don't mention the
+  sandbox.
+- **Your sandbox blocked the call:** the harness reports a permission,
+  network-policy or sandbox denial instead of a connection result. Ask once,
+  for the narrowest access: "AnchorCore runs on this computer at
+  127.0.0.1:<port>, and my sandbox blocks local network calls. Can I allow
+  access to that address, or run this one request outside the sandbox?"
+  Prefer allowing that address over leaving the sandbox. Never retry with a
+  sandbox bypass the user didn't approve. If they say no, stop, give them
+  the exact command to run themselves (in Claude Code:
+  `! curl -s http://127.0.0.1:<port>/health`), and don't ask again this
+  session.
+
+If you can't tell which (a timeout with no denial message), say so and ask
+whether the app is open.
 
 ## Calls
 

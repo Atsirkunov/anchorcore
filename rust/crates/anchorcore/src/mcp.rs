@@ -661,7 +661,7 @@ fn tool_defs() -> Value {
         },
         {
             "name": "search",
-            "description": "Default extraction: gated, cited chunks (with provenance, item title/path and scores) for a query. Prefer this — your model composes the answer from the returned bytes. Long chunks are capped at 4000 chars and set content_truncated=true. A \"refusal\" field carries \"gated_provider\" when sensitive content was withheld; \"blocked\" counts withheld hits.",
+            "description": "Search the user's own or team's indexed documents, code, tickets and notes (their company memory). Use for any question about their material in their own words — what our docs or specs say, where X is documented, how our system handles X — even when they don't name AnchorCore; not for general knowledge. Default extraction: gated, cited chunks (with provenance, item title/path and scores) for a query. Prefer this — your model composes the answer from the returned bytes. Long chunks are capped at 4000 chars and set content_truncated=true. A \"refusal\" field carries \"gated_provider\" when sensitive content was withheld; \"blocked\" counts withheld hits.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -729,7 +729,7 @@ fn tool_defs() -> Value {
         },
         {
             "name": "decisions",
-            "description": "Decision log parsed from record structure (Decision: headings/fields, Status:, Owner:, ADR front matter). Each row has record_id, status (superseded when a newer record supersedes it), current, owner, supersedes/superseded_by and provenance (item_id, path, chunk_id). Same scope and provider gate as search: refusal=gated_provider + blocked when sensitive rows were withheld. Same contract as REST GET /decisions.",
+            "description": "Use for 'what did we decide about X?' and 'is that still current?'. Decision log parsed from record structure (Decision: headings/fields, Status:, Owner:, ADR front matter). Each row has record_id, status (superseded when a newer record supersedes it), current, owner, supersedes/superseded_by and provenance (item_id, path, chunk_id). Same scope and provider gate as search: refusal=gated_provider + blocked when sensitive rows were withheld. Same contract as REST GET /decisions.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -745,7 +745,7 @@ fn tool_defs() -> Value {
         },
         {
             "name": "actions",
-            "description": "Action tracker parsed from 'Action items' sections and checkbox bullets: task, owner, due, done, provenance (item_id, path, chunk_id). Defaults to open items; owner match is case-insensitive; overdue=true keeps open items with an ISO due date before today. Same scope and provider gate as search. Same contract as REST GET /actions.",
+            "description": "Use for 'who owns X?' and 'what's open or overdue for <person>?'. Action tracker parsed from 'Action items' sections and checkbox bullets: task, owner, due, done, provenance (item_id, path, chunk_id). Defaults to open items; owner match is case-insensitive; overdue=true keeps open items with an ISO due date before today. Same scope and provider gate as search. Same contract as REST GET /actions.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -764,6 +764,15 @@ fn tool_defs() -> Value {
     ])
 }
 
+/// R47.3: sent on `initialize` so harnesses route questions phrased in the
+/// user's own words here, not only ones that name the product. Keep in step
+/// with the `anchorcore-search` skill's description (no MCP-only behaviour).
+const SERVER_INSTRUCTIONS: &str = "AnchorCore is the user's local company memory: their own and their team's indexed documents, code, tickets and notes. \
+Use these tools whenever the user asks about that material, in any words — they rarely say \"AnchorCore\". \
+Decisions (\"what did we decide about X, is it still current?\") → decisions; owners and open or overdue work → actions; \
+everything else → search, then get_item or get_outline to read the passage before you cite it. \
+Cite path and lines or section for each claim; if nothing indexed matches, say so rather than answering from general knowledge.";
+
 async fn handle_request(req: Request) -> Option<Response> {
     let id = req.id.clone().unwrap_or(Value::Null);
     let is_notification = req.id.is_none();
@@ -772,7 +781,8 @@ async fn handle_request(req: Request) -> Option<Response> {
             let result = json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "anchorcore", "version": env!("CARGO_PKG_VERSION")}
+                "serverInfo": {"name": "anchorcore", "version": env!("CARGO_PKG_VERSION")},
+                "instructions": SERVER_INSTRUCTIONS
             });
             Some(Response { jsonrpc: "2.0".to_string(), id, result: Some(result), error: None })
         }
@@ -977,6 +987,28 @@ mod tests {
         assert!(desc.contains("warning"), "ask description must name the warning: {desc}");
         assert!(desc.contains("server's configured answer model"), "ask description must name BYOM: {desc}");
         assert!(desc.contains("agent_compose"), "ask description must name agent mode: {desc}");
+    }
+
+    #[test]
+    fn question_shaped_descriptions_and_instructions() {
+        // R47.3: people ask in their own words; the routing hints must say so.
+        let defs = tool_defs();
+        let desc = |name: &str| {
+            defs.as_array().unwrap().iter().find(|t| t["name"] == name).and_then(|t| t["description"].as_str()).unwrap_or("").to_string()
+        };
+        assert!(desc("search").contains("in their own words"), "{}", desc("search"));
+        assert!(desc("decisions").contains("what did we decide"), "{}", desc("decisions"));
+        assert!(desc("actions").contains("who owns"), "{}", desc("actions"));
+        for name in ["decisions", "actions", "search", "get_item"] {
+            assert!(SERVER_INSTRUCTIONS.contains(name), "instructions route to {name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn initialize_carries_instructions() {
+        let req: Request = serde_json::from_value(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})).unwrap();
+        let resp = handle_request(req).await.expect("initialize answers");
+        assert_eq!(resp.result.unwrap()["instructions"], SERVER_INSTRUCTIONS);
     }
 
     #[test]

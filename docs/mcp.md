@@ -19,6 +19,8 @@ same retrieval the UI uses. Agents that prefer plain HTTP use the REST skill.
 
 ## 2. Tool surface (v1 — read-only)
 
+**Asked in the user's own words (R47.3).** People rarely say "AnchorCore": they ask "what did we decide about refunds?", "who owns the payout migration?", "where is onboarding documented?". `initialize` returns server `instructions` that route those (decisions → `decisions`, owners and open work → `actions`, everything else → `search`, then `get_item`/`get_outline` before citing), and the `search`/`decisions`/`actions` descriptions lead with the same question shapes. The `anchorcore-search` skill's description carries the same wording for REST-only agents, plus a sandbox step: a refused connection means "open AnchorCore"; only a harness sandbox denial earns one question asking for the narrowest localhost access, never a bypass the user didn't approve.
+
 | Tool | Parameters | Returns | Maps to |
 |---|---|---|---|
 | `ask` | `question` (required), `project_id?`, `public_only?`, `include_content?` | composed answer (local mode) or `agent_compose` evidence (agent mode, §2.2) + citations with provenance (item id + file path + title + env class on every citation; full chunk bytes on opt-in — always in agent mode — capped at 4000 chars with `content_truncated`) + `mode`/`warning` flags (§2.1) | `POST /qa`, `POST /qa/public` |
