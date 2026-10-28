@@ -4,6 +4,20 @@ ADR log. Append newest first.
 
 ---
 
+## 2026-10-28 — R35.6: per-destination Sensitive opt-in, host-bound, UI-only
+
+* **Decision:** one rule `sharing::allowed(settings, Destination)` for three destinations — cloud embedder, cloud answer provider, AI agents (MCP / skill). Each opens when local (loopback or the built-in embedder; never agents), set by environment (`ANCHOR_CLOUD_TRUST=1` opens all three; `ANCHOR_TRUSTED_PROVIDERS` opens matching provider hosts only), or the person's switch is on. Provider switches store the destination **origin** at opt-in and close when the configured host changes (the card reports the stale consent). Switches are `app_settings` rows `sensitive_share_*` with no env fallback, outside `PUT /settings` and backups, written only by `PUT /settings/sensitive-sharing` with the UI header; every change writes a `settings` system event (on = `warning`, off = `info`). Agent trust is no longer inferred from `answer_base_url`. In local mode, an agent caller without the agents switch gets an answer whose generation input is gated too (`ask_gates`), so a composed answer cannot carry Sensitive text to the agent.
+* **Context:** R35.5 left env-only trust and inferred agent trust from the answer provider (a local Ollama answer model opened every agent read). With separate destinations, that inference stopped being true: the answer switch and the agents switch mean different things.
+* **Alternatives considered:**
+  - *Boolean switches not bound to a host* — rejected: pointing the embedder or answer model at a new host would silently carry the old consent ("per destination" would be per kind, not per destination).
+  - *Switches in the generic `PUT /settings` / `SETTING_KEYS`* — rejected: any agent with the CSRF token could opt itself in, the change would not be audited, and `ANCHOR_<KEY>` env fallback would add a third, invisible override.
+  - *Round-trip switches in backups like other settings* — rejected: consent is given on this machine, in its UI, with an audit row; an archive must not grant it silently.
+  - *A migration with a dedicated table* — rejected: three keys fit `app_settings` (empty = unset).
+  - *Keep agents open when the answer provider is local* — rejected by the row spec; also the agent is a separate recipient whatever model answers.
+* **Consequences:** behaviour change on upgrade: agents (MCP/skill) that read Sensitive content because the answer model was a local Ollama now get `gated_provider` until the person turns on "AI agents". The UI-only write is a guardrail against well-behaved agents, not a boundary (a local process can call with the header or edit the DB), consistent with R35.5's scope.
+
+---
+
 ## 2026-10-26 — R45.6: wizard picks the answer model by RAM; explicit size tags must match exactly
 
 * **Decision:** `GET /system/onboarding` gains `machine` = `{total_memory_bytes, recommended_answer_model, answer_models[]}` (`machine.rs`: `sysctlbyname("hw.memsize")` on macOS, `/proc/meminfo` capped by cgroup v2 `memory.max` on Linux, `GlobalMemoryStatusEx` on Windows; `null` elsewhere). The catalog lives server-side so the setup skill can read the same recommendation: `llama3.2:1b` (any RAM), `llama3.2:3b` (8 GB), `qwen2.5:7b` (16 GB), `qwen2.5:14b` (32 GB), `qwen2.5:32b` (64 GB); the recommendation is the largest whose floor the machine meets with 0.5 GiB firmware slack, and `llama3.2:3b` (the old default) when RAM is unknown. Model readiness (`ollama.rs`) now requires an explicit non-`latest` tag to be installed exactly; untagged/`:latest` names still match any tag of the family. The wizard is mode-first: step 1 sets the mode and search embeddings (built-in model first, Ollama `nomic-embed-text` offered as the faster alternative when Ollama runs); local mode then picks the answer model, agent mode picks a channel (MCP or the REST skill, neither preselected).

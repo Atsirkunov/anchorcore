@@ -15,6 +15,28 @@ export type AppSettings = {
   embed_provider?: EmbedProvider; // R45.4: which engine embeds (default "auto")
 };
 
+/** R35.6: one Sensitive-sharing destination (`GET /settings/sensitive-sharing`). */
+export type SharingDestinationId = "embed" | "answer" | "agents";
+
+export type SharingDestination = {
+  id: SharingDestinationId;
+  label: string;
+  /** What the switch allows: the provider origin, or the agents description. */
+  destination: string;
+  /** Loopback provider or the built-in embedder — no switch needed. */
+  local: boolean;
+  /** Opened by ANCHOR_CLOUD_TRUST / ANCHOR_TRUSTED_PROVIDERS ("set by environment"). */
+  env: boolean;
+  /** The person's switch is on for this destination. */
+  switch: boolean;
+  /** Effective: Sensitive content may reach this destination. */
+  allowed: boolean;
+  /** A switch left on for a host that is no longer configured. */
+  stale_for: string | null;
+};
+
+export type SensitiveSharing = Record<SharingDestinationId, SharingDestination>;
+
 /** R45.4: `auto` — Ollama (or a configured cloud endpoint) when it serves,
  * else the built-in model once downloaded;
  * `builtin` — always the built-in model; `ollama` — the HTTP embedder. */

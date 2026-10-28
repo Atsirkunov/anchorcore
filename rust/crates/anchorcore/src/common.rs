@@ -57,10 +57,15 @@ pub fn provider_is_local(base_url: &str) -> bool {
 }
 
 pub fn provider_trusted(base_url: &str) -> bool {
+    provider_is_local(base_url) || provider_env_trusted(base_url)
+}
+
+/// R35.6: the admin overrides ("set by environment" in the Settings card):
+/// the provider is listed in `ANCHOR_TRUSTED_PROVIDERS`, or the global
+/// `ANCHOR_CLOUD_TRUST=1` is set. The person's per-destination switches
+/// live in `sharing.rs`, whose `allowed` is the one rule every gate reads.
+pub fn provider_env_trusted(base_url: &str) -> bool {
     let base = base_url.trim().trim_end_matches('/');
-    if provider_is_local(base) {
-        return true;
-    }
     if let Ok(list) = std::env::var("ANCHOR_TRUSTED_PROVIDERS") {
         for entry in list.split(',').map(|s| s.trim().trim_end_matches('/')).filter(|s| !s.is_empty()) {
             if base == entry || base.starts_with(&format!("{}/", entry)) {
@@ -68,6 +73,11 @@ pub fn provider_trusted(base_url: &str) -> bool {
             }
         }
     }
+    env_cloud_trust()
+}
+
+/// `ANCHOR_CLOUD_TRUST=1`: opens every destination, agents included (R35.6).
+pub fn env_cloud_trust() -> bool {
     std::env::var("ANCHOR_CLOUD_TRUST").as_deref() == Ok("1")
 }
 

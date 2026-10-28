@@ -664,10 +664,16 @@ fn export_review_state(conn: &Connection, zip: &mut ArchiveWriter, opts: &Export
     Ok((disputes, merges))
 }
 
+/// Settings that travel in a backup: never secrets, and never R35.6's
+/// Sensitive-sharing switches — consent is given on this machine, in its UI,
+/// with an audit event, never imported silently from an archive.
+fn portable_setting(key: &str) -> bool {
+    !crate::settings::SECRET_KEYS.contains(&key) && !crate::sharing::SHARING_KEYS.contains(&key)
+}
+
 fn export_settings(conn: &Connection, zip: &mut ArchiveWriter) -> Result<u64, String> {
     let sql = "SELECT json_object('type','setting','key',key,'value',value) FROM app_settings \
                WHERE value != '' ORDER BY key";
-    let secretish: Vec<String> = crate::settings::SECRET_KEYS.iter().map(|s| s.to_string()).collect();
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| r.get::<_, String>(0))
@@ -676,12 +682,7 @@ fn export_settings(conn: &Connection, zip: &mut ArchiveWriter) -> Result<u64, St
     for row in rows {
         let record = row.map_err(|e| e.to_string())?;
         let value: Value = serde_json::from_str(&record).map_err(|e| e.to_string())?;
-        let is_secret = value
-            .get("key")
-            .and_then(|k| k.as_str())
-            .map(|k| secretish.iter().any(|s| s == k))
-            .unwrap_or(false);
-        if is_secret {
+        if !portable_setting(value.get("key").and_then(|k| k.as_str()).unwrap_or_default()) {
             continue;
         }
         write_record_line(zip, &record)?;
@@ -1866,7 +1867,7 @@ fn apply_merge_action(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
 fn apply_setting(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
     let key = str_field(rec, "key");
     let value = str_field(rec, "value");
-    if key.is_empty() || crate::settings::SECRET_KEYS.contains(&key.as_str()) {
+    if key.is_empty() || !portable_setting(&key) {
         return Ok(());
     }
     let exists: Option<String> = ctx
@@ -2609,6 +2610,7 @@ mod tests {
         conn.execute("INSERT INTO merge_actions (entity_a_id, entity_b_id, status, reason) VALUES (?1,?1,'proposed','duplicate-ish')", [eid]).unwrap();
         conn.execute("INSERT INTO app_settings (key, value) VALUES ('answer_model','llama3')", []).unwrap();
         conn.execute("INSERT INTO app_settings (key, value) VALUES ('answer_api_key','sk-live-SETTINGS-never-exported')", []).unwrap();
+        conn.execute("INSERT INTO app_settings (key, value) VALUES ('sensitive_share_agents','1')", []).unwrap();
         let store = SecretStore::new(dir.join("secrets.enc"));
         store.set(&crate::secrets::source_secret_key(sid, "token"), MARKER_TOKEN);
         store.set(&crate::secrets::source_secret_key(sid, "password"), MARKER_PHRASE);
@@ -2877,6 +2879,8 @@ mod tests {
         // non-secret settings land on a fresh machine; secret ones never travel
         assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM app_settings WHERE key='answer_model'"), 1);
         assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM app_settings WHERE key='answer_api_key'"), 0);
+        // R35.6: a Sensitive-sharing consent never travels in an archive
+        assert_eq!(one::<i64>(&conn, "SELECT COUNT(*) FROM app_settings WHERE key LIKE 'sensitive_share_%'"), 0);
         // imported chunks have no vectors yet — the report asks for a re-embed job
         let new_sid: i64 = one(&conn, "SELECT id FROM sources");
         assert_eq!(report.reembed_source_ids, vec![new_sid]);

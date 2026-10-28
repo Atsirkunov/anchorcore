@@ -305,20 +305,20 @@ impl Embedder {
     }
 
     fn base_url(&self) -> String {
-        self.settings
-            .get("embed_base_url", None)
-            .or_else(|| self.settings.get("ollama_base_url", None))
-            .unwrap_or_else(|| "http://localhost:11434".to_string())
+        crate::sharing::embed_base_url(&self.settings)
     }
 
     fn provider_is_local(&self) -> bool {
         crate::common::provider_is_local(&self.base_url())
     }
 
-    /// Whether a remote embedder is trusted (B39/B30). Local — including the
-    /// built-in engine, which never leaves the process — is always trusted.
+    /// Whether Sensitive content may reach this embedder (B39/B30, R35.6):
+    /// local — including the built-in engine, which never leaves the
+    /// process — always; a cloud endpoint only with the person's
+    /// "cloud embedder" switch for its host or an environment override.
+    /// Every embed gate (ingest, re-embed job, backfill) reads this.
     pub(crate) fn cloud_trusted(&self) -> bool {
-        self.active_provider() == Provider::Builtin || crate::common::provider_trusted(&self.base_url())
+        crate::sharing::allowed(&self.settings, crate::sharing::Destination::Embed)
     }
 
     /// Embed in `BATCH_SIZE` requests, up to `ANCHOR_EMBED_CONCURRENCY` in

@@ -3,10 +3,10 @@
 //!
 //! Caller rule (default closed): the SPA sends `X-Anchor-Client: ui` and is
 //! never gated; every other caller (MCP proxy, skill, curl) is gated unless
-//! the provider is trusted. Until R35.6's switches land, "trusted" is still
-//! inferred from the answer provider (`answer::is_answer_trusted` — local or
-//! allowlisted); the header only exempts the response to the UI, never bytes
-//! leaving the machine toward a cloud model.
+//! the person turned on the "AI agents" switch (R35.6, `sharing.rs`) or the
+//! admin set `ANCHOR_CLOUD_TRUST=1`. Agent trust is never inferred from the
+//! answer provider. The header only exempts the response to the UI, never
+//! bytes leaving the machine toward a cloud model.
 //!
 //! Sensitivity is R35.4's effective rule (per-document override or the
 //! `sensitive` source label), derived at the gate entry point. Single-item
@@ -48,25 +48,25 @@ pub enum ReadRefusal {
     Gated(String),
 }
 
-/// One request's gate state: who is asking and whether the answer provider
-/// may receive Sensitive content.
+/// One request's gate state: who is asking and whether AI agents may
+/// receive Sensitive content.
 pub struct Gate {
     pub ui_caller: bool,
-    pub provider_trusted: bool,
+    pub agents_allowed: bool,
 }
 
 impl Gate {
     pub fn from_request(headers: &HeaderMap, settings: &crate::settings::SettingsService) -> Self {
         Self {
             ui_caller: caller_is_ui(headers),
-            provider_trusted: crate::answer::is_answer_trusted(settings),
+            agents_allowed: crate::answer::agents_allowed(settings),
         }
     }
 
     /// The response path is open: the person at the UI always sees
-    /// everything, and a trusted provider's callers flow until R35.6.
+    /// everything; other callers only with the "AI agents" switch (R35.6).
     pub fn open(&self) -> bool {
-        self.ui_caller || self.provider_trusted
+        self.ui_caller || self.agents_allowed
     }
 
     /// Byte gate for one item's effective Sensitive state.
@@ -110,7 +110,7 @@ pub async fn into_api_error(data_dir: &str, refusal: ReadRefusal) -> ApiError {
         ReadRefusal::BadRequest(detail) => (StatusCode::BAD_REQUEST, Json(json!({"detail": detail}))),
         ReadRefusal::Gated(label) => {
             crate::answer::record_gate_event(data_dir, std::slice::from_ref(&label)).await;
-            let body = json!({"detail": "Content withheld from an untrusted answer provider (Sensitive source)", "refusal": "gated_provider"});
+            let body = json!({"detail": "Sensitive content withheld from AI agents — the person can allow agents under Settings → Sensitive sources", "refusal": "gated_provider"});
             (StatusCode::FORBIDDEN, Json(body))
         }
     }
@@ -120,8 +120,8 @@ pub async fn into_api_error(data_dir: &str, refusal: ReadRefusal) -> ApiError {
 mod tests {
     use super::*;
 
-    fn gate(ui_caller: bool, provider_trusted: bool) -> Gate {
-        Gate { ui_caller, provider_trusted }
+    fn gate(ui_caller: bool, agents_allowed: bool) -> Gate {
+        Gate { ui_caller, agents_allowed }
     }
 
     #[test]
@@ -146,7 +146,7 @@ mod tests {
         assert!(matches!(closed.check_bytes("internal", true), Err(ReadRefusal::Gated(l)) if l == crate::common::ITEM_SENSITIVE_MARK));
         assert!(closed.check_bytes("internal", false).is_ok());
         assert!(closed.check_bytes("public", false).is_ok());
-        // The UI is never gated; trust still opens the agent path (R35.6).
+        // The UI is never gated; the "AI agents" switch opens the agent path (R35.6).
         assert!(gate(true, false).check_bytes("sensitive", true).is_ok());
         assert!(gate(false, true).check_bytes("sensitive", true).is_ok());
     }

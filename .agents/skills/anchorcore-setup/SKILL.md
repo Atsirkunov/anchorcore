@@ -172,10 +172,14 @@ name the cause** (`/system/status` → `answer.provider` is `ollama|configured|m
 `context_only` output as a model answer — and never let a harness degrade
 silently to a model the user did not choose.
 
-Cloud providers are trusted for `sensitive` sources and Sensitive-marked
-documents only when the host is in `ANCHOR_TRUSTED_PROVIDERS` or `ANCHOR_CLOUD_TRUST=1`
-(both env vars — restart needed); localhost is always trusted. If the user is
-not comfortable with that, use a local model.
+Sensitive sources and Sensitive-marked documents stay local by default. The
+person opts in per destination in the app under **Settings → Sensitive
+sources**: cloud embedder, cloud answer provider (each bound to the host shown)
+and AI agents (MCP / skill). Localhost providers need no switch. Only the
+person at the app can flip a switch — never try to via the API; point them to
+the card instead. Admins can override with `ANCHOR_TRUSTED_PROVIDERS` /
+`ANCHOR_CLOUD_TRUST=1` (env, restart needed; the card shows "set by
+environment"). If the user is not comfortable sharing, use a local model.
 
 ## 3. Index the knowledge (sources)
 
@@ -217,10 +221,10 @@ repo's `sample/` corpus (release zips do not include it; clone
   marks a whole document, `null` clears it back to inheriting the source label
   (`false` is reserved); entities carry their parent item's effective state as `item_sensitive`.
   A marked document is treated like a `sensitive` source (R35.5 caller rule):
-  its chunks are never sent to an untrusted cloud embedder, and ask, search,
+  its chunks never reach a cloud embedder the person has not allowed, and ask, search,
   `/decisions`, `/actions`, `/media` and the read surfaces (`GET /items/:id`,
   node text, section/tag chunks, entity reads) withhold it from every caller
-  but the app UI (`blocked`, `refusal: gated_provider` when nothing survives;
+  but the app UI unless AI agents are allowed (`blocked`, `refusal: gated_provider` when nothing survives;
   single-item reads answer 403). `public_only` / `/qa/public` drop it whatever
   the provider. Mark before connecting a cloud embedder — vectors already sent
   are not recalled. The auto-detect/review endpoints are retired — do not call
@@ -328,7 +332,7 @@ Report back: what you configured, what you verified, what is degraded and why.
 | `401` | auth enabled | `POST /auth/login`, use `Authorization: Bearer` |
 | `retrieval: keyword_only` | embed model/base unreachable or unset | pull `nomic-embed-text` or set `embed_base_url`, then sync/reclassify to re-embed |
 | `mode: context_only` | answer provider missing or broken | configure step 2, `test-connection`, re-probe |
-| `refusal: gated_provider` | Sensitive-labelled or Sensitive-marked content + untrusted cloud | local model, `ANCHOR_TRUSTED_PROVIDERS`, or user-approved `ANCHOR_CLOUD_TRUST=1` |
+| `refusal: gated_provider` | Sensitive-labelled or Sensitive-marked content + a destination the person has not allowed (cloud provider or AI agent) | local model, or the person turns on the switch in Settings → Sensitive sources (admins: `ANCHOR_TRUSTED_PROVIDERS` / `ANCHOR_CLOUD_TRUST=1`) |
 | job `failed` | connector/auth error | `GET /sources/jobs/{id}`, `/system/errors`, fix config, re-sync |
 | settings seem ignored | empty string means "unset" (falls back to env/default) | set real values; confirm via `/system/status` |
 

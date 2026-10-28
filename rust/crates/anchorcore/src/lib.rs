@@ -62,6 +62,7 @@ pub mod secrets;
 pub mod sections;
 pub mod security;
 pub mod settings;
+pub mod sharing;
 pub mod skills_setup;
 pub mod sources;
 pub mod stubs;

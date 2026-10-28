@@ -4,6 +4,7 @@ import { stripPlaceholders } from "../placeholders";
 import { theme, radius } from "../theme";
 import type { AppSettings, AskResponse, EmbedProvider, LlmMode } from "../types";
 import { BuiltinEmbedder } from "../BuiltinEmbedder";
+import { SensitiveSharingCard } from "./SensitiveSharingCard";
 
 type ProbeResult = { status: "pass" | "fail" | "inconclusive"; message: string };
 
@@ -24,6 +25,7 @@ export function SettingsTab() {
   const [testBusy, setTestBusy] = useState<string | null>(null);
   const [probeBusy, setProbeBusy] = useState(false);
   const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
+  const [savedCount, setSavedCount] = useState(0);
 
   const refresh = useCallback(() => {
     api
@@ -72,6 +74,7 @@ export function SettingsTab() {
       setSettings(updated);
       setForm({ ...updated });
       setSaved(true);
+      setSavedCount((n) => n + 1);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -329,6 +332,8 @@ export function SettingsTab() {
             </div>
           )}
         </div>
+
+        <SensitiveSharingCard refreshKey={savedCount} />
 
         {testResult && (
           <div

@@ -63,4 +63,17 @@ describe("source labels (R35.4: pii bundled into sensitive)", () => {
     expect(host.textContent).toContain("label: sensitive");
     expect(host.textContent).toContain("local models only");
   });
+
+  it("R35.6: the hint names where Sensitive content is also sent", async () => {
+    const d = (id: string, destination: string, allowed: boolean) => ({ id, label: id, destination, local: false, env: false, switch: allowed, allowed, stale_for: null });
+    const body = { embed: d("embed", "https://embed.example", false), answer: d("answer", "https://api.openai.com", true), agents: d("agents", "agents", false) };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const host = await renderRow("sensitive");
+    for (let i = 0; i < 20 && !host.textContent?.includes("also sent to"); i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+      });
+    }
+    expect(host.textContent).toContain("also sent to api.openai.com");
+  });
 });

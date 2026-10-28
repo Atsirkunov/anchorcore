@@ -361,6 +361,9 @@ mod tests {
         let conn = crate::db::init_db(&db_path).unwrap();
         let base = if untrusted { "https://untrusted.example.invalid/v1" } else { "http://127.0.0.1:11434/v1" };
         settings.set("answer_base_url", base, &conn).unwrap();
+        if !untrusted {
+            settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agents allowed
+        }
         conn.execute("INSERT INTO sources (connector, name, label) VALUES ('folder','team','internal')", []).unwrap();
         let team = conn.last_insert_rowid();
         conn.execute("INSERT INTO sources (connector, name, label) VALUES ('folder','vault','sensitive')", []).unwrap();

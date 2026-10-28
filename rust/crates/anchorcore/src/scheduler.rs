@@ -517,6 +517,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn backfill_once_attempts_sensitive_with_embed_switch() {
+        // R35.6: the person's "cloud embedder" switch for this host opens the
+        // backfill — the sensitive chunk is selected (closed port => failure);
+        // a switch for another host does not.
+        let _tg = TrustEnvGuard::clean();
+        let dir = tempdir().unwrap();
+        let conn = seed_single_label(&dir, "sensitive");
+        let (sched, embedder) = backfill_sched(&dir, &conn, "http://0.0.0.0:9");
+        sched.settings.set("sensitive_share_embed", "http://other.example", &conn).unwrap();
+        assert!(!embedder.cloud_trusted(), "a switch bound to another host stays closed");
+        assert_eq!(sched.backfill_once().await, (0, false));
+        sched.settings.set("sensitive_share_embed", "http://0.0.0.0:9", &conn).unwrap();
+        assert!(embedder.cloud_trusted());
+        let (embedded, failed) = sched.backfill_once().await;
+        assert_eq!(embedded, 0);
+        assert!(failed, "sensitive chunk must be attempted once the switch is on");
+    }
+
+    #[tokio::test]
     async fn backfill_once_attempts_ordinary_on_untrusted() {
         // F-02 ordinary half: an ordinary chunk under an untrusted provider
         // must still be selected — the attempt against a closed port fails,

@@ -192,7 +192,7 @@ function AdvancedEndpoint({
         />
         <label style={styles.label}>Answer model</label>
         <input style={styles.input} value={model} onChange={(e) => setModel(e.target.value)} placeholder="gpt-4o-mini" />
-        <div style={styles.hint}>Cloud endpoints never see Sensitive sources unless the provider is trusted (ANCHOR_TRUSTED_PROVIDERS).</div>
+        <div style={styles.hint}>Cloud endpoints never see Sensitive sources unless you allow them in Settings → Sensitive sources.</div>
         <div>
           <button style={{ ...styles.button, ...styles.secondary }} disabled={busy} onClick={save}>
             {busy ? "Saving…" : "Save & test"}

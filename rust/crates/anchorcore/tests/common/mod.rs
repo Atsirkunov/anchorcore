@@ -201,6 +201,23 @@ impl TestServer {
         self.mutating(req).await
     }
 
+    pub async fn put_ui(&self, path: &str, body: &Value) -> Response {
+        let req = self
+            .client
+            .put(self.url(path))
+            .header("X-Anchor-Client", "ui")
+            .json(body);
+        self.mutating(req).await
+    }
+
+    /// R35.6: flip Sensitive-sharing switches as the person at the UI
+    /// (`{"agents": true}` etc.); returns the new card state.
+    pub async fn share_sensitive(&self, changes: Value) -> Value {
+        let resp = self.put_ui("/settings/sensitive-sharing", &changes).await;
+        assert_eq!(resp.status(), StatusCode::OK, "sensitive-sharing {changes}");
+        resp.json().await.expect("sharing json")
+    }
+
     async fn mutating(&self, req: reqwest::RequestBuilder) -> Response {
         req.header("X-CSRF-Token", &self.csrf)
             .send()

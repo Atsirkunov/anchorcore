@@ -1,4 +1,4 @@
-import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, CancelJobResult, ConflictLink, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, Project, PullProgress, Source, EventGroup, EventLevel, EventMatch, EventSummary, SystemStatus, TestConnectionResult, UpdateStatus } from "./types";
+import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, CancelJobResult, ConflictLink, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, Project, PullProgress, SensitiveSharing, SharingDestinationId, Source, EventGroup, EventLevel, EventMatch, EventSummary, SystemStatus, TestConnectionResult, UpdateStatus } from "./types";
 import type { SkillInstallResult } from "./skillHandle";
 
 export class RequestAbortedError extends Error {
@@ -268,6 +268,15 @@ export const api = {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+    }),
+  /** R35.6: per-destination Sensitive sharing (Settings → Sensitive sources). */
+  getSensitiveSharing: () => request<SensitiveSharing>("/settings/sensitive-sharing"),
+  /** R35.6: flip switches; each change is audited server-side. UI-only endpoint. */
+  updateSensitiveSharing: (changes: Partial<Record<SharingDestinationId, boolean>>) =>
+    request<SensitiveSharing>("/settings/sensitive-sharing", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(changes),
     }),
   testConnection: (provider: "ollama" | "embedder" | "answer") =>
     request<TestConnectionResult>("/settings/test-connection", {

@@ -101,6 +101,9 @@ export function ModeStep({ state, mode, embedModel, onMode, recheck }: Props) {
             You can continue now — search stays keyword-only until an embedding model is ready, then catches up on its own.
           </div>
         )}
+        <div style={{ ...styles.hint, marginTop: 8 }}>
+          A cloud embedder or your AI agent never sees Sensitive sources unless you allow it in Settings → Sensitive sources.
+        </div>
       </div>
     </div>
   );
