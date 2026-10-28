@@ -63,7 +63,7 @@ self-hosted image already ships the same Rust binary in ONE container (R19.1); t
 |---|---|---|---|
 | DB | SQLite | PostgreSQL | `DB` swap point already documented |
 | Secrets | OS keychain | server-side secret manager | same `SecretStore` interface |
-| Vector store | sqlite-vec | pgvector / Qdrant | `VectorStore` swap point |
+| Vector store | SQLite embedding scan (`sqlite-vec` not linked yet — R43.10) | pgvector / Qdrant | `VectorStore` swap point |
 | Model calls | user's keys / Ollama | bundled keys (margin) or BYO | |
 | Connectors | folder, Drive, Jira, Linear, REST | Jira/Drive/Linear OAuth (server-side) | folder watch is local-only; hosted uses API connectors |
 | Files | local folder | object storage (S3-compatible) | |

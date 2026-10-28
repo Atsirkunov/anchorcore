@@ -57,6 +57,11 @@ are the trust boundary for the whole pipeline.
    RRF-fused. Entity chunks bypass the section filter (they carry no
    section).
 
+The TOC vector steps need the `sqlite-vec` index, which is not linked yet
+(R43.10): today they return nothing, so summary and leaf search here run
+on keywords, and vectors reach the answer through the flat legs (the
+R43.9 slim scan; see `retrieval-tuning.md`).
+
 If the TOC pass comes back empty, retrieval falls back to the flat hybrid
 search. Context expansion reads same-section siblings instead of ±1
 neighbors. What happens after the legs (fusion, slots, gates) is in

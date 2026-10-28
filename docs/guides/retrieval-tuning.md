@@ -164,7 +164,7 @@ Code constants (need a rebuild; change only with a failing test in hand):
   vector is stamped `chunks.embed_fp = provider:model:dim` at write time
   (`Embedder::sync_vec`, which every embed path already calls), and each
   query vector records its fingerprint in `embed_state` before retrieval
-  runs. The vector legs (scan and vec0) compare only stored vectors in
+  runs. The vector legs compare only stored vectors in
   the query's *family* + dim; everything else (another model, unstamped
   vectors from old archives or raw writes) is keyword-only until re-embedded.
   Families: unknown models are their own family; Ollama `nomic-embed-text`
@@ -216,6 +216,25 @@ Code constants (need a rebuild; change only with a failing test in hand):
   nothing is stored; opt-in via `acronym_expansion=true`. Migration 24
   dropped every LLM row and every rule row failing the initialism check.
   Backup archives carry `vocab` records + the item's `is_glossary` mark.
+- Vector leg is a full scan, not an index (R43.9): no `sqlite-vec` is
+  linked, so the flat vector leg reads every in-scope vector on every
+  query. Since R43.9 it reads `(id, embedding)` only — kind, family,
+  source and section filters run in SQL, cosine is computed straight from
+  the blob — and hydrates full rows for the top `top_k × 10` candidates
+  only (`load_hits_filtered` → `make_hit`, so `status_ok` still decides
+  stale/disputed; a batch that loses rows to it walks further down the
+  ranking). Results are identical to the old scan
+  (`slim_vector_scan_matches_legacy_scan` compares both over sources,
+  sections, statuses, kinds, families and ties). Measured on the same 50k
+  768-d chunks (M-series Mac, best of 3): release 340 → 88 ms unscoped
+  (3.9×), 201 → 70 ms one source (2.9×); debug 2.78 s → 0.77 s (3.6×).
+  Perf guard: `vector_scan_perf_guard_50k` (budget 2.5 s debug / 0.5 s
+  release, `ANCHOR_PERF_BUDGET_MS` overrides); re-measure with
+  `cargo test -p anchorcore --lib slim_vs_legacy -- --ignored --nocapture`.
+  Cost still grows linearly with the corpus; an index is R43.10. The TOC
+  summary/leaf vector legs still go through `exec_vec_search`, which needs
+  vec0 and returns nothing without it — TOC pruning is keyword-only until
+  R43.10.
 - Still open: suspect detector duplicated pending reunification (R39.13,
   P3). The cross-encoder reranker (R39.11) was closed 2026-10-26 — no model
   scores a chunk; in agent mode the agent reranks.

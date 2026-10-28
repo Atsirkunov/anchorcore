@@ -26,7 +26,7 @@ anchorcore.dev
 | Compute | Hetzner CX22 | 4 GB RAM headroom for Postgres + app |
 | Runtime | Docker Compose | single deploy unit |
 | DB | PostgreSQL 16 (official image) | future cloud-tier swap; Team self-hosted = SQLite in one container (R19.1) |
-| Vector store | pgvector / Qdrant (defer) | VectorStore swap point; sqlite-vec fine at pilot |
+| Vector store | pgvector / Qdrant (defer) | VectorStore swap point; the SQLite embedding scan (sqlite-vec once R43.10 lands) is fine at pilot |
 | Object storage | Cloudflare R2 | bucket per workspace; $0 egress → share-link serving |
 | Billing | Team self-hosted: offline license files (`hosting/README.md`); hosted (later): Stripe Checkout + webhooks | no license server — sign with `scripts/make_license.py`, verify offline |
 | Monitoring | UptimeRobot HTTP ping on `/health` | 5-min cadence; alert email |
