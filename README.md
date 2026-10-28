@@ -120,4 +120,4 @@ vector results by reciprocal rank, scoped to a project if you pick one, and come
 citations — written by your agent (agent mode) or by a local/cloud model (local mode). Sources labelled
 `sensitive` never reach an untrusted cloud provider.
 
-Details: [docs/architecture.md](./docs/architecture.md) · retrieval knobs: [docs/guides/retrieval-tuning.md](./docs/guides/retrieval-tuning.md) · agents: [docs/mcp.md](./docs/mcp.md) and the [search skill](./.agents/skills/anchorcore-search/SKILL.md) (REST).
+Details: [docs/architecture.md](./docs/architecture.md) · retrieval knobs: [docs/guides/retrieval-tuning.md](./docs/guides/retrieval-tuning.md) · agents: [docs/mcp.md](./docs/mcp.md) and the [search skill](./.agents/skills/ask-docs/SKILL.md) (REST).

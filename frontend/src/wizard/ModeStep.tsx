@@ -20,7 +20,7 @@ const MODES: { id: LlmMode; title: string; body: string }[] = [
   {
     id: "agent",
     title: "My AI agent",
-    body: "Claude Code, Codex, Cursor… write answers from cited passages, over MCP or the anchorcore-search skill. No answer model on this computer.",
+    body: "Claude Code, Codex, Cursor… write answers from cited passages, over MCP or the ask-docs skill. No answer model on this computer.",
   },
   {
     id: "local",

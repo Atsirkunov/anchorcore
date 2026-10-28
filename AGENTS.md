@@ -110,6 +110,7 @@ Local-first "company memory": connect sources (folder, Jira, Linear, Drive, Miro
 - Windows builds use MinGW: `winlibs` on PATH + `cargo +stable-x86_64-pc-windows-gnu --target x86_64-pc-windows-gnu --offline` from `rust/` (MSVC can't link). Fresh worktrees lack `rust/target` and `frontend/dist` — copy or rebuild.
 - PowerShell: commit with `git commit -F <file>` (a `"` in `-m` breaks args); `curl.exe -o NUL`, not `-o $null`; end CI `pwsh` steps with `exit 0` and assert statuses via `-w "%{http_code}"`.
 - Line endings are LF — if an edit fails to match, suspect whitespace.
+- The search skill lives in `.agents/skills/ask-docs/` and installs under a person-chosen handle: copies are found by the `<!-- anchorcore-skill: search` body marker, never by folder name — keep the marker, and keep the `name:` line + `` `/ask-docs `` example as the only handle-specific text (`skills_setup::personalize_search`).
 - Skills: only `.agents/skills/` (our own) is tracked; vendored skills are restored from `skills-lock.json` — never `git add -A` them back. Both of our skills are embedded in the binary (`include_str!`); a test pins them byte-identical.
 
 ## Feature workflow

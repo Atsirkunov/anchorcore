@@ -1,9 +1,11 @@
 ---
-name: anchorcore-search
+name: ask-docs
 description: Answer questions from the user's own or team's indexed documents, code, tickets and notes (AnchorCore, their local company memory) through its local REST API, read-only, with citations. Use whenever the user asks about their own material in any words, without naming AnchorCore — what did we decide about X and does it still hold, who owns X, what's open or overdue, where is X documented, what do our docs, specs, ADRs, notes or tickets say, how does our system handle X, is it implemented as documented — or invokes this skill with a question. Not for general knowledge. If AnchorCore MCP tools are available and working, use those instead.
 ---
 
-# AnchorCore search
+<!-- anchorcore-skill: search (installs find and update this copy by this marker, whatever its folder is called) -->
+
+# Ask docs (AnchorCore)
 
 Read-only retrieval over the user's indexed sources. Never write, resync or
 reclassify; that changes the user's index.
@@ -19,7 +21,7 @@ People ask in their own words and rarely say "AnchorCore". Treat any
 question about their own or their team's material as yours.
 
 1. The question is whatever text came with the invocation
-   (`/anchorcore-search what did we decide about refunds?`) or the user's
+   (`/ask-docs what did we decide about refunds?`) or the user's
    message. If there is none, ask what to look up.
 2. Connect (below). If a call fails, follow "When the app can't be reached"
    before anything else.

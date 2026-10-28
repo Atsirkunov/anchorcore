@@ -2,15 +2,16 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { theme } from "../theme";
 import { styles } from "./styles";
+import { SkillHandleField } from "../SkillHandleField";
+import { handleError, initialHandle, installNote } from "../skillHandle";
 
-type Client = { id: string; name: string; detected: boolean; skills_dir: string | null };
+type Client = { id: string; name: string; detected: boolean; skills_dir: string | null; search_handles?: string[] };
 
 const SKILL = "search";
-const SKILL_DIR = "anchorcore-search";
 const DEFAULT_URLS = ["http://127.0.0.1:8000", "http://localhost:8000"];
 
-/** R45.6: the REST channel — install the read-only anchorcore-search skill
- * into an agent (explicit confirm naming the path), or copy/download it. */
+/** R45.6: the REST channel — install the read-only ask-docs skill into an
+ * agent (explicit confirm naming the path, R47.4 handle), or copy/download it. */
 export function SkillChannel() {
   const [clients, setClients] = useState<Client[] | null>(null);
   const [clientId, setClientId] = useState("");
@@ -18,6 +19,7 @@ export function SkillChannel() {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [handle, setHandle] = useState("");
 
   useEffect(() => {
     api
@@ -32,7 +34,7 @@ export function SkillChannel() {
   }, []);
 
   const client = clients?.find((c) => c.id === clientId) ?? null;
-  const target = client?.skills_dir ? `${client.skills_dir}/${SKILL_DIR}/SKILL.md` : null;
+  const target = client?.skills_dir ? `${client.skills_dir}/${handle.trim() || initialHandle(client.search_handles)}/SKILL.md` : null;
   const origin = window.location.origin;
   const customUrl = !DEFAULT_URLS.includes(origin);
 
@@ -40,12 +42,8 @@ export function SkillChannel() {
     if (!client) return;
     setBusy(true);
     try {
-      const r = await api.skillInstall(SKILL, client.id);
-      setNote(
-        r.ok
-          ? `${r.already_installed ? "Already installed at" : "Installed to"} ${r.path ?? target}${r.backup ? " (previous file backed up)" : ""} — restart ${client.name} to pick it up.`
-          : (r.error ?? "Install failed")
-      );
+      const r = await api.skillInstall(SKILL, client.id, handle.trim());
+      setNote(installNote(r, target ?? "", client.name));
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
     } finally {
@@ -66,7 +64,7 @@ export function SkillChannel() {
 
   return (
     <div style={styles.note}>
-      <div style={{ fontWeight: 600, marginBottom: 4 }}>REST skill (anchorcore-search)</div>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>REST skill (ask-docs)</div>
       <div style={{ fontSize: 13, color: theme.textMuted }}>
         A read-only skill file: your agent calls this app&apos;s local HTTP API (search, whole files, outlines) — no MCP server needed.
       </div>
@@ -80,13 +78,16 @@ export function SkillChannel() {
               </option>
             ))}
           </select>
-          <button style={{ ...styles.button, ...styles.primary }} disabled={!target || busy} onClick={() => setConfirming(true)}>
+          <button style={{ ...styles.button, ...styles.primary }} disabled={!target || busy} onClick={() => {
+              setHandle(initialHandle(client?.search_handles));
+              setConfirming(true);
+            }}>
             Install…
           </button>
           <button style={{ ...styles.button, ...styles.secondary }} onClick={copy}>
             {copied ? "Copied!" : "Copy skill"}
           </button>
-          <a href={api.skillUrl(SKILL)} download="anchorcore-search-SKILL.md" style={{ fontSize: 13, color: theme.accentAlt }}>
+          <a href={api.skillUrl(SKILL)} download="ask-docs-SKILL.md" style={{ fontSize: 13, color: theme.accentAlt }}>
             Download SKILL.md
           </a>
         </div>
@@ -97,8 +98,9 @@ export function SkillChannel() {
           <div style={{ fontSize: 12, color: theme.textMuted, wordBreak: "break-all" }}>
             This writes {target}. An identical file is left alone; a different one is backed up first.
           </div>
+          <SkillHandleField value={handle} disabled={busy} onChange={setHandle} />
           <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-            <button style={{ ...styles.button, ...styles.primary }} disabled={busy} onClick={install}>
+            <button style={{ ...styles.button, ...styles.primary }} disabled={busy || handleError(handle) !== null} onClick={install}>
               {busy ? "Installing…" : "Confirm install"}
             </button>
             <button style={{ ...styles.button, ...styles.secondary }} disabled={busy} onClick={() => setConfirming(false)}>

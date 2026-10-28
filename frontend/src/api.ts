@@ -1,4 +1,5 @@
 import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, CancelJobResult, ConflictLink, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, Project, PullProgress, Source, EventGroup, EventLevel, EventMatch, EventSummary, SystemStatus, TestConnectionResult, UpdateStatus } from "./types";
+import type { SkillInstallResult } from "./skillHandle";
 
 export class RequestAbortedError extends Error {
   constructor(message = "Request cancelled") {
@@ -319,15 +320,16 @@ export const api = {
   skillInstallTargets: () =>
     request<{
       skills: { name: string; dir: string; file: string }[];
-      clients: { id: string; name: string; detected: boolean; skills_dir: string | null }[];
+      clients: { id: string; name: string; detected: boolean; skills_dir: string | null; search_handles?: string[] }[];
     }>("/system/skills/install-targets"),
-  skillInstall: (name: string, client: string) =>
-    request<{ ok: boolean; path?: string; already_installed?: boolean; backup?: string | null; error?: string }>(
+  // R47.4: `handle` (search skill only) is the folder and `/name` it installs as.
+  skillInstall: (name: string, client: string, handle?: string) =>
+    request<SkillInstallResult>(
       `/system/skills/${encodeURIComponent(name)}/install`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client }),
+        body: JSON.stringify(handle ? { client, handle } : { client }),
       }
     ),
 

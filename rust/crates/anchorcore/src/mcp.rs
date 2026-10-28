@@ -504,7 +504,7 @@ async fn tool_actions(args: &Value) -> Result<Value, String> {
 }
 
 // --- R36.15: item + outline reads (REST first: each tool forwards only the
-// REST query keys, so the anchorcore-search skill reaches the same data) ---
+// REST query keys, so the ask-docs skill reaches the same data) ---
 
 const LIST_ITEMS_KEYS: &[&str] = &["path_prefix", "source_id", "public_only", "limit", "offset"];
 const GET_ITEM_KEYS: &[&str] = &["lines", "public_only"];
@@ -766,7 +766,7 @@ fn tool_defs() -> Value {
 
 /// R47.3: sent on `initialize` so harnesses route questions phrased in the
 /// user's own words here, not only ones that name the product. Keep in step
-/// with the `anchorcore-search` skill's description (no MCP-only behaviour).
+/// with the `ask-docs` skill's description (no MCP-only behaviour).
 const SERVER_INSTRUCTIONS: &str = "AnchorCore is the user's local company memory: their own and their team's indexed documents, code, tickets and notes. \
 Use these tools whenever the user asks about that material, in any words — they rarely say \"AnchorCore\". \
 Decisions (\"what did we decide about X, is it still current?\") → decisions; owners and open or overdue work → actions; \

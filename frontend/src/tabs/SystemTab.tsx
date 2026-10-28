@@ -12,6 +12,8 @@ import { UpdateCard } from "../Updates";
 import { theme, radius } from "../theme";
 import type { Job, LogFile, McpClient, SystemStatus } from "../types";
 import { ErrorsPanel } from "./system/ErrorsPanel";
+import { SkillHandleField } from "../SkillHandleField";
+import { handleError, initialHandle, installNote } from "../skillHandle";
 
 const POLL_MS = 10000;
 
@@ -292,19 +294,22 @@ const SKILLS = [
   {
     name: "setup",
     title: "Setup skill",
+    dir: "anchorcore-setup",
     file: "anchorcore-setup-SKILL.md",
     blurb: "Install, configure, and connect AnchorCore via an agent.",
   },
   {
     name: "search",
-    title: "Search skill (read-only)",
-    file: "anchorcore-search-SKILL.md",
+    title: "Ask docs skill (read-only search)",
+    dir: "ask-docs",
+    file: "ask-docs-SKILL.md",
     blurb: "Read-only retrieval for agents when MCP is blocked.",
   },
 ];
 
-type SkillInstallClient = { id: string; name: string; detected: boolean; skills_dir: string | null };
-type PendingInstall = { skill: string; title: string; clientName: string; path: string };
+type SkillInstallClient = { id: string; name: string; detected: boolean; skills_dir: string | null; search_handles?: string[] };
+// `handle` is set for the search skill only (R47.4) — it names the folder.
+type PendingInstall = { skill: string; title: string; clientName: string; skillDir: string; handle?: string };
 
 function AgentSkillsCard() {
   const [copied, setCopied] = useState<string | null>(null);
@@ -343,21 +348,20 @@ function AgentSkillsCard() {
     selectedClient?.skills_dir ? `${selectedClient.skills_dir}/${skillDir}/SKILL.md` : null;
 
   const install = (name: string, title: string, skillDir: string) => {
-    const path = targetPath(skillDir);
-    if (!selectedClient || !path) return;
+    if (!selectedClient || !targetPath(skillDir)) return;
     // Click = consent via confirm step stating the target path.
-    setPending({ skill: name, title, clientName: selectedClient.name, path });
+    const handle = name === "search" ? initialHandle(selectedClient.search_handles) : undefined;
+    setPending({ skill: name, title, clientName: selectedClient.name, skillDir, handle });
   };
+  const pendingPath = pending ? targetPath(pending.handle?.trim() || pending.skillDir) ?? "" : "";
+  const pendingInvalid = pending?.handle !== undefined && handleError(pending.handle) !== null;
 
   const confirmInstall = async () => {
     if (!pending || !selectedClient) return;
     setInstalling(true);
     try {
-      const r = await api.skillInstall(pending.skill, selectedClient.id);
-      const note = r.ok
-        ? `${r.already_installed ? "Already installed at" : "Installed to"} ${r.path ?? pending.path}${r.backup ? ` (previous file backed up)` : " — restart your agent to pick it up."}`
-        : r.error ?? "Install failed";
-      setNotes((n) => ({ ...n, [pending.skill]: note }));
+      const r = await api.skillInstall(pending.skill, selectedClient.id, pending.handle?.trim());
+      setNotes((n) => ({ ...n, [pending.skill]: installNote(r, pendingPath, pending.clientName) }));
     } catch (e) {
       setNotes((n) => ({ ...n, [pending.skill]: e instanceof Error ? e.message : String(e) }));
     } finally {
@@ -442,13 +446,9 @@ function AgentSkillsCard() {
             </button>
             {offerInstall && (
               <button
-                onClick={() => install(s.name, s.title, `anchorcore-${s.name}`)}
+                onClick={() => install(s.name, s.title, s.dir)}
                 disabled={installing || !selectedClient?.skills_dir}
-                title={
-                  selectedClient?.skills_dir
-                    ? `Install into ${selectedClient.name} (${targetPath(`anchorcore-${s.name}`)})`
-                    : "No install target"
-                }
+                title={selectedClient?.skills_dir ? `Install into ${selectedClient.name}` : "No install target"}
                 style={{ ...styles.button, background: theme.accent, color: theme.onAccent }}
               >
                 Install…
@@ -464,13 +464,16 @@ function AgentSkillsCard() {
         <div style={{ ...styles.row, marginTop: 8, borderColor: theme.amber }}>
           <div style={{ fontSize: 13, fontWeight: 600 }}>Install {pending.title} into {pending.clientName}?</div>
           <div style={{ fontSize: 12, color: theme.textMuted, wordBreak: "break-all" }}>
-            This writes {pending.path}. An identical file is left alone; a different file is backed up first, never
+            This writes {pendingPath}. An identical file is left alone; a different file is backed up first, never
             overwritten blindly.
           </div>
+          {pending.handle !== undefined && (
+            <SkillHandleField value={pending.handle} disabled={installing} onChange={(h) => setPending({ ...pending, handle: h })} />
+          )}
           <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
             <button
               onClick={confirmInstall}
-              disabled={installing}
+              disabled={installing || pendingInvalid}
               style={{ ...styles.button, background: theme.accent, color: theme.onAccent }}
             >
               {installing ? "Installing…" : "Confirm install"}

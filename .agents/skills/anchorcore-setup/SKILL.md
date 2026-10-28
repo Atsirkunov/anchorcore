@@ -273,7 +273,7 @@ to the plain REST API instead of leaving the agent unconnected:
 - MCP is not reachable (its tools error or time out) while the app itself
   answers `GET /health`.
 
-The fallback is the read-only `anchorcore-search` skill: ranked search,
+The fallback is the read-only `ask-docs` skill: ranked search,
 whole-file fetch, line windows (`GET /items/:id?lines=a-b`), and section
 outlines and text (`GET /nodes/:id?include=parent,children,siblings,text`) over the same local REST API (same base
 URL, CSRF, and auth rules as this skill) — no MCP process needed. It never
@@ -282,12 +282,22 @@ writes, resyncs, or reclassifies. **Either/or, never both:** with MCP tools
 out over MCP and over plain HTTP). If you install the skill, do not also
 connect MCP — and if MCP later starts working, remove the skill again.
 
+Before installing, ask once: "It installs as `/ask-docs`. Do you want to use a
+different handle for it?" The handle is what they type after `/` and the
+skill's folder name: 1–64 lowercase letters, digits or inner hyphens. If the
+client's row in `GET /system/skills/install-targets` lists `search_handles`,
+offer the one already there as the default.
+
 Install it through the app (the binary embeds both skills):
 `GET /system/skills/install-targets` lists clients, then
-`POST /system/skills/search/install {"client":"claude-code"}` writes it into
-that client's skills dir (backup first; same client ids as MCP connect). For a
-harness the app doesn't know, save `GET /system/skills/search` (raw markdown) to
-`<skills dir>/anchorcore-search/SKILL.md`.
+`POST /system/skills/search/install {"client":"claude-code","handle":"ask-docs"}`
+writes it into that client's skills dir (backup first; same client ids as MCP
+connect; `handle` is optional). Any older copy under another handle (including
+the old `anchorcore-search`) is retired, listed in `retired`, so only one copy
+triggers; a different skill already using that handle is refused, never
+overwritten. For a harness the app doesn't know, save `GET
+/system/skills/search` (raw markdown) to `<skills dir>/<handle>/SKILL.md` and
+set its `name:` line to the handle.
 
 Restart the harness (skills load at start), then verify: ask it to search
 AnchorCore for a known term — expect ranked hits with citations — and confirm

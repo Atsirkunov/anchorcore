@@ -12,7 +12,7 @@ export function modeBannerNotes(mode?: string, retrieval?: string): string[] {
 // tab shows the ranked, cited evidence with a neutral hint, never the amber
 // degraded banner (nothing is degraded).
 export const AGENT_COMPOSE_HINT =
-  "Agent mode — your AI agent writes the answers (via MCP or the anchorcore-search skill). These are the ranked, cited passages it would get. Ask your agent, or switch Settings → Who writes the answers to “A local model” for in-app answers.";
+  "Agent mode — your AI agent writes the answers (via MCP or the ask-docs skill). These are the ranked, cited passages it would get. Ask your agent, or switch Settings → Who writes the answers to “A local model” for in-app answers.";
 
 export function isAgentCompose(mode?: string): boolean {
   return mode === "agent_compose";

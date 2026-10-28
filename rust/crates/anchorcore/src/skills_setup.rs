@@ -11,6 +11,12 @@
 //! JSON the UI expects. Targets are built from the allowlist only — the
 //! request carries a client id + skill name, never a path — so a write can
 //! never land outside the matrix.
+//!
+//! R47.4: the search skill installs as `ask-docs` by default and takes an
+//! optional `handle` (its folder and `name:`), validated to one folder name.
+//! Copies are recognised by the body marker (or the pre-marker
+//! `anchorcore-search` name), so an install under a new handle retires the
+//! old copy instead of leaving two skills that both trigger.
 
 use axum::extract::Path as UrlPath;
 use axum::Json;
@@ -22,7 +28,7 @@ use std::path::{Path, PathBuf};
 // (duplicated `include_str!` — `system.rs` owns the serving copy; this module
 // must not depend on its privates).
 const SETUP_SKILL_MD: &str = include_str!("../../../../.agents/skills/anchorcore-setup/SKILL.md");
-const SEARCH_SKILL_MD: &str = include_str!("../../../../.agents/skills/anchorcore-search/SKILL.md");
+const SEARCH_SKILL_MD: &str = include_str!("../../../../.agents/skills/ask-docs/SKILL.md");
 
 fn home_dir() -> Option<PathBuf> {
     std::env::var("HOME")
@@ -143,7 +149,7 @@ const SKILL_IDS: [&str; 2] = ["setup", "search"];
 fn canonical_skill_dir(name: &str) -> Option<&'static str> {
     match name.trim() {
         "setup" | "anchorcore-setup" => Some("anchorcore-setup"),
-        "search" | "anchorcore-search" => Some("anchorcore-search"),
+        "search" | "ask-docs" | "anchorcore-search" => Some("ask-docs"),
         _ => None,
     }
 }
@@ -151,7 +157,7 @@ fn canonical_skill_dir(name: &str) -> Option<&'static str> {
 fn skill_bytes(name: &str) -> Option<&'static str> {
     match canonical_skill_dir(name)? {
         "anchorcore-setup" => Some(SETUP_SKILL_MD),
-        "anchorcore-search" => Some(SEARCH_SKILL_MD),
+        "ask-docs" => Some(SEARCH_SKILL_MD),
         _ => None,
     }
 }
@@ -162,6 +168,92 @@ fn install_target_path(client: &str, skill: &str) -> Result<PathBuf, String> {
     let root = skills_root_for(client).ok_or_else(|| format!("unknown client '{client}'"))?;
     let dir = canonical_skill_dir(skill).ok_or_else(|| format!("Unknown skill '{skill}' (setup, search)"))?;
     Ok(root.join(dir).join("SKILL.md"))
+}
+
+// --- search-skill handle (R47.4) ---
+
+const SEARCH_DIR: &str = "ask-docs";
+const SEARCH_MARKER: &str = "<!-- anchorcore-skill: search";
+/// `name:` values older builds installed the search skill under (no marker).
+const LEGACY_SEARCH_NAMES: [&str; 1] = ["anchorcore-search"];
+
+fn is_search_skill(name: &str) -> bool {
+    canonical_skill_dir(name) == Some(SEARCH_DIR)
+}
+
+/// A handle becomes a folder and the skill's `name:`: lowercase letters,
+/// digits and inner hyphens, at most 64 chars (the agents' own rule), so it
+/// can never be a path. The setup skill's folder is taken.
+fn validate_handle(raw: &str) -> Result<String, String> {
+    let h = raw.trim();
+    let shape_ok = !h.is_empty()
+        && h.len() <= 64
+        && h.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !h.starts_with('-')
+        && !h.ends_with('-');
+    if !shape_ok {
+        return Err(format!("Handle '{h}' must be 1-64 lowercase letters, digits or inner hyphens (like ask-docs)"));
+    }
+    if h == "anchorcore-setup" {
+        return Err("Handle 'anchorcore-setup' is the setup skill's folder — pick another".to_string());
+    }
+    Ok(h.to_string())
+}
+
+fn frontmatter_name(content: &str) -> Option<&str> {
+    let rest = content.strip_prefix("---")?;
+    let block = &rest[..rest.find("\n---")?];
+    block.lines().find_map(|l| l.strip_prefix("name:")).map(str::trim)
+}
+
+/// True when SKILL.md content is a copy of our search skill, whatever its
+/// folder is called.
+fn is_our_search_copy(content: &str) -> bool {
+    content.contains(SEARCH_MARKER) || frontmatter_name(content).is_some_and(|n| LEGACY_SEARCH_NAMES.contains(&n))
+}
+
+/// The served bytes with the handle as the skill's name and in its
+/// invocation example; the default handle returns them unchanged.
+fn personalize_search(handle: &str) -> String {
+    if handle == SEARCH_DIR {
+        return SEARCH_SKILL_MD.to_string();
+    }
+    SEARCH_SKILL_MD
+        .replacen(&format!("\nname: {SEARCH_DIR}\n"), &format!("\nname: {handle}\n"), 1)
+        .replace(&format!("`/{SEARCH_DIR} "), &format!("`/{handle} "))
+}
+
+/// Folders under `root` holding a copy of the search skill.
+fn installed_search_dirs(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
+    let mut dirs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|d| std::fs::read_to_string(d.join("SKILL.md")).is_ok_and(|c| is_our_search_copy(&c)))
+        .collect();
+    dirs.sort();
+    dirs
+}
+
+/// Install under `root/<handle>/`, then retire every other copy (its
+/// SKILL.md becomes the `.anchorcore.bak` sibling, so the agent stops
+/// loading it but nothing is deleted).
+fn install_search_at(root: &Path, handle: &str) -> Result<(PathBuf, InstallOutcome, Vec<PathBuf>), String> {
+    let path = root.join(handle).join("SKILL.md");
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        if !is_our_search_copy(&existing) {
+            return Err(format!("'{handle}' already holds a different skill ({}) — pick another handle", path.display()));
+        }
+    }
+    let outcome = install_skill_file(&path, &personalize_search(handle))?;
+    let mut retired = Vec::new();
+    for dir in installed_search_dirs(root).into_iter().filter(|d| d.file_name() != Some(std::ffi::OsStr::new(handle))) {
+        let old = dir.join("SKILL.md");
+        let bak = backup_path(&old);
+        std::fs::rename(&old, &bak).map_err(|e| format!("retire {}: {e}", old.display()))?;
+        retired.push(bak);
+    }
+    Ok((path, outcome, retired))
 }
 
 // --- never-clobber write ---
@@ -208,11 +300,20 @@ fn install_skill_file(path: &Path, bytes: &str) -> Result<InstallOutcome, String
 fn client_row(id: &str) -> Value {
     let Some(name) = client_name(id) else { return json!({}) };
     let dir = skills_root_for(id);
+    // R47.4: handles the search skill is installed under (the UI defaults to it).
+    let search_handles: Vec<String> = dir
+        .as_deref()
+        .map(installed_search_dirs)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|d| d.file_name().map(|n| n.to_string_lossy().to_string()))
+        .collect();
     json!({
         "id": id,
         "name": name,
         "detected": client_detected(id),
         "skills_dir": dir.map(|p| p.to_string_lossy().to_string()),
+        "search_handles": search_handles,
     })
 }
 
@@ -224,7 +325,7 @@ pub async fn install_targets_handler() -> Json<Value> {
             .iter()
             .map(|id| {
                 let dir = canonical_skill_dir(id).unwrap_or(*id);
-                json!({"name": id, "dir": dir, "file": "SKILL.md"})
+                json!({"name": id, "dir": dir, "file": "SKILL.md", "renamable": is_search_skill(id)})
             })
             .collect();
         let mut clients: Vec<Value> = Vec::new();
@@ -241,17 +342,25 @@ pub async fn install_targets_handler() -> Json<Value> {
 #[derive(Deserialize)]
 pub struct InstallRequest {
     pub client: String,
+    /// R47.4: search skill only — folder + `name:` (default `ask-docs`).
+    pub handle: Option<String>,
 }
 
 /// POST /system/skills/:name/install — explicit user action from the UI only.
 /// Writes the embedded skill bytes with backup + never-clobber semantics.
 pub async fn install_handler(UrlPath(name): UrlPath<String>, Json(req): Json<InstallRequest>) -> Json<Value> {
-    let client = req.client;
-    let result = tokio::task::spawn_blocking(move || install_skill(&client, &name)).await.unwrap();
+    let (client, handle) = (req.client, req.handle);
+    let result = tokio::task::spawn_blocking(move || install_skill(&client, &name, handle.as_deref())).await.unwrap();
     Json(finish(result))
 }
 
-fn install_skill(client: &str, skill: &str) -> Result<Value, String> {
+fn install_skill(client: &str, skill: &str, handle: Option<&str>) -> Result<Value, String> {
+    if is_search_skill(skill) {
+        return install_search(client, handle);
+    }
+    if handle.is_some() {
+        return Err(format!("Only the search skill ({SEARCH_DIR}) takes a handle"));
+    }
     let path = install_target_path(client, skill)?;
     let bytes = skill_bytes(skill).ok_or_else(|| format!("Unknown skill '{skill}' (setup, search)"))?;
     match install_skill_file(&path, bytes)? {
@@ -266,6 +375,23 @@ fn install_skill(client: &str, skill: &str) -> Result<Value, String> {
             "backup": backup.map(|b| b.to_string_lossy().to_string()),
         })),
     }
+}
+
+fn install_search(client: &str, handle: Option<&str>) -> Result<Value, String> {
+    let root = skills_root_for(client).ok_or_else(|| format!("unknown client '{client}'"))?;
+    let handle = validate_handle(handle.unwrap_or(SEARCH_DIR))?;
+    let (path, outcome, retired) = install_search_at(&root, &handle)?;
+    let (already_installed, backup) = match outcome {
+        InstallOutcome::AlreadyInstalled => (true, None),
+        InstallOutcome::Written { backup } => (false, backup),
+    };
+    Ok(json!({
+        "path": path.to_string_lossy(),
+        "handle": handle,
+        "already_installed": already_installed && retired.is_empty(),
+        "backup": backup.map(|b| b.to_string_lossy().to_string()),
+        "retired": retired.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>(),
+    }))
 }
 
 /// Best-effort: turn a result into the `{ok, ...}` JSON the UI expects.
@@ -304,7 +430,7 @@ mod tests {
     #[test]
     fn embedded_bytes_match_repo_skill_files() {
         assert_eq!(SETUP_SKILL_MD.as_bytes(), repo_skill_bytes("anchorcore-setup").as_slice());
-        assert_eq!(SEARCH_SKILL_MD.as_bytes(), repo_skill_bytes("anchorcore-search").as_slice());
+        assert_eq!(SEARCH_SKILL_MD.as_bytes(), repo_skill_bytes("ask-docs").as_slice());
     }
 
     #[test]
@@ -314,7 +440,7 @@ mod tests {
             let path = target_under(home.path(), "claude-code", skill);
             assert_eq!(
                 path,
-                home.path().join(".claude").join("skills").join(format!("anchorcore-{skill}")).join("SKILL.md")
+                home.path().join(".claude").join("skills").join(canonical_skill_dir(skill).unwrap()).join("SKILL.md")
             );
             let bytes = skill_bytes(skill).unwrap();
             match install_skill_file(&path, bytes).unwrap() {
@@ -360,6 +486,52 @@ mod tests {
     }
 
     #[test]
+    fn handles_are_one_folder_name() {
+        assert_eq!(validate_handle(" ask-docs ").unwrap(), "ask-docs");
+        assert_eq!(validate_handle("kb2").unwrap(), "kb2");
+        for bad in ["", "-x", "x-", "Ask", "a b", "a/b", "..", "../x", "a.b", "anchorcore-setup", &"a".repeat(65)] {
+            assert!(validate_handle(bad).is_err(), "{bad:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn custom_handle_renames_and_retires_older_copies() {
+        let home = tmp_home();
+        let root = home.path().join("skills");
+        // An install from an older build (pre-marker, old name).
+        std::fs::create_dir_all(root.join("anchorcore-search")).unwrap();
+        std::fs::write(root.join("anchorcore-search/SKILL.md"), "---\nname: anchorcore-search\ndescription: old\n---\nbody").unwrap();
+        let (path, _, retired) = install_search_at(&root, "kb").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\nname: kb\n") && text.contains("`/kb what did we decide"), "personalised name + example");
+        assert_eq!(text.replace("\nname: kb\n", "\nname: ask-docs\n").replace("`/kb ", "`/ask-docs "), SEARCH_SKILL_MD, "nothing else changes");
+        assert_eq!(retired, vec![root.join("anchorcore-search/SKILL.md.anchorcore.bak")]);
+        assert!(!root.join("anchorcore-search/SKILL.md").exists(), "the old copy no longer loads");
+        // Back to the default: the custom copy is retired in turn.
+        let (path, _, retired) = install_search_at(&root, SEARCH_DIR).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), SEARCH_SKILL_MD);
+        assert_eq!(retired, vec![root.join("kb/SKILL.md.anchorcore.bak")]);
+        assert_eq!(installed_search_dirs(&root), vec![root.join(SEARCH_DIR)]);
+    }
+
+    #[test]
+    fn a_foreign_skill_at_the_handle_is_never_overwritten() {
+        let home = tmp_home();
+        let root = home.path().join("skills");
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        std::fs::write(root.join("notes/SKILL.md"), "---\nname: notes\n---\nsomeone else's").unwrap();
+        let err = install_search_at(&root, "notes").err().expect("refused");
+        assert!(err.contains("different skill"), "{err}");
+        assert_eq!(std::fs::read_to_string(root.join("notes/SKILL.md")).unwrap(), "---\nname: notes\n---\nsomeone else's");
+    }
+
+    #[test]
+    fn setup_skill_takes_no_handle() {
+        let err = install_skill("claude-code", "setup", Some("x")).err().expect("refused");
+        assert!(err.contains("Only the search skill"), "{err}");
+    }
+
+    #[test]
     fn dir_allowlist_is_pinned() {
         // Every client id resolves to exactly one home-relative skills root;
         // anything else resolves to nothing. Additions here are deliberate.
@@ -395,7 +567,7 @@ mod tests {
         let home = Path::new("/home/testuser");
         for id in CLIENT_IDS {
             let Some(parts) = skills_subpath(id) else { continue }; // windows desktop: APPDATA branch
-            for skill in ["setup", "search", "anchorcore-setup", "anchorcore-search"] {
+            for skill in ["setup", "search", "anchorcore-setup", "anchorcore-search", "ask-docs"] {
                 let dir = canonical_skill_dir(skill).unwrap();
                 let target = join_many(home, &parts).join(dir).join("SKILL.md");
                 assert!(target.starts_with(home), "{target:?} escapes home");
@@ -409,8 +581,9 @@ mod tests {
     fn skill_names_accept_aliases_and_reject_traversal() {
         assert_eq!(canonical_skill_dir("setup"), Some("anchorcore-setup"));
         assert_eq!(canonical_skill_dir("anchorcore-setup"), Some("anchorcore-setup"));
-        assert_eq!(canonical_skill_dir("search"), Some("anchorcore-search"));
-        assert_eq!(canonical_skill_dir("anchorcore-search"), Some("anchorcore-search"));
+        assert_eq!(canonical_skill_dir("search"), Some("ask-docs"));
+        assert_eq!(canonical_skill_dir("ask-docs"), Some("ask-docs"));
+        assert_eq!(canonical_skill_dir("anchorcore-search"), Some("ask-docs"), "old name still resolves");
         for bad in ["", "SETUP", "setup.md", "..", "../x", "a/../../etc", "anchorcore-setup/../x", "skill"] {
             assert!(canonical_skill_dir(bad).is_none(), "{bad} must be rejected");
             assert!(skill_bytes(bad).is_none(), "{bad} must have no bytes");

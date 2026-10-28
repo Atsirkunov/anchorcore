@@ -5,7 +5,7 @@
 > consume it with full provenance.
 > Status: **shipped** — `anchorcore mcp` (same binary, stdio, 12 read-only
 > tools, `public_only` gate, ask/search audit). Every tool has a REST
-> equivalent (the `anchorcore-search` skill), so no feature is MCP-only. HTTP
+> equivalent (the `ask-docs` skill), so no feature is MCP-only. HTTP
 > transport and write-back are planned (B14.2/B14.3).
 
 ---
@@ -19,7 +19,7 @@ same retrieval the UI uses. Agents that prefer plain HTTP use the REST skill.
 
 ## 2. Tool surface (v1 — read-only)
 
-**Asked in the user's own words (R47.3).** People rarely say "AnchorCore": they ask "what did we decide about refunds?", "who owns the payout migration?", "where is onboarding documented?". `initialize` returns server `instructions` that route those (decisions → `decisions`, owners and open work → `actions`, everything else → `search`, then `get_item`/`get_outline` before citing), and the `search`/`decisions`/`actions` descriptions lead with the same question shapes. The `anchorcore-search` skill's description carries the same wording for REST-only agents, plus a sandbox step: a refused connection means "open AnchorCore"; only a harness sandbox denial earns one question asking for the narrowest localhost access, never a bypass the user didn't approve.
+**Asked in the user's own words (R47.3).** People rarely say "AnchorCore": they ask "what did we decide about refunds?", "who owns the payout migration?", "where is onboarding documented?". `initialize` returns server `instructions` that route those (decisions → `decisions`, owners and open work → `actions`, everything else → `search`, then `get_item`/`get_outline` before citing), and the `search`/`decisions`/`actions` descriptions lead with the same question shapes. The `ask-docs` skill's description carries the same wording for REST-only agents, plus a sandbox step: a refused connection means "open AnchorCore"; only a harness sandbox denial earns one question asking for the narrowest localhost access, never a bypass the user didn't approve.
 
 | Tool | Parameters | Returns | Maps to |
 |---|---|---|---|
@@ -73,7 +73,7 @@ REST contract:
   MCP is an agent caller and stays gated.
 
 **`decisions`/`actions` are REST first** (R45.9): the MCP tools forward only
-the REST query keys (a test pins it), so an agent on the `anchorcore-search`
+the REST query keys (a test pins it), so an agent on the `ask-docs`
 skill gets the same answers without MCP. Scope and gating mirror `search` for
 the same caller: `project_id` + `public_only` resolve the same way, stale (and
 disputed, per `ANCHOR_QA_EXCLUDE_DISPUTED`) rows drop, and an untrusted answer
@@ -123,7 +123,7 @@ writes the answers?"; default `local`, so upgrades keep today's behavior).
 `GET /system/status` reports it as `llm_mode` (and `answer.mode`).
 
 - **`agent`** — the user's AI agent writes answers, over **MCP or the REST
-  `anchorcore-search` skill** (equal channels; no feature is MCP-only).
+  `ask-docs` skill** (equal channels; no feature is MCP-only).
   AnchorCore runs no chat model on the answer path: `ask` / `POST /qa` /
   `POST /qa/public` do scope + `public_only` + the Sensitive gate + fusion,
   skip the follow-up rewrite and generation, and return

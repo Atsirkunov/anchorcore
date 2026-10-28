@@ -11,9 +11,9 @@
 !.agents/skills/
 .agents/skills/*
 !.agents/skills/anchorcore-setup/
-!.agents/skills/anchorcore-search/
+!.agents/skills/ask-docs/
 !.agents/skills/anchorcore-setup/SKILL.md
-!.agents/skills/anchorcore-search/SKILL.md
+!.agents/skills/ask-docs/SKILL.md
 .claude
 agent
 docs

@@ -662,3 +662,16 @@ ADR log. Append newest first.
   - *Group client-side* — rejected: with a 50-row page, one noisy failure would push everything else out before grouping could fold it.
 * **Consequences:** the table grows without bound as before (MCP audit is the bulk); a retention row needs the owner's audit-lifetime answer first. Dismiss/restore take a required JSON body so a malformed request can never mean "dismiss everything".
 
+---
+
+## 2026-10-28 — R47.4: the search skill is `ask-docs`, and people may pick its handle
+
+* **Decision:** the read-only search skill's folder and name become `ask-docs` (owner's pick), and the installer takes an optional `handle` for it. Copies are recognised by a body marker (or the legacy `name: anchorcore-search`), and an install retires every other copy by renaming its `SKILL.md` to `.anchorcore.bak`. The setup skill keeps its fixed name.
+* **Context:** after R47.3 triggering comes from the description; the name only matters for `/name` invocation, and `anchorcore-search` was long and product-shaped. A free handle risks two copies that both trigger (breaking the either/or rule) and overwriting someone else's skill.
+* **Alternatives considered:**
+  - *Rename only, no handle* — rejected: the owner asked for a choice at setup.
+  - *Remember the handle in app settings* — rejected: copies placed by hand or by older builds would be missed; scanning the client's skills dir for the marker finds them all.
+  - *Delete retired copies* — rejected: installs never delete; `.anchorcore.bak` stops the agent loading it and keeps the file.
+  - *Handles for the setup skill too* — rejected: the search skill references it by name, and nobody invokes setup often.
+* **Consequences:** the handle is the only request-controlled path piece in the installer, so it is validated to one folder name (no `/`, `.`, or uppercase). Old `search`/`anchorcore-search` ids keep working on the serve and install endpoints.
+

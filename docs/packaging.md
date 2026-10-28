@@ -36,7 +36,7 @@ Security → Open Anyway. Windows and Linux builds are not code-signed.
 3. The onboarding wizard (R45.6) asks who writes answers (agent or local model) and sets up search
    embeddings (the built-in model, one ~550 MB download, or Ollama's `nomic-embed-text` when it runs).
    Local mode then picks an Ollama answer model sized to the machine's RAM (`GET /system/onboarding` →
-   `machine`); agent mode picks a channel — MCP Connect or the REST `anchorcore-search` skill. Then it
+   `machine`); agent mode picks a channel — MCP Connect or the REST `ask-docs` skill. Then it
    connects a folder (or the bundled sample).
 4. Sync, then ask — answers come back with citations.
 

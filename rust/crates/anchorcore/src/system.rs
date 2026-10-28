@@ -579,12 +579,12 @@ pub fn spawn_update_check(state: AppState) {
 // `GET /system/skills/:name` (the R23.3 `/system/skill` shape never shipped,
 // so no compat alias).
 const SETUP_SKILL_MD: &str = include_str!("../../../../.agents/skills/anchorcore-setup/SKILL.md");
-const SEARCH_SKILL_MD: &str = include_str!("../../../../.agents/skills/anchorcore-search/SKILL.md");
+const SEARCH_SKILL_MD: &str = include_str!("../../../../.agents/skills/ask-docs/SKILL.md");
 
 fn skill_markdown(name: &str) -> Option<&'static str> {
     match name {
         "setup" | "anchorcore-setup" => Some(SETUP_SKILL_MD),
-        "search" | "anchorcore-search" => Some(SEARCH_SKILL_MD),
+        "search" | "ask-docs" | "anchorcore-search" => Some(SEARCH_SKILL_MD),
         _ => None,
     }
 }
@@ -688,7 +688,8 @@ mod tests {
         assert_eq!(resp.headers()["content-type"], "text/markdown; charset=utf-8");
         let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
         assert_eq!(body.as_ref(), skill_markdown(name).unwrap().as_bytes());
-        assert_eq!(body.as_ref(), repo_skill_bytes(&format!("anchorcore-{name}")).as_slice());
+        let dir = if name == "search" { "ask-docs".to_string() } else { format!("anchorcore-{name}") };
+        assert_eq!(body.as_ref(), repo_skill_bytes(&dir).as_slice());
     }
 
     /// R23.3/R23.6: each served skill is byte-identical to its repo file.

@@ -6,7 +6,7 @@ the same redacted bundle:
 - **People:** the *Report issue* button under any answer in the Ask tab
   downloads `anchorcore-report-<timestamp>.json`.
 - **Agents:** `GET /system/report` (`?index=1` for the previous query;
-  404 when nothing was asked yet). Documented in the `anchorcore-search`
+  404 when nothing was asked yet). Documented in the `ask-docs`
   skill — no separate skill; the flow is one call.
 
 The bundle covers the last 20 `/qa` and `/qa/search` calls (in-memory,

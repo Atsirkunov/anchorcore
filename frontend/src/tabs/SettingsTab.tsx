@@ -258,7 +258,7 @@ export function SettingsTab() {
             value={form?.llm_mode === "agent" ? "agent" : "local"}
             onChange={(e) => form && setForm({ ...form, llm_mode: e.target.value as LlmMode })}
           >
-            <option value="agent">My AI agent (MCP or the anchorcore-search skill)</option>
+            <option value="agent">My AI agent (MCP or the ask-docs skill)</option>
             <option value="local">A local model on this computer</option>
           </select>
           <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 4, lineHeight: 1.5 }}>
