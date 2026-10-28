@@ -10,7 +10,8 @@ import { McpConnectCard } from "../McpConnect";
 import { useModelPull } from "../useModelPull";
 import { UpdateCard } from "../Updates";
 import { theme, radius } from "../theme";
-import type { Job, LogFile, McpClient, SystemEvent, SystemStatus } from "../types";
+import type { Job, LogFile, McpClient, SystemStatus } from "../types";
+import { ErrorsPanel } from "./system/ErrorsPanel";
 
 const POLL_MS = 10000;
 
@@ -18,7 +19,6 @@ const RECENT_JOBS = 10;
 
 export function SystemTab({ onConfigure, focusJobs }: { onConfigure?: () => void; focusJobs?: number } = {}) {
   const [status, setStatus] = useState<SystemStatus | null>(null);
-  const [events, setEvents] = useState<SystemEvent[]>([]);
   const [logs, setLogs] = useState<LogFile[]>([]);
   // R30.4: the shared jobs poll (1 s while anything is active) — every
   // active job is listed with its own Stop control, plus the recent ones.
@@ -33,7 +33,7 @@ export function SystemTab({ onConfigure, focusJobs }: { onConfigure?: () => void
   useEffect(() => {
     if (focusJobs) jobsRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
   }, [focusJobs]);
-  const [componentFilter, setComponentFilter] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [startingOllama, setStartingOllama] = useState(false);
   const [ollamaMsg, setOllamaMsg] = useState<string | null>(null);
@@ -47,16 +47,12 @@ export function SystemTab({ onConfigure, focusJobs }: { onConfigure?: () => void
       .systemStatus()
       .then(setStatus)
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
-    api
-      .systemErrors({ component: componentFilter || undefined, limit: 50 })
-      .then(setEvents)
-      .catch(() => {});
     api.systemLogs().then(setLogs).catch(() => {});
     api
       .listSources()
       .then((list) => setSourceNames(Object.fromEntries(list.map((s) => [s.id, s.name]))))
       .catch(() => {});
-  }, [componentFilter, queryClient]);
+  }, [queryClient]);
 
   useEffect(() => {
     refresh();
@@ -64,14 +60,19 @@ export function SystemTab({ onConfigure, focusJobs }: { onConfigure?: () => void
     return () => clearInterval(timer);
   }, [refresh]);
 
-  const levelColor = (level: string) =>
-    level === "error" ? theme.red : level === "warning" ? theme.amber : theme.blue;
-
   return (
     <div>
       <h2>System</h2>
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-        <button onClick={refresh} style={styles.button}>Refresh</button>
+        <button
+          onClick={() => {
+            refresh();
+            setRefreshKey((k) => k + 1);
+          }}
+          style={styles.button}
+        >
+          Refresh
+        </button>
         <button
           onClick={() => {
             localStorage.removeItem("wizard-dismissed");
@@ -82,14 +83,6 @@ export function SystemTab({ onConfigure, focusJobs }: { onConfigure?: () => void
         >
           Show welcome wizard
         </button>
-        <select value={componentFilter} onChange={(e) => setComponentFilter(e.target.value)} style={styles.select}>
-          <option value="">All components</option>
-          <option value="pipeline">pipeline</option>
-          <option value="scheduler">scheduler</option>
-          <option value="embedder">embedder</option>
-          <option value="qa">qa</option>
-          <option value="system">system</option>
-        </select>
       </div>
       {error && <p style={{ color: theme.red }}>{error}</p>}
 
@@ -254,27 +247,7 @@ export function SystemTab({ onConfigure, focusJobs }: { onConfigure?: () => void
       <UpdateCard onGoSettings={onConfigure} />
       <AgentSkillsCard />
 
-      <h3 style={{ marginBottom: 8 }}>Errors & warnings</h3>
-      {events.length === 0 ? (
-        <p style={{ color: theme.textDim, fontSize: 13 }}>No errors recorded.</p>
-      ) : (
-        <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 6, marginBottom: 20 }}>
-          {events.map((e) => (
-            <li key={e.id} style={styles.row}>
-              <div>
-                <span style={{ fontSize: 11, fontFamily: theme.mono, textTransform: "uppercase", color: levelColor(e.level) }}>{e.level}</span>{" "}
-                <span style={{ fontSize: 12, color: theme.textMuted }}>{new Date(e.created_at).toLocaleString()}</span>{" "}
-                <span style={{ fontSize: 12, background: theme.bgHover, borderRadius: radius, padding: "0 0.35rem" }}>
-                  {e.component}
-                </span>{" "}
-                {e.source_name && <span style={{ fontSize: 12, color: theme.accentAlt }}>{e.source_name}</span>}
-              </div>
-              <div style={{ fontSize: 13 }}>{e.message}</div>
-              {e.detail && <div style={{ fontSize: 12, color: theme.textMuted }} title={e.detail}>{e.detail.slice(0, 200)}</div>}
-            </li>
-          ))}
-        </ul>
-      )}
+      <ErrorsPanel refreshKey={refreshKey} />
 
       <h3 ref={jobsRef} id="jobs" style={{ marginBottom: 8 }}>Jobs</h3>
       {jobs.length === 0 ? (

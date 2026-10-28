@@ -154,7 +154,7 @@ sequenceDiagram
 | `vocabulary` | glossary terms (`manual` · `glossary` · `rule`) |
 | `assets`, `asset_blobs` | image metadata + content-addressed bytes |
 | `projects`, `project_sources` | scoped-search bundles |
-| `jobs`, `system_events`, `embed_state` | job queue/history, audit trail, query embedding family |
+| `jobs`, `system_events`, `embed_state` | job queue/history, audit trail + System-tab errors panel (dismissed rows are hidden, never deleted — R47.2), query embedding family |
 | `app_settings`, `users` | runtime setting overrides; Team auth users |
 
 Migrations are in `rust/crates/anchorcore/migrations/` (registered in `db.rs`).

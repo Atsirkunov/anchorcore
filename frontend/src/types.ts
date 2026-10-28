@@ -159,6 +159,39 @@ export type SystemEvent = {
   message: string;
   detail: string;
   created_at: string;
+  dismissed_at?: string | null;
+};
+
+export type EventLevel = SystemEvent["level"];
+
+/** R47.2: repeats of one component + level + source + message, folded. */
+export type EventGroup = {
+  id: number;
+  component: string;
+  level: EventLevel;
+  source_id: number | null;
+  source_name: string | null;
+  message: string;
+  detail: string;
+  count: number;
+  first_seen: string;
+  last_seen: string;
+  dismissed: boolean;
+};
+
+export type EventSummary = {
+  levels: Record<EventLevel, number>;
+  components: { component: string; count: number }[];
+  sources: { source_id: number; source_name: string | null; count: number }[];
+  dismissed: number;
+};
+
+/** Dismiss/restore match: absent keys match anything; `source_id: null` = no source. */
+export type EventMatch = {
+  component?: string;
+  levels?: EventLevel[];
+  source_id?: number | null;
+  message?: string;
 };
 
 export type LogFile = {

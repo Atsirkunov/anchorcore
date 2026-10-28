@@ -441,6 +441,8 @@ fn migrations() -> Migrations<'static> {
         // R36.2: chunker generation per item (re-chunk runs in `init_db`)
         M::up(include_str!("../migrations/28_chunker_version.sql")),
         M::up_with_hook(include_str!("../migrations/29_sensitive_bundle.sql"), bundle_sensitive),
+        // R47.2: dismissable system events (column added by the hook)
+        M::up_with_hook(include_str!("../migrations/30_event_dismiss.sql"), add_event_dismissed_at),
     ])
 }
 
@@ -570,6 +572,14 @@ fn bundle_sensitive(tx: &rusqlite::Transaction) -> rusqlite_migration::HookResul
         if column_exists(tx, "chunks", col) {
             tx.execute(&format!("ALTER TABLE chunks DROP COLUMN {col}"), [])?;
         }
+    }
+    Ok(())
+}
+
+/// R47.2 hook for migration 30: `system_events.dismissed_at` (NULL = shown).
+fn add_event_dismissed_at(tx: &rusqlite::Transaction) -> rusqlite_migration::HookResult {
+    if !column_exists(tx, "system_events", "dismissed_at") {
+        tx.execute("ALTER TABLE system_events ADD COLUMN dismissed_at DATETIME", [])?;
     }
     Ok(())
 }
@@ -767,7 +777,10 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         run_migrations(&mut conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 29);
+        assert_eq!(v, 30);
+        // R47.2 (migration 30): migration 13 rebuilt system_events without
+        // the column, so the hook must have added it.
+        assert!(column_exists(&conn, "system_events", "dismissed_at"), "migration 30 adds dismissed_at");
         // R35.4 (migration 29): legacy `pii` labels bundle into `sensitive`,
         // `is_pii` becomes the tri-state override, chunk PII columns go.
         let pii_labels: i64 = conn.query_row("SELECT COUNT(*) FROM sources WHERE label = 'pii'", [], |r| r.get(0)).unwrap();

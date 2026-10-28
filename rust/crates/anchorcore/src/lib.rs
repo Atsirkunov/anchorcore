@@ -26,6 +26,7 @@ pub mod embed_local;
 pub mod embed_model_api;
 pub mod embedder;
 pub mod entities;
+pub mod events_api;
 pub mod extract;
 pub mod fernet;
 pub mod frontend;

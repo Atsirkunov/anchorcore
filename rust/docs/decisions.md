@@ -649,3 +649,16 @@ ADR log. Append newest first.
   - *Teaching the skill the UI header* — rejected: the header is the app's own exemption, not an agent channel. The skills document the gated behavior (403/drops); spoofing the header is deliberate evasion, outside the guardrail scope like reading the SQLite file directly.
   - *Query-param exemption for `<img>`* — rejected: inconsistent with the header rule. Thumbnails fetch through `api.assetBlob` (UI header) and render blob URLs, which also feed the open-in-tab link.
 * **Consequences:** `read_gate.rs` owns the caller rule (`caller_is_ui`, `Gate::from_request/open/check_bytes`, `check_public` on the effective rule, `item_sensitivity`); R36.15's label-only `gated_label`/`item_label`/`check_bytes(label, trusted)` are gone. Every retrieval fn still takes `source_ids`; `ask`/`search` grew a `ui_caller` bool (transport, not body — MCP/skill POSTs carry no header). Contract in `tests/api_client_gate.rs` (8 black-box tests: agent gated / UI open / trust lifts per path + MCP stdio for `get_item`/`get_entity`) plus caller-split unit tests in `answer.rs`, `items.rs`, `sections.rs`, `entities.rs`, `records_api.rs`.
+
+---
+
+## 2026-10-28 — R47.2: the errors panel dismisses, never deletes; no automatic retention yet
+
+* **Decision:** clearing the System tab's errors & warnings stamps `system_events.dismissed_at` (migration 30); rows stay. Dismissed rows are hidden by default and come back with `include_dismissed` / "Show dismissed" and `restore`. Automatic retention (the row's original step 4: prune dismissed + info rows after 30 days) is not shipped.
+* **Context:** `system_events` is three things at once: the panel's source, the audit trail (MCP `ask`/`search` calls — `docs/mcp.md` promises "who asked what is always answerable" — and gate refusals), and an input to item flags (`items.rs` reads `pdf split-word repair` rows). The info level is mostly MCP audit, which is why the panel now starts with info off.
+* **Alternatives considered:**
+  - *Delete on clear* — rejected: a person tidying the panel would erase audit rows and PDF repair flags.
+  - *Prune dismissed + info after 30 days* — deferred: it ends the audit promise after 30 days; that's an owner call (how long audit lives, and whether Team differs from Personal).
+  - *Group client-side* — rejected: with a 50-row page, one noisy failure would push everything else out before grouping could fold it.
+* **Consequences:** the table grows without bound as before (MCP audit is the bulk); a retention row needs the owner's audit-lifetime answer first. Dismiss/restore take a required JSON body so a malformed request can never mean "dismiss everything".
+

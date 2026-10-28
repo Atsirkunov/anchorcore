@@ -1,4 +1,4 @@
-import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, CancelJobResult, ConflictLink, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, Project, PullProgress, Source, SystemEvent, SystemStatus, TestConnectionResult, UpdateStatus } from "./types";
+import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, CancelJobResult, ConflictLink, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, Project, PullProgress, Source, EventGroup, EventLevel, EventMatch, EventSummary, SystemStatus, TestConnectionResult, UpdateStatus } from "./types";
 
 export class RequestAbortedError extends Error {
   constructor(message = "Request cancelled") {
@@ -274,13 +274,21 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider }),
     }),
-  systemErrors: (params?: { component?: string; level?: string; limit?: number }) => {
-    const q = new URLSearchParams();
-    if (params?.component) q.set("component", params.component);
-    if (params?.level) q.set("level", params.level);
-    if (params?.limit) q.set("limit", String(params.limit));
-    return request<SystemEvent[]>(`/system/errors?${q}`);
+  // R47.2: the errors & warnings panel (grouped rows, filter counts, dismiss/restore).
+  systemErrorGroups: (params: { levels: EventLevel[]; component?: string; sourceId?: number; includeDismissed?: boolean; limit?: number }) => {
+    const q = new URLSearchParams({ group: "true" });
+    if (params.levels.length) q.set("levels", params.levels.join(","));
+    if (params.component) q.set("component", params.component);
+    if (params.sourceId != null) q.set("source_id", String(params.sourceId));
+    if (params.includeDismissed) q.set("include_dismissed", "true");
+    if (params.limit) q.set("limit", String(params.limit));
+    return request<EventGroup[]>(`/system/errors?${q}`);
   },
+  systemErrorSummary: () => request<EventSummary>("/system/errors/summary"),
+  dismissErrors: (match: EventMatch) =>
+    request<{ dismissed: number }>("/system/errors/dismiss", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(match) }),
+  restoreErrors: (match: EventMatch) =>
+    request<{ restored: number }>("/system/errors/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(match) }),
   systemLogs: () => request<LogFile[]>("/system/logs"),
   systemMcp: () => request<McpInfo>("/system/mcp"),
   browseFolders: (path?: string) => {
