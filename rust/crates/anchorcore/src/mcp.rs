@@ -115,7 +115,8 @@ async fn probe_health(base: &str) -> bool {
     let url = format!("{}/health", base.trim_end_matches('/'));
     let req = http_client().get(&url).timeout(std::time::Duration::from_millis(1500));
     let Ok(resp) = req.send().await else { return false };
-    if !resp.status().is_success() {
+    // R41.7: 503 `starting`/`failed` is our app mid-upgrade — still the port.
+    if !resp.status().is_success() && resp.status() != 503 {
         return false;
     }
     resp.json::<Value>().await.is_ok_and(|v| v.get("status").is_some())
@@ -185,6 +186,12 @@ async fn http_call(method: &str, path: &str, body: Option<Value>) -> Result<Valu
     };
     if resp.status() == 404 {
         return Err("not found".to_string());
+    }
+    // R41.7: the app is up but still upgrading its database (or the upgrade
+    // failed) — say so plainly instead of a raw 503.
+    if resp.status() == 503 {
+        let body = resp.json::<Value>().await.unwrap_or(Value::Null);
+        return Err(startup_message(&base, body).await);
     }
     if !resp.status().is_success() {
         let status = resp.status();
@@ -454,8 +461,29 @@ async fn tool_list_sources() -> Result<Value, String> {
     Ok(json!({"sources": sources}))
 }
 
+/// R41.7: a gated route's 503 carries step/of; `/health` adds the step's
+/// wording, so ask it for the full line (best-effort).
+async fn startup_message(base: &str, body: Value) -> String {
+    let url = format!("{}/health", base.trim_end_matches('/'));
+    let req = http_client().get(&url).timeout(std::time::Duration::from_millis(1500));
+    let health = match req.send().await {
+        Ok(r) => r.json::<Value>().await.ok(),
+        Err(_) => None,
+    };
+    let health = health.filter(|h| matches!(h.get("status").and_then(Value::as_str), Some("starting" | "failed")));
+    crate::startup::agent_message(health.as_ref().unwrap_or(&body))
+}
+
+/// R41.7: while the app upgrades its database, `memory_status` answers with
+/// the step instead of failing.
 async fn tool_memory_status() -> Result<Value, String> {
-    http_call("GET", "/system/status", None).await
+    match http_call("GET", "/system/status", None).await {
+        Err(msg) if msg.starts_with("AnchorCore is upgrading") || msg.starts_with("AnchorCore could not upgrade") => {
+            let status = if msg.starts_with("AnchorCore is upgrading") { "starting" } else { "failed" };
+            Ok(json!({"status": status, "message": msg}))
+        }
+        other => other,
+    }
 }
 
 /// R45.9: percent-encode one query value (RFC 3986 unreserved pass through).
@@ -1423,5 +1451,30 @@ mod tests {
         for key in ["item_id", "node_id", "include", "max_chars", "depth", "public_only"] {
             assert!(outline["inputSchema"]["properties"].get(key).is_some(), "{key}");
         }
+    }
+
+    /// R41.7: mid-upgrade the app answers 503 `starting` — agents get "try
+    /// again shortly" with the step, and `memory_status` reports it as a status.
+    #[tokio::test]
+    async fn upgrading_backend_reads_as_a_retry_message_not_a_connection_error() {
+        let _guard = crate::retrieval::ENV_LOCK.lock().unwrap();
+        let body = json!({"status": "starting", "phase": "migrations", "step": 2, "of": 4, "detail": "Migration 29: rewriting the search index"});
+        let mock = spawn_fixed_mock("503 Service Unavailable", body.to_string()).await;
+        let saved_url = std::env::var("ANCHOR_BACKEND_URL").ok();
+        std::env::set_var("ANCHOR_BACKEND_URL", &mock.base);
+        let status = tool_memory_status().await;
+        let sources = tool_list_sources().await;
+        match saved_url {
+            Some(u) => std::env::set_var("ANCHOR_BACKEND_URL", u),
+            None => std::env::remove_var("ANCHOR_BACKEND_URL"),
+        }
+        let status = status.expect("memory_status answers while upgrading");
+        assert_eq!(status["status"], "starting");
+        let msg = status["message"].as_str().unwrap();
+        assert!(msg.contains("AnchorCore is upgrading its database (step 2 of 4: Migration 29"), "{msg}");
+        assert!(msg.contains("try again shortly"), "{msg}");
+        let err = sources.expect_err("other tools return the message as the tool error");
+        assert!(err.starts_with("AnchorCore is upgrading its database (step 2 of 4"), "{err}");
+        assert!(!err.contains("unreachable"), "{err}");
     }
 }

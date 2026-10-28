@@ -39,7 +39,9 @@ question about their own or their team's material as yours.
 
 - Base URL: ANCHOR_BACKEND_URL env, else `http://127.0.0.1:<port>` with the
   `port` from `~/.anchorcore/runtime.json` (the running app writes it), else
-  http://127.0.0.1:8000. Probe GET /health (expect `{"status":"ok"}`).
+  http://127.0.0.1:8000. Probe GET /health (expect `{"status":"ok"}`; a 503
+  `{"status":"starting"}` means the app is upgrading its database — see
+  below).
 - Search is a POST: first GET /csrf, then send its csrf_token as
   X-CSRF-Token with Content-Type: application/json. (No CSRF header needed
   when you authenticate with a Bearer token instead.)
@@ -49,7 +51,15 @@ question about their own or their team's material as yours.
 
 ## When the app can't be reached
 
-Tell the two failures apart before you say anything:
+Tell the failures apart before you say anything:
+
+- **AnchorCore is upgrading its database:** a 503 whose body says
+  `"status":"starting"` (on /health) or "AnchorCore is upgrading its
+  database". The app is running: tell the user "AnchorCore is upgrading its
+  database (step N of M), I'll retry shortly", wait about 10 s and retry —
+  large libraries take several minutes. Don't call it "not running". A 503
+  with `"status":"failed"` means the upgrade failed: ask the user to open
+  AnchorCore, which shows what happened.
 
 - **AnchorCore isn't running:** connection refused, nothing listening on the
   port. Ask the user to open AnchorCore, then retry. Don't mention the

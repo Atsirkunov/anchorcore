@@ -114,9 +114,12 @@ pub fn build_router(state: health::AppState) -> Router {
         )
         // frontend (R5.1) — must be last, SPA fallback to index.html
         .fallback(frontend::handler)
-        // Layers: outermost -> innermost: Host/Origin -> CORS -> CSRF -> Auth
+        // Layers: outermost -> innermost: Host/Origin -> CORS -> Startup -> CSRF -> Auth
         .layer(middleware::from_fn_with_state(state.clone(), auth::require_auth_middleware))
         .layer(middleware::from_fn_with_state(state.clone(), security::csrf_middleware))
+        // R41.7: while the database upgrades, only /health + the SPA shell
+        // pass; auth would open the DB mid-migration, so this runs first.
+        .layer(middleware::from_fn(crate::startup::gate))
         .layer(security::cors_layer())
         .layer(middleware::from_fn_with_state(state.clone(), security::host_origin_middleware))
         .with_state(state)

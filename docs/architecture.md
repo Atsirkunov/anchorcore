@@ -19,6 +19,17 @@ Postgres (B49, `hosted-cloud-plan.md`).
 The only model on the ingest path is the embedder, and it is optional — without it everything stays
 keyword-searchable.
 
+**Startup (R41.7).** The process binds its port, opens the browser and builds the tray *before* it
+touches the database; `db::init_db_tracked` then runs on a blocking task: free-disk precheck (about 2×
+the DB) → R45.10 safety backup when needed → one transaction per pending migration → column check +
+R36.2 re-chunk. Each step reports into `startup.rs`. Until it finishes, `/health` answers 503
+`{"status":"starting","step","of","detail",…}`, the SPA shell loads and shows a full-page upgrade
+screen, every other route answers 503 "AnchorCore is upgrading its database", and the tray tooltip
+says so; MCP tools relay "upgrading (step N of M), try again shortly". Background services
+(scheduler, watcher, update check) start only after success. On failure the process keeps serving:
+`/health` 503 `failed` carries the redacted error, what state the data is in (a failed migration rolls
+back alone; earlier ones are kept and the next start resumes), the log path and a support line.
+
 ## 2. System diagram
 
 ```mermaid

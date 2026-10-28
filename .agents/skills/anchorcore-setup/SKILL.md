@@ -18,7 +18,12 @@ command or action and wait.
 1. **Find the app before anything.** Base URL: `ANCHOR_BACKEND_URL` env if
    set, else the `port` in `~/.anchorcore/runtime.json` (the running app writes
    it; use `http://127.0.0.1:<port>`), else `http://127.0.0.1:8000`. Probe
-   `GET /health`; expected `{"status":"ok"}`.
+   `GET /health`; expected `{"status":"ok"}`. A 503 with
+   `{"status":"starting", "step", "of", "detail"}` means the app is up and
+   upgrading its database: wait and re-probe every ~10 s (large libraries take
+   minutes) — never restart, reinstall or touch the data dir meanwhile. A 503
+   with `"status":"failed"` means the upgrade failed: relay its `error` and
+   `data_state` and ask the user to open AnchorCore (it shows the details).
    Anything else means the app is not up — see step 1. Exception: when the
    harness reports a sandbox, permission or network-policy denial (not a
    refused connection), the app may be fine and your sandbox is blocking
@@ -104,7 +109,8 @@ Terminal launch flags: `--port 8123`, `--data-dir <path>`, and
 `ANCHOR_OPEN_BROWSER=0` to suppress the browser tab. Double-click defaults:
 port 8000, data dir `~/.anchorcore`, UI at `http://127.0.0.1:8000`.
 
-Poll `/health` until `ok` (allow ~30 s on first run for migrations). Then read
+Poll `/health` until `ok` (allow ~30 s on first run; a 503 `starting` is a
+database upgrade in progress — keep waiting, it reports `step` of `of`). Then read
 before you write:
 
 | Call | What it tells you |
@@ -322,6 +328,8 @@ Report back: what you configured, what you verified, what is degraded and why.
 | Symptom | Cause | Fix |
 |---|---|---|
 | connection refused / "backend unreachable" | app not running | start it (step 1), check `/health` |
+| `503` "AnchorCore is upgrading its database" / `/health` `starting` | database upgrade running | wait and retry; don't restart it |
+| `/health` 503 `failed` | database upgrade failed | relay `error` + `data_state`; the user opens AnchorCore for details |
 | `version` older than `releases/latest` | stale build in use | update in place (step 1): stop → replace → relaunch, then re-probe |
 | local zip/binary version can't be verified | untrusted copy on the PC | download the newest release; don't unzip the local one |
 | `403` "missing or invalid CSRF token" | write without `X-CSRF-Token` | `GET /csrf`, retry with the header |

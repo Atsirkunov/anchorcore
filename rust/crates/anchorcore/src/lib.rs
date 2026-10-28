@@ -63,6 +63,7 @@ pub mod sections;
 pub mod security;
 pub mod settings;
 pub mod skills_setup;
+pub mod startup;
 pub mod sources;
 pub mod stubs;
 pub mod system;

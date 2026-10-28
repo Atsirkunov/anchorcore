@@ -1,4 +1,4 @@
-//! R34.1: system tray (Windows + macOS) — `Open AnchorCore` + `Quit AnchorCore`.
+//! R34.1: system tray (Windows + macOS) — status line (R41.7) + `Open AnchorCore` + `Quit AnchorCore`.
 //!
 //! Release builds are windowed (no console), so without a tray the app can only
 //! be stopped from the Task Manager / Activity Monitor. The tray owns no state:
@@ -205,10 +205,12 @@ mod imp {
         #[cfg(target_os = "macos")]
         let app = init_appkit()?;
         let url = format!("http://{}", addr);
+        // R41.7: a disabled first line follows the startup status.
+        let status_item = MenuItem::new(status_text(), false, None);
         let open_item = MenuItem::new("Open AnchorCore", true, None);
         let quit_item = MenuItem::new("Quit AnchorCore", true, None);
         let menu = Menu::new();
-        if menu.append(&open_item).is_err() || menu.append(&quit_item).is_err() {
+        if menu.append(&status_item).is_err() || menu.append(&open_item).is_err() || menu.append(&quit_item).is_err() {
             tracing::warn!("tray: menu build failed, running without a tray icon");
             return None;
         }
@@ -224,7 +226,7 @@ mod imp {
         tracing::info!("creating system tray icon");
         let tray = match with_platform_icon(TrayIconBuilder::new(), icon)
             .with_menu(Box::new(menu))
-            .with_tooltip("AnchorCore")
+            .with_tooltip(crate::startup::tray_label())
             .with_menu_on_left_click(true)
             .build()
         {
@@ -245,13 +247,46 @@ mod imp {
             return None;
         }
         tracing::info!("tray ready at {} (Open + Quit)", format!("http://{}", addr));
+        STATUS_UI.with(|ui| *ui.borrow_mut() = Some((tray.clone(), status_item.clone())));
+        crate::startup::on_change(Box::new(schedule_refresh));
         Some(super::TrayGuard(Guard {
             _icon: tray,
-            _items: vec![open_item, quit_item],
+            _items: vec![status_item, open_item, quit_item],
             #[cfg(target_os = "macos")]
             _app: app,
         }))
     }
+
+    thread_local! {
+        /// R41.7: the icon + status line, owned by the main thread (AppKit /
+        /// Win32 objects are not `Send`); refreshed only there.
+        static STATUS_UI: std::cell::RefCell<Option<(tray_icon::TrayIcon, MenuItem)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    fn status_text() -> String {
+        crate::startup::tray_label().trim_start_matches("AnchorCore — ").replace("AnchorCore", "Running")
+    }
+
+    /// Main thread only: copy the startup status into tooltip + status line.
+    fn refresh_status() {
+        STATUS_UI.with(|ui| {
+            if let Some((tray, item)) = ui.borrow().as_ref() {
+                let _ = tray.set_tooltip(Some(crate::startup::tray_label()));
+                item.set_text(status_text());
+            }
+        });
+    }
+
+    /// macOS: hop onto the main queue (drained by `NSApplication.run`).
+    #[cfg(target_os = "macos")]
+    fn schedule_refresh() {
+        dispatch2::DispatchQueue::main().exec_async(refresh_status);
+    }
+
+    /// Windows: the pump below refreshes on its 1 s timer.
+    #[cfg(target_os = "windows")]
+    fn schedule_refresh() {}
 
     /// macOS: `NSApplication.run` delivers status-item clicks to muda, which
     /// forwards them to the `tray-menu` thread below.
@@ -264,11 +299,20 @@ mod imp {
     /// message pump dispatches its clicks. Returns on `WM_QUIT` or error.
     #[cfg(target_os = "windows")]
     pub(super) fn run_event_loop(_guard: &Guard) {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, TranslateMessage, MSG};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, GetMessageW, SetTimer, TranslateMessage, MSG, WM_TIMER,
+        };
         // SAFETY: MSG is plain data; the pump only reads/writes our local.
+        // The thread timer (no window, no callback) only posts WM_TIMER here.
         unsafe {
+            // R41.7: refresh the startup status once a second.
+            SetTimer(std::ptr::null_mut(), 0, 1000, None);
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                if msg.message == WM_TIMER && msg.hwnd.is_null() {
+                    refresh_status();
+                    continue;
+                }
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }

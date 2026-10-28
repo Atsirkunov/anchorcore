@@ -675,3 +675,13 @@ ADR log. Append newest first.
   - *Handles for the setup skill too* — rejected: the search skill references it by name, and nobody invokes setup often.
 * **Consequences:** the handle is the only request-controlled path piece in the installer, so it is validated to one folder name (no `/`, `.`, or uppercase). Old `search`/`anchorcore-search` ids keep working on the serve and install endpoints.
 
+
+## 2026-10-28 — R41.7: bind before the database; one transaction per migration
+
+* **Decision:** the server binds its port (tray, browser, `runtime.json`) before `init_db`, and the router serves only `/health` (503 `starting`/`failed`) and the SPA shell until boot finishes. Migrations now run one transaction per schema version instead of one for the whole pending run.
+* **Context:** a 5.5 GB upgrade sat silent for ~8 min, and a failed 1.6.0 migration made the app quit with nothing on screen. Per-step progress needs a boundary between migrations; `rusqlite_migration::to_latest` wraps everything in one transaction.
+* **Alternatives considered:**
+  - *Keep one transaction, report only "migrating"* — rejected: no step N of M, and a failure late in a long run discards every earlier step's work.
+  - *Exit with a native dialog on failure* — rejected: three platforms, no tray state, and the person still sees nothing on Linux/Team; serving the error page works everywhere.
+  - *Gate per route inside handlers* — rejected: auth middleware already opens the DB; one layer outside CSRF/auth is the only place that keeps every path off the DB mid-migration.
+* **Consequences:** every schema version is a valid resting state (each was already a released state), so a failed step leaves the library at version N-1 with earlier steps kept and the next start resumes. A new migration adds a `db::MIGRATIONS` row with its screen wording. Test hooks are debug-build only.

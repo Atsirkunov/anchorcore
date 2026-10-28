@@ -83,6 +83,22 @@ impl TestServer {
         srv
     }
 
+    /// R41.7: spawn without waiting for `/health` 200 — the startup tests
+    /// watch the 503 `starting`/`failed` phase themselves.
+    pub fn spawn_unready(extra_env: &[(&str, &str)]) -> Self {
+        let port = free_port();
+        let dir = TempDir::new().expect("data tempdir");
+        let work = TempDir::new().expect("work tempdir");
+        Self {
+            child: Self::spawn(port, dir.path(), extra_env),
+            port,
+            dir,
+            work,
+            client: Client::builder().timeout(Duration::from_secs(30)).build().expect("reqwest client"),
+            csrf: String::new(),
+        }
+    }
+
     fn spawn(port: u16, data_dir: &std::path::Path, extra_env: &[(&str, &str)]) -> Child {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_anchorcore"));
         cmd.arg("--port")
@@ -127,7 +143,14 @@ impl TestServer {
             .to_string();
     }
 
-    async fn wait_healthy(&self) {
+    /// R41.7: restart on the same port + data dir without waiting.
+    pub fn restart_unready(&mut self, extra_env: &[(&str, &str)]) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        self.child = Self::spawn(self.port, self.dir.path(), extra_env);
+    }
+
+    pub async fn wait_healthy(&self) {
         let deadline = Instant::now() + Duration::from_secs(30);
         let url = self.url("/health");
         while Instant::now() < deadline {

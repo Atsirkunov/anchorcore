@@ -10,7 +10,7 @@
 
 use anchorcore::{
     auth, cli, db, embedder, health, jobs, license, mcp, routes, runtime, scheduler, secrets, security,
-    settings, system, tray,
+    settings, startup, system, tray,
 };
 #[cfg(not(test))]
 use anchorcore::watcher;
@@ -640,28 +640,18 @@ async fn serve(args: Args, tray_handoff: Option<TrayHandoff>) {
         }
     }
     install_panic_hook(&data_dir);
-    let db_path = db::resolve_db_path(&data_dir.to_string_lossy());
-    // init DB for side-effect (migrations, pragmas) - health/qa open per-request
-    let _ = db::init_db(&db_path).expect("failed to init DB");
     ensure_log_file(&data_dir);
-    sweep_orphan_jobs(&db_path);
+    let db_path = db::resolve_db_path(&data_dir.to_string_lossy());
+    // R41.7: bind first. Until `boot_database` finishes, the router answers
+    // `/health` with the upgrade status, serves the SPA shell, and 503s the
+    // rest — so the person sees the tray, a browser tab and progress instead
+    // of minutes of silence on a large upgrade.
+    startup::begin(&data_dir.join("anchorcore.log"));
     tracing::info!("Rust anchorcore — data_dir {} db {}", data_dir.display(), db_path.display());
 
     let state = build_state(&data_dir);
     tracing::info!("CSRF token generated (per-session)");
-    // R29.1: opt-in startup update check (`update_check_enabled`); no-op when off.
-    system::spawn_update_check(state.clone());
-    wire_scheduler(&state, &db_path);
-    // Folder watcher: extracted to `watcher::service` (P0 3.3) — gated for `cargo test`
-    // Keeps FolderWatcher (mpsc::Receiver !Sync) + HashMap future off test thread stack (8 MB).
-    #[cfg(not(test))]
-    {
-        watcher::service::spawn(state.clone());
-    }
-
-    spawn_ollama_autolaunch(state.settings.clone());
-
-    let app = routes::build_router(state);
+    let app = routes::build_router(state.clone());
 
     let addr = format!("{}:{}", resolve_host(&args.host), args.port);
     // Bind via std first: a second instance fails here before it can plant a
@@ -688,6 +678,7 @@ async fn serve(args: Args, tray_handoff: Option<TrayHandoff>) {
     };
     let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
     let advertised = advertise_runtime(&data_dir, &resolve_host(&args.host), &listener);
+    tokio::spawn(boot_database(state, db_path));
     let served = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(shutdown))
         .await;
@@ -695,6 +686,45 @@ async fn serve(args: Args, tray_handoff: Option<TrayHandoff>) {
         runtime::remove_own(&data_dir, pid);
     }
     served.unwrap();
+}
+
+/// R41.7: open + upgrade the database behind the already-bound server, then
+/// start the background services. A failure keeps the process serving the
+/// error screen (never a silent exit); the services stay off.
+async fn boot_database(state: health::AppState, db_path: PathBuf) {
+    let path = db_path.clone();
+    let outcome = tokio::task::spawn_blocking(move || db::init_db_tracked(&path).map(|_| ())).await;
+    let failure = match outcome {
+        Ok(Ok(())) => None,
+        Ok(Err(f)) => Some(f),
+        Err(e) => Some(db::InitFailure {
+            error: format!("the database upgrade stopped unexpectedly: {e}"),
+            data_state: "Each migration runs in its own transaction, so the interrupted step was rolled back; finished steps are kept. Restarting AnchorCore retries from there.".to_string(),
+        }),
+    };
+    if let Some(f) = failure {
+        tracing::error!("R41.7: database startup failed: {} — data: {}", f.error, f.data_state);
+        startup::fail(&f.error, &f.data_state);
+        return;
+    }
+    startup::step_detail("Starting background services");
+    sweep_orphan_jobs(&db_path);
+    start_services(&state, &db_path);
+    startup::ready();
+    tracing::info!("database ready");
+}
+
+fn start_services(state: &health::AppState, db_path: &std::path::Path) {
+    // R29.1: opt-in startup update check (`update_check_enabled`); no-op when off.
+    system::spawn_update_check(state.clone());
+    wire_scheduler(state, db_path);
+    // Folder watcher: extracted to `watcher::service` (P0 3.3) — gated for `cargo test`
+    // Keeps FolderWatcher (mpsc::Receiver !Sync) + HashMap future off test thread stack (8 MB).
+    #[cfg(not(test))]
+    {
+        watcher::service::spawn(state.clone());
+    }
+    spawn_ollama_autolaunch(state.settings.clone());
 }
 
 /// Bind `addr`, then run `on_bound` — only after the bind succeeded (R43.17).

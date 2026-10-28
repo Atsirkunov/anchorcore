@@ -83,6 +83,7 @@ dependencies = [
  "chacha20poly1305",
  "chrono",
  "clap",
+ "dispatch2",
  "dotenvy",
  "ed25519-dalek",
  "flate2",
@@ -1241,6 +1242,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
  "bitflags 2.13.1",
+ "block2",
+ "libc",
  "objc2",
 ]
 
