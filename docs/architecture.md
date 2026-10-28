@@ -169,7 +169,7 @@ Migrations are in `rust/crates/anchorcore/migrations/` (registered in `db.rs`).
   untrusted cloud provider (embed or answer) or to any caller but the app UI (which sends
   `X-Anchor-Client: ui`); refusals are recorded in `system_events`. `/qa/public` and `public_only`
   see `public` sources minus Sensitive items, whatever the caller or provider.
-- **PII** is a manual whole-document mark (R35.1); there is no auto-detection.
+- **Sensitive** is one concept (R35.4): the source label `sensitive`, or the escalate-only per-document override `sensitive_override` (`PATCH /items/:id`); legacy PII marks migrated into it. There is no auto-detection.
 - `GET /media/:uid` serves image bytes from the DB only, label-gated and CSP-sandboxed.
 
 ## 7. Swap points
