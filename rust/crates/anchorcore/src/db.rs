@@ -555,12 +555,17 @@ fn bundle_sensitive(tx: &rusqlite::Transaction) -> rusqlite_migration::HookResul
     if column_exists(tx, "sources", "label") {
         tx.execute("UPDATE sources SET label = 'sensitive' WHERE label = 'pii'", [])?;
     }
-    if column_exists(tx, "ingested_items", "is_pii") && !column_exists(tx, "ingested_items", "sensitive_override") {
-        tx.execute("ALTER TABLE ingested_items RENAME COLUMN is_pii TO sensitive_override", [])?;
+    // `is_pii` was added `NOT NULL DEFAULT 0`, so a rename would carry the
+    // constraint and reject the NULL (inherit) state: add the nullable
+    // column, copy explicit marks, drop the old one.
+    if !column_exists(tx, "ingested_items", "sensitive_override") {
+        tx.execute("ALTER TABLE ingested_items ADD COLUMN sensitive_override INTEGER", [])?;
     }
-    if column_exists(tx, "ingested_items", "sensitive_override") {
-        tx.execute("UPDATE ingested_items SET sensitive_override = NULL WHERE COALESCE(sensitive_override, 0) = 0", [])?;
+    if column_exists(tx, "ingested_items", "is_pii") {
+        tx.execute("UPDATE ingested_items SET sensitive_override = 1 WHERE is_pii = 1", [])?;
+        tx.execute("ALTER TABLE ingested_items DROP COLUMN is_pii", [])?;
     }
+    tx.execute("UPDATE ingested_items SET sensitive_override = NULL WHERE COALESCE(sensitive_override, 0) = 0", [])?;
     for col in ["is_pii", "pii_categories"] {
         if column_exists(tx, "chunks", col) {
             tx.execute(&format!("ALTER TABLE chunks DROP COLUMN {col}"), [])?;
@@ -729,7 +734,10 @@ mod tests {
             // A real v10 DB also predates R35.4 — the per-document mark is
             // still `is_pii`, the chunk PII columns exist, and a source may
             // carry the `pii` label, so migration 29 has real work to do.
-            conn.execute("ALTER TABLE ingested_items RENAME COLUMN sensitive_override TO is_pii", []).unwrap();
+            // Real DBs got `is_pii` from `ensure_columns` as NOT NULL — the
+            // shape that broke the first 1.6.0 migration on upgrade.
+            conn.execute("ALTER TABLE ingested_items DROP COLUMN sensitive_override", []).unwrap();
+            conn.execute("ALTER TABLE ingested_items ADD COLUMN is_pii INTEGER NOT NULL DEFAULT 0", []).unwrap();
             conn.execute("ALTER TABLE chunks ADD COLUMN is_pii BOOLEAN NOT NULL DEFAULT 0", []).unwrap();
             conn.execute("ALTER TABLE chunks ADD COLUMN pii_categories TEXT NOT NULL DEFAULT '[]'", []).unwrap();
             conn.execute("UPDATE sources SET label = 'pii'", []).unwrap();
