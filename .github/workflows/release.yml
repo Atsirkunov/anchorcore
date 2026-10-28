@@ -87,10 +87,11 @@ jobs:
           trap "kill $SRV 2>/dev/null || true" EXIT
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8129/health >/dev/null && break; sleep 1; done
           curl -sf http://127.0.0.1:8129/health >/dev/null || { echo "FAULT: skill-smoke server did not start"; cat /tmp/ac-skill-smoke.log; exit 1; }
-          for SKILL in setup search; do
+          for PAIR in setup:anchorcore-setup search:ask-docs; do
+            SKILL=${PAIR%%:*}; DIR=${PAIR#*:}
             curl -sf -D /tmp/skill-headers.txt "http://127.0.0.1:8129/system/skills/$SKILL" -o /tmp/skill-served.md
             grep -qi 'content-type: text/markdown' /tmp/skill-headers.txt || { echo "FAULT: /system/skills/$SKILL is not text/markdown"; cat /tmp/skill-headers.txt; exit 1; }
-            cmp /tmp/skill-served.md ".agents/skills/anchorcore-$SKILL/SKILL.md" || { echo "FAULT: /system/skills/$SKILL bytes differ from the repo SKILL.md"; exit 1; }
+            cmp /tmp/skill-served.md ".agents/skills/$DIR/SKILL.md" || { echo "FAULT: /system/skills/$SKILL bytes differ from the repo SKILL.md"; exit 1; }
           done
           if curl -sf http://127.0.0.1:8129/system/skills/nope -o /dev/null; then echo "FAULT: unknown skill did not 404"; exit 1; fi
           echo "ok (linux): /system/skills/:name serves setup + search byte-identical"
@@ -182,10 +183,11 @@ jobs:
           trap "kill $SRV 2>/dev/null || true" EXIT
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8129/health >/dev/null && break; sleep 1; done
           curl -sf http://127.0.0.1:8129/health >/dev/null || { echo "FAULT: skill-smoke server did not start"; cat /tmp/ac-skill-smoke.log; exit 1; }
-          for SKILL in setup search; do
+          for PAIR in setup:anchorcore-setup search:ask-docs; do
+            SKILL=${PAIR%%:*}; DIR=${PAIR#*:}
             curl -sf -D /tmp/skill-headers.txt "http://127.0.0.1:8129/system/skills/$SKILL" -o /tmp/skill-served.md
             grep -qi 'content-type: text/markdown' /tmp/skill-headers.txt || { echo "FAULT: /system/skills/$SKILL is not text/markdown"; cat /tmp/skill-headers.txt; exit 1; }
-            cmp /tmp/skill-served.md ".agents/skills/anchorcore-$SKILL/SKILL.md" || { echo "FAULT: /system/skills/$SKILL bytes differ from the repo SKILL.md"; exit 1; }
+            cmp /tmp/skill-served.md ".agents/skills/$DIR/SKILL.md" || { echo "FAULT: /system/skills/$SKILL bytes differ from the repo SKILL.md"; exit 1; }
           done
           if curl -sf http://127.0.0.1:8129/system/skills/nope -o /dev/null; then echo "FAULT: unknown skill did not 404"; exit 1; fi
           echo "ok (macos): /system/skills/:name serves setup + search byte-identical"
@@ -254,13 +256,14 @@ jobs:
               Start-Sleep -Seconds 1
             }
             if (-not $up) { Get-Content (Join-Path $dataDir "smoke.log") -Raw -ErrorAction SilentlyContinue; Get-Content (Join-Path $dataDir "smoke.err.log") -Raw -ErrorAction SilentlyContinue; throw "FAULT: skill-smoke server did not start" }
+            $skillDirs = @{ "setup" = "anchorcore-setup"; "search" = "ask-docs" }
             foreach ($skill in @("setup", "search")) {
               & curl.exe -sf -D (Join-Path $env:TEMP "skill-headers.txt") "http://127.0.0.1:8129/system/skills/$skill" -o (Join-Path $env:TEMP "skill-served.md") 2>$null
               if ($LASTEXITCODE -ne 0) { throw "FAULT: /system/skills/$skill request failed" }
               $headers = Get-Content (Join-Path $env:TEMP "skill-headers.txt") -Raw
               if ($headers -notmatch "(?i)content-type:\s*text/markdown") { throw "FAULT: /system/skills/$skill is not text/markdown" }
               $served = [IO.File]::ReadAllBytes((Join-Path $env:TEMP "skill-served.md"))
-              $repo = [IO.File]::ReadAllBytes(".agents/skills/anchorcore-$skill/SKILL.md")
+              $repo = [IO.File]::ReadAllBytes(".agents/skills/$($skillDirs[$skill])/SKILL.md")
               $same = ($served.Length -eq $repo.Length) -and (-not (Compare-Object $served $repo -SyncWindow 0))
               if (-not $same) { throw "FAULT: /system/skills/$skill bytes differ from the repo SKILL.md" }
             }
