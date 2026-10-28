@@ -1229,9 +1229,9 @@ mod tests {
         use crate::read_gate::Gate;
         let (_dir, conn, iid) = seed_db();
         conn.execute("UPDATE ingested_items SET text = 'l1\nl2\nl3' WHERE id = ?1", [iid]).unwrap();
-        let agent = Gate { ui_caller: false, provider_trusted: false };
-        let trusted = Gate { ui_caller: false, provider_trusted: true };
-        let ui = Gate { ui_caller: true, provider_trusted: false };
+        let agent = Gate { ui_caller: false, agents_allowed: false };
+        let trusted = Gate { ui_caller: false, agents_allowed: true };
+        let ui = Gate { ui_caller: true, agents_allowed: false };
         let q = |lines: Option<&str>, public_only: Option<bool>| GetQuery { lines: lines.map(str::to_string), public_only };
         let v = read_item(&conn, iid, &q(Some("2-3"), None), &agent).ok().expect("internal source window");
         assert_eq!(v["content"], "l2\nl3");

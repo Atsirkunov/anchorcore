@@ -1,5 +1,7 @@
 import { useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { sensitiveHint } from "../../sharingText";
+import { SHARING_QUERY_KEY } from "../../sharingText";
 import { api } from "../../api";
 import { theme, commonStyles, radius } from "../../theme";
 import type { Job, Source } from "../../types";
@@ -22,7 +24,6 @@ function jobLabel(job: Job): string {
 
 const LABEL_ALLOWS: Record<string, string> = {
   public: "answerable in shared/public scope",
-  sensitive: "local models only · never shared",
 };
 
 /** B37: one source row — status, every active job with its own Stop
@@ -46,6 +47,14 @@ export function SourceRow({
   // slips through (the backend 409s it, but the button should never be live).
   const [busy, setBusy] = useState(false);
   const queryClient = useQueryClient();
+  // R35.6: a Sensitive source's hint reflects the effective sharing state.
+  const sharing = useQuery({
+    queryKey: SHARING_QUERY_KEY,
+    queryFn: api.getSensitiveSharing,
+    enabled: source.label === "sensitive",
+    staleTime: 30_000,
+    retry: false,
+  });
   const stopper = useJobStop(onChanged);
   // R30.1: sync + reclassify share one slot per source; embed jobs don't block them.
   const syncJob = jobs.find((j) => j.kind === "sync" || j.kind === "reclassify");
@@ -125,7 +134,7 @@ export function SourceRow({
         </div>
         {source.label !== "internal" && (
           <div style={{ fontSize: 11, color: source.label === "sensitive" ? theme.amber : theme.textMuted, marginTop: 2 }}>
-            label: {source.label} — {LABEL_ALLOWS[source.label] ?? LABEL_ALLOWS.sensitive}
+            label: {source.label} — {LABEL_ALLOWS[source.label] ?? sensitiveHint(sharing.data)}
           </div>
         )}
           {jobs.map((job) => (

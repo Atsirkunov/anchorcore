@@ -256,8 +256,8 @@ pub(crate) async fn record_gate_event(data_dir: &str, blocked: &[String]) {
     let _ = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         if let Ok(conn) = crate::db::init_db(&db_path) {
-            let msg = format!("answer gate: {} hit(s) excluded from cloud answer (Sensitive source or Sensitive-marked item)", blocked_len);
-            let detail = format!("labels={:?}; set ANCHOR_CLOUD_TRUST=1 to allow", labels);
+            let msg = format!("answer gate: {} hit(s) excluded from a cloud answer provider or AI agent (Sensitive source or Sensitive-marked item)", blocked_len);
+            let detail = format!("labels={:?}; allow it under Settings → Sensitive sources (or ANCHOR_CLOUD_TRUST=1)", labels);
             let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning',?1,?2)", rusqlite::params![msg, detail]);
         }
     })
@@ -641,10 +641,9 @@ pub async fn ask(
     // separately. Sensitive bytes never reach an untrusted provider for
     // generation (they would leave the machine), while the person at the
     // UI sees every citation. Public scopes drop Sensitive from both,
-    // whatever the caller or provider.
-    let provider_trusted = is_answer_trusted(settings);
-    let gate_generation = !provider_trusted || public_only;
-    let gate_response = !(ui_caller || provider_trusted) || public_only;
+    // whatever the caller or provider. R35.6: agents need their own switch.
+    let response_open = ui_caller || agents_allowed(settings);
+    let (gate_generation, gate_response) = ask_gates(is_answer_trusted(settings), response_open, public_only);
     let (gen_hits, resp_hits) = match gate_ask_hits(&data_dir_string, hits, gate_generation, gate_response, public_only, retrieval).await {
         Ok(pair) => pair,
         Err(refusal) => return refusal,
@@ -738,7 +737,7 @@ fn gated_refusal(public_only: bool, retrieval: &str) -> AskResponse {
         )
     } else {
         (
-            "Relevant knowledge was found but it is Sensitive and the answer provider is not approved for it. Enable a local provider, list it in ANCHOR_TRUSTED_PROVIDERS, or set ANCHOR_CLOUD_TRUST=1 to answer.".to_string(),
+            "Relevant knowledge was found but it is Sensitive and this destination is not approved for it. The person can allow it under Settings → Sensitive sources in the AnchorCore app (a local answer provider needs no switch).".to_string(),
             degraded_warning("none", Some("gated_provider")),
         )
     };
@@ -773,7 +772,7 @@ fn degraded_warning(mode: &str, refusal: Option<&str>) -> Option<String> {
         return None;
     }
     if refusal == Some("gated_provider") {
-        return Some("Relevant knowledge exists but is Sensitive and the answer provider is not approved for it, so no answer was composed. Do not treat this as an answer.".to_string());
+        return Some("Relevant knowledge exists but is Sensitive and this destination (answer provider or AI agent) is not approved for it, so no answer was composed. Do not treat this as an answer.".to_string());
     }
     if mode == "none" {
         return Some("No relevant knowledge was found, so no answer was composed. Do not treat this as an answer.".to_string());
@@ -951,9 +950,28 @@ pub(crate) fn answer_ready(settings: &SettingsService, model_ready: bool) -> boo
     model_ready || crate::settings::is_agent_mode(settings)
 }
 
+/// R35.6: may Sensitive content reach the answer provider (generation,
+/// follow-up rewrite, acronym expansion)? Local, the person's "cloud answer
+/// provider" switch for its host, or an environment override.
 pub(crate) fn is_answer_trusted(settings: &SettingsService) -> bool {
-    let base = settings.get("answer_base_url", None).unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-    crate::common::provider_trusted(&base)
+    crate::sharing::allowed(settings, crate::sharing::Destination::Answer)
+}
+
+/// R35.6: may Sensitive content reach a non-UI caller (MCP, skill, curl)?
+/// Only the person's "AI agents" switch or `ANCHOR_CLOUD_TRUST=1` — never
+/// inferred from the answer provider.
+pub(crate) fn agents_allowed(settings: &SettingsService) -> bool {
+    crate::sharing::allowed(settings, crate::sharing::Destination::Agents)
+}
+
+/// R35.6: (gate generation input, gate response citations) for one ask.
+/// The response is open to the UI or allowed agents. Generation input is
+/// gated when the answer provider is not allowed — and whenever the
+/// response is gated, because a composed answer hands its input's content
+/// to the caller.
+fn ask_gates(answer_allowed: bool, response_open: bool, public_only: bool) -> (bool, bool) {
+    let gate_response = !response_open || public_only;
+    (gate_response || !answer_allowed, gate_response)
 }
 
 pub async fn search(
@@ -1010,9 +1028,9 @@ pub async fn search(
     .await
     .unwrap_or_default();
     // R35.5: same response gate as ask — the UI sees everything, other
-    // callers need a trusted provider, and public scopes drop Sensitive
-    // whatever the caller or provider.
-    let response_open = ui_caller || is_answer_trusted(settings);
+    // callers need the "AI agents" switch (R35.6), and public scopes drop
+    // Sensitive whatever the caller or provider.
+    let response_open = ui_caller || agents_allowed(settings);
     let (hits, blocked_count, refusal) = gate_search_hits(&data_dir_string, hits, public_only || !response_open).await;
     // Paginate after gating so a harness sees a stable walk of exactly what
     // it may read; blocked/refusal still describe the whole gated set.
@@ -1682,6 +1700,7 @@ mod tests {
         let embedder = Arc::new(Embedder::new(settings.clone()));
         // Localhost is trusted in every environment — deterministic trust.
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agent caller
         assert!(is_answer_trusted(&settings));
         let req = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
         let res = search(&settings, &embedder, req, &data_dir, false).await;
@@ -1703,6 +1722,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agent caller
         let base = SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
         let compact = search(&settings, &embedder, base, &data_dir, false).await;
         assert!(!compact.hits.is_empty());
@@ -1725,6 +1745,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agent caller
         // Both seeded chunks share these words, so one page of 1 must leave a next cursor.
         let mk = |cursor: Option<usize>| SearchRequest { query: "quarterly report numbers".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("all".to_string()), cursor, limit: Some(1), include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
         let p1 = search(&settings, &embedder, mk(None), &data_dir, false).await;
@@ -1768,6 +1789,7 @@ mod tests {
         settings.set_data_dir(dir.path());
         settings.set("embed_base_url", "http://127.0.0.1:9", &conn).unwrap();
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agent caller
         let embedder = Arc::new(Embedder::new(settings.clone()));
         let mk = |k: Option<usize>, cursor: Option<usize>, limit: Option<usize>| SearchRequest {
             query: "quasarion ledger".to_string(), k, project_id: None, public_only: None,
@@ -2038,6 +2060,32 @@ mod tests {
         assert!(res.citations.iter().all(|c| c.content.contains("public")), "only public sources may be cited");
     }
 
+    #[test]
+    fn ask_gates_split_generation_and_response() {
+        // R35.6: (gate_generation, gate_response) for
+        // (answer allowed, response open (UI or agents switch), public).
+        assert_eq!(ask_gates(true, true, false), (false, false), "allowed provider + open caller");
+        assert_eq!(ask_gates(false, true, false), (true, false), "UI sees citations; cloud model gated");
+        assert_eq!(ask_gates(true, false, false), (true, true), "an agent's composed answer never carries Sensitive input");
+        assert_eq!(ask_gates(true, true, true), (true, true), "public scope gates both");
+    }
+
+    #[tokio::test]
+    async fn local_answer_provider_no_longer_opens_agents() {
+        // R35.6: a localhost answer model used to make agents trusted; now
+        // only the "AI agents" switch does.
+        let (dir, conn, settings) = seed_gate_db();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let embedder = Arc::new(Embedder::new(settings.clone()));
+        settings.set("answer_base_url", "http://localhost:11434/v1", &conn).unwrap();
+        let req = || SearchRequest { query: "moonvault".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
+        let res = search(&settings, &embedder, req(), &data_dir, false).await;
+        assert_eq!(res.refusal.as_deref(), Some("gated_provider"), "agents stay gated with a local answer model");
+        settings.set("sensitive_share_agents", "1", &conn).unwrap();
+        let res = search(&settings, &embedder, req(), &data_dir, false).await;
+        assert!(!res.hits.is_empty() && res.refusal.is_none(), "the agents switch opens the response");
+    }
+
     #[tokio::test]
     async fn agent_mode_keeps_gated_provider_refusal() {
         // R45.2: the label gate still refuses in agent mode (same trust
@@ -2080,6 +2128,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agent caller
         conn.execute("INSERT INTO sources (connector, name, label) VALUES ('folder','pub','public')", []).unwrap();
         let pubsid: i64 = conn.query_row("SELECT id FROM sources WHERE name='pub'", [], |r| r.get(0)).unwrap();
         conn.execute("INSERT INTO ingested_items (source_id, content_hash, title, external_id, text, sensitive_override) VALUES (?1,'h2','p','docs/p.md','moonvault public digest',1)", [pubsid]).unwrap();
@@ -2129,6 +2178,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agent caller
         let req = SearchRequest { query: "sunshine".to_string(), k: Some(8), project_id: None, public_only: None, fields: None, cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
         let res = search(&settings, &embedder, req, &data_dir, false).await;
         assert!(!res.hits.is_empty(), "keyword search must find the seeded chunk");
@@ -2156,6 +2206,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agent caller
         let res = search(&settings, &embedder, exact_req("moonvault"), &data_dir, false).await;
         assert_eq!(res.hits.len(), 1, "only the sensitive chunk holds the needle");
         assert_eq!(res.retrieval, "exact");
@@ -2197,6 +2248,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agent caller
         let ord: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
         conn.execute("INSERT INTO projects (name) VALUES ('p1')", []).unwrap();
         let pid: i64 = conn.last_insert_rowid();
@@ -2222,6 +2274,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agent caller
         let mut req = exact_req("sunshine");
         req.mode = Some("fuzzy".to_string());
         let res = search(&settings, &embedder, req, &data_dir, false).await;
@@ -2236,6 +2289,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agent caller
         let mut capped = exact_req("quarterly");
         capped.k = Some(1);
         let cap = search(&settings, &embedder, capped, &data_dir, false).await;
@@ -2475,6 +2529,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agent caller
         let ord: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
         conn.execute(
             "INSERT INTO ingested_items (source_id, content_hash, title, external_id, text) VALUES (?1,'h','routing-config.yml','cfg/routing-config.yml','live treasury routes acme config content')",
@@ -2681,6 +2736,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agent caller
         let plain = search(&settings, &embedder, filter_req("acme ledger", None, None, None), &data_dir, false).await;
         assert_eq!(plain.hits.len(), 5, "five document chunks match; the seeded entity chunk stays out");
         let docs = search(&settings, &embedder, filter_req("acme ledger", Some("document"), None, None), &data_dir, false).await;
@@ -2702,6 +2758,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agent caller
         // Relative: the cfg item's doc chunk only (its entity chunk stays
         // out of retrieval since R33.3).
         let rel = search(&settings, &embedder, filter_req("acme ledger", None, Some("cfg/"), None), &data_dir, false).await;
@@ -2721,6 +2778,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agent caller
         let sym = search(&settings, &embedder, filter_req("acme ledger", None, None, Some("fetch_user")), &data_dir, false).await;
         assert_eq!(sym.hits.len(), 1);
         assert_eq!(sym.hits[0].item_title, "src/code.py");
@@ -2737,6 +2795,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agent caller
         // doc ∩ symbol: only the symbol-section chunk survives.
         let both = search(&settings, &embedder, filter_req("acme ledger", Some("document"), None, Some("fetch_user")), &data_dir, false).await;
         assert_eq!(both.hits.len(), 1);
@@ -2772,6 +2831,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agent caller
         let req = |env: Option<&str>, kind: Option<&str>, prefix: Option<&str>, symbol: Option<&str>| SearchRequest {
             query: "acme ledger".to_string(),
             k: Some(8),
@@ -2848,6 +2908,7 @@ mod tests {
         let data_dir = dir.path().to_string_lossy().to_string();
         let embedder = Arc::new(Embedder::new(settings.clone()));
         settings.set("answer_base_url", "http://127.0.0.1:11434/v1", &conn).unwrap();
+        settings.set("sensitive_share_agents", "1", &conn).unwrap(); // R35.6: agent caller
         let req = SearchRequest { query: "tungsten invoice".to_string(), k: Some(8), project_id: None, public_only: None, fields: Some("all".to_string()), cursor: None, limit: None, include_content: None, env: None, kind: None, path_prefix: None, symbol: None, mode: None };
         let res = search(&settings, &embedder, req, &data_dir, false).await;
         assert_eq!(res.hits.len(), 2, "two Billing matches merge into one parent");

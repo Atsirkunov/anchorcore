@@ -115,6 +115,11 @@ fn guard_test_ollama_url(value: Option<String>) -> Option<String> {
 static ENV_CACHE: OnceLock<HashMap<String, String>> = OnceLock::new();
 
 fn env_value(key: &str) -> Option<String> {
+    // R35.6: a Sensitive-sharing switch is the person's consent — never an
+    // env var (the admin overrides are ANCHOR_CLOUD_TRUST/TRUSTED_PROVIDERS).
+    if crate::sharing::SHARING_KEYS.contains(&key) {
+        return None;
+    }
     // ANCHOR_ prefix, like Python Settings env_prefix
     let env_key = format!("ANCHOR_{}", key.to_uppercase());
     if let Ok(v) = std::env::var(&env_key) {
@@ -152,6 +157,13 @@ fn env_value(key: &str) -> Option<String> {
 /// blank fields, and Python's `db or env or default` chain treated them as
 /// falsy. Returning `None` keeps `.or_else(fallback)` chains (base URLs,
 /// models) working regardless of whether the 3s cache is warm or cold.
+/// Non-secret keys stored in `app_settings`: the `PUT /settings` keys plus
+/// R35.6's Sensitive-sharing switches, which only
+/// `PUT /settings/sensitive-sharing` writes (audited, UI only).
+fn is_stored_key(key: &str) -> bool {
+    SETTING_KEYS.contains(&key) || crate::sharing::SHARING_KEYS.contains(&key)
+}
+
 fn non_empty(v: Option<String>) -> Option<String> {
     v.filter(|s| !s.trim().is_empty())
 }
@@ -198,7 +210,7 @@ impl SettingsService {
     }
 
     pub fn get(&self, key: &str, conn: Option<&Connection>) -> Option<String> {
-        if !SETTING_KEYS.contains(&key) && !SECRET_KEYS.contains(&key) {
+        if !is_stored_key(key) && !SECRET_KEYS.contains(&key) {
             return env_value(key);
         }
         if SECRET_KEYS.contains(&key) {
@@ -238,7 +250,7 @@ impl SettingsService {
 
     pub fn set(&self, key: &str, value: &str, conn: &Connection) -> Result<(), String> {
         let v = value.trim();
-        if !SETTING_KEYS.contains(&key) && !SECRET_KEYS.contains(&key) {
+        if !is_stored_key(key) && !SECRET_KEYS.contains(&key) {
             tracing::warn!("ignoring unknown setting key '{}'", key);
             return Ok(());
         }

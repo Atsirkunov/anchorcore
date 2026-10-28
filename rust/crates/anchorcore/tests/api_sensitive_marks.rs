@@ -221,9 +221,14 @@ async fn sensitive_override_gates_every_read_path_under_untrusted_cloud() {
 async fn sensitive_override_flows_to_localhost_answer_provider() {
     let srv = TestServer::start().await;
     let (_, items) = corpus(&srv, "local", Some("public")).await;
-    // Localhost is always trusted (closed port: generation fails fast).
+    // Localhost answer provider: generation input flows (closed port:
+    // generation fails fast), but R35.6 no longer infers agent trust from
+    // it — agent reads need the agents switch.
     set(&srv, &[("answer_base_url", "http://localhost:1/v1")]).await;
     let c = mark(&srv, &items).await;
+    let gated = post_json(&srv, "/qa/search", json!({"query": "zorblax vault rotation"})).await;
+    assert_eq!(gated["refusal"], "gated_provider", "agent reads stay gated: {gated}");
+    srv.share_sensitive(json!({"agents": true})).await;
     assert_reads_flow(&srv, &c).await;
 }
 

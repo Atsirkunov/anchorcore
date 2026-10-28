@@ -57,13 +57,6 @@ fn window_hash(text: &str) -> String {
     crate::hashing::window_hash(text)
 }
 
-fn cloud_trusted(settings: &SettingsService, kind: &str) -> bool {
-    let base = match kind {
-        "embed" => settings.get("embed_base_url", None).or_else(|| settings.get("ollama_base_url", None)).unwrap_or_else(|| "http://localhost:11434".to_string()),
-        _ => settings.get("ollama_base_url", None).unwrap_or_else(|| "http://localhost:11434".to_string()),
-    };
-    crate::common::provider_trusted(&base)
-}
 fn record_sync_error(conn: &Connection, source_id: i64, err: &str) {
     let redacted = err.chars().take(1000).collect::<String>();
     let _ = conn.execute("UPDATE sources SET last_error = ?1, error_count = COALESCE(error_count,0)+1 WHERE id = ?2", rusqlite::params![redacted, source_id]);
@@ -562,7 +555,7 @@ impl Pipeline {
         .await?;
         // Label only — the job covers the whole source; per-item overrides
         // filter in `fetch_embed_batch` via `skip_marked`.
-        let gated = crate::common::effective_sensitive(&label, false) && !cloud_trusted(&self.settings, "embed");
+        let gated = crate::common::effective_sensitive(&label, false) && !self.embedder.cloud_trusted();
         // R35.4: override-marked items' chunks never reach an untrusted embedder.
         let skip_marked = !self.embedder.cloud_trusted();
         if skip_marked {
@@ -1099,7 +1092,7 @@ impl ClassifyCtx {
     // trust gate, no boxing. Cached on the item; force reclassify
     // re-buckets (recovers legacy 8-way labels deterministically).
     async fn detect_doc_type(&mut self) -> Result<(), String> {
-        self.embed_trusted = cloud_trusted(&*self.settings, "embed");
+        self.embed_trusted = self.embedder.cloud_trusted();
         if !self.doc_type.is_empty() && !self.force {
             return Ok(());
         }
@@ -1885,7 +1878,7 @@ async fn note_marked_embed_skips(data_dir: &str, source_id: i64, item_id: Option
             .unwrap_or(0);
         if pending > 0 {
             let msg = format!("embed gate: {pending} chunk(s) of Sensitive-marked items kept from the cloud embedder");
-            let detail = "item_sensitive; list the provider in ANCHOR_TRUSTED_PROVIDERS or set ANCHOR_CLOUD_TRUST=1 to allow";
+            let detail = "item_sensitive; allow the cloud embedder under Settings → Sensitive sources (or ANCHOR_TRUSTED_PROVIDERS / ANCHOR_CLOUD_TRUST=1)";
             let _ = conn.execute(
                 "INSERT INTO system_events (component, level, source_id, message, detail) VALUES ('embed','warning',?1,?2,?3)",
                 rusqlite::params![source_id, msg, detail],

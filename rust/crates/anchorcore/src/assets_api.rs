@@ -83,7 +83,7 @@ pub async fn media_handler(State(state): State<AppState>, Path(uid): Path<String
     let want_json = q.format.as_deref().is_some_and(|f| f.eq_ignore_ascii_case("json"));
     let uid_for_db = uid.clone();
     // R35.5: the person at the UI always sees their images; other callers
-    // need a trusted provider.
+    // need the "AI agents" switch (R35.6).
     let open = crate::read_gate::Gate::from_request(&headers, &state.settings).open();
     let data_dir = state.data_dir.clone();
     let loaded = tokio::task::spawn_blocking(move || {
@@ -98,7 +98,7 @@ pub async fn media_handler(State(state): State<AppState>, Path(uid): Path<String
     };
     if !open && gated_label(&label) {
         crate::answer::record_gate_event(&state.data_dir, std::slice::from_ref(&label)).await;
-        let body = json!({"detail": "Asset withheld from an untrusted answer provider", "refusal": "gated_provider"});
+        let body = json!({"detail": "Sensitive image withheld from AI agents — the person can allow agents under Settings → Sensitive sources", "refusal": "gated_provider"});
         return (StatusCode::FORBIDDEN, Json(body)).into_response();
     }
     match bytes {

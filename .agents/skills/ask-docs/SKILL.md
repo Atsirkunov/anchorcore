@@ -113,8 +113,8 @@ or `~`, and URLs get a 400 that names the expected form. They never get an
 empty list. All of these reads take `public_only=true`, and anything outside
 a public source — or marked Sensitive on one — then reads as 404. Whole-file
 reads, line windows, section text, section/tag chunk lists and entity reads
-from a Sensitive item answer 403 `refusal: "gated_provider"` under an
-untrusted provider (multi-item lists drop the gated rows instead), like
+from a Sensitive item answer 403 `refusal: "gated_provider"` unless
+the person allowed AI agents in Settings → Sensitive sources (multi-item lists drop the gated rows instead; tell the user what was withheld — only they can allow it), like
 search. Do not send `X-Anchor-Client: ui` (that header is the app's own UI
 exemption, not an agent channel). MCP clients get the same reads as
 `list_items`, `get_item` (with `lines`) and `get_outline` (with `node_id` +
@@ -128,7 +128,7 @@ diagram, a chart), fetch the image with GET /media/:asset_id?format=json and
 look at it before answering; alt/caption are hints, not the picture. The
 JSON form refuses images over 1.5 MB with 413 + `size` + the raw `url`;
 Sensitive sources and Sensitive-marked documents answer 403 `refusal:
-"gated_provider"` under an untrusted provider, like search. `url: null` means the bytes were not stored (over the
+"gated_provider"` unless AI agents are allowed, like search. `url: null` means the bytes were not stored (over the
 size cap) — say so instead of guessing. MCP clients get the same call as the
 `get_asset` tool. A hit with `kind: "caption"` (path ending `caption by a
 person`) is a person's description of an image no document links: cite it
@@ -140,7 +140,7 @@ For "what did we decide about X, is it still current?", "who owns X?" or
 they read the records' own structure (Decision:, Status:, Owner:, Action
 items), so owners, due dates and supersession come back exact. Both take
 `source_ids` (comma list), `project_id`, `public_only`, `limit`, `offset`, and
-apply the same scope and provider gate as /qa/search (`blocked`, `refusal:
+apply the same scope and Sensitive gate as /qa/search (`blocked`, `refusal:
 "gated_provider"`). Rows are parsed, not reviewed: `review_status` stays
 `unverified` until a person confirms one. Cite the provenance path, then fetch
 the item if you need the surrounding text. MCP clients get the same calls as

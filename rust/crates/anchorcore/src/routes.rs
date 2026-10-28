@@ -74,6 +74,8 @@ pub fn build_router(state: health::AppState) -> Router {
         // settings (R6.1)
         .route("/settings", get(settings::get_handler).put(settings::put_handler))
         .route("/settings/test-connection", post(settings::test_connection_handler))
+        // R35.6: per-destination Sensitive sharing (UI-only writes, audited)
+        .route("/settings/sensitive-sharing", get(crate::sharing::get_handler).put(crate::sharing::put_handler))
         // system (R6.2 + R11 manual ollama start)
         .route("/system/status", get(system::status_handler))
         .route("/system/onboarding", get(system::onboarding_handler))

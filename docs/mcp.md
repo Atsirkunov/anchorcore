@@ -66,18 +66,19 @@ REST contract:
   effective-Sensitive items. Anything else reads as 404, so the share-safe
   surface never confirms that an item exists. The whole-item read, line
   windows, node `text`, section/tag chunk lists and entity reads from
-  Sensitive items answer 403 `refusal: "gated_provider"` under an untrusted
-  answer provider (multi-item lists drop the gated rows instead), with a
+  Sensitive items answer 403 `refusal: "gated_provider"` unless the person
+  turned on the "AI agents" switch (R35.6, Settings → Sensitive sources;
+  multi-item lists drop the gated rows instead), with a
   gate event, the same as `/media`. Outline and node metadata stay
   readable. The app itself sends `X-Anchor-Client: ui` and is never gated;
-  MCP is an agent caller and stays gated.
+  MCP is an agent caller and stays gated until the person allows agents.
 
 **`decisions`/`actions` are REST first** (R45.9): the MCP tools forward only
 the REST query keys (a test pins it), so an agent on the `ask-docs`
 skill gets the same answers without MCP. Scope and gating mirror `search` for
 the same caller: `project_id` + `public_only` resolve the same way, stale (and
-disputed, per `ANCHOR_QA_EXCLUDE_DISPUTED`) rows drop, and an untrusted answer
-provider withholds Sensitive rows (source label or per-document override,
+disputed, per `ANCHOR_QA_EXCLUDE_DISPUTED`) rows drop, and without the "AI agents"
+switch Sensitive rows are withheld (source label or per-document override,
 R35.4) (`blocked`, plus `refusal: "gated_provider"` when nothing survives).
 
 **`search` is the workhorse for harnesses.** Harnesses don't want a final
@@ -136,12 +137,18 @@ writes the answers?"; default `local`, so upgrades keep today's behavior).
 
 `search` / `POST /qa/search` is identical in both modes. The Sensitive gate
 uses the same caller rule for `ask` and `search` in both modes (R35.5):
-agents are gated unless the provider is trusted; the app's own UI requests
-carry `X-Anchor-Client: ui` and are never gated. Whether agent mode should
-treat the agent itself as an untrusted provider even when the answer
-provider is trusted is an open owner decision (handover 2026-10-21 §7.2.5;
-R35.6 switches will answer it per destination). Switching modes needs no
-re-ingest.
+the app's own UI requests carry `X-Anchor-Client: ui` and are never gated;
+agents are gated unless the person turned on the **AI agents** switch in
+Settings → Sensitive sources (R35.6) or the admin set `ANCHOR_CLOUD_TRUST=1`.
+Agent trust is its own destination, never inferred from the answer provider:
+a local Ollama answer model does not open agents. Separate switches allow
+the cloud embedder and the cloud answer provider (each bound to the host it
+named — a new host closes it). In local mode an agent caller without the
+agents switch also gets an answer composed without Sensitive input, so the
+composed text cannot carry it. Only the app UI can flip a switch
+(`PUT /settings/sensitive-sharing`, audited in `system_events`); agents
+read the state with `GET /settings/sensitive-sharing`. Switching modes needs
+no re-ingest.
 
 ## 3. Transports
 

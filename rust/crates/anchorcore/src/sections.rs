@@ -532,9 +532,9 @@ mod tests {
     fn read_node_scopes_and_gates_text_only() {
         use crate::read_gate::Gate;
         let (_dir, conn, _iid, _intro, api, _sym) = seed_tree();
-        let agent = Gate { ui_caller: false, provider_trusted: false };
-        let trusted = Gate { ui_caller: false, provider_trusted: true };
-        let ui = Gate { ui_caller: true, provider_trusted: false };
+        let agent = Gate { ui_caller: false, agents_allowed: false };
+        let trusted = Gate { ui_caller: false, agents_allowed: true };
+        let ui = Gate { ui_caller: true, agents_allowed: false };
         let q = |include: &str, public_only: Option<bool>| NodeQuery { include: Some(include.to_string()), max_chars: None, public_only };
         let v = read_node(&conn, api, &q("text,children", None), &agent).ok().expect("internal source reads");
         assert_eq!(v["text"], "aaa\n\nbbbbb");
