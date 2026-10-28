@@ -5,6 +5,7 @@ import "./theme.css";
 import App from "./App";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { ProjectsProvider } from "./ProjectsContext";
+import { StartupGate } from "./StartupGate";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 0, retry: 1, refetchOnWindowFocus: false } },
@@ -12,12 +13,15 @@ const queryClient = new QueryClient({
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <ProjectsProvider>
-        <ErrorBoundary label="app">
-          <App />
-        </ErrorBoundary>
-      </ProjectsProvider>
-    </QueryClientProvider>
+    {/* R41.7: nothing below may call the API before the database is ready. */}
+    <StartupGate>
+      <QueryClientProvider client={queryClient}>
+        <ProjectsProvider>
+          <ErrorBoundary label="app">
+            <App />
+          </ErrorBoundary>
+        </ProjectsProvider>
+      </QueryClientProvider>
+    </StartupGate>
   </StrictMode>,
 );

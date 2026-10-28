@@ -44,7 +44,12 @@ struct Outdated {
 pub fn rechunk_outdated_items(conn: &Connection) -> Result<usize, String> {
     let items = outdated_items(conn)?;
     let mut done = 0usize;
-    for item in &items {
+    // R41.7: the startup screen shows items done / total (no-op after boot).
+    if !items.is_empty() {
+        crate::startup::step_detail(&format!("Rebuilding search chunks for {} item(s)", items.len()));
+    }
+    for (i, item) in items.iter().enumerate() {
+        crate::startup::progress(i as u64, items.len() as u64, "items");
         match rechunk_item(conn, item) {
             Ok(()) => done += 1,
             Err(e) => tracing::warn!("R36.2: re-chunk of item {} ({}) failed: {}", item.id, item.external_id, e),

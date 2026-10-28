@@ -44,64 +44,134 @@ pub fn open_db(path: &Path) -> Result<Connection> {
 /// Open SQLite at `path`, set PRAGMAs, run migrations once per path.
 /// Mirrors `backend/app/db.py:44` + `backend/app/main.py:_run_migrations`.
 pub fn init_db(path: &Path) -> Result<Connection> {
+    init_db_tracked(path).map_err(|f| rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(f.error)))
+}
+
+/// R41.7: why boot could not finish, and what state the data is in — both
+/// in words the startup error screen shows as is.
+#[derive(Debug)]
+pub struct InitFailure {
+    pub error: String,
+    pub data_state: String,
+}
+
+impl InitFailure {
+    fn new(error: impl ToString, data_state: impl Into<String>) -> Self {
+        Self { error: error.to_string(), data_state: data_state.into() }
+    }
+}
+
+const UNCHANGED: &str = "Nothing in your library was changed: the upgrade stops before touching data.";
+
+/// R41.7: what this boot has to do, decided before anything changes.
+struct UpgradePlan {
+    from: usize,
+    to: usize,
+    backup: bool,
+    step: u32,
+    of: u32,
+    backup_file: Option<PathBuf>,
+}
+
+impl UpgradePlan {
+    fn for_db(conn: &Connection) -> Result<Self, InitFailure> {
+        let from = conn
+            .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .map_err(|e| InitFailure::new(e, UNCHANGED))?
+            .max(0) as usize;
+        let to = MIGRATIONS.len();
+        let backup = legacy_cleanup_needs_backup(conn).map_err(|e| InitFailure::new(e, UNCHANGED))?;
+        // backup (if any) + one step per pending migration + finishing up
+        let of = u32::from(backup) + to.saturating_sub(from) as u32 + 1;
+        crate::startup::plan(of, from > 0 && to > from);
+        Ok(Self { from, to, backup, step: 0, of, backup_file: None })
+    }
+
+    fn has_upgrade_work(&self) -> bool {
+        self.backup || self.to > self.from
+    }
+
+    fn next(&mut self, phase: &'static str, detail: &str) {
+        self.step += 1;
+        crate::startup::step(self.step, phase, detail);
+    }
+}
+
+/// Same as [`init_db`], with the failure explained for the startup screen
+/// and every phase reported to `startup` (R41.7).
+pub fn init_db_tracked(path: &Path) -> Result<Connection, InitFailure> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
     // Fast path: if this path already migrated in this process, just open with pragmas
-    {
-        let guard = migrated_paths().lock().unwrap();
-        if guard.contains(path) {
-            drop(guard);
-            return open_db(path);
-        }
+    if migrated_paths().lock().unwrap_or_else(|e| e.into_inner()).contains(path) {
+        return open_db(path).map_err(|e| InitFailure::new(e, UNCHANGED));
     }
-    let mut conn = Connection::open(path)?;
-
     // PRAGMAs — must match Python (WAL, busy_timeout, synchronous, foreign_keys)
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "busy_timeout", 5000)?;
-    conn.pragma_update(None, "synchronous", "NORMAL")?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
-
+    let mut conn = open_db(path).map_err(|e| {
+        InitFailure::new(format!("cannot open the database: {e}"), "The database file could not be opened; it was not changed.")
+    })?;
+    let mut plan = UpgradePlan::for_db(&conn)?;
+    if plan.has_upgrade_work() {
+        check_free_disk(path)?;
+    }
+    if plan.backup {
+        plan.next("backup", "Making a safety backup of your library");
+        plan.backup_file = backup_before_legacy_cleanup(&conn, path).map_err(|e| InitFailure::new(e, UNCHANGED))?;
+    }
     // Run migrations (see `migrations()` below). If the DB already exists from
     // Python/Alembic, this will apply only missing ones; otherwise it creates all.
-    // All SQL uses IF NOT EXISTS so re-running on a Python-created DB is safe.
-    backup_before_legacy_cleanup(&conn, path)?;
-    if let Err(e) = run_migrations(&mut conn) {
-        // Real syntax errors should surface; "already exists" is ok because
-        // Python/Alembic already created tables before rusqlite_migration
-        // tracking table existed. Log and continue for the latter.
-        let msg = e.to_string();
-        if msg.contains("already exists") || msg.contains("duplicate column") {
-            tracing::warn!("migration ignored (idempotent rerun on Python DB): {}", msg);
-        } else {
-            // For fresh DBs any error is fatal - surface it
-            return Err(rusqlite::Error::SqliteFailure(
-                rusqlite::ffi::Error::new(1),
-                Some(msg),
-            ));
-        }
-    }
+    run_migrations(&mut conn, &mut plan)?;
+    plan.next("finishing", "Checking the index");
+    finish_init(&conn).map_err(|e| {
+        InitFailure::new(
+            e,
+            "Every schema migration finished and was kept; the final column check failed and removed nothing. Restarting AnchorCore runs the check again.",
+        )
+    })?;
+    migrated_paths().lock().unwrap_or_else(|e| e.into_inner()).insert(path.to_path_buf());
+    Ok(conn)
+}
 
+/// R41.7 (5): the safety backup plus a table rewrite need roughly twice the
+/// database on disk — refuse up front rather than fail halfway.
+fn check_free_disk(path: &Path) -> Result<(), InitFailure> {
+    let size = |p: PathBuf| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    let db_bytes = size(path.to_path_buf()) + size(PathBuf::from(format!("{}-wal", path.display())));
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let free = crate::startup::free_bytes(dir);
+    tracing::info!(
+        "R41.7: database upgrade — database {} , needs about {} free, {} free; rough estimate {} min on this size",
+        crate::startup::human_bytes(db_bytes),
+        crate::startup::human_bytes(db_bytes.saturating_mul(2)),
+        free.map(crate::startup::human_bytes).unwrap_or_else(|| "unknown".to_string()),
+        db_bytes / 600_000_000 + 1
+    );
+    match crate::startup::disk_shortfall(db_bytes, free) {
+        Some(msg) => Err(InitFailure::new(msg, UNCHANGED)),
+        None => Ok(()),
+    }
+}
+
+/// Post-migration upkeep (idempotent; runs on every boot).
+fn finish_init(conn: &Connection) -> Result<()> {
     // Idempotent column adds for incremental schema (b39, b30, b26, etc.)
-    ensure_columns(&conn)?;
+    ensure_columns(conn)?;
     // R25.1: rows created before the uid columns existed (or by insert paths
     // that don't set one) get their stable id here — SQL cannot make UUIDv7.
-    let _ = backfill_uids(&conn);
-    ensure_vec(&conn);
-
+    let _ = backfill_uids(conn);
+    ensure_vec(conn);
     // Ensure PRAGMAs after migrations (some migrations may reset)
     conn.pragma_update(None, "foreign_keys", "ON")?;
     // R36.2: items an older chunker produced are rebuilt from their stored
     // text now — after `ensure_columns` (chunks.kind/path/section_id) and
     // `ensure_vec` (the vec_chunks sync triggers must see the deletes).
     // Migration 28 holds the per-item marker; a no-op query when current.
-    if let Err(e) = crate::pipeline::rechunk_outdated_items(&conn) {
+    // Failures are per item and retried next boot.
+    if let Err(e) = crate::pipeline::rechunk_outdated_items(conn) {
         tracing::warn!("R36.2: chunker upgrade skipped: {}", e);
     }
-    // mark migrated
-    migrated_paths().lock().unwrap().insert(path.to_path_buf());
-    Ok(conn)
+    Ok(())
 }
 
 fn try_add_column(conn: &Connection, sql: &str) {
@@ -309,32 +379,68 @@ fn vec_trigger_defs(conn: &Connection) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-fn run_migrations(conn: &mut Connection) -> Result<(), rusqlite_migration::Error> {
+/// One transaction per migration (R41.7) so the startup screen can name
+/// each step; a failed step rolls back alone and the next boot resumes there.
+fn run_migrations(conn: &mut Connection, plan: &mut UpgradePlan) -> Result<(), InitFailure> {
     // This build has no vec0 module linked, but Python-managed DBs contain a
     // real vec0 table plus vec_chunks_* triggers on chunks. ALTER TABLE ...
     // RENAME re-validates every trigger body, which fails with "no such
     // module: vec0". Drop those triggers for the migration run and restore
     // them byte-identical afterwards (even on failure, so a rolled-back run
     // leaves the schema untouched). Fresh DBs have no such triggers: no-op.
-    let saved = vec_trigger_defs(conn);
+    let saved = if plan.to > plan.from { vec_trigger_defs(conn) } else { Vec::new() };
     for (name, _) in &saved {
-        let _ = conn.execute(
-            &format!("DROP TRIGGER IF EXISTS \"{}\"", name.replace('"', "\"\"")),
-            [],
-        );
+        let _ = conn.execute(&format!("DROP TRIGGER IF EXISTS \"{}\"", name.replace('"', "\"\"")), []);
     }
-    let result = migrations().to_latest(conn);
+    let result = apply_pending(conn, plan);
     // Migration 21 removes an orphaned vec0 table; its triggers then point at
     // nothing, and `ensure_vec` recreates the plain table + fallback triggers.
-    if !table_exists(conn, "vec_chunks") {
-        return result;
-    }
-    for (_, sql) in &saved {
-        if let Err(e) = conn.execute(sql, []) {
-            tracing::warn!("failed to restore vec trigger after migrate: {}", e);
+    if table_exists(conn, "vec_chunks") {
+        for (_, sql) in &saved {
+            if let Err(e) = conn.execute(sql, []) {
+                tracing::warn!("failed to restore vec trigger after migrate: {}", e);
+            }
         }
     }
     result
+}
+
+fn apply_pending(conn: &mut Connection, plan: &mut UpgradePlan) -> Result<(), InitFailure> {
+    let migrations = migrations();
+    for version in plan.from + 1..=plan.to {
+        let name = MIGRATIONS[version - 1].2;
+        plan.next("migrations", &format!("Migration {version}: {name}"));
+        test_slow_step();
+        let Err(e) = migrations.to_version(conn, version) else { continue };
+        // "already exists" is ok because Python/Alembic already created
+        // tables before the rusqlite_migration tracking existed: log, stop
+        // migrating, continue with `ensure_columns` (pre-R41.7 behaviour).
+        let msg = e.to_string();
+        if msg.contains("already exists") || msg.contains("duplicate column") {
+            tracing::warn!("migration ignored (idempotent rerun on Python DB): {}", msg);
+            return Ok(());
+        }
+        return Err(InitFailure::new(format!("migration {version} ({name}) failed: {msg}"), migration_data_state(plan, version)));
+    }
+    Ok(())
+}
+
+/// What the error screen says about the data after migration `failed`
+/// rolled back (backed by `api_startup` black-box tests).
+fn migration_data_state(plan: &UpgradePlan, failed: usize) -> String {
+    let mut s = format!(
+        "Migration {failed} was rolled back as one transaction, so it changed nothing: your library is at schema version {}.",
+        failed - 1
+    );
+    if failed - 1 > plan.from {
+        s.push_str(&format!(" The steps before it (versions {}–{}) finished and were kept.", plan.from + 1, failed - 1));
+    }
+    if let Some(file) = &plan.backup_file {
+        let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        s.push_str(&format!(" A full safety backup from before this upgrade is in the exports folder ({name})."));
+    }
+    s.push_str(" Restarting AnchorCore retries from this step.");
+    s
 }
 
 fn table_exists(conn: &Connection, name: &str) -> bool {
@@ -382,68 +488,112 @@ fn drop_orphan_vec0(tx: &rusqlite::Transaction) -> rusqlite_migration::HookResul
     Ok(())
 }
 
+/// A migration hook (runs inside the migration's transaction).
+type Hook = fn(&rusqlite::Transaction) -> rusqlite_migration::HookResult;
+
+/// R41.7: one row per schema version (index + 1): SQL, optional hook, and
+/// what the startup screen says while it runs. Append only.
+const MIGRATIONS: &[(&str, Option<Hook>, &str)] = &[
+    // 23bca0413318_initial_schema — sources, ingested_items, entities, chunks, merge_actions, relationships
+    (include_str!("../migrations/01_initial.sql"), None, "creating the library tables"),
+    // 7c4a2b9e3d81_add_system_events_table
+    (include_str!("../migrations/02_system_events.sql"), None, "adding the event log"),
+    // 9d3f1b2c4a51_add_jobs_table
+    (include_str!("../migrations/03_jobs.sql"), None, "adding the job queue"),
+    // b4a00c1_add_app_settings
+    (include_str!("../migrations/04_app_settings.sql"), None, "adding settings"),
+    // b3a0c1_disputes + b15a0d1_projects + b18 distilled + b26 review_context (collapsed)
+    (include_str!("../migrations/05_misc.sql"), None, "adding projects and review data"),
+    // b12f7c0_add_chunks_fts
+    (include_str!("../migrations/06_fts.sql"), None, "building the keyword search index"),
+    // b39a0c1_add_source_label
+    (include_str!("../migrations/07_source_label.sql"), None, "adding source labels"),
+    // b33a0c1_add_vec_chunks
+    (include_str!("../migrations/08_vec.sql"), None, "adding the vector table"),
+    // b30a0c1_add_pii_flags
+    (include_str!("../migrations/09_pii.sql"), None, "adding privacy flags"),
+    // b40a0c1_add_users
+    (include_str!("../migrations/10_users.sql"), None, "adding user accounts"),
+    // R14.1 hierarchical TOC
+    (include_str!("../migrations/11_sections.sql"), None, "adding document outlines"),
+    // R14.4 dynamic tags
+    (include_str!("../migrations/12_tags.sql"), None, "adding tags"),
+    // Backfill created_at default on system_events (older chains lack it -> audit writes fail)
+    (include_str!("../migrations/13_system_events_default.sql"), None, "fixing event timestamps"),
+    // R25.1: stable uids (UUIDv7) for backup/export + device migration
+    (include_str!("../migrations/14_uids.sql"), None, "adding stable ids for backups"),
+    // R27.4: free-text reason on conflict links
+    (include_str!("../migrations/15_conflict_note.sql"), None, "adding conflict notes"),
+    // R35.1: manual PII mark at whole-document level
+    (include_str!("../migrations/16_item_pii.sql"), None, "adding document-level privacy marks"),
+    // Incremental folder sync: stat fingerprint so unchanged files skip extraction
+    (include_str!("../migrations/17_file_fingerprint.sql"), None, "adding file fingerprints"),
+    // F-03: per-item completion marker (processed_hash) with one-shot backfill
+    (include_str!("../migrations/18_processed_hash.sql"), None, "adding completion markers"),
+    // R38.1: markdown line ranges + section kind/meta
+    (include_str!("../migrations/19_markdown_ranges.sql"), None, "adding markdown line ranges"),
+    // R40.7: corpus vocabulary table (R45.13: glossary + initialism rules)
+    (include_str!("../migrations/20_vocabulary.sql"), None, "adding the vocabulary table"),
+    // R45.0: drop a Python-era vec0 index this binary cannot load
+    (include_str!("../migrations/21_drop_orphan_vec0.sql"), Some(drop_orphan_vec0), "removing an old vector index"),
+    // R45.5: vector provenance (chunks.embed_fp + embed_state) with one-shot backfill
+    (include_str!("../migrations/22_vector_provenance.sql"), None, "recording vector provenance"),
+    // R45.8: record fields on entities (decision id/status, action due/done)
+    (include_str!("../migrations/23_entity_records.sql"), None, "adding decision and action fields"),
+    // R45.13: glossary marks + drop vocabulary no person or initialism backs
+    (include_str!("../migrations/24_glossary.sql"), Some(prune_vocabulary), "adding glossary marks"),
+    // R45.18: drop distilled chunks (distillation deleted)
+    (include_str!("../migrations/25_drop_distilled.sql"), Some(drop_distilled_chunks), "dropping distilled chunks"),
+    // R46.7: image assets — deduped blobs + per-reference rows
+    (include_str!("../migrations/26_assets.sql"), None, "adding image storage"),
+    // R45.10: legacy entity cleanup (backup first, see `init_db`)
+    (include_str!("../migrations/27_legacy_entities.sql"), Some(cleanup_legacy_entities), "cleaning up legacy entities (can take several minutes on large libraries)"),
+    // R36.2: chunker generation per item (re-chunk runs in `init_db`)
+    (include_str!("../migrations/28_chunker_version.sql"), None, "adding chunker generations"),
+    (include_str!("../migrations/29_sensitive_bundle.sql"), Some(bundle_sensitive), "rewriting the search index for Sensitive labels (can take several minutes on large libraries)"),
+    // R47.2: dismissable system events (column added by the hook)
+    (include_str!("../migrations/30_event_dismiss.sql"), Some(add_event_dismissed_at), "making errors dismissable"),
+];
+
 fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![
-        // 23bca0413318_initial_schema — sources, ingested_items, entities, chunks, merge_actions, relationships
-        M::up(include_str!("../migrations/01_initial.sql")),
-        // 7c4a2b9e3d81_add_system_events_table
-        M::up(include_str!("../migrations/02_system_events.sql")),
-        // 9d3f1b2c4a51_add_jobs_table
-        M::up(include_str!("../migrations/03_jobs.sql")),
-        // b4a00c1_add_app_settings
-        M::up(include_str!("../migrations/04_app_settings.sql")),
-        // b3a0c1_disputes + b15a0d1_projects + b18 distilled + b26 review_context (collapsed)
-        M::up(include_str!("../migrations/05_misc.sql")),
-        // b12f7c0_add_chunks_fts
-        M::up(include_str!("../migrations/06_fts.sql")),
-        // b39a0c1_add_source_label
-        M::up(include_str!("../migrations/07_source_label.sql")),
-        // b33a0c1_add_vec_chunks
-        M::up(include_str!("../migrations/08_vec.sql")),
-        // b30a0c1_add_pii_flags
-        M::up(include_str!("../migrations/09_pii.sql")),
-        // b40a0c1_add_users
-        M::up(include_str!("../migrations/10_users.sql")),
-        // R14.1 hierarchical TOC
-        M::up(include_str!("../migrations/11_sections.sql")),
-        // R14.4 dynamic tags
-        M::up(include_str!("../migrations/12_tags.sql")),
-        // Backfill created_at default on system_events (older chains lack it -> audit writes fail)
-        M::up(include_str!("../migrations/13_system_events_default.sql")),
-        // R25.1: stable uids (UUIDv7) for backup/export + device migration
-        M::up(include_str!("../migrations/14_uids.sql")),
-        // R27.4: free-text reason on conflict links
-        M::up(include_str!("../migrations/15_conflict_note.sql")),
-        // R35.1: manual PII mark at whole-document level
-        M::up(include_str!("../migrations/16_item_pii.sql")),
-        // Incremental folder sync: stat fingerprint so unchanged files skip extraction
-        M::up(include_str!("../migrations/17_file_fingerprint.sql")),
-        // F-03: per-item completion marker (processed_hash) with one-shot backfill
-        M::up(include_str!("../migrations/18_processed_hash.sql")),
-        // R38.1: markdown line ranges + section kind/meta
-        M::up(include_str!("../migrations/19_markdown_ranges.sql")),
-        // R40.7: corpus vocabulary table (R45.13: glossary + initialism rules)
-        M::up(include_str!("../migrations/20_vocabulary.sql")),
-        // R45.0: drop a Python-era vec0 index this binary cannot load
-        M::up_with_hook(include_str!("../migrations/21_drop_orphan_vec0.sql"), drop_orphan_vec0),
-        // R45.5: vector provenance (chunks.embed_fp + embed_state) with one-shot backfill
-        M::up(include_str!("../migrations/22_vector_provenance.sql")),
-        // R45.8: record fields on entities (decision id/status, action due/done)
-        M::up(include_str!("../migrations/23_entity_records.sql")),
-        // R45.13: glossary marks + drop vocabulary no person or initialism backs
-        M::up_with_hook(include_str!("../migrations/24_glossary.sql"), prune_vocabulary),
-        // R45.18: drop distilled chunks (distillation deleted)
-        M::up_with_hook(include_str!("../migrations/25_drop_distilled.sql"), drop_distilled_chunks),
-        // R46.7: image assets — deduped blobs + per-reference rows
-        M::up(include_str!("../migrations/26_assets.sql")),
-        // R45.10: legacy entity cleanup (backup first, see `init_db`)
-        M::up_with_hook(include_str!("../migrations/27_legacy_entities.sql"), cleanup_legacy_entities),
-        // R36.2: chunker generation per item (re-chunk runs in `init_db`)
-        M::up(include_str!("../migrations/28_chunker_version.sql")),
-        M::up_with_hook(include_str!("../migrations/29_sensitive_bundle.sql"), bundle_sensitive),
-        // R47.2: dismissable system events (column added by the hook)
-        M::up_with_hook(include_str!("../migrations/30_event_dismiss.sql"), add_event_dismissed_at),
-    ])
+    let fail_at = test_fail_migration();
+    Migrations::new(
+        MIGRATIONS
+            .iter()
+            .enumerate()
+            .map(|(i, &(sql, hook, _))| match (hook, fail_at == Some(i + 1)) {
+                (_, true) => M::up_with_hook(sql, move |tx: &rusqlite::Transaction| failing_hook(tx, hook)),
+                (Some(h), false) => M::up_with_hook(sql, h),
+                (None, false) => M::up(sql),
+            })
+            .collect(),
+    )
+}
+
+/// Debug builds only: `ANCHOR_TEST_FAIL_MIGRATION=<version>` makes that
+/// migration fail after its SQL ran (so the black-box suite can prove the
+/// rollback); `ANCHOR_TEST_SLOW_MIGRATION_MS` slows every step.
+fn test_fail_migration() -> Option<usize> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var("ANCHOR_TEST_FAIL_MIGRATION").ok()?.parse().ok()
+}
+
+fn test_slow_step() {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    if let Some(ms) = std::env::var("ANCHOR_TEST_SLOW_MIGRATION_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+}
+
+fn failing_hook(tx: &rusqlite::Transaction, inner: Option<Hook>) -> rusqlite_migration::HookResult {
+    if let Some(h) = inner {
+        h(tx)?;
+    }
+    Err(rusqlite_migration::HookError::Hook("test hook: simulated migration failure".to_string()))
 }
 
 /// R45.13 hook for migration 24 (the initialism check is Rust, not SQL).
@@ -499,28 +649,63 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
         > 0
 }
 
-/// R45.10: before migration 27 deletes/demotes legacy entities, copy the
-/// whole DB to `exports/safety-backup-pre-r45.10-<utc>.db` (never swept).
-/// A failed backup fails the boot rather than changing unbacked-up data.
-fn backup_before_legacy_cleanup(conn: &Connection, db_path: &Path) -> Result<()> {
+/// R45.10: whether migration 27 is pending on a DB with legacy entities
+/// (only then is the safety backup taken).
+fn legacy_cleanup_needs_backup(conn: &Connection) -> Result<bool> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version == 0 || version >= 27 || !table_exists(conn, "entities") {
-        return Ok(());
+        return Ok(false);
     }
     let legacy: i64 = conn.query_row(
         &format!("SELECT COUNT(*) FROM entities WHERE {LEGACY_ENTITY}"),
         [crate::records::RECORD_REASONING],
         |r| r.get(0),
     )?;
-    if legacy == 0 {
-        return Ok(());
+    Ok(legacy > 0)
+}
+
+/// R45.10: before migration 27 deletes/demotes legacy entities, copy the
+/// whole DB to `exports/safety-backup-pre-r45.10-<utc>.db` (never swept).
+/// A failed backup fails the boot rather than changing unbacked-up data.
+/// R41.7: the startup screen shows bytes written against the DB size.
+fn backup_before_legacy_cleanup(conn: &Connection, db_path: &Path) -> Result<Option<PathBuf>> {
+    if !legacy_cleanup_needs_backup(conn)? {
+        return Ok(None);
     }
     let dir = db_path.parent().unwrap_or(Path::new(".")).join("exports");
     std::fs::create_dir_all(&dir).map_err(|e| backup_error(&dir, e))?;
     let file = dir.join(format!("safety-backup-pre-r45.10-{}.db", chrono::Utc::now().format("%Y%m%dT%H%M%SZ")));
-    conn.execute("VACUUM INTO ?1", [file.to_string_lossy()])?;
-    tracing::warn!("R45.10: {} legacy entities to clean up — backed up the database to {}", legacy, file.display());
-    Ok(())
+    let total = std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0);
+    let watcher = BackupProgress::spawn(file.clone(), total);
+    let res = conn.execute("VACUUM INTO ?1", [file.to_string_lossy()]);
+    watcher.stop();
+    res?;
+    tracing::warn!("R45.10: legacy entities to clean up — backed up the database to {}", file.display());
+    Ok(Some(file))
+}
+
+/// Polls the growing backup file so `/health` can show bytes copied.
+struct BackupProgress {
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl BackupProgress {
+    fn spawn(file: PathBuf, total: u64) -> Self {
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = done.clone();
+        let _ = std::thread::Builder::new().name("backup-progress".to_string()).spawn(move || {
+            while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+                let written = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+                crate::startup::progress(written.min(total), total, "bytes");
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+        });
+        Self { done }
+    }
+
+    fn stop(self) {
+        self.done.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 fn backup_error(dir: &Path, e: std::io::Error) -> rusqlite::Error {
@@ -588,6 +773,16 @@ fn add_event_dismissed_at(tx: &rusqlite::Transaction) -> rusqlite_migration::Hoo
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    fn migrate_all(conn: &mut Connection) {
+        let mut plan = UpgradePlan::for_db(conn).unwrap();
+        run_migrations(conn, &mut plan).unwrap();
+    }
+
+    #[test]
+    fn every_migration_has_a_name_for_the_startup_screen() {
+        assert!(MIGRATIONS.iter().all(|(_, _, name)| !name.is_empty()));
+    }
 
     #[test]
     fn opens_and_migrates() {
@@ -775,7 +970,7 @@ mod tests {
         let before = vec_trigger_sql(&open_db(&path).unwrap());
         assert!(!before.is_empty(), "test setup must have vec triggers");
         let mut conn = open_db(&path).unwrap();
-        run_migrations(&mut conn).unwrap();
+        migrate_all(&mut conn);
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(v, 30);
         // R47.2 (migration 30): migration 13 rebuilt system_events without
@@ -922,7 +1117,7 @@ mod tests {
         drop_entity_record_columns(&conn);
         drop_glossary_artifacts(&conn);
         conn.execute("ALTER TABLE ingested_items DROP COLUMN chunker_version", []).unwrap();
-        run_migrations(&mut conn).unwrap();
+        migrate_all(&mut conn);
         assert!(table_exists(&conn, "vec_chunks"));
         assert_eq!(vec_trigger_sql(&conn), before);
     }

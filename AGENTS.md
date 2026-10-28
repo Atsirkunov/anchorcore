@@ -32,6 +32,7 @@ Local-first "company memory": connect sources (folder, Jira, Linear, Drive, Miro
 - Ops: `watcher/` · `scheduler.rs` (source polls, embedding backfill) · `jobs.rs`.
 - Platform: `secrets.rs` · `backup.rs` + `cli.rs` · `license.rs` · `frontend.rs` · `tray.rs` · `mcp.rs` + `mcp_setup.rs` · `skills_setup.rs` · `fsbrowse.rs` · `machine.rs` (RAM + answer-model catalog for the wizard).
 - DB work goes through `spawn_blocking` + `with_db`/`run_db` (`pipeline.rs`); never hold a `Connection` (`!Send`) across `.await`.
+- Startup (R41.7, `startup.rs`): the port binds before `init_db`; until boot finishes every route but `/health` (503 `starting`/`failed`) and the SPA shell is 503. Migrations run one transaction per version (`db::MIGRATIONS` rows carry the screen wording — a new migration needs one); background services start only after a successful boot. Debug-only test hooks: `ANCHOR_TEST_SLOW_MIGRATION_MS`, `ANCHOR_TEST_FAIL_MIGRATION`, `ANCHOR_TEST_FREE_DISK_BYTES`.
 
 ## Retrieval (core rules)
 
