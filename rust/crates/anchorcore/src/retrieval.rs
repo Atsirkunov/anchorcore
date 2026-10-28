@@ -767,6 +767,13 @@ fn vector_search_vec0_filtered(
     exec_vec_search(conn, query_emb, source_ids, section_ids, top_k, qa_exclude_disputed, KindScope::Leaf)
 }
 
+/// R43.9 slim scan: no sqlite-vec is linked, so the vector leg reads every
+/// in-scope vector. Phase 1 reads `(id, embedding)` only — kind, family,
+/// source and section filters run in SQL, no content, no per-row lookup —
+/// and scores the vectors. Phase 2 hydrates full rows for the best
+/// candidates only (`load_hits_filtered` → `make_hit`, so `status_ok` stays
+/// the one stale/disputed rule), walking further down the ranking when a
+/// status filter drops rows, until the over-fetch pool is full.
 fn vector_search_scan_filtered(
     conn: &Connection,
     query_emb: &[f32],
@@ -775,23 +782,104 @@ fn vector_search_scan_filtered(
     top_k: usize,
     qa_exclude_disputed: bool,
 ) -> Vec<Hit> {
-    let hits = load_chunks_with_embedding_filtered(conn, source_ids, section_ids, qa_exclude_disputed);
+    // An empty scope admits nothing (the scan never passes source-less rows).
+    if source_ids.is_some_and(|s| s.is_empty()) || section_ids.is_some_and(|s| s.is_empty()) {
+        return vec![];
+    }
+    let ranked = scan_vector_scores(conn, query_emb, source_ids, section_ids);
+    hydrate_ranked(conn, &ranked, source_ids, section_ids, top_k * CANDIDATE_MULT, qa_exclude_disputed)
+}
+
+/// Phase 1: `(chunk_id, cosine)` for every in-scope leaf vector above the
+/// 0.2 floor, best first (stable: ties keep scan order).
+fn scan_vector_scores(
+    conn: &Connection,
+    query_emb: &[f32],
+    source_ids: Option<&HashSet<i64>>,
+    section_ids: Option<&HashSet<i64>>,
+) -> Vec<(i64, f32)> {
+    let mut sql = String::from("SELECT c.id, c.embedding FROM chunks c");
+    if source_ids.is_some() {
+        // Same effective-item join as every leg (entity chunks resolve via e.item_id).
+        sql.push_str(
+            " LEFT JOIN entities e ON e.id = c.entity_id \
+             LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id)",
+        );
+    }
+    sql.push_str(" WHERE c.embedding IS NOT NULL AND c.kind IN ('document','caption')");
+    let mut params: Vec<rusqlite::types::Value> = Vec::new();
+    append_source_filter(&mut sql, &mut params, source_ids);
+    append_section_filter(&mut sql, &mut params, section_ids);
+    append_vector_family_filter(conn, &mut sql, &mut params);
+    let Ok(mut stmt) = conn.prepare(&sql) else { return vec![] };
+    let Ok(mut rows) = stmt.query(rusqlite::params_from_iter(params.iter())) else { return vec![] };
+    let q_norm = query_emb.iter().map(|x| x * x).sum::<f32>().sqrt();
     let mut scored = Vec::new();
-    for mut h in hits {
-        if let Some(blob) = get_embedding(conn, h.chunk_id) {
-            if let Some(vec) = unpack_f32(&blob, query_emb.len()) {
-                let score = cosine(query_emb, &vec);
-                if score > 0.2 {
-                    h.score = score as f64;
-                    h.cosine = Some(score as f64);
-                    scored.push(h);
-                }
+    while let Ok(Some(row)) = rows.next() {
+        let Ok(id) = row.get::<_, i64>(0) else { continue };
+        let Some(blob) = row.get_ref(1).ok().and_then(|v| v.as_blob().ok()) else { continue };
+        if let Some(score) = cosine_le_blob(query_emb, q_norm, blob).filter(|s| *s > 0.2) {
+            scored.push((id, score));
+        }
+    }
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+    scored
+}
+
+/// `cosine(query, unpack_f32(blob))` without the per-row allocation and with
+/// the query norm hoisted — same operation order, so bit-identical scores.
+/// `None` when the blob's width differs from the query (the unpack miss).
+fn cosine_le_blob(query: &[f32], q_norm: f32, blob: &[u8]) -> Option<f32> {
+    if blob.len() != query.len() * 4 {
+        return None;
+    }
+    if query.is_empty() {
+        return Some(0.0);
+    }
+    let (mut dot, mut nb) = (0.0f32, 0.0f32);
+    for (q, b) in query.iter().zip(blob.chunks_exact(4)) {
+        let y = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+        dot += q * y;
+        nb += y * y;
+    }
+    let nb = nb.sqrt();
+    if q_norm == 0.0 || nb == 0.0 {
+        return Some(0.0);
+    }
+    Some(dot / (q_norm * nb))
+}
+
+/// Phase 2: hydrate the ranking in `limit`-sized batches until `limit`
+/// hits survive the row filters (usually one batch).
+fn hydrate_ranked(
+    conn: &Connection,
+    ranked: &[(i64, f32)],
+    source_ids: Option<&HashSet<i64>>,
+    section_ids: Option<&HashSet<i64>>,
+    limit: usize,
+    qa_exclude_disputed: bool,
+) -> Vec<Hit> {
+    let mut out = Vec::new();
+    if limit == 0 {
+        return out;
+    }
+    for batch in ranked.chunks(limit) {
+        let ids: Vec<i64> = batch.iter().map(|(id, _)| *id).collect();
+        let mut by_id: HashMap<i64, Hit> = load_hits_filtered(conn, &ids, source_ids, section_ids, qa_exclude_disputed)
+            .into_iter()
+            .map(|h| (h.chunk_id, h))
+            .collect();
+        for (id, score) in batch {
+            let Some(mut h) = by_id.remove(id) else { continue };
+            h.score = *score as f64;
+            h.cosine = Some(*score as f64);
+            out.push(h);
+            if out.len() == limit {
+                return out;
             }
         }
     }
-    sort_hits(&mut scored);
-    scored.truncate(top_k * CANDIDATE_MULT);
-    scored
+    out
 }
 
 type HitRow10 = (i64, Option<i64>, Option<i64>, String, String, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<i64>, String);
@@ -852,60 +940,6 @@ fn load_hits_filtered(
     out
 }
 
-fn load_chunks_with_embedding_filtered(
-    conn: &Connection,
-    source_ids: Option<&HashSet<i64>>,
-    section_ids: Option<&HashSet<i64>>,
-    qa_exclude_disputed: bool,
-) -> Vec<Hit> {
-    // Document chunks only — the scan path must match the vec0 path (R33.3).
-    let mut sql = String::from(
-        "SELECT c.id, c.entity_id, COALESCE(c.item_id, e.item_id), c.content, c.source_ref, e.status, i.source_id, c.section_id, c.path \
-         FROM chunks c \
-         LEFT JOIN entities e ON e.id = c.entity_id \
-         LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
-         WHERE c.embedding IS NOT NULL AND c.kind IN ('document','caption')",
-    );
-    let mut params: Vec<rusqlite::types::Value> = Vec::new();
-    append_vector_family_filter(conn, &mut sql, &mut params);
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(_) => return vec![],
-    };
-    let rows = stmt
-        .query_map(rusqlite::params_from_iter(params.iter()), |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, Option<i64>>(1)?,
-                r.get::<_, Option<i64>>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, Option<String>>(5)?,
-                r.get::<_, Option<i64>>(6)?,
-                r.get::<_, Option<i64>>(7)?,
-                r.get::<_, String>(8)?,
-            ))
-        })
-        .unwrap();
-    let mut out = Vec::new();
-    for row in rows.flatten() {
-        // R32.2: col 2 is the effective item (entity chunks resolve via e.item_id).
-        let (cid, eid, iid, content, source_ref, status, sid, sec, path) = row;
-        // Scan covers every embedded chunk: a missing source always filters out
-        // (stricter than make_hit's scoped pass-through).
-        if let Some(filter) = source_ids {
-            match sid {
-                Some(s) if filter.contains(&s) => {}
-                _ => continue,
-            }
-        }
-        if let Some(h) = make_hit(cid, eid, iid, content, source_ref, status, sid, sec, path, None, section_ids, qa_exclude_disputed) {
-            out.push(h);
-        }
-    }
-    out
-}
-
 /// R45.5: restrict a vector leg to vectors in the active query vector's
 /// family (`embed_fp::comparable_fingerprints`) — mixed vector spaces are
 /// never compared. Out-of-family and unstamped vectors drop out (keyword-only)
@@ -918,11 +952,6 @@ fn append_vector_family_filter(conn: &Connection, sql: &mut String, params: &mut
     }
     sql.push_str(&format!(" AND c.embed_fp IN ({})", placeholders(fps.len())));
     params.extend(fps.into_iter().map(rusqlite::types::Value::Text));
-}
-
-fn get_embedding(conn: &Connection, chunk_id: i64) -> Option<Vec<u8>> {
-    conn.query_row("SELECT embedding FROM chunks WHERE id = ?1", [chunk_id], |r| r.get::<_, Option<Vec<u8>>>(0))
-        .ok()?
 }
 
 pub fn keyword_search(
@@ -5293,5 +5322,260 @@ status: None, content_truncated: false,
         filename_boost(&conn, &mut hits, "config.yml");
         assert_eq!(hits.len(), 2, "opt-out restores the legacy include-disputed boost");
         std::env::remove_var("ANCHOR_QA_EXCLUDE_DISPUTED");
+    }
+
+
+    // --- R43.9: the pre-slim scan, kept verbatim as the equivalence reference ---
+
+    fn legacy_vector_scan(
+        conn: &Connection,
+        query_emb: &[f32],
+        source_ids: Option<&HashSet<i64>>,
+        section_ids: Option<&HashSet<i64>>,
+        top_k: usize,
+        qa_exclude_disputed: bool,
+    ) -> Vec<Hit> {
+        let hits = load_chunks_with_embedding_filtered(conn, source_ids, section_ids, qa_exclude_disputed);
+        let mut scored = Vec::new();
+        for mut h in hits {
+            if let Some(blob) = get_embedding(conn, h.chunk_id) {
+                if let Some(vec) = unpack_f32(&blob, query_emb.len()) {
+                    let score = cosine(query_emb, &vec);
+                    if score > 0.2 {
+                        h.score = score as f64;
+                        h.cosine = Some(score as f64);
+                        scored.push(h);
+                    }
+                }
+            }
+        }
+        sort_hits(&mut scored);
+        scored.truncate(top_k * CANDIDATE_MULT);
+        scored
+    }
+
+    fn load_chunks_with_embedding_filtered(
+        conn: &Connection,
+        source_ids: Option<&HashSet<i64>>,
+        section_ids: Option<&HashSet<i64>>,
+        qa_exclude_disputed: bool,
+    ) -> Vec<Hit> {
+        // Document chunks only — the scan path must match the vec0 path (R33.3).
+        let mut sql = String::from(
+            "SELECT c.id, c.entity_id, COALESCE(c.item_id, e.item_id), c.content, c.source_ref, e.status, i.source_id, c.section_id, c.path \
+             FROM chunks c \
+             LEFT JOIN entities e ON e.id = c.entity_id \
+             LEFT JOIN ingested_items i ON i.id = COALESCE(c.item_id, e.item_id) \
+             WHERE c.embedding IS NOT NULL AND c.kind IN ('document','caption')",
+        );
+        let mut params: Vec<rusqlite::types::Value> = Vec::new();
+        append_vector_family_filter(conn, &mut sql, &mut params);
+        let mut stmt = match conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Option<i64>>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, Option<i64>>(6)?,
+                    r.get::<_, Option<i64>>(7)?,
+                    r.get::<_, String>(8)?,
+                ))
+            })
+            .unwrap();
+        let mut out = Vec::new();
+        for row in rows.flatten() {
+            // R32.2: col 2 is the effective item (entity chunks resolve via e.item_id).
+            let (cid, eid, iid, content, source_ref, status, sid, sec, path) = row;
+            // Scan covers every embedded chunk: a missing source always filters out
+            // (stricter than make_hit's scoped pass-through).
+            if let Some(filter) = source_ids {
+                match sid {
+                    Some(s) if filter.contains(&s) => {}
+                    _ => continue,
+                }
+            }
+            if let Some(h) = make_hit(cid, eid, iid, content, source_ref, status, sid, sec, path, None, section_ids, qa_exclude_disputed) {
+                out.push(h);
+            }
+        }
+        out
+    }
+
+    fn get_embedding(conn: &Connection, chunk_id: i64) -> Option<Vec<u8>> {
+        conn.query_row("SELECT embedding FROM chunks WHERE id = ?1", [chunk_id], |r| r.get::<_, Option<Vec<u8>>>(0))
+            .ok()?
+    }
+
+    // --- R43.9: slim vector scan perf guard ---
+
+    /// Deterministic xorshift vectors — no rand dep, same data every run.
+    fn perf_vector(seed: u64, dim: usize) -> Vec<f32> {
+        let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        (0..dim)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                ((x >> 40) as f32 / (1u64 << 24) as f32) - 0.5
+            })
+            .collect()
+    }
+
+    /// `n` embedded leaf chunks (768 dims, ~600-char bodies) over two sources.
+    fn seed_perf_db(n: usize, near: &[f32]) -> (tempfile::TempDir, Connection, i64) {
+        let (dir, conn) = harness_db();
+        let s1 = insert_source(&conn, "perf-a", "internal");
+        let s2 = insert_source(&conn, "perf-b", "internal");
+        let items: Vec<i64> = (0..50).map(|i| insert_item(&conn, if i % 2 == 0 { s1 } else { s2 }, &format!("perf{i}"))).collect();
+        let body = "lorem ipsum dolor sit amet routing config ".repeat(14);
+        conn.execute_batch("BEGIN").unwrap();
+        {
+            let mut stmt = conn
+                .prepare("INSERT INTO chunks (item_id, kind, content, source_ref, embedding, created_at) VALUES (?1,'document',?2,'ref',?3,datetime('now'))")
+                .unwrap();
+            for i in 0..n {
+                // Every 97th chunk leans toward the query: ~515 pass the 0.2 floor.
+                let mut v = perf_vector(i as u64 + 1, 768);
+                if i % 97 == 0 {
+                    v.iter_mut().zip(near).for_each(|(x, q)| *x = *x * 0.5 + q);
+                }
+                let blob = crate::embedder::pack_single(&v);
+                stmt.execute(rusqlite::params![items[i % items.len()], format!("{body} #{i}"), blob]).unwrap();
+            }
+        }
+        conn.execute_batch("COMMIT").unwrap();
+        (dir, conn, s1)
+    }
+
+    /// Best of three — the minimum resists CI noise.
+    fn best_ms(mut f: impl FnMut() -> usize) -> (f64, usize) {
+        let mut best = f64::MAX;
+        let mut n = 0;
+        for _ in 0..3 {
+            let t = std::time::Instant::now();
+            n = f();
+            best = best.min(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        (best, n)
+    }
+
+    #[test]
+    fn vector_scan_perf_guard_50k() {
+        let q = perf_vector(424_242, 768);
+        let (_dir, conn, s1) = seed_perf_db(50_000, &q);
+        let scope: HashSet<i64> = [s1].into_iter().collect();
+        let (all_ms, all_n) = best_ms(|| vector_search(&conn, &q, None, 8, true).len());
+        let (scoped_ms, scoped_n) = best_ms(|| vector_search(&conn, &q, Some(&scope), 8, true).len());
+        eprintln!("R43.9 vector scan 50k: unscoped {all_ms:.1} ms ({all_n} hits), one source {scoped_ms:.1} ms ({scoped_n} hits)");
+        assert!(all_n > 0 && scoped_n > 0, "perf corpus must produce hits");
+        // Measured 2026-10-28 (M-series Mac): debug ~0.8 s under the full
+        // parallel suite, release ~0.09 s; the pre-R43.9 scan took 2.7 s /
+        // 0.34 s. Budgets leave ~3x headroom for slower CI runners;
+        // `ANCHOR_PERF_BUDGET_MS` overrides on an unusually slow box.
+        let default_ms = if cfg!(debug_assertions) { 2500.0 } else { 500.0 };
+        let budget_ms = std::env::var("ANCHOR_PERF_BUDGET_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(default_ms);
+        assert!(all_ms < budget_ms, "unscoped 50k scan {all_ms:.0} ms over the {budget_ms} ms budget");
+        assert!(scoped_ms < budget_ms, "scoped 50k scan {scoped_ms:.0} ms over the {budget_ms} ms budget");
+    }
+
+    type HitKey = (i64, u64, Option<i64>, Option<i64>, Option<i64>, String, Option<String>);
+
+    fn hit_key(hits: &[Hit]) -> Vec<HitKey> {
+        hits.iter()
+            .map(|h| (h.chunk_id, h.score.to_bits(), h.item_id, h.source_id, h.section_id, h.content.clone(), h.status.clone()))
+            .collect()
+    }
+
+    /// A mixed corpus for the slim/legacy equivalence check: three sources,
+    /// sections, entity chunks with stale/disputed status, summary + caption
+    /// kinds, foreign families, wrong-width blobs and duplicate vectors (ties).
+    fn seed_mixed_vector_db(q: &[f32]) -> (tempfile::TempDir, Connection, Vec<i64>, Vec<i64>) {
+        let (dir, conn) = harness_db();
+        let sources: Vec<i64> = (0..3).map(|i| insert_source(&conn, &format!("mix{i}"), "internal")).collect();
+        let items: Vec<i64> = (0..9).map(|i| insert_item(&conn, sources[i % 3], &format!("mix{i}"))).collect();
+        let mut sections = Vec::new();
+        for (n, iid) in items.iter().enumerate() {
+            conn.execute("INSERT INTO sections (item_id, parent_id, level, title, path) VALUES (?1,NULL,1,?2,?2)", rusqlite::params![iid, format!("S{n}")]).unwrap();
+            sections.push(conn.last_insert_rowid());
+        }
+        let statuses = ["active", "stale", "disputed", "superseded"];
+        for i in 0..600usize {
+            let iid = items[i % items.len()];
+            let mut v = perf_vector(i as u64 / 3 + 7, 768); // every 3 rows share a vector: ties
+            if i % 4 != 0 {
+                v.iter_mut().zip(q).for_each(|(x, qv)| *x = *x * 0.8 + qv);
+            }
+            let blob = if i % 53 == 0 { crate::embedder::pack_single(&v[..384]) } else { crate::embedder::pack_single(&v) };
+            let kind = match i % 17 { 0 => "section_summary", 5 => "caption", _ => "document" };
+            let fp: Option<&str> = match i % 11 { 0 => Some("ollama:mxbai-embed-large:768"), 1 => None, _ => Some("builtin:nomic-embed-text-v1.5:768") };
+            let (item, entity) = if i % 7 == 0 {
+                (None, Some(insert_entity(&conn, iid, &format!("e{i}"), statuses[i % 4], "")))
+            } else {
+                (Some(iid), None)
+            };
+            let sec = (i % 5 != 0).then(|| sections[i % sections.len()]);
+            conn.execute(
+                "INSERT INTO chunks (item_id, entity_id, kind, content, source_ref, embedding, embed_fp, section_id, created_at) VALUES (?1,?2,?3,?4,'ref',?5,?6,?7,datetime('now'))",
+                rusqlite::params![item, entity, kind, format!("mixed chunk {i}"), blob, fp, sec],
+            )
+            .unwrap();
+        }
+        (dir, conn, sources, sections)
+    }
+
+    #[test]
+    fn slim_vector_scan_matches_legacy_scan() {
+        let q = perf_vector(99, 768);
+        let (_dir, conn, sources, sections) = seed_mixed_vector_db(&q);
+        let one: HashSet<i64> = [sources[1]].into_iter().collect();
+        let two: HashSet<i64> = [sources[0], sources[2]].into_iter().collect();
+        let empty: HashSet<i64> = HashSet::new();
+        let secs: HashSet<i64> = sections.iter().step_by(2).copied().collect();
+        let scopes: [Option<&HashSet<i64>>; 4] = [None, Some(&one), Some(&two), Some(&empty)];
+        let sec_scopes: [Option<&HashSet<i64>>; 3] = [None, Some(&secs), Some(&empty)];
+        let check = |conn: &Connection, label: &str| {
+            for src in scopes {
+                for sec in sec_scopes {
+                    for top_k in [0usize, 1, 3, 100] {
+                        for excl in [true, false] {
+                            let slim = vector_search_scan_filtered(conn, &q, src, sec, top_k, excl);
+                            let legacy = legacy_vector_scan(conn, &q, src, sec, top_k, excl);
+                            assert_eq!(hit_key(&slim), hit_key(&legacy), "{label} src={src:?} sec={sec:?} k={top_k} excl={excl}");
+                        }
+                    }
+                }
+            }
+        };
+        assert!(!legacy_vector_scan(&conn, &q, None, None, 100, true).is_empty(), "corpus must produce hits");
+        check(&conn, "no fingerprint");
+        crate::embed_fp::record_active_fingerprint(&conn, "builtin:nomic-embed-text-v1.5:768").unwrap();
+        check(&conn, "nomic family");
+        crate::embed_fp::record_active_fingerprint(&conn, "ollama:all-minilm:768").unwrap();
+        check(&conn, "no comparable family");
+    }
+
+    /// Before/after on the same 50k corpus (R43.9 measured win). Ignored in
+    /// the default suite — the legacy scan alone costs seconds in debug.
+    /// `cargo test -p anchorcore --lib slim_vs_legacy -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn vector_scan_slim_vs_legacy_50k() {
+        let q = perf_vector(424_242, 768);
+        let (_dir, conn, s1) = seed_perf_db(50_000, &q);
+        let scope: HashSet<i64> = [s1].into_iter().collect();
+        let (old_all, a) = best_ms(|| legacy_vector_scan(&conn, &q, None, None, 8, true).len());
+        let (new_all, b) = best_ms(|| vector_search_scan_filtered(&conn, &q, None, None, 8, true).len());
+        let (old_one, c) = best_ms(|| legacy_vector_scan(&conn, &q, Some(&scope), None, 8, true).len());
+        let (new_one, d) = best_ms(|| vector_search_scan_filtered(&conn, &q, Some(&scope), None, 8, true).len());
+        assert_eq!((a, c), (b, d));
+        eprintln!("R43.9 50k unscoped: legacy {old_all:.1} ms -> slim {new_all:.1} ms ({:.1}x)", old_all / new_all);
+        eprintln!("R43.9 50k one source: legacy {old_one:.1} ms -> slim {new_one:.1} ms ({:.1}x)", old_one / new_one);
     }
 }
