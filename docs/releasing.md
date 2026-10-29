@@ -11,9 +11,27 @@
 `.github/workflows/release.yml`, which:
 
 1. Builds the frontend (`npm run build`)
-2. Builds Rust `AnchorCore-{windows,macos,linux}.zip` (`cargo build --release`, `frontend/dist` embedded via `include_dir!`, `codesign` on macOS) plus `AnchorCore-macos.dmg` (R41.2: the same ad-hoc-signed `AnchorCore.app` + an `/Applications` symlink, UDZO via `scripts/make_macos_dmg.sh`; `scripts/verify_macos_dmg.sh` mounts it, checks the layout + `codesign --verify --deep --strict`, runs the MCP handshake against the mounted binary, detaches)
+2. Builds Rust `AnchorCore-{windows,macos,linux}.zip` (`cargo build --release`, `frontend/dist` embedded via `include_dir!`) plus `AnchorCore-macos.dmg` (R41.2: the same `AnchorCore.app` + an `/Applications` symlink, UDZO via `scripts/make_macos_dmg.sh`; `scripts/verify_macos_dmg.sh` mounts it, checks the layout + `codesign --verify --deep --strict`, runs the MCP handshake against the mounted binary, detaches). macOS is Developer ID signed and notarized (R41.4, below)
 3. Attaches the DMG, the three zips and `SHA256SUMS` to the GitHub Release for that tag (website Download buttons link straight at `AnchorCore-macos.dmg` and the windows/linux zips — keep those file names stable). `AnchorCore-macos.zip` keeps shipping for now: the in-app update card (`system.rs` `update_asset_name`), the setup skill's unzip step and older links still point at it; drop it only after those move to the DMG
 4. Deploys `website/` to `anchorcore.dev` via wrangler — but only when `website/` changed since the previous tag (`deploy-website` job diffs `$PREV_TAG..$TAG`). Uses repo secrets `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` (set 2026-10-11; token = Account → Workers Scripts: Edit + Zone `anchorcore.dev` → Workers Routes: Edit — no Client IP filtering, GitHub runners have no stable IPs). If the job fails: rotate the token, re-set the secret, then `gh run rerun <run-id> --failed --repo Atsirkunov/anchorcore` — no re-tag needed
+
+## macOS signing + notarization (R41.4)
+
+`build-rust-macos` signs `AnchorCore.app` with the owner's Developer ID Application certificate (hardened runtime, secure timestamp, no entitlements), notarizes it and staples the ticket, zips the stapled app, packs the DMG from it, then signs, notarizes and staples the DMG (`scripts/notarize_macos.sh`, App Store Connect API key). `verify_macos_dmg.sh` runs with `ANCHOR_REQUIRE_NOTARIZED=1` and fails unless Gatekeeper (`spctl`) accepts both as `Notarized Developer ID`.
+
+Repo secrets (set 2026-10-29, Individual membership, team `4AFSJ54APF`):
+
+| Secret | What |
+|---|---|
+| `MACOS_CERT_P12_BASE64` | `base64 -i <Developer ID Application export>.p12` (certificate + private key) |
+| `MACOS_CERT_PASSWORD` | the `.p12` export password |
+| `MACOS_NOTARY_KEY_P8_BASE64` | `base64 -i AuthKey_<KEYID>.p8` (App Store Connect → Users and Access → Integrations → Team Keys, Developer role) |
+| `MACOS_NOTARY_KEY_ID` | the key's ID |
+| `MACOS_NOTARY_ISSUER_ID` | the Issuer ID above the key list |
+
+Set each with `gh secret set <NAME> --repo Atsirkunov/anchorcore` (pipe the base64 in). Without `MACOS_CERT_P12_BASE64` the job ad-hoc signs and warns — fine for forks, a failed release otherwise. Rotation: a new certificate or key only means re-setting its secrets; builds already notarized stay valid.
+
+Local: `xcrun notarytool store-credentials anchorcore-notary --key AuthKey_<KEYID>.p8 --key-id <KEYID> --issuer <ISSUER>` once, then `NOTARY_PROFILE=anchorcore-notary ./build.sh` signs with the keychain's Developer ID identity and runs the same notarize + verify path. `./build.sh` alone stays ad-hoc.
 
 ## Docs-only pushes skip CI
 
@@ -56,7 +74,8 @@ cargo build --release
 | Symptom | Cause | Fix |
 |---|---|---|
 | UI missing a feature that's in source | stale exe (frontend bundled at build time) | rebuild / re-tag |
-| macOS "cannot be verified" | no notarization (free tier) | System Settings → Privacy & Security → Open Anyway (right-click → Open no longer works on recent macOS) |
+| macOS "cannot be verified" | the build isn't notarized: a pre-R41.4 release, an ad-hoc `./build.sh`, or a release run that warned "MACOS_CERT_P12_BASE64 is not set" | fix the secrets and re-run the release; for an old build: System Settings → Privacy & Security → Open Anyway |
+| Release job: "notarization Invalid" | Apple rejected the submission; its log is printed below | usually an unsigned nested binary or a missing hardened-runtime flag — sign inside-out with `--options runtime --timestamp` |
 | Release has no artifacts | workflow failed | check Actions tab logs; fix, re-tag |
 
 ---

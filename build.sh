@@ -58,10 +58,28 @@ cat > "$ROOT/dist/AnchorCore.app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# 4. Ad-hoc sign the .app so Gatekeeper shows "Open" instead of blocking outright
-echo "==> Ad-hoc signing dist/AnchorCore.app (Rust $VERSION)..."
-codesign --force --deep --sign - "$ROOT/dist/AnchorCore.app"
-codesign --verify --verbose=2 "$ROOT/dist/AnchorCore.app" 2>&1 | head -n 5 || true
+# 4. Sign the .app. R41.4: with NOTARY_PROFILE set (a `notarytool
+# store-credentials` profile) and a Developer ID Application identity in the
+# keychain, sign like release.yml (hardened runtime + timestamp) and notarize +
+# staple; otherwise ad-hoc sign so Gatekeeper shows "Open Anyway".
+DEVID=""
+if [ -n "${NOTARY_PROFILE:-}" ]; then
+  DEVID="$(security find-identity -v -p codesigning | awk '/Developer ID Application/ {print $2; exit}')"
+  [ -n "$DEVID" ] || { echo "FAULT: NOTARY_PROFILE is set but no 'Developer ID Application' identity is in the keychain" >&2; exit 1; }
+fi
+if [ -n "$DEVID" ]; then
+  echo "==> Developer ID signing + notarizing dist/AnchorCore.app (Rust $VERSION)..."
+  codesign --force --options runtime --timestamp --sign "$DEVID" "$ROOT/dist/AnchorCore.app"
+  codesign --verify --deep --strict "$ROOT/dist/AnchorCore.app"
+  NOTARY_ZIP="$(mktemp -d "${TMPDIR:-/tmp}/anchorcore-notary.XXXXXX")/AnchorCore.zip"
+  ditto -c -k --keepParent "$ROOT/dist/AnchorCore.app" "$NOTARY_ZIP"
+  bash "$ROOT/scripts/notarize_macos.sh" "$NOTARY_ZIP" "$ROOT/dist/AnchorCore.app"
+  rm -rf "$(dirname "$NOTARY_ZIP")"
+else
+  echo "==> Ad-hoc signing dist/AnchorCore.app (Rust $VERSION; set NOTARY_PROFILE to notarize)..."
+  codesign --force --deep --sign - "$ROOT/dist/AnchorCore.app"
+  codesign --verify --verbose=2 "$ROOT/dist/AnchorCore.app" 2>&1 | head -n 5 || true
+fi
 
 # 5. Zip for distribution (Finder shows .app as one file; recipients unzip once)
 # Same name as the CI asset (release.yml build-rust-macos).
@@ -73,7 +91,12 @@ rm -f "$ROOT/dist/AnchorCore-macos.zip"
 # handshake against the mounted payload). Shared scripts keep CI and local identical.
 echo "==> Packing dist/AnchorCore-macos.dmg..."
 bash "$ROOT/scripts/make_macos_dmg.sh" "$ROOT/dist/AnchorCore.app" "$ROOT/dist/AnchorCore-macos.dmg"
-bash "$ROOT/scripts/verify_macos_dmg.sh" "$ROOT/dist/AnchorCore-macos.dmg"
+if [ -n "$DEVID" ]; then
+  codesign --force --timestamp --sign "$DEVID" "$ROOT/dist/AnchorCore-macos.dmg"
+  bash "$ROOT/scripts/notarize_macos.sh" "$ROOT/dist/AnchorCore-macos.dmg"
+fi
+ANCHOR_REQUIRE_NOTARIZED="$([ -n "$DEVID" ] && echo 1 || echo 0)" \
+  bash "$ROOT/scripts/verify_macos_dmg.sh" "$ROOT/dist/AnchorCore-macos.dmg"
 
 echo ""
 echo "Done: $ROOT/dist/AnchorCore-macos.dmg (+ .zip) (Rust $VERSION, opens http://127.0.0.1:8000)"
