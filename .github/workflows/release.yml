@@ -6,8 +6,10 @@ name: Release
 # R20.8: one executable per OS — the app and `anchorcore mcp` are the same file):
 #   AnchorCore-windows.zip  — anchorcore.exe
 #   AnchorCore-macos.dmg    — AnchorCore.app + /Applications symlink (R41.2:
-#                             drag-to-Applications; app ad-hoc signed, not
-#                             notarized — the DMG itself is unsigned)
+#                             drag-to-Applications). R41.4: with the
+#                             MACOS_* signing secrets set, the app and the DMG
+#                             are Developer ID signed, notarized and stapled;
+#                             without them, the app is ad-hoc signed (warning)
 #   AnchorCore-macos.zip    — the same signed AnchorCore.app, zipped. Kept
 #                             alongside the DMG for the in-app update card
 #                             (system.rs update_asset_name) and existing links /
@@ -150,10 +152,63 @@ jobs:
           </dict>
           </plist>
           PLIST
-      - name: Ad-hoc sign app bundle
+      # R41.4: Developer ID + notarization when MACOS_CERT_P12_BASE64 is set
+      # (docs/releasing.md "macOS signing secrets"); ad-hoc otherwise, with a
+      # warning, so forks and secret-less runs still produce a working build.
+      # The identity output is the certificate's SHA-1, or "-" for ad-hoc.
+      - name: Import Developer ID certificate
+        id: devid
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
-          codesign --force --deep --sign - dist/AnchorCore.app
-          codesign --verify --verbose=2 dist/AnchorCore.app 2>&1 | head -n 5 || true
+          set -euo pipefail
+          if [ -z "$MACOS_CERT_P12_BASE64" ]; then
+            echo "::warning::MACOS_CERT_P12_BASE64 is not set: ad-hoc signing, no notarization"
+            echo "identity=-" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          KC_PW="$(uuidgen)"
+          printf '%s' "$MACOS_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KC_PW" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PW" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PW" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          ID="$(security find-identity -v -p codesigning "$KC" | awk '/Developer ID Application/ {print $2; exit}')"
+          [ -n "$ID" ] || { echo "FAULT: the certificate holds no 'Developer ID Application' identity"; exit 1; }
+          echo "identity=$ID" >> "$GITHUB_OUTPUT"
+      # One executable in Contents/MacOS, so signing the bundle covers it (no
+      # --deep). Notarization requires the hardened runtime + a secure
+      # timestamp; the app loads no code at runtime, so no entitlements.
+      - name: Sign app bundle
+        env:
+          IDENTITY: ${{ steps.devid.outputs.identity }}
+        run: |
+          set -euo pipefail
+          if [ "$IDENTITY" = "-" ]; then
+            codesign --force --deep --sign - dist/AnchorCore.app
+          else
+            codesign --force --options runtime --timestamp --sign "$IDENTITY" dist/AnchorCore.app
+          fi
+          codesign --verify --deep --strict --verbose=2 dist/AnchorCore.app
+          codesign -dv dist/AnchorCore.app 2>&1 | grep -E '^(Authority|TeamIdentifier|Signature|Runtime)' || true
+      # Notarize the app on its own first so the ticket is stapled into the
+      # bundle itself: the zip (in-app update card) can't carry a ticket, and
+      # the DMG is packed from the stapled app.
+      - name: Notarize + staple app
+        if: steps.devid.outputs.identity != '-'
+        env:
+          NOTARY_KEY_P8_BASE64: ${{ secrets.MACOS_NOTARY_KEY_P8_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          ditto -c -k --keepParent dist/AnchorCore.app "$RUNNER_TEMP/notarize-app.zip"
+          bash scripts/notarize_macos.sh "$RUNNER_TEMP/notarize-app.zip" dist/AnchorCore.app
       - name: Zip app
         run: |
           cd dist
@@ -163,12 +218,26 @@ jobs:
       # already-signed bundle and refuses an unsigned one.
       - name: Pack DMG
         run: bash scripts/make_macos_dmg.sh dist/AnchorCore.app dist/AnchorCore-macos.dmg
+      - name: Sign + notarize + staple DMG
+        if: steps.devid.outputs.identity != '-'
+        env:
+          IDENTITY: ${{ steps.devid.outputs.identity }}
+          NOTARY_KEY_P8_BASE64: ${{ secrets.MACOS_NOTARY_KEY_P8_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          codesign --force --timestamp --sign "$IDENTITY" dist/AnchorCore-macos.dmg
+          bash scripts/notarize_macos.sh dist/AnchorCore-macos.dmg
       # R20.5 + R41.2: mount the DMG read-only, assert AnchorCore.app + the
       # /Applications symlink and `codesign --verify --deep --strict`, run the
       # MCP handshake (initialize + tools/list, 6 tools incl. search) against
       # AnchorCore.app/Contents/MacOS/AnchorCore inside the mounted payload,
       # detach. The zip carries the same bundle; its listing is checked too.
       - name: Assert the MCP-capable binary in the DMG (R20.5)
+        env:
+          # R41.4: a Developer ID run must also pass Gatekeeper + stapler checks.
+          ANCHOR_REQUIRE_NOTARIZED: ${{ steps.devid.outputs.identity != '-' && '1' || '0' }}
         run: |
           set -e
           unzip -l dist/AnchorCore-macos.zip | grep -q 'AnchorCore.app/Contents/MacOS/AnchorCore' || { echo "FAULT: app binary missing from AnchorCore-macos.zip"; exit 1; }
@@ -191,6 +260,10 @@ jobs:
           done
           if curl -sf http://127.0.0.1:8129/system/skills/nope -o /dev/null; then echo "FAULT: unknown skill did not 404"; exit 1; fi
           echo "ok (macos): /system/skills/:name serves setup + search byte-identical"
+
+      - name: Remove signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
 
       - name: Upload macOS app
         uses: actions/upload-artifact@v4

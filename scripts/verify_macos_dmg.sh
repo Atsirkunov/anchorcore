@@ -35,9 +35,31 @@ EXTRA="$(ls -1 "$MNT" | grep -vxE 'AnchorCore\.app|Applications' || true)"
 BIN="$MNT/AnchorCore.app/Contents/MacOS/AnchorCore"
 [ -x "$BIN" ] || { echo "FAULT: app binary missing or not executable in DMG"; exit 1; }
 
-# Ad-hoc signature survives packing.
+# The signature survives packing.
 codesign --verify --deep --strict --verbose=2 "$MNT/AnchorCore.app"
-codesign -dv "$MNT/AnchorCore.app" 2>&1 | grep -E '^(Identifier|Signature|Format)=' || true
+codesign -dv "$MNT/AnchorCore.app" 2>&1 | grep -E '^(Identifier|Signature|Format|Authority|TeamIdentifier)=' || true
+
+# R41.4: a notarized release (ANCHOR_REQUIRE_NOTARIZED=1, set by release.yml
+# when the signing secrets exist) must be Developer ID signed with the
+# hardened runtime, carry stapled tickets on the DMG and the app, and pass
+# Gatekeeper's assessment — what a fresh download's double-click runs.
+if [ "${ANCHOR_REQUIRE_NOTARIZED:-0}" = "1" ]; then
+  SIG="$(codesign -dv --verbose=4 "$MNT/AnchorCore.app" 2>&1)"
+  grep -q '^Authority=Developer ID Application:' <<<"$SIG" || { echo "FAULT: app is not Developer ID signed"; echo "$SIG"; exit 1; }
+  grep -qE '^CodeDirectory .*flags=.*runtime' <<<"$SIG" || { echo "FAULT: app is not signed with the hardened runtime"; echo "$SIG"; exit 1; }
+  # stapler validate asks Apple's ticket service; retry transient network drops.
+  for T in "$DMG" "$MNT/AnchorCore.app"; do
+    for attempt in 1 2 3 4 5; do
+      xcrun stapler validate "$T" && break
+      [ "$attempt" -eq 5 ] && { echo "FAULT: stapler validate failed 5 times for $T"; exit 1; }
+      echo "stapler validate failed (attempt $attempt), retrying..." >&2
+      sleep $((attempt * 5))
+    done
+  done
+  spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+  spctl --assess --type execute --verbose=2 "$MNT/AnchorCore.app"
+  echo "ok (macos dmg): Developer ID + hardened runtime, tickets stapled, Gatekeeper accepts DMG + app"
+fi
 
 # R20.5 MCP handshake against the DMG payload (throwaway data dir so a dev
 # machine's ~/.anchorcore is never touched; tools/list needs no server).
