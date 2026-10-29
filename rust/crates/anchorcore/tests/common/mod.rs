@@ -116,6 +116,8 @@ impl TestServer {
             .env_remove("ANCHOR_TRUSTED_PROVIDERS")
             .env_remove("ANCHOR_QA_EXCLUDE_DISPUTED")
             .env("ANCHOR_SECRETS_NO_KEYRING", "1")
+            // Never open a browser tab per test server on a dev machine.
+            .env("ANCHOR_OPEN_BROWSER", "0")
             .env("ANCHOR_OLLAMA_BASE_URL", "http://localhost:1")
             .env("ANCHOR_ALLOW_TEST_URLS", "1")
             .env("ANCHOR_CLASSIFIER_TIMEOUT", "1.0")
