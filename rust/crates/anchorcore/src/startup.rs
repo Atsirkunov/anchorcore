@@ -36,6 +36,9 @@ struct Status {
     of: u32,
     detail: String,
     started_at: String,
+    /// When the current step or its wording last changed (R41.10: the screen
+    /// shows how long this phase has been running).
+    detail_since: String,
     /// Upgrading an existing library (vs. creating a fresh one / a quick boot).
     upgrading: bool,
     progress: Option<(u64, u64, &'static str)>,
@@ -46,6 +49,10 @@ struct Status {
 
 fn status() -> MutexGuard<'static, Status> {
     STATUS.get_or_init(|| Mutex::new(Status::default())).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn now() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 fn starting() -> bool {
@@ -72,7 +79,8 @@ pub fn begin(log_file: &std::path::Path) {
             step: 0,
             of: 0,
             detail: "Opening your library".to_string(),
-            started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            started_at: now(),
+            detail_since: now(),
             log_file: redact_home(&log_file.to_string_lossy()),
             ..Status::default()
         };
@@ -110,6 +118,7 @@ pub fn step(step: u32, phase: &'static str, detail: &str) {
         s.step = step;
         s.phase = phase;
         s.detail = detail.to_string();
+        s.detail_since = now();
         s.progress = None;
     }
     changed();
@@ -120,7 +129,12 @@ pub fn step_detail(detail: &str) {
     if !starting() {
         return;
     }
-    status().detail = detail.to_string();
+    {
+        let mut s = status();
+        s.detail = detail.to_string();
+        s.detail_since = now();
+        s.progress = None;
+    }
     changed();
 }
 
@@ -171,6 +185,7 @@ pub fn snapshot() -> Value {
         "of": s.of,
         "detail": s.detail,
         "started_at": s.started_at,
+        "detail_since": s.detail_since,
         "upgrading": s.upgrading,
         "version": env!("CARGO_PKG_VERSION"),
         "progress": s.progress.map(|(done, total, unit)| json!({"done": done, "total": total, "unit": unit})),

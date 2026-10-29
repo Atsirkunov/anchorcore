@@ -6,6 +6,8 @@ export type StartupStatus = {
   of: number;
   detail: string;
   started_at: string;
+  /** When the current step or its wording last changed (R41.10). */
+  detail_since?: string;
   upgrading: boolean;
   version: string;
   progress: { done: number; total: number; unit: "bytes" | "items" } | null;
@@ -54,3 +56,17 @@ export function stepText(s: StartupStatus): string {
   return `${step}${s.detail}`;
 }
 
+
+/** "This step has been running for 3 min 12 s" once a phase passes 10 s, so a
+ * long step without a progress bar still shows the app is working (R41.10). */
+export function elapsedText(since: string | undefined, now: number = Date.now()): string | null {
+  const start = since ? Date.parse(since) : NaN;
+  if (Number.isNaN(start)) return null;
+  const secs = Math.floor((now - start) / 1000);
+  if (secs < 10) return null;
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  const span = h > 0 ? `${h} h ${m} min` : m > 0 ? `${m} min ${s} s` : `${s} s`;
+  return `This step has been running for ${span}`;
+}

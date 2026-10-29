@@ -22,7 +22,9 @@ keyword-searchable.
 **Startup (R41.7).** The process binds its port, opens the browser and builds the tray *before* it
 touches the database; `db::init_db_tracked` then runs on a blocking task: free-disk precheck (about 2×
 the DB) → R45.10 safety backup when needed → one transaction per pending migration → column check +
-R36.2 re-chunk. Each step reports into `startup.rs`. Until it finishes, `/health` answers 503
+R36.2 re-chunk (per-item lookups go through `ix_chunks_item_id`, R41.10 — without it this step
+scanned `chunks` once per item). Each step reports into `startup.rs`, with `detail_since` so the screen
+shows how long the current phase has run. Until it finishes, `/health` answers 503
 `{"status":"starting","step","of","detail",…}`, the SPA shell loads and shows a full-page upgrade
 screen, every other route answers 503 "AnchorCore is upgrading its database", and the tray tooltip
 says so; MCP tools relay "upgrading (step N of M), try again shortly". Background services

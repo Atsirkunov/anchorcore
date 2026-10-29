@@ -42,22 +42,26 @@ struct Outdated {
 /// many items were re-chunked; one failing item is logged and skipped (its
 /// stamp stays old, so the next boot retries it).
 pub fn rechunk_outdated_items(conn: &Connection) -> Result<usize, String> {
-    let items = outdated_items(conn)?;
-    let mut done = 0usize;
-    // R41.7: the startup screen shows items done / total (no-op after boot).
-    if !items.is_empty() {
-        crate::startup::step_detail(&format!("Rebuilding search chunks for {} item(s)", items.len()));
+    // R41.7/R41.10: name this phase on the startup screen (no-op after boot).
+    crate::startup::step_detail("Looking for documents to rebuild");
+    let candidates = outdated_candidates(conn)?;
+    let (mut done, mut outdated) = (0usize, 0usize);
+    if !candidates.is_empty() {
+        crate::startup::step_detail(&format!("Rebuilding search chunks for {} item(s)", candidates.len()));
     }
-    for (i, item) in items.iter().enumerate() {
-        crate::startup::progress(i as u64, items.len() as u64, "items");
-        match rechunk_item(conn, item) {
+    for (i, (id, external_id)) in candidates.iter().enumerate() {
+        crate::startup::progress(i as u64, candidates.len() as u64, "items");
+        // Text is loaded one item at a time, never the whole library at once.
+        let Some(item) = load_outdated(conn, *id, external_id)? else { continue };
+        outdated += 1;
+        match rechunk_item(conn, &item) {
             Ok(()) => done += 1,
             Err(e) => tracing::warn!("R36.2: re-chunk of item {} ({}) failed: {}", item.id, item.external_id, e),
         }
     }
     if done > 0 {
         tracing::info!("R36.2: re-chunked {} item(s) to the current chunker generation", done);
-        let detail = format!(r#"{{"rechunked":{done},"outdated":{}}}"#, items.len());
+        let detail = format!(r#"{{"rechunked":{done},"outdated":{outdated}}}"#);
         let _ = conn.execute(
             "INSERT INTO system_events (component, level, message, detail) VALUES ('migration', 'info', 'R36.2 chunker upgrade', ?1)",
             [detail],
@@ -66,27 +70,38 @@ pub fn rechunk_outdated_items(conn: &Connection) -> Result<usize, String> {
     Ok(done)
 }
 
-/// Chunked items (they have document chunks) whose stored generation is
-/// older than what their filename's family produces now.
-fn outdated_items(conn: &Connection) -> Result<Vec<Outdated>, String> {
+/// Items whose stored generation is older than what their filename's family
+/// produces now (metadata only). Runs on every boot and most rows are prose
+/// at the base generation, so the filename filter comes before any text or
+/// chunk read (R41.10).
+fn outdated_candidates(conn: &Connection) -> Result<Vec<(i64, String)>, String> {
     let newest = crate::chunking::CONFIG_CHUNKER_VERSION.max(crate::chunking::BASE_CHUNKER_VERSION);
     let mut stmt = conn
-        .prepare(
-            "SELECT i.id, i.external_id, COALESCE(i.text, ''), COALESCE(i.doc_type, ''), i.chunker_version FROM ingested_items i \
-             WHERE i.chunker_version < ?1 AND COALESCE(i.text, '') <> '' \
-             AND EXISTS (SELECT 1 FROM chunks c WHERE c.item_id = i.id AND c.kind = 'document') ORDER BY i.id",
-        )
+        .prepare("SELECT id, external_id, chunker_version FROM ingested_items WHERE chunker_version < ?1 ORDER BY id")
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([newest], |r| {
-            Ok((Outdated { id: r.get(0)?, external_id: r.get(1)?, text: r.get(2)?, doc_type: r.get(3)? }, r.get::<_, i64>(4)?))
-        })
+        .query_map([newest], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))
         .map_err(|e| e.to_string())?;
     Ok(rows
         .filter_map(|r| r.ok())
-        .filter(|(it, stored)| crate::chunking::chunker_version(&it.external_id) > *stored && !crate::assets::hosts_images(&it.external_id))
-        .map(|(it, _)| it)
+        .filter(|(_, ext, stored)| crate::chunking::chunker_version(ext) > *stored && !crate::assets::hosts_images(ext))
+        .map(|(id, ext, _)| (id, ext))
         .collect())
+}
+
+/// One candidate's text, when it has any and was chunked (has document
+/// chunks — the lookup uses `ix_chunks_item_id`, migration 31).
+const LOAD_OUTDATED_SQL: &str = "SELECT COALESCE(i.text, ''), COALESCE(i.doc_type, '') FROM ingested_items i \
+     WHERE i.id = ?1 AND COALESCE(i.text, '') <> '' \
+     AND EXISTS (SELECT 1 FROM chunks c WHERE c.item_id = i.id AND c.kind = 'document')";
+
+fn load_outdated(conn: &Connection, id: i64, external_id: &str) -> Result<Option<Outdated>, String> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(LOAD_OUTDATED_SQL, [id], |r| {
+        Ok(Outdated { id, external_id: external_id.to_string(), text: r.get(0)?, doc_type: r.get(1)? })
+    })
+    .optional()
+    .map_err(|e| e.to_string())
 }
 
 /// One item, one transaction. Clean + chunk + the vector read run before
@@ -236,6 +251,32 @@ mod tests {
         assert_eq!(rechunk_outdated_items(&conn).unwrap(), 0, "idempotent");
         let in_tx: bool = conn.is_autocommit();
         assert!(in_tx, "no transaction left open");
+    }
+
+    /// R41.10: per-item chunk lookups (the boot-time check, the chunk delete,
+    /// vector reuse, citation base) must use an index, never scan `chunks` —
+    /// a scan per item made a multi-GB library's boot take hours.
+    #[test]
+    fn per_item_chunk_lookups_use_an_index() {
+        let dir = tempdir().unwrap();
+        let conn = crate::db::init_db(&dir.path().join("plan.db")).unwrap();
+        let plan = |sql: &str| -> String {
+            conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map([1i64], |r| r.get::<_, String>(3))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+        for sql in [
+            LOAD_OUTDATED_SQL,
+            "DELETE FROM chunks WHERE item_id=?1 AND entity_id IS NULL AND kind <> 'caption'",
+            "SELECT kind, path, content, embedding, embed_fp FROM chunks WHERE item_id=?1",
+        ] {
+            let p = plan(sql);
+            assert!(!p.contains("SCAN c") && !p.contains("SCAN chunks"), "{sql}\n→ {p}");
+        }
     }
 
     #[test]

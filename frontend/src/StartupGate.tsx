@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { commonStyles, radius, theme } from "./theme";
-import { probeStartup, progressText, stepText, type GateState, type StartupStatus } from "./startupText";
+import { elapsedText, probeStartup, progressText, stepText, type GateState, type StartupStatus } from "./startupText";
 
 const POLL_MS = 1000;
 
@@ -60,6 +60,7 @@ export function UpgradeScreen({ status }: { status: StartupStatus }) {
   const p = status.progress;
   const pct = p && p.total > 0 ? Math.min(100, Math.round((p.done / p.total) * 100)) : null;
   const progress = progressText(p);
+  const elapsed = elapsedText(status.detail_since);
   return (
     <Page>
       <h1 style={titleStyle}>{status.upgrading ? "Upgrading your library" : "Starting AnchorCore"}</h1>
@@ -78,6 +79,7 @@ export function UpgradeScreen({ status }: { status: StartupStatus }) {
         </div>
       )}
       {progress && <p style={{ margin: "0 0 0.75rem", color: theme.textMuted, fontSize: "0.9rem" }}>{progress}</p>}
+      {elapsed && <p style={{ margin: "0 0 0.75rem", color: theme.textMuted, fontSize: "0.9rem" }}>{elapsed}</p>}
       {status.upgrading && (
         <p style={{ margin: 0, color: theme.textMuted, fontSize: "0.9rem" }}>
           This can take several minutes on large libraries. Don't close AnchorCore — this page continues by itself

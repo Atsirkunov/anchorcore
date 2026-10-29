@@ -2,7 +2,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StartupGate } from "./StartupGate";
-import type { StartupStatus } from "./startupText";
+import { elapsedText, type StartupStatus } from "./startupText";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -66,7 +66,13 @@ describe("StartupGate (R41.7)", () => {
   it("shows the upgrade screen with the step, then loads the app when /health turns 200", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockImplementationOnce(() => respond(503, { ...STARTING, progress: { done: 3, total: 10, unit: "items" } }))
+      .mockImplementationOnce(() =>
+        respond(503, {
+          ...STARTING,
+          detail_since: new Date(Date.now() - 135_000).toISOString(),
+          progress: { done: 3, total: 10, unit: "items" },
+        }),
+      )
       .mockImplementation(() => respond(200, { status: "ok" }));
     const host = await render(
       <StartupGate pollMs={10}>
@@ -76,6 +82,7 @@ describe("StartupGate (R41.7)", () => {
     expect(host.textContent).toContain("Upgrading your library");
     expect(host.textContent).toContain("Step 2 of 4: Migration 29: rewriting the search index");
     expect(host.textContent).toContain("3 of 10 items");
+    expect(host.textContent).toContain("This step has been running for 2 min 15 s");
     expect(host.textContent).toContain("Don't close AnchorCore");
     expect(host.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("30");
     expect(host.textContent).not.toContain("the app");
@@ -113,5 +120,19 @@ describe("StartupGate (R41.7)", () => {
       </StartupGate>,
     );
     expect(host.textContent).toContain("the app");
+  });
+});
+
+describe("elapsedText (R41.10)", () => {
+  const t0 = Date.parse("2026-10-29T10:00:00Z");
+  it("stays quiet for short or unknown steps", () => {
+    expect(elapsedText(undefined, t0)).toBeNull();
+    expect(elapsedText("not a date", t0)).toBeNull();
+    expect(elapsedText("2026-10-29T09:59:55Z", t0)).toBeNull();
+  });
+  it("counts seconds, minutes and hours", () => {
+    expect(elapsedText("2026-10-29T09:59:30Z", t0)).toBe("This step has been running for 30 s");
+    expect(elapsedText("2026-10-29T09:56:48Z", t0)).toBe("This step has been running for 3 min 12 s");
+    expect(elapsedText("2026-10-29T08:55:00Z", t0)).toBe("This step has been running for 1 h 5 min");
   });
 });

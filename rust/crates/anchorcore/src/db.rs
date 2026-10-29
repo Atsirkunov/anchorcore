@@ -234,6 +234,9 @@ fn ensure_columns(conn: &Connection) -> Result<()> {
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_sections_item_id ON sections(item_id)", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_sections_parent_id ON sections(parent_id)", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_chunks_section_id ON chunks(section_id)", []);
+    // R41.10: mirrors migration 31 for DBs whose migration run stopped early
+    // (the re-chunk check below does one lookup per item).
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_chunks_item_id ON chunks(item_id)", []);
     try_add_column(conn, "ALTER TABLE sections ADD COLUMN summary_hash TEXT NOT NULL DEFAULT ''");
     // R38.1 markdown ranges (mirrors 19_markdown_ranges.sql for straggler DBs)
     try_add_column(conn, "ALTER TABLE sections ADD COLUMN line_start INTEGER NOT NULL DEFAULT 0");
@@ -553,6 +556,8 @@ const MIGRATIONS: &[(&str, Option<Hook>, &str)] = &[
     (include_str!("../migrations/29_sensitive_bundle.sql"), Some(bundle_sensitive), "rewriting the search index for Sensitive labels (can take several minutes on large libraries)"),
     // R47.2: dismissable system events (column added by the hook)
     (include_str!("../migrations/30_event_dismiss.sql"), Some(add_event_dismissed_at), "making errors dismissable"),
+    // R41.10: per-item chunk lookups (re-chunk check, chunk deletes) use an index
+    (include_str!("../migrations/31_chunk_item_index.sql"), None, "indexing chunks by document (can take a minute on large libraries)"),
 ];
 
 fn migrations() -> Migrations<'static> {
@@ -972,7 +977,14 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         migrate_all(&mut conn);
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 30);
+        assert_eq!(v, 31);
+        // R41.10 (migration 31): per-item chunk lookups are indexed.
+        for (table, index) in [("chunks", "ix_chunks_item_id"), ("assets", "ix_assets_chunk_id")] {
+            let n: i64 = conn
+                .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name=?1 AND name=?2", [table, index], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 1, "migration 31 must create {index}");
+        }
         // R47.2 (migration 30): migration 13 rebuilt system_events without
         // the column, so the hook must have added it.
         assert!(column_exists(&conn, "system_events", "dismissed_at"), "migration 30 adds dismissed_at");

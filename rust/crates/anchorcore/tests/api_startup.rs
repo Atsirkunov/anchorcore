@@ -40,13 +40,14 @@ async fn slow_migration_shows_phases_then_turns_healthy() {
         s == StatusCode::SERVICE_UNAVAILABLE && b["status"] == "starting" && b["phase"] == "migrations"
     })
     .await;
-    // fresh library: 30 migrations + finishing up
+    // fresh library: every migration + finishing up
     let of = body["of"].as_u64().unwrap();
     assert!(of >= 2, "{body}");
     let step = body["step"].as_u64().unwrap();
     assert!(step >= 1 && step <= of, "{body}");
     assert!(body["detail"].as_str().unwrap().starts_with("Migration "), "{body}");
     assert!(body["started_at"].as_str().is_some_and(|s| !s.is_empty()), "{body}");
+    assert!(body["detail_since"].as_str().is_some_and(|s| !s.is_empty()), "{body}");
 
     // Every other API route is 503 with the plain-words detail.
     for path in ["/sources", "/system/status", "/csrf"] {
