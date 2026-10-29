@@ -9,7 +9,7 @@ Key facts, each stated on the pages below:
 - Coding agents can use the same cited search through an MCP server.
 - Team edition is one self-hosted container, quote-based, with optional password sign-in. No SSO, no roles.
 - Hosted edition is a waitlist only.
-- No SOC 2, ISO 27001 or third-party penetration test. Downloads are not code-signed on Windows and Linux; the macOS build is ad-hoc signed and not notarized.
+- No SOC 2, ISO 27001 or third-party penetration test. The macOS build is Developer ID signed and Apple-notarized; Windows and Linux downloads are not code-signed.
 
 ## Pages
 

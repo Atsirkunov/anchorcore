@@ -20,12 +20,13 @@ cargo build --release      # from rust/ (or ./build.sh / .\build.ps1 from the re
 ```
 
 `release.yml` builds `AnchorCore-{windows,macos,linux}.zip` + `AnchorCore-macos.dmg` on every `v*` tag
-(frontend → release build → ad-hoc `codesign` on macOS → DMG). Windows builds use the MinGW (GNU) toolchain — see `AGENTS.md`.
+(frontend → release build → Developer ID `codesign` + notarize + staple on macOS → DMG; R41.4, `docs/releasing.md`). Windows builds use the MinGW (GNU) toolchain — see `AGENTS.md`.
 
 macOS ships an `AnchorCore.app` bundle so Finder launches it without a Terminal window, packed as
 `AnchorCore-macos.dmg` (the app + an `/Applications` symlink to drag onto; R41.2) and, for now, also as
-`AnchorCore-macos.zip`. It is ad-hoc signed, not notarized: first launch needs System Settings → Privacy &
-Security → Open Anyway. Windows and Linux builds are not code-signed.
+`AnchorCore-macos.zip`. Both carry a Developer ID-signed, Apple-notarized app with the ticket stapled, so first launch is a plain
+double-click (1.6.2 and older: System Settings → Privacy & Security → Open Anyway). A local `./build.sh`
+without `NOTARY_PROFILE` is ad-hoc, for the building machine only. Windows and Linux builds are not code-signed.
 
 ## 3. First run (tester view)
 
@@ -48,7 +49,6 @@ Windowed builds have no console: startup errors and panics go to `~/.anchorcore/
 | Item | Tracked as |
 |---|---|
 | DMG with drag-to-Applications | R41.2 |
-| Apple notarization (needs a paid developer account) | R41.4 (owner call) |
 | Built-in embedder (no Ollama needed for hybrid search) | R45.3 → R45.4 |
 | Sample corpus inside the release | B50 |
 | Windows installer, custom app icon, auto-update | not scheduled |

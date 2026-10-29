@@ -84,8 +84,8 @@ release is left alone. No network → say so and continue with what is installed
 Prebuilt artifacts — users never need Rust or Node:
 `https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-{windows,macos,linux}.zip`
 Unzip: Windows/Linux `anchorcore.exe` / `anchorcore`; macOS `AnchorCore.app`
-(not notarized: first launch needs System Settings → Privacy & Security → Open
-Anyway, or `xattr -dr com.apple.quarantine AnchorCore.app`).
+(Developer ID signed and notarized: it opens with a double-click; only 1.6.2 and
+older need System Settings → Privacy & Security → Open Anyway).
 Keep the app in one place so the next check is cheap: Windows
 `%LOCALAPPDATA%\AnchorCore\`, macOS `/Applications/AnchorCore.app` (or `~/Applications`), Linux
 `~/.local/share/anchorcore\` — or wherever the user already keeps it.

@@ -119,7 +119,7 @@
 Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
                 (compare with the matching line in SHA256SUMS)</code></pre>
 <p>The checksum shows the file is the one the release published; it does not prove who built it. If that matters to you, build from source.</p>
-<p><strong>Signing status.</strong> The macOS app is ad-hoc signed and not notarized by Apple. The Windows and Linux builds are not code-signed. Nothing is signed through an app store. That is why first launch needs "Open Anyway" on macOS or "Run anyway" in Windows SmartScreen. Release notes: <a href="https://github.com/Atsirkunov/anchorcore/tree/main/docs/release-notes" rel="noopener noreferrer">docs/release-notes</a>.</p>
+<p><strong>Signing status.</strong> The macOS app is signed with a Developer ID and notarized by Apple, so Gatekeeper opens it without asking. The Windows and Linux builds are not code-signed. Nothing is signed through an app store. That is why first launch needs "Run anyway" in Windows SmartScreen. Release notes: <a href="https://github.com/Atsirkunov/anchorcore/tree/main/docs/release-notes" rel="noopener noreferrer">docs/release-notes</a>.</p>
 
 <h2 id="limits">Known limits</h2>
 <ul>

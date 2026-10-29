@@ -20,7 +20,7 @@ Version: `v1.0.13` (`rust/Cargo.toml` `workspace.package.version`).
 | Asset | Contents | URL |
 |---|---|---|
 | `AnchorCore-windows.zip` | `anchorcore.exe` (app + `anchorcore mcp`) | `https://github.com/Atsirkunov/anchorcore/releases/download/v1.0.13/AnchorCore-windows.zip` |
-| `AnchorCore-macos.zip` | `AnchorCore.app` (ad-hoc signed) | `https://github.com/Atsirkunov/anchorcore/releases/download/v1.0.13/AnchorCore-macos.zip` |
+| `AnchorCore-macos.zip` | `AnchorCore.app` (notarized from 1.6.3; ad-hoc before) | `https://github.com/Atsirkunov/anchorcore/releases/download/v1.0.13/AnchorCore-macos.zip` |
 | `AnchorCore-linux.zip` | `anchorcore` (app + `anchorcore mcp`) | `https://github.com/Atsirkunov/anchorcore/releases/download/v1.0.13/AnchorCore-linux.zip` |
 
 Alternate entry: `https://anchorcore.dev` Download buttons (must resolve to the
@@ -213,10 +213,10 @@ Fallback if `npx` is unavailable (no network/npm): raw JSON-RPC over stdio —
 ```bash
 set -euo pipefail
 mkdir -p ~/b48 && cd ~/b48
-curl -sL -o macos.zip https://github.com/Atsirkunov/anchorcore/releases/download/v1.0.13/AnchorCore-macos.zip
-rm -rf AnchorCore.app && unzip -q macos.zip
-# Gatekeeper: ad-hoc signed, no notarization — approve once:
-xattr -dr com.apple.quarantine AnchorCore.app || true
+curl -sL -o macos.zip https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-macos.zip
+rm -rf AnchorCore.app && ditto -x -k macos.zip .
+# Gatekeeper: notarized since 1.6.3 — expect "source=Notarized Developer ID":
+spctl -a -t exec -vv AnchorCore.app
 git clone --depth 1 --filter=blob:none --sparse https://github.com/Atsirkunov/anchorcore.git b48-sample 2>/dev/null || true
 git -C b48-sample sparse-checkout set sample
 export SAMPLE_DIR="$PWD/b48-sample/sample" ANCHOR_OPEN_BROWSER=0

@@ -25,7 +25,7 @@ menu-bar icons, look left of your other icons and ⌘-drag it where you want it.
 Linux has no tray yet.
 Verify a download against `SHA256SUMS` on the release page.
 
-> First launch: run AnchorCore from `/Applications`. macOS: open it, then System Settings → Privacy & Security → Open Anyway (the app isn't Apple-notarized yet).
+> First launch: run AnchorCore from `/Applications`. macOS: the app is signed with a Developer ID and notarized by Apple, so it opens with a double-click (1.6.2 and older weren't: System Settings → Privacy & Security → Open Anyway).
 > Windows: SmartScreen → More info → Run anyway. (Windows and Linux builds aren't code-signed; nothing is store-signed.)
 
 ## 60-second start
