@@ -158,7 +158,7 @@ Status: `todo` | `doing` | `done` (✅). Update this file when you pick/complete
 
 > R35.1 shipped 2026-10-12, R35.2 2026-10-27, R35.4 2026-10-27, R35.5 2026-10-27, R35.6 2026-10-28 (see rows/shipped log). R35.3 folded into R35.4; R36.19 into R35.5.
 
-### Phase 41 — macOS install flow + "(Not Responding)" (owner question, 2026-10-19) — 3 open / 1 deferred / 6 shipped (R41.2, R41.4, R41.5, R41.6, R41.7, R41.10)
+### Phase 41 — macOS install flow + "(Not Responding)" (owner question, 2026-10-19) — 3 open / 7 shipped (R41.2, R41.4, R41.5, R41.6, R41.7, R41.9, R41.10)
 
 > Field question: Activity Monitor / Force Quit shows AnchorCore "(Not Responding)" while Q&A keeps working. Root cause is architectural, not the install location: `main` creates `NSApplication.shared` + the tray on the main thread, then parks that thread in `axum::serve` forever — the Cocoa event loop is never pumped, so macOS flags the app (server runs on Tokio workers, unaffected). R41.5 is that root fix. R41.1–R41.4 are the install-flow half: one blessed location, a DMG with drag-to-Applications, a Translocation warning, and (owner-deferred) notarization.
 
