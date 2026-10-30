@@ -24,13 +24,16 @@ command or action and wait.
    minutes) — never restart, reinstall or touch the data dir meanwhile. A 503
    with `"status":"failed"` means the upgrade failed: relay its `error` and
    `data_state` and ask the user to open AnchorCore (it shows the details).
-   Anything else means the app is not up — see step 1. Exception: when the
-   harness reports a sandbox, permission or network-policy denial (not a
-   refused connection), the app may be fine and your sandbox is blocking
-   localhost. Ask once for the narrowest access ("allow 127.0.0.1:<port>, or
-   run this one request outside the sandbox?"), never bypass the sandbox
-   unasked, and on a no give the user the command to run themselves
-   (`! curl -s http://127.0.0.1:<port>/health` in Claude Code).
+   No HTTP answer at all can still mean the app is up and **your sandbox** is
+   blocking localhost, because a sandbox denial often looks like a refused
+   connection. Before calling the app down, read the `pid` from
+   `runtime.json` and run `ps -p <pid> -o comm=`. If it prints a name with
+   `anchorcore`, the app is running: ask once "AnchorCore is running, but my
+   sandbox blocks local network calls. OK to run the AnchorCore requests
+   outside the sandbox for this session?" Retry outside the sandbox only
+   after a yes. On a no, give the user the command to run themselves
+   (`! curl -s http://127.0.0.1:<port>/health` in Claude Code). No file or a
+   dead pid means the app is not up — see step 1.
 2. **Newest version first.** Before configuring anything, check the installed
    build (and any installer copy you are about to use) against the newest GitHub
    release — step 1. If it is older, update it first. Never set up, launch, or

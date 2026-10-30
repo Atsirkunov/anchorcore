@@ -51,32 +51,68 @@ question about their own or their team's material as yours.
 
 ## When the app can't be reached
 
+Users know this skill by its name, not by "AnchorCore", especially when
+their company hosts it. In every message below, `<skill>` is the `name:` in
+this file's front matter (what they type after `/`). Use it, not
+"AnchorCore", except when telling them which app to open on their own
+computer.
+
 Tell the failures apart before you say anything:
 
-- **AnchorCore is upgrading its database:** a 503 whose body says
+- **The server is upgrading its database:** a 503 whose body says
   `"status":"starting"` (on /health) or "AnchorCore is upgrading its
-  database". The app is running: tell the user "AnchorCore is upgrading its
-  database (step N of M), I'll retry shortly", wait about 10 s and retry —
-  large libraries take several minutes. Don't call it "not running". A 503
-  with `"status":"failed"` means the upgrade failed: ask the user to open
-  AnchorCore, which shows what happened.
+  database". It is running: tell the user "<skill> is upgrading its database
+  (step N of M), I'll retry shortly", wait about 10 s and retry. Large
+  libraries take several minutes. Don't call it "not running". A 503 with
+  `"status":"failed"` means the upgrade failed: on this computer, ask the
+  user to open the AnchorCore app, which shows what happened; on a hosted
+  server, tell them to contact whoever runs it.
 
-- **AnchorCore isn't running:** connection refused, nothing listening on the
-  port. Ask the user to open AnchorCore, then retry. Don't mention the
-  sandbox.
-- **Your sandbox blocked the call:** the harness reports a permission,
-  network-policy or sandbox denial instead of a connection result. Ask once,
-  for the narrowest access: "AnchorCore runs on this computer at
-  127.0.0.1:<port>, and my sandbox blocks local network calls. Can I allow
-  access to that address, or run this one request outside the sandbox?"
-  Prefer allowing that address over leaving the sandbox. Never retry with a
-  sandbox bypass the user didn't approve. If they say no, stop, give them
-  the exact command to run themselves (in Claude Code:
-  `! curl -s http://127.0.0.1:<port>/health`), and don't ask again this
-  session.
+A sandbox that blocks network calls often looks exactly like a server that
+is down (curl: "Couldn't connect", "connection refused", "Operation not
+permitted"), so never decide from the error text alone. For any failed
+connection (no HTTP status at all):
 
-If you can't tell which (a timeout with no denial message), say so and ask
-whether the app is open.
+**Hosted (ANCHOR_BACKEND_URL points to another machine).** You can't check
+the server from here. Ask once: "I can't reach <skill> at <host>. My sandbox
+may be blocking it. OK to run <skill> outside the sandbox for this
+session?" If it still fails outside the sandbox, the server is down or
+unreachable: tell them to check their network or VPN, or contact whoever
+runs <skill>.
+
+**On this computer.** Check whether the app is alive:
+
+1. Read `~/.anchorcore/runtime.json` (a file read, which sandboxes allow)
+   and take its `pid`.
+2. Run `ps -p <pid> -o comm=`. The app is alive when it prints a name
+   containing `anchorcore` (or `AnchorCore`). Match this exact pid: an
+   `anchorcore mcp` helper running elsewhere doesn't count. A crashed app can
+   leave a stale file behind, which is why the pid has to be checked.
+
+Then:
+
+- **App alive, call failed → your sandbox blocked it.** Don't tell the user
+  to open the app; it is open. Ask once: "<skill> is running on this
+  computer, but my sandbox blocks local network calls. OK to run <skill>
+  outside the sandbox for this session?"
+- **No `runtime.json`, or its pid isn't running → the app isn't open.** Say
+  "<skill> needs the AnchorCore app, which isn't open. Open it and I'll
+  retry." Don't mention the sandbox.
+- **The harness itself reports a sandbox, permission or network-policy
+  denial** → treat it as blocked (first bullet), even if the pid check
+  couldn't run.
+- **You can't tell** (the pid check itself fails, or a timeout): ask both at
+  once: "Is the AnchorCore app open? If it is, my sandbox is probably
+  blocking <skill>. OK to run <skill> outside the sandbox?"
+
+After any of these questions: on a yes, retry the same call outside the
+sandbox (in Claude Code: the Bash call with the sandbox disabled, which also
+shows the user a permission prompt) and keep doing so for <skill> calls
+this session. Never leave the sandbox without that yes. On a no, stop, give
+them the exact command to run themselves (in Claude Code:
+`! curl -s <base URL>/health`), and don't ask again this session. Mention
+once that allowing <base URL>'s host in their sandbox settings skips this
+question in the future.
 
 ## Calls
 
