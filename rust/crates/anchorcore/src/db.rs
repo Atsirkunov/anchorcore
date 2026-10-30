@@ -550,7 +550,7 @@ const MIGRATIONS: &[(&str, Option<Hook>, &str)] = &[
     // R46.7: image assets — deduped blobs + per-reference rows
     (include_str!("../migrations/26_assets.sql"), None, "adding image storage"),
     // R45.10: legacy entity cleanup (backup first, see `init_db`)
-    (include_str!("../migrations/27_legacy_entities.sql"), Some(cleanup_legacy_entities), "cleaning up legacy entities (can take several minutes on large libraries)"),
+    (include_str!("../migrations/27_legacy_entities.sql"), Some(cleanup_legacy_entities), "cleaning up legacy entities"),
     // R36.2: chunker generation per item (re-chunk runs in `init_db`)
     (include_str!("../migrations/28_chunker_version.sql"), None, "adding chunker generations"),
     (include_str!("../migrations/29_sensitive_bundle.sql"), Some(bundle_sensitive), "rewriting the search index for Sensitive labels (can take several minutes on large libraries)"),
@@ -558,7 +558,11 @@ const MIGRATIONS: &[(&str, Option<Hook>, &str)] = &[
     (include_str!("../migrations/30_event_dismiss.sql"), Some(add_event_dismissed_at), "making errors dismissable"),
     // R41.10: per-item chunk lookups (re-chunk check, chunk deletes) use an index
     (include_str!("../migrations/31_chunk_item_index.sql"), None, "indexing chunks by document (can take a minute on large libraries)"),
+    // R41.8: entity cascades use indexes (the migration 27 hook runs it first)
+    (ENTITY_FK_INDEXES, None, "indexing records"),
 ];
+
+const ENTITY_FK_INDEXES: &str = include_str!("../migrations/32_entity_fk_indexes.sql");
 
 fn migrations() -> Migrations<'static> {
     let fail_at = test_fail_migration();
@@ -623,6 +627,8 @@ fn cleanup_legacy_entities(tx: &rusqlite::Transaction) -> rusqlite_migration::Ho
     if legacy == 0 {
         return Ok(());
     }
+    // R41.8: without these each deleted row scans `chunks` for its cascade.
+    tx.execute_batch(ENTITY_FK_INDEXES)?;
     // No doc_type column yet → no item is in the record bucket.
     let records = if column_exists(tx, "ingested_items", "doc_type") {
         "SELECT id FROM ingested_items WHERE doc_type = 'record'"
@@ -841,6 +847,40 @@ mod tests {
         conn.execute("ALTER TABLE ingested_items DROP COLUMN is_glossary", []).unwrap();
     }
 
+    /// Undo migration 32 (R41.8): a real pre-v27 DB has none of these.
+    fn drop_entity_fk_indexes(conn: &Connection) {
+        for name in [
+            "ix_chunks_entity_id",
+            "ix_relationships_from_entity_id",
+            "ix_relationships_to_entity_id",
+            "ix_merge_actions_entity_a_id",
+            "ix_merge_actions_entity_b_id",
+            "ix_disputes_entity_id",
+            "ix_entities_item_id",
+        ] {
+            conn.execute(&format!("DROP INDEX {name}"), []).unwrap();
+        }
+    }
+
+    #[test]
+    fn legacy_cleanup_indexes_before_deleting() {
+        let dir = tempdir().unwrap();
+        let mut conn = init_db(&dir.path().join("anchorcore.db")).unwrap();
+        drop_entity_fk_indexes(&conn);
+        conn.execute("INSERT INTO sources (name, connector) VALUES ('s','folder')", []).unwrap();
+        conn.execute("INSERT INTO ingested_items (source_id, content_hash) VALUES (1,'h')", []).unwrap();
+        conn.execute("INSERT INTO entities (item_id, kind, summary, reasoning) VALUES (1,'decision','x','llm')", []).unwrap();
+        conn.execute("INSERT INTO chunks (item_id, entity_id, content) VALUES (1, 1, 'entity chunk')", []).unwrap();
+        let tx = conn.transaction().unwrap();
+        cleanup_legacy_entities(&tx).unwrap();
+        let plan: String = tx
+            .query_row("EXPLAIN QUERY PLAN DELETE FROM chunks WHERE entity_id = 1", [], |r| r.get(3))
+            .unwrap();
+        assert!(plan.contains("ix_chunks_entity_id"), "the hook indexes before its delete: {plan}");
+        let left: i64 = tx.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0, "the entity chunk still cascades");
+    }
+
     fn vec_trigger_sql(conn: &Connection) -> Vec<String> {
         let mut stmt = conn
             .prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND sql LIKE '%vec_chunks%' ORDER BY name")
@@ -938,6 +978,7 @@ mod tests {
                 .unwrap();
             drop_entity_record_columns(&conn);
             drop_glossary_artifacts(&conn);
+            drop_entity_fk_indexes(&conn);
             // A real v10 DB also predates R36.2 — drop the chunker
             // generation so migration 28 has real work to do.
             conn.execute("ALTER TABLE ingested_items DROP COLUMN chunker_version", []).unwrap();
@@ -977,14 +1018,29 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         migrate_all(&mut conn);
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 31);
+        assert_eq!(v, 32);
         // R41.10 (migration 31): per-item chunk lookups are indexed.
-        for (table, index) in [("chunks", "ix_chunks_item_id"), ("assets", "ix_assets_chunk_id")] {
+        // R41.8 (migration 32, also run by the 27 hook): entity cascades are.
+        for (table, index) in [
+            ("chunks", "ix_chunks_item_id"),
+            ("assets", "ix_assets_chunk_id"),
+            ("chunks", "ix_chunks_entity_id"),
+            ("relationships", "ix_relationships_from_entity_id"),
+            ("relationships", "ix_relationships_to_entity_id"),
+            ("merge_actions", "ix_merge_actions_entity_a_id"),
+            ("merge_actions", "ix_merge_actions_entity_b_id"),
+            ("disputes", "ix_disputes_entity_id"),
+            ("entities", "ix_entities_item_id"),
+        ] {
             let n: i64 = conn
                 .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name=?1 AND name=?2", [table, index], |r| r.get(0))
                 .unwrap();
-            assert_eq!(n, 1, "migration 31 must create {index}");
+            assert_eq!(n, 1, "migrations 31/32 must create {index}");
         }
+        let plan: String = conn
+            .query_row("EXPLAIN QUERY PLAN DELETE FROM chunks WHERE entity_id = 1", [], |r| r.get(3))
+            .unwrap();
+        assert!(plan.contains("ix_chunks_entity_id"), "entity cascade must use the index: {plan}");
         // R47.2 (migration 30): migration 13 rebuilt system_events without
         // the column, so the hook must have added it.
         assert!(column_exists(&conn, "system_events", "dismissed_at"), "migration 30 adds dismissed_at");

@@ -21,7 +21,9 @@ keyword-searchable.
 
 **Startup (R41.7).** The process binds its port, opens the browser and builds the tray *before* it
 touches the database; `db::init_db_tracked` then runs on a blocking task: free-disk precheck (about 2×
-the DB) → R45.10 safety backup when needed → one transaction per pending migration → column check +
+the DB) → R45.10 safety backup when needed → one transaction per pending migration (the R45.10
+cleanup indexes every `entities` child first, R41.8 — without them each deleted entity scanned
+`chunks` for its cascade) → column check +
 R36.2 re-chunk (per-item lookups go through `ix_chunks_item_id`, R41.10 — without it this step
 scanned `chunks` once per item). Each step reports into `startup.rs`, with `detail_since` so the screen
 shows how long the current phase has run. Until it finishes, `/health` answers 503
