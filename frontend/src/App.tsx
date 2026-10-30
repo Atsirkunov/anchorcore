@@ -9,14 +9,14 @@ import { theme, radius } from "./theme";
 import { OnboardingWizard } from "./OnboardingWizard";
 import { UpdateBanner } from "./Updates";
 import { AskTab } from "./tabs/AskTab";
-import { EntitiesTab } from "./tabs/EntitiesTab";
+import { RecordsTab } from "./tabs/RecordsTab";
 import { SettingsTab } from "./tabs/SettingsTab";
 import { SourcesTab } from "./tabs/SourcesTab";
 import { SystemTab } from "./tabs/SystemTab";
 import { isActiveJob } from "./jobControlsText";
 import type { Job } from "./types";
 
-type Tab = "ask" | "sources" | "entities" | "settings" | "system";
+type Tab = "ask" | "sources" | "records" | "settings" | "system";
 
 function badgeText(jobs: Job[]): string {
   const running = jobs.filter((j) => j.status === "running").length;
@@ -25,12 +25,12 @@ function badgeText(jobs: Job[]): string {
 }
 
 // Primary = everyday flow; secondary = configure & inspect (airy grouped nav)
-// R31.2: the Review tab folded into Entities ("Needs a look" + Possible doubles);
-// /review/* stays for agents.
+// R45.25: Entities became Records (decisions, actions, glossary); the review
+// queue is gone from the UI, /entities* and /review/* stay for agents.
 const PRIMARY_TABS: { id: Tab; label: string }[] = [
   { id: "ask", label: "Ask" },
   { id: "sources", label: "Sources" },
-  { id: "entities", label: "Entities" },
+  { id: "records", label: "Records" },
 ];
 const SECONDARY_TABS: { id: Tab; label: string }[] = [
   { id: "settings", label: "Settings" },
@@ -220,8 +220,8 @@ export default function App() {
         <ErrorBoundary label="Sources">
           {tab === "sources" && <SourcesTab />}
         </ErrorBoundary>
-        <ErrorBoundary label="Entities">
-          {tab === "entities" && <EntitiesTab />}
+        <ErrorBoundary label="Records">
+          {tab === "records" && <RecordsTab />}
         </ErrorBoundary>
         <ErrorBoundary label="Settings">
           {tab === "settings" && <SettingsTab />}

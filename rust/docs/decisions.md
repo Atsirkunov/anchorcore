@@ -4,6 +4,18 @@ ADR log. Append newest first.
 
 ---
 
+## 2026-10-30 — R45.25: the Entities tab becomes Records; no "Looks right" review queue
+
+* **Decision:** the tab is **Records** with three views — Decisions (default), Actions, Glossary. The "All entities" review queue is removed from the UI: Looks right (row + bulk), the confidence badge, the kind dropdown, the New/In-answers badges, duplicates and per-row conflict flagging. Decision and action rows gain **Dispute…** (reason required, `POST /entities/:id/dispute`, history kept) and **Restore** (`PATCH /entities/:id {"status":"unverified"}`); `GET /decisions` / `GET /actions` take `disputed=true` to list only disputed rows (the UI's "Disputed" filter). Every `/entities*` and `/review/*` endpoint stays for REST and MCP callers; no schema change.
+* **Context:** owner report R45.24 ("Looks right does nothing"). It wrote `verified`, but `status_ok` drops only `stale`/`disputed`, so `unverified` rows were already used and nothing reads `verified` — the click could never change an answer, and the "New" vs "In answers" labels said otherwise. Since R45.18 the confidence is a constant and the queue's rows were raw markdown lines; on the owner's library (pre-migration-27) all 1,609 rows were legacy rule-classifier rows already `verified`, so the click rewrote the stored value. Entity chunks are never `ask` evidence, so a dispute affects the record lists and the agent `decisions`/`actions` tools, not chunk retrieval — the UI says that, not "removed from answers".
+* **Alternatives considered:**
+  - *Fix the button (R45.24 as filed)* — rejected: a working button still changes nothing a person can observe.
+  - *Make `verified` mean something (rank verified records first, or answer only from verified)* — rejected: it hands people a review chore over every parsed record before answers work, the queue R45.13 removed for vocabulary.
+  - *Keep "All entities" as a read-only list* — rejected: legacy `document`/`note` rows are noise once migration 27 runs, and Decisions/Actions already show every record the parser writes.
+* **Consequences:** R45.8's "`verified` means a person confirmed it" still holds for any API caller that sets it; the UI no longer sets it. Merge proposals and conflict links are API-only now. The remembered view key `entities-view` is reused, so a stored `all` falls back to Decisions.
+
+---
+
 ## 2026-10-28 — R35.6: per-destination Sensitive opt-in, host-bound, UI-only
 
 * **Decision:** one rule `sharing::allowed(settings, Destination)` for three destinations — cloud embedder, cloud answer provider, AI agents (MCP / skill). Each opens when local (loopback or the built-in embedder; never agents), set by environment (`ANCHOR_CLOUD_TRUST=1` opens all three; `ANCHOR_TRUSTED_PROVIDERS` opens matching provider hosts only), or the person's switch is on. Provider switches store the destination **origin** at opt-in and close when the configured host changes (the card reports the stale consent). Switches are `app_settings` rows `sensitive_share_*` with no env fallback, outside `PUT /settings` and backups, written only by `PUT /settings/sensitive-sharing` with the UI header; every change writes a `settings` system event (on = `warning`, off = `info`). Agent trust is no longer inferred from `answer_base_url`. In local mode, an agent caller without the agents switch gets an answer whose generation input is gated too (`ask_gates`), so a composed answer cannot carry Sensitive text to the agent.

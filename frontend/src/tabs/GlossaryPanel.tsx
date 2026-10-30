@@ -10,9 +10,9 @@ import type { GlossaryEntry, ItemMeta } from "../types";
  * Every entry is active at once and teaches search that the short form means
  * the long one.
  */
-export function GlossaryPanel() {
+export function GlossaryPanel({ defaultOpen = false }: { defaultOpen?: boolean } = {}) {
   const [entries, setEntries] = useState<GlossaryEntry[]>([]);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const [term, setTerm] = useState("");
   const [expansion, setExpansion] = useState("");
   const [fileQuery, setFileQuery] = useState("");

@@ -258,7 +258,7 @@ export type Entity = {
   id: number;
   item_id: number;
   /** Open set: decision/action/note (+ legacy document rows) and anything else
-   *  the backend sends — render via entityLabels.kindLabel, never a closed union. */
+   *  the backend sends — never assume a closed union. */
   kind: string;
   summary: string;
   reasoning: string;
@@ -293,20 +293,6 @@ export type ItemMeta = {
 export type ItemList = {
   items: ItemMeta[];
   total: number;
-};
-
-export type ConflictLink = {
-  other_entity_id: number;
-  note: string;
-  created_at: string;
-};
-
-export type Dispute = {
-  id: number;
-  entity_id: number;
-  reason: string;
-  user: string;
-  created_at: string;
 };
 
 /** R46.9: an image reference (search hits, citations, item detail). `url`
@@ -499,13 +485,6 @@ export type PullProgress = {
   error: string | null;
 };
 
-export type MergeProposal = {
-  id: number;
-  entity_a_id: number;
-  entity_b_id: number;
-  reason: string;
-};
-
 /** R45.13: a people-owned glossary entry (typed in, or from a marked file). */
 export type GlossaryEntry = {
   id: number;
@@ -628,8 +607,8 @@ export type RecordListing<K extends string, T> = { [key in K]: T[] } & {
   refusal: string | null;
 };
 
-export type DecisionFilters = { q?: string; status?: string; project_id?: number };
-export type ActionFilters = { q?: string; owner?: string; state?: "open" | "done" | "all"; overdue?: boolean; project_id?: number };
+export type DecisionFilters = { q?: string; status?: string; disputed?: boolean; project_id?: number };
+export type ActionFilters = { q?: string; owner?: string; state?: "open" | "done" | "all"; overdue?: boolean; disputed?: boolean; project_id?: number };
 
 /** R45.6: `GET /system/onboarding` → `machine` — RAM and an Ollama answer
  * model sized to it, for the wizard's local-model picker. */

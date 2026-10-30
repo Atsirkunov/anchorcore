@@ -37,8 +37,8 @@ after that).
 
 Two things in here are deliberate test content, not mistakes: the same
 decision appears twice (in `sprint12.md` and `d1`), and one meeting note
-contradicts another. They exist so you can try the Entities tab's duplicate
-merging and dispute flow (Needs a look + Possible doubles).
+contradicts another. They exist so you can see how answers cite both, and
+try disputing a record in the Records tab.
 
 ## Things to try (in the Ask tab)
 
@@ -51,13 +51,13 @@ merging and dispute flow (Needs a look + Possible doubles).
 - "show the steps for it" — the follow-up is understood from context.
 - "and what happens if delivery fails?" — answered from the rollback note.
 
-**3. Decisions, actions and review (in the Entities tab)**
+**3. Decisions and actions (in the Records tab)**
 - Decisions: the four decision records with their status and owner — read
   from the files' own `Status:` / `Owner:` lines, no model involved.
 - Actions: the retro and planning action items with owners; filter to open ones.
-- Possible doubles: the twice-recorded decision is there to try merging.
-- Disputed: dispute the contradicting claim, and answers stop citing it.
-- Everything starts unverified — verifying a record is your call.
+- Dispute: a record that is wrong can be disputed with a reason — it drops
+  out of the Decisions/Actions lists and the AI agents' `decisions`/`actions`
+  tools, and comes back with Restore (find it under the Disputed filter).
 
 **4. People & ownership**
 - "Who owns the billing provider migration?" → Sarah, cited from the decisions and notes.

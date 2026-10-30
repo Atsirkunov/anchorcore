@@ -1,4 +1,4 @@
-import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, CancelJobResult, ConflictLink, Dispute, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, MergeProposal, OnboardingState, Project, PullProgress, SensitiveSharing, SharingDestinationId, Source, EventGroup, EventLevel, EventMatch, EventSummary, SystemStatus, TestConnectionResult, UpdateStatus } from "./types";
+import type { AppSettings, AskResponse, AskTurn, BackupExportOptions, BackupImportOptions, BackupImportReport, CancelJobResult, Entity, FolderListing, Health, Job, LogFile, McpClient, McpInfo, OnboardingState, Project, PullProgress, SensitiveSharing, SharingDestinationId, Source, EventGroup, EventLevel, EventMatch, EventSummary, SystemStatus, TestConnectionResult, UpdateStatus } from "./types";
 import type { SkillInstallResult } from "./skillHandle";
 
 export class RequestAbortedError extends Error {
@@ -182,15 +182,6 @@ export const api = {
   deleteProject: (id: number) => request<{ deleted: boolean }>(`/projects/${id}`, { method: "DELETE" }),
   defaultProject: () => request<Project | null>("/projects/default"),
 
-  listEntities: (params?: { kind?: string; status?: string; limit?: number }) => {
-    const q = new URLSearchParams();
-    if (params?.kind) q.set("kind", params.kind);
-    if (params?.status) q.set("status", params.status);
-    if (params?.limit) q.set("limit", String(params.limit));
-    const qs = q.toString();
-    return request<Entity[]>(`/entities${qs ? `?${qs}` : ""}`);
-  },
-  getEntity: (id: number) => request<Entity>(`/entities/${id}`),
   updateEntity: (id: number, payload: Partial<Pick<Entity, "kind" | "status" | "owner">>) =>
     request<Entity>(`/entities/${id}`, {
       method: "PATCH",
@@ -203,29 +194,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason }),
     }),
-  entityDisputes: (id: number) => request<Dispute[]>(`/entities/${id}/disputes`),
-  listConflicts: (id: number) => request<ConflictLink[]>(`/entities/${id}/conflicts`),
-  flagConflict: (id: number, otherId: number, note?: string) =>
-    request<{ id: number; from_entity_id: number; to_entity_id: number; kind: string; note: string; created_at: string }>(`/entities/${id}/conflicts`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ other_entity_id: otherId, note }),
-    }),
-  unflagConflict: (id: number, otherId: number) =>
-    request<{ deleted: boolean }>(`/entities/${id}/conflicts/${otherId}`, { method: "DELETE" }),
-  entityContext: (id: number) =>
-    request<{ entity_id: number; source_name: string | null; source_ref: string; window_text: string; expanded_before: string[]; expanded_after: string[]; full_text: string; highlight: string; item_title: string }>(`/entities/${id}/context`),
 
-  // R31.2: the Review tab folded into Entities, but /review/* stays — agents
-  // and the folded duplicates queue use it. No backend change.
-  lowConfidence: () => request<Entity[]>("/review/low-confidence"),
-  duplicates: () => request<MergeProposal[]>("/review/duplicates"),
-  decideMerge: (proposalId: number, decision: "merge" | "dismiss") =>
-    request<{ merged: boolean; entity_id?: number }>("/review/merge", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ proposal_id: proposalId, decision }),
-    }),
   // R45.13: people-owned glossary (replaces the "Words to confirm" queue).
   glossary: () => request<import("./types").GlossaryEntry[]>("/glossary"),
   addGlossaryEntry: (term: string, expansion: string) =>

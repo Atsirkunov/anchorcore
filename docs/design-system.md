@@ -63,7 +63,7 @@ pre-paint script in `index.html`; the choice is stored as `theme-mode` in localS
 
 ## 4. App UX
 
-Five tabs (Ask, Sources, Entities, Settings, System). Header: brand mark, text tabs with an ink underline on the active one, one ink rule under the bar.
+Five tabs (Ask, Sources, Records, Settings, System). Header: brand mark, text tabs with an ink underline on the active one, one ink rule under the bar.
 
 **Ask (R-archive, 2026-10-22):** each question reads above its answer (newest pair first). Local mode: serif answer with `[S1]` marks (mono, oxblood, hover highlights the source card), then numbered source cards: breadcrumb title, path relative to the folder source + `§` + line range (mono), one excerpt. Agent mode: no answer block; the same cards are the content ("Evidence for your agent"). `answerText.ts` strips `[match N]` marks and renders a safe markdown subset (paragraphs, lists, bold) as React nodes — never HTML.
 

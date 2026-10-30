@@ -87,8 +87,8 @@ Benchmarks: hierarchical search ~7ms vs ~40ms flat on a 30k-chunk probe
 
 ## 6. UI
 
-- Entities and Ask citations render a `path` breadcrumb (`›`-separated) plus
-  tag chips (`frontend/src/tabs/EntitiesTab.tsx`, `AskTab.tsx`).
+- Ask citations render a `path` breadcrumb (`›`-separated) plus tag chips
+  (`AskTab.tsx`); Records rows show the record's path.
 - Settings has a TOC & Tags section with the reuse-threshold input.
 
 ## 7. How to verify

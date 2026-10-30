@@ -199,7 +199,7 @@ Code constants (need a rebuild; change only with a failing test in hand):
   R40.8 "Words to confirm" queue) after owner feedback: proposals were
   mostly noise and the queue handed cleanup to people. Three origins, all
   active, no proposals:
-  - `manual` — typed in on the Entities tab Glossary panel (`/glossary`
+  - `manual` — typed in on the Records tab's Glossary view (`/glossary`
     CRUD); global, applies in every project scope.
   - `glossary` — rows of a file a person marked as a glossary (`PATCH
     /items/:id {"is_glossary": true}`): CSV/TSV/semicolon rows, Markdown

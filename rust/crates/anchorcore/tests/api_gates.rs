@@ -9,7 +9,7 @@
 
 mod common;
 
-use common::{TestServer, decision_doc};
+use common::{TestServer, action_doc, decision_doc};
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 
@@ -340,6 +340,45 @@ async fn disputed_decision_drops_from_listings() {
     srv_open.post(&format!("/entities/{eid2}/dispute"), &json!({})).await;
     let listed: Value = srv_open.get("/decisions").await.json().await.expect("decisions");
     assert!(listed["decisions"].as_array().unwrap().iter().any(|d| d["entity_id"] == eid2), "{listed}");
+}
+
+#[tokio::test]
+async fn disputed_records_list_and_restore() {
+    // R45.25: the Records tab lists disputed rows (`disputed=true`) and
+    // restores one with PATCH status=unverified; the dispute history stays.
+    let srv = TestServer::start().await;
+    let d = decision_doc("Ochre lobby", "We decided to paint the lobby ochre", "Olu");
+    let a = action_doc("order ochre paint samples for the lobby", "Olu");
+    let source = srv.mk_folder_source("ochre", &[("d.md", &d), ("a.md", &a)], None).await;
+    srv.sync_and_wait(source["id"].as_i64().unwrap(), "sync").await;
+
+    let decisions: Value = srv.get("/decisions").await.json().await.expect("decisions");
+    let did = decisions["decisions"][0]["entity_id"].as_i64().expect("decision id");
+    let actions: Value = srv.get("/actions").await.json().await.expect("actions");
+    let aid = actions["actions"][0]["entity_id"].as_i64().expect("action id");
+    let none: Value = srv.get("/decisions?disputed=true").await.json().await.expect("none");
+    assert!(none["decisions"].as_array().unwrap().is_empty(), "{none}");
+
+    for eid in [did, aid] {
+        let resp = srv.post(&format!("/entities/{eid}/dispute"), &json!({"reason": "wrong colour"})).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+    let hidden: Value = srv.get("/decisions").await.json().await.expect("hidden");
+    assert!(hidden["decisions"].as_array().unwrap().iter().all(|r| r["entity_id"] != did), "{hidden}");
+    let disputed: Value = srv.get("/decisions?disputed=true").await.json().await.expect("disputed");
+    let rows = disputed["decisions"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{disputed}");
+    assert_eq!(rows[0]["entity_id"], did);
+    assert_eq!(rows[0]["review_status"], "disputed");
+    let disputed_actions: Value = srv.get("/actions?state=all&disputed=true").await.json().await.expect("disputed actions");
+    assert_eq!(disputed_actions["actions"][0]["entity_id"], aid, "{disputed_actions}");
+
+    let restored = srv.patch(&format!("/entities/{did}"), &json!({"status": "unverified"})).await;
+    assert_eq!(restored.status(), StatusCode::OK);
+    let back: Value = srv.get("/decisions").await.json().await.expect("back");
+    assert!(back["decisions"].as_array().unwrap().iter().any(|r| r["entity_id"] == did), "{back}");
+    let history: Value = srv.get(&format!("/entities/{did}/disputes")).await.json().await.expect("history");
+    assert_eq!(history.as_array().unwrap().len(), 1, "restore keeps the dispute history: {history}");
 }
 
 #[tokio::test]

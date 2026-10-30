@@ -5,7 +5,8 @@
 //! MCP-only. Scope and gating mirror `/qa/search` for the same caller:
 //! `project_id` + `public_only` resolve through `answer::project_scope`,
 //! stale (and, per `ANCHOR_QA_EXCLUDE_DISPUTED`, disputed) rows drop via
-//! `retrieval::status_ok`, and Sensitive rows (source label or
+//! `retrieval::status_ok` (`disputed=true` lists only the disputed rows
+//! instead), and Sensitive rows (source label or
 //! per-document override, R35.4) drop for gated callers — every caller but
 //! the UI under an untrusted provider, plus `public_only` whatever the
 //! caller or provider (R35.5) (`blocked`, `refusal: "gated_provider"`).
@@ -36,6 +37,9 @@ pub struct RecordQuery {
     pub state: Option<String>,
     /// Actions: only open items whose ISO `due` date is before today.
     pub overdue: Option<bool>,
+    /// R45.25: only rows a person disputed (left out of answers), so they
+    /// can be reviewed and restored.
+    pub disputed: Option<bool>,
     /// Comma list of source ids (intersected with the project scope).
     pub source_ids: Option<String>,
     pub project_id: Option<i64>,
@@ -123,6 +127,9 @@ fn push_filters(sql: &mut String, params: &mut Vec<rusqlite::types::Value>, kind
         sql.push_str(" AND e.summary LIKE ? ESCAPE '\\'");
         params.push(V::Text(format!("%{esc}%")));
     }
+    if q.disputed.unwrap_or(false) {
+        sql.push_str(" AND e.status = 'disputed'");
+    }
     if kind != "action" {
         return;
     }
@@ -154,7 +161,7 @@ fn load_rows(conn: &Connection, kind: &str, q: &RecordQuery) -> Vec<Row> {
     }
     sql.push_str(" ORDER BY e.id");
     let Ok(mut stmt) = conn.prepare(&sql) else { return Vec::new() };
-    let exclude_disputed = qa_exclude_disputed();
+    let exclude_disputed = qa_exclude_disputed() && !q.disputed.unwrap_or(false);
     stmt.query_map(rusqlite::params_from_iter(params.iter()), row_from_sql)
         .map(|rows| rows.flatten().filter(|r| crate::retrieval::status_ok(Some(&r.review_status), exclude_disputed)).collect())
         .unwrap_or_default()
