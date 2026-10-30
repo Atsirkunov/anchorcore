@@ -110,9 +110,14 @@ sandbox (in Claude Code: the Bash call with the sandbox disabled, which also
 shows the user a permission prompt) and keep doing so for <skill> calls
 this session. Never leave the sandbox without that yes. On a no, stop, give
 them the exact command to run themselves (in Claude Code:
-`! curl -s <base URL>/health`), and don't ask again this session. Mention
-once that allowing <base URL>'s host in their sandbox settings skips this
-question in the future.
+`! curl -s <base URL>/health`), and don't ask again this session.
+
+First run: offer the persistent fix once as a yes/no: "Want to allow
+<base URL>'s host (e.g. 127.0.0.1:8000) in your sandbox settings so this
+isn't asked again? In Claude Code run /sandbox and allow it. (yes/no)".
+Only the user can run /sandbox — never try it yourself. On a yes, name the
+exact host to allow (the <base URL> host, not a guess); on a no, drop it
+for the session.
 
 ## Calls
 
