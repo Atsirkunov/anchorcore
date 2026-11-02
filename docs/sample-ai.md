@@ -11,7 +11,7 @@ had to be corrected.
 
 ## Connect it
 
-In the app → Sources tab → **Add source**:
+In the app → Library tab → **Add source**:
 
 - Connector: **Local folder**
 - Path: the absolute path to the `sample-ai/` directory — click **Browse…** to navigate, or paste it (e.g.

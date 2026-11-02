@@ -256,7 +256,7 @@ function RestFields({
   );
 }
 
-/** B37: the "add source" form (folder, Jira, Linear, Miro, Drive or generic REST), extracted from SourcesTab. */
+/** B37: the "add source" form (folder, Jira, Linear, Miro, Drive or generic REST), extracted from SourcesTab (now LibraryTab). */
 export function SourceForm({ onAdded }: { onAdded: () => void }) {
   const [connector, setConnector] = useState("folder");
   const [name, setName] = useState("");
@@ -375,7 +375,7 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
   );
 }
 
-/** B37: inline edit form for one source (B7), extracted from SourcesTab. */
+/** B37: inline edit form for one source (B7), extracted from SourcesTab (now LibraryTab). */
 export function SourceEditForm({
   source,
   config,

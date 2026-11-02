@@ -4,7 +4,7 @@ import { commonStyles, theme, radius } from "./theme";
 import type { UpdateStatus } from "./types";
 
 /**
- * R29.1 "Updates" card (System tab).
+ * R29.1 "Updates" card (Settings → Updates).
  *
  * Trust contract: the Check button is the ONLY thing in this component that can
  * make a network request. Loading the card / the banner performs a plain

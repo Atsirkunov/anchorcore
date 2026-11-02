@@ -103,7 +103,7 @@ flowchart LR
 - **Deletion:** removing a source cascades to its items, chunks, entities and jobs (`foreign_keys=ON`).
 - **Jobs and stopping them** (`jobs.rs`): at most 2 jobs run at once, the rest queue as `pending`; one
   sync/reclassify per source. Every active job has its own labeled Stop control (`Stop reclassify #11`)
-  in its source row and in the System tab job list (the header "N running" badge opens it);
+  in its source row and in the Settings → Status & logs job list (the header "N running" badge opens it);
   `POST /sources/jobs/{id}/cancel` does the same for agents. A queued job cancels at once. A running job
   stops at its next checkpoint (between documents, classify windows and finalize phases); an in-flight
   embed call is dropped (the built-in engine finishes its current 64-text group), so Stop lands within

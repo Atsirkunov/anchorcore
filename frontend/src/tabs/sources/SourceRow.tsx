@@ -33,12 +33,15 @@ export function SourceRow({
   config,
   jobs,
   onChanged,
+  onOpen,
 }: {
   source: Source;
   config: Record<string, string>;
   /** All pending/running jobs of this source, oldest first. */
   jobs: Job[];
   onChanged: () => void;
+  /** R49.9: opens the source's Library page (documents, images, jobs). */
+  onOpen?: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -109,7 +112,20 @@ export function SourceRow({
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 600 }}>
-            {source.name}
+            {onOpen ? (
+              <a
+                href={`#/library/${source.id}`}
+                onClick={(e) => {
+                  e.preventDefault();
+                  onOpen();
+                }}
+                style={{ color: theme.text }}
+              >
+                {source.name}
+              </a>
+            ) : (
+              source.name
+            )}
             {source.error_count > 0 && (
               <span
                 style={{

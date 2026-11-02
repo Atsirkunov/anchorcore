@@ -56,10 +56,10 @@ excluded by default (they are recomputed on the new device), so a
 | `project_id` | all | restrict the export to one project's sources |
 
 The response streams the archive with
-`Content-Disposition: attachment`. The same options drive the System tab card
+`Content-Disposition: attachment`. The same options drive the Settings → Backup & restore card
 and `anchorcore export` (CLI), so all three callers produce the same file.
 
-In the app: **System → Backup & restore → Export archive**. The passphrase
+In the app: **Settings → Backup & restore → Export archive**. The passphrase
 field only appears when you tick "Include source credentials", and the button
 stays disabled until you provide one.
 

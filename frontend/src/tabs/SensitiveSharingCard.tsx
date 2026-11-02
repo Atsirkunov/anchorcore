@@ -11,8 +11,9 @@ const ORDER: SharingDestinationId[] = ["embed", "answer", "agents"];
 /** R35.6: the "Sensitive sources" card — one switch per destination, off by
  * default, each naming what it allows. Changes apply at once (no Save) and
  * are audited server-side. `refreshKey` re-reads after the model settings
- * are saved (a new provider host closes its switch). */
-export function SensitiveSharingCard({ refreshKey }: { refreshKey: number }) {
+ * are saved (a new provider host closes its switch). `only` limits the card
+ * to some destinations (the Agents tab shows the agents switch, R49.9). */
+export function SensitiveSharingCard({ refreshKey, only }: { refreshKey: number; only?: SharingDestinationId[] }) {
   const [state, setState] = useState<SensitiveSharing | null>(null);
   const [busy, setBusy] = useState<SharingDestinationId | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -49,7 +50,7 @@ export function SensitiveSharingCard({ refreshKey }: { refreshKey: number }) {
         Each switch allows one destination to receive it. You see everything here either way.
       </div>
       {!state && !error && <div style={{ fontSize: 12, marginTop: 8 }}>Loading…</div>}
-      {state && ORDER.map((id) => <DestinationRow key={id} d={state[id]} busy={busy === id} onToggle={toggle} />)}
+      {state && ORDER.filter((id) => !only || only.includes(id)).map((id) => <DestinationRow key={id} d={state[id]} busy={busy === id} onToggle={toggle} />)}
       {error && <div style={{ color: theme.red, fontSize: 12, marginTop: 8 }}>{error}</div>}
     </div>
   );

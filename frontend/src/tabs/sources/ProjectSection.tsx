@@ -5,7 +5,7 @@ import { theme, commonStyles, radius } from "../../theme";
 import type { Source } from "../../types";
 
 /** B37: project create + per-source membership toggles (moved out of the
- * god SourcesTab). Consumes the shared ProjectsContext so there's exactly one
+ * god SourcesTab, now LibraryTab). Consumes the shared ProjectsContext so there's exactly one
  * /projects fetch. */
 export function ProjectSection({ sources, onChanged }: { sources: Source[]; onChanged: () => void }) {
   const { projects, refreshProjects } = useProjects();

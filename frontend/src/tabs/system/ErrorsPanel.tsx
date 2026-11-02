@@ -4,7 +4,7 @@ import { theme, radius } from "../../theme";
 import type { EventGroup, EventLevel, EventSummary } from "../../types";
 import { filterMatch, groupMatch, levelColor } from "./errorsMatch";
 
-// R47.2: the System tab's errors & warnings. Repeats fold into one row
+// R47.2: the Status & logs errors & warnings. Repeats fold into one row
 // (×N, first/last seen); Clear and per-row Dismiss only hide rows — the
 // events stay in the audit trail and come back under "Show dismissed".
 

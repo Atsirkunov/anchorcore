@@ -8,7 +8,7 @@ const MODES: { id: ThemeMode; label: string; title: string }[] = [
   { id: "dark", label: "Dark", title: "Always dark" },
 ];
 
-/** Header control: Auto / Light / Dark (see themeMode.ts). */
+/** Settings → Appearance: Auto / Light / Dark (see themeMode.ts; R49.8 moved it out of the header). */
 export function ThemeSwitch() {
   const [mode, setMode] = useState<ThemeMode>(readMode);
   const modeRef = useRef(mode);
@@ -42,7 +42,7 @@ export function ThemeSwitch() {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  group: { display: "inline-flex", marginLeft: "auto", border: `1px solid ${theme.border}`, borderRadius: radius },
+  group: { display: "inline-flex", border: `1px solid ${theme.border}`, borderRadius: radius },
   btn: {
     background: "none",
     border: "none",

@@ -48,7 +48,7 @@ export function AgentChannelStep({ mode }: { mode: LlmMode }) {
       {channel === "skill" && <SkillChannel />}
       {channel && (
         <div style={styles.hint}>
-          Use one channel per agent, not both: with MCP tools and the skill active, agents duplicate their work. Change it any time in System.
+          Use one channel per agent, not both: with MCP tools and the skill active, agents duplicate their work. Change it any time in Agents.
         </div>
       )}
     </div>

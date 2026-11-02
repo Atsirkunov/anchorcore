@@ -4,13 +4,15 @@ import { theme, radius } from "./theme";
 import type { McpClient, McpInfo } from "./types";
 
 /**
- * R20.9 — "Agent access (MCP)" card. Used by SystemTab and the onboarding
+ * R20.9 — "Agent access (MCP)" card. Used by AgentsTab and the onboarding
  * wizard: one-click Connect/Disconnect for detected clients, copy-paste
  * fallback for everything else.
  */
 export function McpConnectCard() {
   const [mcp, setMcp] = useState<McpInfo | null>(null);
   const [clients, setClients] = useState<McpClient[]>([]);
+  // R49.9: undetected agents fold into one line until asked for.
+  const [showAll, setShowAll] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [copied, setCopied] = useState<string | null>(null);
@@ -105,7 +107,7 @@ export function McpConnectCard() {
         <div style={{ fontSize: 12, color: theme.textMuted }}>Checking MCP mode…</div>
       ) : (
         <>
-          {clients.map((c) => (
+          {clients.filter((c) => showAll || c.detected || c.connected).map((c) => (
             <div key={c.id} style={styles.clientRow}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13 }}>
@@ -134,9 +136,12 @@ export function McpConnectCard() {
               )}
             </div>
           ))}
+          <MissingClients clients={clients} shown={showAll} onShow={() => setShowAll(true)} />
 
-          <div style={{ fontSize: 12, color: theme.textMuted, margin: "10px 0 4px" }}>
-            Manual setup: the exact command (runs this app in stdio MCP mode, no separate binary):
+          <details style={{ marginTop: 10 }}>
+          <summary style={styles.summary}>Manual setup (command / JSON)</summary>
+          <div style={{ fontSize: 12, color: theme.textMuted, margin: "6px 0 4px" }}>
+            The exact command (runs this app in stdio MCP mode, no separate binary):
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
             <code style={styles.code}>{claudeLine}</code>
@@ -158,6 +163,7 @@ export function McpConnectCard() {
               {copied === "ocjson" ? "Copied" : "Copy JSON"}
             </button>
           </details>
+          </details>
           <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>
             Read-only tools: search, ask, decisions, actions, documents, outlines and more. Every call is audited.
             {mcp.calls > 0 && (
@@ -169,6 +175,20 @@ export function McpConnectCard() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/** "Cursor · Codex not found on this computer (show)" — one line, not rows of disabled buttons. */
+function MissingClients({ clients, shown, onShow }: { clients: McpClient[]; shown: boolean; onShow: () => void }) {
+  const missing = clients.filter((c) => !c.detected && !c.connected);
+  if (shown || missing.length === 0) return null;
+  return (
+    <div style={{ fontSize: 12, color: theme.textDim, padding: "0.35rem 0" }}>
+      {missing.map((c) => c.name).join(" · ")} not found on this computer{" "}
+      <button onClick={onShow} style={{ background: "none", border: "none", padding: 0, color: theme.text, textDecoration: "underline", cursor: "pointer", fontSize: 12 }}>
+        show
+      </button>
     </div>
   );
 }

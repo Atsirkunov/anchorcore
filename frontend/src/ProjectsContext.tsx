@@ -4,7 +4,7 @@ import type { Project } from "./types";
 import { ProjectsContext } from "./useProjects";
 
 /** B37: single source of truth for the projects list. App.tsx (project picker)
- * and SourcesTab (project membership) previously fetched /projects separately;
+ * and LibraryTab (project membership) previously fetched /projects separately;
  * now both consume this context, invalidated on create/update/delete. */
 export function ProjectsProvider({ children }: { children: ReactNode }) {
   const [projects, setProjects] = useState<Project[]>([]);

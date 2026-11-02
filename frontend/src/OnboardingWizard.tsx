@@ -86,7 +86,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
             </div>
             <button
               onClick={onClose}
-              title="Skip the wizard. You can connect a source later in Sources"
+              title="Skip the wizard. You can connect a source later in the Library"
               style={{ ...styles.button, ...styles.ghost, flexShrink: 0 }}
             >
               Skip →

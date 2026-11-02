@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errMsg, RequestAbortedError } from "../api";
 import { theme, radius } from "../theme";
-import type { AskResponse, AskTurn } from "../types";
+import type { AskResponse, AskTurn, Project } from "../types";
 import { AnswerView, type AnswerTurn } from "./AnswerView";
 import { onlySampleSources, SAMPLE_QUESTIONS, startersFromRecords } from "../starters";
 
@@ -20,7 +20,20 @@ function pairs(turns: Turn[]): AnswerTurn[] {
   return out.reverse();
 }
 
-export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSources?: () => void }) {
+export function AskTab({
+  projectId,
+  projects = [],
+  onProject,
+  onGoSources,
+  onTour,
+}: {
+  projectId?: number;
+  /** R49.9: the project scope moved here from the header. */
+  projects?: Project[];
+  onProject?: (id: number | null) => void;
+  onGoSources?: () => void;
+  onTour?: () => void;
+}) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [question, setQuestion] = useState("");
   const [busy, setBusy] = useState(false);
@@ -118,13 +131,30 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
           </button>
         )}
       </div>
-      <label
-        style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: theme.textDim, marginTop: 8, cursor: "pointer" }}
-        title="Answer only from sources labelled 'public', safe to share"
-      >
-        <input type="checkbox" checked={publicOnly} onChange={(e) => setPublicOnly(e.target.checked)} />
-        Public only: answer from public sources (safe to share or give to agents)
-      </label>
+      <div style={styles.scopeRow}>
+        {projects.length > 0 && (
+          <label style={styles.scope}>
+            Search in
+            <select
+              value={projectId ?? ""}
+              onChange={(e) => onProject?.(e.target.value ? Number(e.target.value) : null)}
+              style={styles.scopeSelect}
+            >
+              <option value="">All sources</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                  {p.is_default ? " (default)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label style={{ ...styles.scope, cursor: "pointer" }} title="Answer only from sources labelled 'public', safe to share">
+          <input type="checkbox" checked={publicOnly} onChange={(e) => setPublicOnly(e.target.checked)} />
+          Public sources only
+        </label>
+      </div>
       {busy && (
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 16, color: theme.textMuted, fontSize: 13 }}>
           <span style={{ display: "inline-flex", gap: 5 }}>
@@ -184,9 +214,17 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
             <p style={{ margin: "8px 0 0", fontSize: 13, color: theme.textDim }}>
               No sources connected yet.{" "}
               <button onClick={onGoSources} style={styles.linkButton}>
-                connect a folder in Sources
+                Add a folder in the Library
               </button>{" "}
               (try <code>sample/</code>), then ask.
+            </p>
+          )}
+          {onTour && (
+            <p style={{ margin: "8px 0 0", fontSize: 13, color: theme.textDim }}>
+              New here?{" "}
+              <button onClick={onTour} style={styles.linkButton}>
+                Take the tour
+              </button>
             </p>
           )}
         </div>
@@ -227,6 +265,9 @@ const styles: Record<string, React.CSSProperties> = {
     animation: "spin 0.8s linear infinite",
     flexShrink: 0,
   },
+  scopeRow: { display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", marginTop: 8 },
+  scope: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: theme.textDim },
+  scopeSelect: { background: theme.bgCard, border: `1px solid ${theme.border}`, color: theme.text, borderRadius: radius, padding: "0.2rem 0.4rem", fontSize: 12, maxWidth: 200 },
   clearButton: {
     background: "none",
     border: `1px solid ${theme.border}`,
@@ -255,7 +296,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: "none",
     border: "none",
     padding: 0,
-    color: theme.accentAlt,
+    color: theme.text,
     textDecoration: "underline",
     cursor: "pointer",
     fontSize: 13,

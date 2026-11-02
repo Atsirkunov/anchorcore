@@ -58,7 +58,7 @@ function ReembedProgress({ jobIds }: { jobIds: number[] }) {
     <div style={{ fontSize: 12, marginTop: 6, color: failed ? theme.red : theme.textMuted }}>
       Re-embedding imported chunks: {done}/{jobIds.length} job(s)
       {total > 0 ? ` · ${processed}/${total} chunks` : " · queued"}
-      {failed ? ". A job failed (see System → Errors). Answers stay keyword-only for those chunks." : ""}
+      {failed ? ". A job failed (see Settings → Status & logs). Answers stay keyword-only for those chunks." : ""}
     </div>
   );
 }
@@ -236,7 +236,7 @@ export function BackupCard() {
             {report.needs_secret.length > 0 && (
               <div style={{ fontSize: 12, marginTop: 4 }}>
                 <div style={{ color: theme.amber }}>
-                  Credentials to re-enter ({report.needs_secret.length}), in the Sources tab:
+                  Credentials to re-enter ({report.needs_secret.length}), in the Library tab:
                 </div>
                 {report.needs_secret.map((s) => (
                   <div key={`${s.source_uid}:${s.field}`} style={{ color: theme.textMuted }}>

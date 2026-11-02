@@ -51,16 +51,21 @@ function mockApi() {
 }
 
 describe("McpConnectCard", () => {
-  it("lists clients with connected/detected/not-detected states", async () => {
+  it("lists detected clients and folds the rest into one line (R49.9)", async () => {
     mockApi();
     const host = await renderCard();
     expect(host.textContent).toContain("Claude Code");
     expect(host.textContent).toContain("connected");
     expect(host.textContent).toContain("Cursor");
     expect(host.textContent).toContain("detected");
-    expect(host.textContent).toContain("Claude Desktop");
-    expect(host.textContent).toContain("not detected");
+    expect(host.textContent).toContain("Claude Desktop not found on this computer");
+    expect(host.textContent).not.toContain("not detected");
     expect(host.textContent).toContain("2 calls audited");
+    const show = Array.from(host.querySelectorAll("button")).find((b) => b.textContent === "show")!;
+    await act(async () => {
+      show.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(host.textContent).toContain("not detected");
   });
 
   it("renders the exact CLI line and JSON snippets for copy-paste setup", async () => {
@@ -112,11 +117,10 @@ describe("McpConnectCard", () => {
     const connect = vi.spyOn(api, "mcpConnect").mockResolvedValue({ ok: true, method: "file", config_path: "/home/u/.cursor/mcp.json" });
     const host = await renderCard();
     const buttons = Array.from(host.querySelectorAll("button"));
-    // order: Disconnect (connected claude-code), Connect (cursor), Connect disabled (desktop)
+    // order: Disconnect (connected claude-code), Connect (cursor); desktop is folded behind "show"
     expect(buttons[0].textContent).toBe("Disconnect");
     expect(buttons[1].textContent).toBe("Connect");
-    expect(buttons[2].textContent).toBe("Connect");
-    expect(buttons[2].disabled).toBe(true);
+    expect(buttons[2].textContent).toBe("show");
     await act(async () => {
       buttons[1].dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
