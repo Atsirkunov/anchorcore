@@ -78,6 +78,15 @@ pub fn ct_eq(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
 }
 
+/// R48.12: a write whose failure must not stop the caller — audit/event rows,
+/// progress counters, tidy-ups, boot-time indexes — logged instead of ignored.
+/// Anything the operation's result depends on uses `?` instead.
+pub fn best_effort(what: &str, result: rusqlite::Result<usize>) {
+    if let Err(e) = result {
+        tracing::warn!(target: "anchorcore::db", "{what} failed: {e}");
+    }
+}
+
 /// R48.11: rows that fail to decode are skipped but logged — never dropped
 /// silently. For read paths where one bad row must not fail the whole list.
 pub fn logged_rows<T>(rows: impl Iterator<Item = rusqlite::Result<T>>) -> impl Iterator<Item = T> {

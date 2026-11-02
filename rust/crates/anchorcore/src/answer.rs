@@ -242,8 +242,8 @@ async fn record_degraded(data_dir: &str) {
     let _ = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         if let Ok(conn) = crate::db::init_db(&db_path) {
-            let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning','retrieval degraded to keyword-only','qa fallback')", []);
-            let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning','answer generation failed; returning matching context only','qa fallback')", []);
+            crate::common::best_effort("record_degraded", conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning','retrieval degraded to keyword-only','qa fallback')", []));
+            crate::common::best_effort("record_degraded", conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning','answer generation failed; returning matching context only','qa fallback')", []));
         }
     })
     .await;
@@ -258,7 +258,7 @@ pub(crate) async fn record_gate_event(data_dir: &str, blocked: &[String]) {
         if let Ok(conn) = crate::db::init_db(&db_path) {
             let msg = format!("answer gate: {} hit(s) excluded from a cloud answer provider or AI agent (Sensitive source or Sensitive-marked item)", blocked_len);
             let detail = format!("labels={:?}; allow it under Settings → Sensitive sources (or ANCHOR_CLOUD_TRUST=1)", labels);
-            let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning',?1,?2)", rusqlite::params![msg, detail]);
+            crate::common::best_effort("record_gate_event", conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning',?1,?2)", rusqlite::params![msg, detail]));
         }
     })
     .await;

@@ -457,10 +457,10 @@ pub fn upsert(conn: &Connection, row: &AssetRow) -> Result<bool, String> {
 
 fn warn_over_cap(conn: &Connection, source_id: i64, what: &str, size: u64, cap: u64) {
     tracing::warn!("asset over size cap ({what}): {size} bytes > {cap}");
-    let _ = conn.execute(
+    crate::common::best_effort("warn_over_cap", conn.execute(
         "INSERT INTO system_events (component, level, source_id, message, detail) VALUES ('pipeline','warning',?1,'asset over size cap',?2)",
         params![source_id, serde_json::json!({"asset": what, "size": size, "cap": cap}).to_string()],
-    );
+    ));
 }
 
 /// The hosting chunks of one item, in order: (chunk id, section id, path, content).

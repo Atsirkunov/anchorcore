@@ -339,10 +339,10 @@ fn record_backfill_event(data_dir: &str, pending: i64, err: &str) {
     let detail: String = err.chars().take(500).collect();
     let msg = format!("embedding backfill failed; {} chunks still pending", pending);
     let conn = crate::common::open_data_db(data_dir);
-    let _ = conn.execute(
+    crate::common::best_effort("record_backfill_event", conn.execute(
         "INSERT INTO system_events (component, level, message, detail) VALUES ('embedder','warning',?1,?2)",
         rusqlite::params![msg, detail],
-    );
+    ));
 }
 
 #[cfg(test)]

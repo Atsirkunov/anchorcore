@@ -301,13 +301,14 @@ impl SettingsService {
         Ok(())
     }
 
-    pub fn clear(&self, key: &str, conn: &Connection) {
+    pub fn clear(&self, key: &str, conn: &Connection) -> Result<(), String> {
         if SECRET_KEYS.contains(&key) {
             self.secrets.delete(&format!("{}{}", SECRET_PREFIX, key));
         } else {
-            let _ = conn.execute("DELETE FROM app_settings WHERE key = ?1", rusqlite::params![key]);
+            conn.execute("DELETE FROM app_settings WHERE key = ?1", rusqlite::params![key]).map_err(|e| e.to_string())?;
         }
         self.invalidate(key);
+        Ok(())
     }
 
     fn cached_get(&self, key: &str) -> Option<String> {
@@ -404,11 +405,11 @@ pub async fn put_handler(
     let data_dir = state.data_dir.clone();
     let settings = state.settings.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::common::open_db_path(&db_path);
+        let conn = crate::common::try_open_data_db(&data_dir)?;
+        // R48.12: a setting that fails to save is an error, not a 200 with the old value.
         for (k, v) in obj.iter() {
             if v.is_null() {
-                settings.clear(k, &conn);
+                settings.clear(k, &conn)?;
             } else {
                 let s = if let Some(s) = v.as_str() {
                     s.to_string()
@@ -418,13 +419,14 @@ pub async fn put_handler(
                 // trim quotes for JSON numbers/bools that were stringified with quotes?
                 // For numbers/bools, v.to_string() yields e.g. "true" without quotes, correct.
                 // For strings, we used as_str, so no extra quotes.
-                let _ = settings.set(k, &s, &conn);
+                settings.set(k, &s, &conn)?;
             }
         }
-        settings.snapshot(Some(&conn))
+        Ok::<_, String>(settings.snapshot(Some(&conn)))
     })
     .await
-    .unwrap();
+    .map_err(crate::common::db_err)?
+    .map_err(crate::common::db_err)?;
     Ok(Json(result))
 }
 

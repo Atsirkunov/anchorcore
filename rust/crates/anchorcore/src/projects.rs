@@ -144,31 +144,38 @@ pub async fn get_handler(State(state): State<AppState>, Path(project_id): Path<i
 
 pub async fn patch_handler(State(state): State<AppState>, Path(project_id): Path<i64>, Json(payload): Json<ProjectUpdate>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
-    tokio::task::spawn_blocking(move || {
-        let conn = crate::common::try_open_data_db(&data_dir).map_err(db_err)?;
-        read_project(&conn, project_id)?;
-        // R48.12: validate everything first, then one transaction.
-        let name = payload.name.map(|n| n.trim().to_string());
-        if name.as_deref() == Some("") {
-            return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"detail":"project name cannot be empty"}))));
-        }
-        let source_ids = payload.source_ids.map(|ids| checked_source_ids(&conn, &ids)).transpose()?;
-        let tx = conn.unchecked_transaction().map_err(db_err)?;
-        if let Some(name) = name {
-            tx.execute("UPDATE projects SET name = ?1 WHERE id = ?2", rusqlite::params![name, project_id]).map_err(db_err)?;
-        }
-        // `is_default: false` is a no-op: some project is always the default once one was picked.
-        if payload.is_default == Some(true) {
-            tx.execute("UPDATE projects SET is_default = (id = ?1)", [project_id]).map_err(db_err)?;
-        }
-        if let Some(ids) = source_ids {
-            set_project_sources(&tx, project_id, &ids)?;
-        }
-        tx.commit().map_err(db_err)?;
-        Ok(Json(read_project(&conn, project_id)?))
-    })
-    .await
-    .map_err(db_err)?
+    tokio::task::spawn_blocking(move || patch_project(&data_dir, project_id, payload))
+        .await
+        .map_err(db_err)?
+}
+
+/// R48.12: validate everything first, then one transaction.
+fn patch_project(data_dir: &str, project_id: i64, payload: ProjectUpdate) -> Result<Json<Value>, ApiError> {
+    let conn = crate::common::try_open_data_db(data_dir).map_err(db_err)?;
+    read_project(&conn, project_id)?;
+    let name = payload.name.map(|n| n.trim().to_string());
+    if name.as_deref() == Some("") {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"detail":"project name cannot be empty"}))));
+    }
+    let source_ids = payload.source_ids.map(|ids| checked_source_ids(&conn, &ids)).transpose()?;
+    let tx = conn.unchecked_transaction().map_err(db_err)?;
+    write_project_patch(&tx, project_id, name, payload.is_default == Some(true), source_ids)?;
+    tx.commit().map_err(db_err)?;
+    Ok(Json(read_project(&conn, project_id)?))
+}
+
+/// `make_default: false` is a no-op: some project is always the default once one was picked.
+fn write_project_patch(tx: &rusqlite::Connection, project_id: i64, name: Option<String>, make_default: bool, source_ids: Option<Vec<i64>>) -> Result<(), ApiError> {
+    if let Some(name) = name {
+        tx.execute("UPDATE projects SET name = ?1 WHERE id = ?2", rusqlite::params![name, project_id]).map_err(db_err)?;
+    }
+    if make_default {
+        tx.execute("UPDATE projects SET is_default = (id = ?1)", [project_id]).map_err(db_err)?;
+    }
+    if let Some(ids) = source_ids {
+        set_project_sources(tx, project_id, &ids)?;
+    }
+    Ok(())
 }
 
 pub async fn delete_handler(State(state): State<AppState>, Path(project_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {

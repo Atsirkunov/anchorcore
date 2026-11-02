@@ -59,12 +59,12 @@ fn window_hash(text: &str) -> String {
 
 fn record_sync_error(conn: &Connection, source_id: i64, err: &str) {
     let redacted = err.chars().take(1000).collect::<String>();
-    let _ = conn.execute("UPDATE sources SET last_error = ?1, error_count = COALESCE(error_count,0)+1 WHERE id = ?2", rusqlite::params![redacted, source_id]);
+    crate::common::best_effort("record_sync_error", conn.execute("UPDATE sources SET last_error = ?1, error_count = COALESCE(error_count,0)+1 WHERE id = ?2", rusqlite::params![redacted, source_id]));
     let msg = format!("sync failed for source {}", source_id);
-    let _ = conn.execute("INSERT INTO system_events (component, level, source_id, message, detail) VALUES ('pipeline','error',?1,?2,?3)", rusqlite::params![source_id, msg, redacted]);
+    crate::common::best_effort("record_sync_error", conn.execute("INSERT INTO system_events (component, level, source_id, message, detail) VALUES ('pipeline','error',?1,?2,?3)", rusqlite::params![source_id, msg, redacted]));
 }
 fn record_sync_success(conn: &Connection, source_id: i64) {
-    let _ = conn.execute("UPDATE sources SET last_error = NULL, error_count = 0, last_synced_at = datetime('now') WHERE id = ?1", [source_id]);
+    crate::common::best_effort("record_sync_success", conn.execute("UPDATE sources SET last_error = NULL, error_count = 0, last_synced_at = datetime('now') WHERE id = ?1", [source_id]));
 }
 
 /// Catcher visibility: a PDF whose repair pass strictly improved the text
@@ -72,10 +72,10 @@ fn record_sync_success(conn: &Connection, source_id: i64) {
 /// trip the detector without being extractable damage.
 async fn record_pdf_quality(data_dir: &str, source_id: i64, detail: String) {
     let _ = run_db(data_dir, move |conn| {
-        let _ = conn.execute(
+        crate::common::best_effort("record_pdf_quality", conn.execute(
             "INSERT INTO system_events (component, level, source_id, message, detail) VALUES ('pipeline','warning',?1,'pdf split-word repair',?2)",
             rusqlite::params![source_id, detail],
-        );
+        ));
         Ok::<(), String>(())
     })
     .await;
@@ -356,7 +356,7 @@ fn purge_missing_inner(
 async fn update_sync_progress(data_dir: &str, job_id: i64, processed: i64, items: i64, entities: i64, purged: i64, unchanged: i64) {
     let result = serde_json::json!({"items": items, "entities": entities, "purged": purged, "unchanged": unchanged}).to_string();
     let _ = run_db(data_dir, move |conn| {
-        let _ = conn.execute("UPDATE jobs SET processed=?1, result=?2 WHERE id=?3", rusqlite::params![processed, result, job_id]);
+        crate::common::best_effort("update_sync_progress", conn.execute("UPDATE jobs SET processed=?1, result=?2 WHERE id=?3", rusqlite::params![processed, result, job_id]));
         Ok(())
     })
     .await;
@@ -387,10 +387,10 @@ async fn load_fingerprints(data_dir: &str, source_id: i64) -> std::collections::
 /// columns untouched — only folder syncs set them).
 fn store_fingerprint(conn: &Connection, item_id: i64, fp: Option<(u64, u64)>) {
     if let Some((mtime_ms, len)) = fp {
-        let _ = conn.execute(
+        crate::common::best_effort("store_fingerprint", conn.execute(
             "UPDATE ingested_items SET file_mtime_ms=?1, file_size=?2 WHERE id=?3",
             rusqlite::params![mtime_ms as i64, len as i64, item_id],
-        );
+        ));
     }
 }
 
@@ -416,7 +416,7 @@ fn purge_item(conn: &Connection, item_id: i64) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
     }
-    let _ = conn.execute("DELETE FROM tags WHERE count <= 0", []);
+    crate::common::best_effort("drop unused tags", conn.execute("DELETE FROM tags WHERE count <= 0", []));
     Ok(())
 }
 
@@ -600,7 +600,7 @@ impl Pipeline {
         // processed/total instead of N/0 (finish_job no longer back-fills it).
         let total = processed;
         let _ = run_db(data_dir, move |conn| {
-            let _ = conn.execute("UPDATE jobs SET total=?1 WHERE id=?2", rusqlite::params![total, job_id]);
+            crate::common::best_effort("run_embed_missing", conn.execute("UPDATE jobs SET total=?1 WHERE id=?2", rusqlite::params![total, job_id]));
             Ok(())
         })
         .await;
@@ -672,7 +672,7 @@ impl Pipeline {
             Err(e) if e == "job cancelled" => {
                 // R9.1: cancelled stays cancelled, no error_count bump. The
                 // handler already stamped finished_at (the Stop time).
-                let _ = conn.execute("UPDATE jobs SET status='cancelled', finished_at=COALESCE(finished_at, datetime('now')), error='job cancelled' WHERE id=?1", [job_id]);
+                crate::common::best_effort("finish_job", conn.execute("UPDATE jobs SET status='cancelled', finished_at=COALESCE(finished_at, datetime('now')), error='job cancelled' WHERE id=?1", [job_id]));
                 log_cancel_landed(conn, job_id);
             }
             Err(e) => {
@@ -712,7 +712,7 @@ impl Pipeline {
         // update job total
         let total_docs = docs.len() as i64;
         run_db(data_dir, move |conn| {
-            let _ = conn.execute("UPDATE jobs SET total=?1 WHERE id=?2", rusqlite::params![total_docs, job_id]);
+            crate::common::best_effort("run_sync_inner", conn.execute("UPDATE jobs SET total=?1 WHERE id=?2", rusqlite::params![total_docs, job_id]));
             Ok(())
         }).await?;
         let mut created_items = 0i64;
@@ -761,7 +761,7 @@ impl Pipeline {
         let purged_items = purge_fetched_set(data_dir, source_id, fetched).await;
         let total = listed.len() as i64;
         run_db(data_dir, move |conn| {
-            let _ = conn.execute("UPDATE jobs SET total=?1 WHERE id=?2", rusqlite::params![total, job_id]);
+            crate::common::best_effort("run_folder_sync", conn.execute("UPDATE jobs SET total=?1 WHERE id=?2", rusqlite::params![total, job_id]));
             Ok(())
         }).await?;
         let known = if force_reclassify {
@@ -926,7 +926,7 @@ impl Pipeline {
                     store_fingerprint(conn, id, fp);
                     return Ok(false);
                 }
-                let _ = conn.execute("UPDATE ingested_items SET content_hash=?1, title=?2, author=?3, text=?4, stale=0 WHERE id=?5", rusqlite::params![digest, doc.title, doc.author, doc.text, id]);
+                conn.execute("UPDATE ingested_items SET content_hash=?1, title=?2, author=?3, text=?4, stale=0 WHERE id=?5", rusqlite::params![digest, doc.title, doc.author, doc.text, id]).map_err(|e| e.to_string())?;
                 Ok(true)
             } else {
                 conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale, created_at, uid) VALUES (?1,?2,?3,?4,?5,?6, 0, datetime('now'),?7)", rusqlite::params![source_id, doc.external_id, doc.title, doc.text, digest, doc.author, crate::db::new_uid()]).map_err(|e| e.to_string())?;
@@ -1527,17 +1527,14 @@ async fn delete_stale_entities(ctx: &ClassifyCtx, window_index: Option<i64>) -> 
             None => conn.prepare("SELECT id FROM entities WHERE item_id=?1").unwrap().query_map([item_id], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect(),
         };
         for eid in ids {
-            let _ = conn.execute("DELETE FROM relationships WHERE from_entity_id=?1 OR to_entity_id=?1", [eid]);
-            let _ = conn.execute("DELETE FROM merge_actions WHERE entity_a_id=?1 OR entity_b_id=?1", [eid]);
+            conn.execute("DELETE FROM relationships WHERE from_entity_id=?1 OR to_entity_id=?1", [eid]).map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM merge_actions WHERE entity_a_id=?1 OR entity_b_id=?1", [eid]).map_err(|e| e.to_string())?;
         }
         match window_index {
-            Some(index) => {
-                let _ = conn.execute("DELETE FROM entities WHERE item_id=?1 AND window_index=?2", rusqlite::params![item_id, index]);
-            }
-            None => {
-                let _ = conn.execute("DELETE FROM entities WHERE item_id=?1", [item_id]);
-            }
+            Some(index) => conn.execute("DELETE FROM entities WHERE item_id=?1 AND window_index=?2", rusqlite::params![item_id, index]),
+            None => conn.execute("DELETE FROM entities WHERE item_id=?1", [item_id]),
         }
+        .map_err(|e| e.to_string())?;
         Ok(())
     }).await
 }
@@ -1572,7 +1569,7 @@ async fn store_batch(ctx: &ClassifyCtx, items: Vec<crate::classifier::Classified
             conn.execute("INSERT INTO entities (item_id, kind, summary, reasoning, confidence, author, source_ref, window_text, window_index, status, owner, record_id, record_status, due, done, supersedes, superseded_by, created_at, updated_at, uid) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'unverified',?10,?11,?12,?13,?14,?15,?16,datetime('now'),datetime('now'),?17)", rusqlite::params![item_id, it.kind, it.summary, it.reasoning, it.confidence, it.author, it.source_ref, it.window_text, it.window_index, it.owner, r.record_id, r.record_status, r.due, r.done, r.supersedes, r.superseded_by, crate::db::new_uid()]).unwrap();
             let eid = conn.last_insert_rowid();
             for chunk_content in crate::chunking::chunk_text(&it.summary) {
-                let _ = conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content, created_at, uid) VALUES (?1,'entity',?2,?3,datetime('now'),?4)", rusqlite::params![eid, it.source_ref, chunk_content, crate::db::new_uid()]);
+                conn.execute("INSERT INTO chunks (entity_id, kind, source_ref, content, created_at, uid) VALUES (?1,'entity',?2,?3,datetime('now'),?4)", rusqlite::params![eid, it.source_ref, chunk_content, crate::db::new_uid()]).map_err(|e| e.to_string())?;
             }
         }
         Ok(())
@@ -1584,7 +1581,7 @@ async fn update_window_hashes(ctx: &ClassifyCtx) -> Result<(), String> {
     let item_id = ctx.item_id;
     let hashes = serde_json::to_string(&ctx.new_hashes).unwrap();
     run_db(&ctx.data_dir, move |conn| {
-        let _ = conn.execute("UPDATE ingested_items SET window_hashes=?1 WHERE id=?2", rusqlite::params![hashes, item_id]);
+        conn.execute("UPDATE ingested_items SET window_hashes=?1 WHERE id=?2", rusqlite::params![hashes, item_id]).map_err(|e| e.to_string())?;
         Ok(())
     }).await
 }
@@ -1739,11 +1736,14 @@ async fn store_doc_chunks(ctx: &ClassifyCtx) -> Result<VectorReuse, String> {
         let locked = std::time::Instant::now();
         // R46.12: a person's caption chunk is not the document's to drop;
         // `captions::refresh_for_item` re-points it after the rebuild.
-        let _ = conn.execute(
+        // R48.12: a failed delete must abort the rebuild — never old and new
+        // chunks side by side in one index.
+        conn.execute(
             "DELETE FROM chunks WHERE item_id=?1 AND entity_id IS NULL AND kind <> 'caption'",
             [item_id],
-        );
-        let _ = conn.execute("DELETE FROM sections WHERE item_id=?1", [item_id]);
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM sections WHERE item_id=?1", [item_id]).map_err(|e| e.to_string())?;
         let section_ids = insert_sections(conn, item_id, &metas)?;
         insert_doc_chunks(conn, item_id, &base_ref, &chunk_metas, &section_ids, &reuse)?;
         rechunk::stamp_chunker_version(conn, item_id, &filename)?;
@@ -1904,10 +1904,10 @@ async fn note_marked_embed_skips(data_dir: &str, source_id: i64, item_id: Option
         if pending > 0 {
             let msg = format!("embed gate: {pending} chunk(s) of Sensitive-marked items kept from the cloud embedder");
             let detail = "item_sensitive; allow the cloud embedder under Settings → Sensitive sources (or ANCHOR_TRUSTED_PROVIDERS / ANCHOR_CLOUD_TRUST=1)";
-            let _ = conn.execute(
+            crate::common::best_effort("note_marked_embed_skips", conn.execute(
                 "INSERT INTO system_events (component, level, source_id, message, detail) VALUES ('embed','warning',?1,?2,?3)",
                 rusqlite::params![source_id, msg, detail],
-            );
+            ));
         }
         Ok(())
     })
@@ -1968,8 +1968,9 @@ async fn embed_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
     let embedder = ctx.embedder.clone();
     run_db(&ctx.data_dir, move |conn| {
         for (cid, blob) in &updates {
-            let _ = conn.execute("UPDATE chunks SET embedding=?1 WHERE id=?2", rusqlite::params![blob, cid]);
-            let _ = embedder.sync_vec(conn, *cid, blob);
+            // R48.12: a vector without its family stamp is never searched — both or an error.
+            conn.execute("UPDATE chunks SET embedding=?1 WHERE id=?2", rusqlite::params![blob, cid]).map_err(|e| e.to_string())?;
+            embedder.sync_vec(conn, *cid, blob)?;
         }
         Ok(())
     })

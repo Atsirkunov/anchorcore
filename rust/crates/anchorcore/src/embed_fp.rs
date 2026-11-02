@@ -102,10 +102,10 @@ pub fn record_active_fingerprint(conn: &Connection, fp: &str) -> Result<bool, St
     }
     let msg = format!("embedding model changed ({prev} -> {fp}); older vectors are keyword-only until re-embedded");
     tracing::warn!("{}", msg);
-    let _ = conn.execute(
+    crate::common::best_effort("record_active_fingerprint", conn.execute(
         "INSERT INTO system_events (component, level, message, detail) VALUES ('embedder','warning',?1,'')",
         [msg],
-    );
+    ));
     Ok(true)
 }
 

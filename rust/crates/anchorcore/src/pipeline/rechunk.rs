@@ -62,9 +62,9 @@ pub fn rechunk_outdated_items(conn: &Connection) -> Result<usize, String> {
     if done > 0 {
         tracing::info!("R36.2: re-chunked {} item(s) to the current chunker generation", done);
         let detail = format!(r#"{{"rechunked":{done},"outdated":{outdated}}}"#);
-        let _ = conn.execute(
-            "INSERT INTO system_events (component, level, message, detail) VALUES ('migration', 'info', 'R36.2 chunker upgrade', ?1)",
-            [detail],
+        crate::common::best_effort(
+            "chunker upgrade event",
+            conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('migration', 'info', 'R36.2 chunker upgrade', ?1)", [detail]),
         );
     }
     Ok(done)
@@ -132,8 +132,9 @@ struct Plan<'a> {
 /// The transaction body: the `store_doc_chunks` rebuild, then the finalize
 /// phases that read the new sections (captions, summaries, tags).
 fn replace_item_chunks(conn: &Connection, item: &Outdated, plan: &Plan) -> Result<(), String> {
-    let _ = conn.execute("DELETE FROM chunks WHERE item_id=?1 AND entity_id IS NULL AND kind <> 'caption'", [item.id]);
-    let _ = conn.execute("DELETE FROM sections WHERE item_id=?1", [item.id]);
+    // R48.12: as in `store_doc_chunks` — a failed delete aborts, never two granularities.
+    conn.execute("DELETE FROM chunks WHERE item_id=?1 AND entity_id IS NULL AND kind <> 'caption'", [item.id]).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM sections WHERE item_id=?1", [item.id]).map_err(|e| e.to_string())?;
     let section_ids = insert_sections(conn, item.id, plan.metas)?;
     insert_doc_chunks(conn, item.id, plan.base_ref, plan.chunk_metas, &section_ids, plan.reuse)?;
     stamp_chunker_version(conn, item.id, &item.external_id)?;
