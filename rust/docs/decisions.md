@@ -4,6 +4,51 @@ ADR log. Append newest first.
 
 ---
 
+## 2026-11-02 — Owner (UX proposal ⚑5): dark mode is a cool black with a desaturated oxblood
+
+* **Decision:** dark tokens move from warm black to neutral/slightly cool: `--ac-bg` `#17171A`, `--ac-bg-card` `#1F1F23` (elevated and hover follow the same hue), dark `--ac-cite` `#CC8A80`. Measured contrast of `#CC8A80`: 5.88:1 on `#1F1F23`, 6.40:1 on `#17171A` (WCAG AA 4.5:1). App `theme.css` and `website/src/style.css` change in the same commit (design-system rule 5).
+* **Context:** the audit found warm black + cream text + salmon `#E39A8F` reads as a generic AI tool; light mode's intent is "cool paper", and dark did not follow it.
+* **Alternatives considered:** *neutral black, salmon kept* — rejected: 7.3:1 but no longer reads as oxblood; *keep the warm set and rely on the site's Light default* — rejected: app users in dark mode still see it.
+* **Consequences:** Wave 2 (R49.7). Every dark token pair is re-checked with a contrast script before shipping, not only `cite`. Source: `docs/ux-audit-2026-11.md`, `docs/ux-proposal-2026-11.md` (§2, §3.1, §4.1, §6).
+
+---
+
+## 2026-11-02 — Owner (UX proposal ⚑4): app tabs are Ask · Library · Records · Agents · Settings
+
+* **Decision:** Sources becomes **Library** (sources list → source detail, Add source in a drawer, jobs, projects). A new **Agents** tab holds MCP setup, agent skills and the "AI agents" sharing switch. **System folds into Settings** as a left rail (Answers · Search · Sensitive sharing · Glossary · Backup · Updates · Status & logs · Appearance · Advanced). **Glossary moves from Records to Settings**; Records keeps Decisions and Actions. The project picker moves from the header into Ask. Every tab and Settings section gets a hash route (`#/library`, `#/settings/answers`); old `#/sources` / `#/system` hashes redirect.
+* **Context:** the site sells two equal paths ("your agent writes it" / "a local model writes it") while agent setup was buried in System; Settings and System split topics (updates, embeddings) across two tabs.
+* **Alternatives considered:** *add Agents only* — rejected: leaves the Settings/System duplication; *keep current tabs* — rejected: the audit's navigation findings stay.
+* **Consequences:** Wave 3 (R49.9). No API change; `/glossary` and every endpoint stay. The header keeps only brand, tabs and the status dot (R49.3), which then links to Settings → Status & logs. Source: `docs/ux-audit-2026-11.md`, `docs/ux-proposal-2026-11.md` (§2, §3.1, §4.1, §6).
+
+---
+
+## 2026-11-02 — Owner (UX proposal ⚑3): no `§` counters on the marketing site
+
+* **Decision:** drop the CSS `§1–§8` heading counters (`main{counter-reset:sec}`) and the mono eyebrow pills on the website. `§` stays in citations, where it names a real section (`runbook.md §2`).
+* **Context:** partly reverses `871c8df` (Archive, 2026-10-22). Numbering marketing sections borrowed the "filed document" look without meaning anything; in citations the mark is information.
+* **Alternatives considered:** *keep the counters as a brand mark* — rejected: they compete with the citation `§`, which is the brand's actual claim.
+* **Consequences:** Wave 4 (R49.10), with the 8 → 6 section restructure. Source: `docs/ux-audit-2026-11.md`, `docs/ux-proposal-2026-11.md` (§2, §3.1, §4.1, §6).
+
+---
+
+## 2026-11-02 — Owner (UX proposal ⚑2): the website defaults to Light; the app's theme switch moves to Settings
+
+* **Decision:** anchorcore.dev opens in Light; Auto and Dark are offered in the footer and remembered per visitor. The app keeps Auto as its default, but its theme switch leaves the header for Settings → Appearance.
+* **Context:** the site is the brand's "filed document" and should show the designed palette first; following the OS showed most developer visitors the dark set first.
+* **Alternatives considered:** *Light default, app switch stays in the header* — rejected: the header is being reduced to tabs + status; *Auto everywhere* — rejected: the first impression depends on the visitor's OS.
+* **Consequences:** website change in Wave 2 (R49.7); the app switch moves with the Settings rail (R49.9) — until then it stays in the header. Source: `docs/ux-audit-2026-11.md`, `docs/ux-proposal-2026-11.md` (§2, §3.1, §4.1, §6).
+
+---
+
+## 2026-11-02 — Owner (UX proposal ⚑1): oxblood means "this is sourced" — links are ink
+
+* **Decision:** design-system rule 2 changes: oxblood (`--ac-cite`) is for citations only (`[S1]` marks, source ids, the active citation card, the brand mark). Links are ink with an underline, oxblood on hover. Step numbers, eyebrows and the active tab go ink / `--ac-text-dim`.
+* **Context:** the Archive palette (R45.15 + `871c8df`, 2026-10-22) made oxblood the sourced signal but also allowed it on links, `§` marks and selected state, so on a busy page it stopped meaning anything. Archive itself never got a decisions entry: its rationale (ink on cool paper, IBM Plex self-hosted for the no-third-parties promise, 2 px radius, no emoji or stripes) lives in `docs/design-system.md` and the 2026-10-22 handover, and stays in force.
+* **Alternatives considered:** *keep oxblood links, cut it only from step numbers and eyebrows* — rejected: links are the most frequent oxblood on both site and app.
+* **Consequences:** Wave 2 (R49.7) edits `theme.css`, `website/src/style.css` and `docs/design-system.md` rule 2 in the same commit. Source: `docs/ux-audit-2026-11.md`, `docs/ux-proposal-2026-11.md` (§2, §3.1, §4.1, §6).
+
+---
+
 ## 2026-11-02 — R49.1/R49.3: Ask keeps its conversation by staying mounted; model health is a dot, not a banner
 
 * **Decision:** Ask stays mounted (hidden when another tab is open); the other tabs keep conditional rendering. The open tab lives in the URL hash (`#/sources`), not component state. Model-health issues move from the red app banner to a header status dot plus one dismissible line on Ask; the banner is kept for sources whose sync keeps failing.

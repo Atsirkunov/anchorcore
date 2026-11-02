@@ -37,7 +37,7 @@ Mockup boards: Ask (answer + collapsed history) · Ask without an answer model (
 - Deliberate choices kept: newest-first Ask (design-system §4) — collapse older pairs instead of reversing; serif answer text; R44.9 hero line; quote-only Team pricing (R44.16).
 - `AGENTS.md` owner decisions (model-free ingest, people-owned vocabulary/captions, one Sensitive concept, two answer modes, manual-first updates) are untouched by every proposal.
 
-## 5. Owner calls pending (need a `rust/docs/decisions.md` entry each before shipping)
+## 5. Owner calls — decided 2026-11-02, all as proposed (entries in `rust/docs/decisions.md`; Wave 1 shipped as R49.1–R49.6, Waves 2–4 are R49.7–R49.10)
 
 1. Links in ink; oxblood for citations only (changes design-system rule 2).
 2. Website defaults to Light (app stays Auto; theme switch moves to Settings → Appearance / site footer).
