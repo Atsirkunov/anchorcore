@@ -55,32 +55,52 @@
   </header>
 
   <main>
-    <!-- Hero: headline, one sentence, one button, the demo. Everything else lives lower (R44.16 personal copy only) -->
-    <section class="hero">
-      <div class="wrap hero-grid">
-        <div>
-          <p class="eyebrow">Private AI search · runs on your computer</p>
-          <h1 id="hero-title">Ask your files. Get the answer and the <span class="cited">exact source</span>.</h1>
-          <p id="hero-sub" class="sub">Connect folders, Drive, Jira or Linear and ask in plain language. AnchorCore finds the decision, who made it and why, and shows the page it came from.</p>
-          <div class="cta">
-            <a id="cta-primary" class="btn primary" href="#download">Download, free for personal use</a>
-            <a class="btn secondary" href="#use">For coding agents</a>
-          </div>
-          <ul class="hero-points">
-            <li>One download, no Docker, no account</li>
-            <li>Every answer cites the file, section and lines</li>
-            <li>Your index stays on your machine</li>
-          </ul>
+    <!-- Hero: line-art band (src/heroArt.ts), headline, one button, proof points, then the demo with one tab per audience.
+         Without JS the band is empty and the agent panel shows; the other panels stay in the DOM. -->
+    <section class="hero hero-home">
+      <div class="hero-art" aria-hidden="true"><svg id="hero-neurons" preserveAspectRatio="xMidYMid slice"></svg></div>
+      <div class="wrap hero-center">
+        <p class="eyebrow-plain">Private AI search · runs on your computer</p>
+        <h1 id="hero-title">Ask your data.<span class="l2"> Get the answer and its <span class="cited">exact source</span>.</span></h1>
+        <p id="hero-sub" class="sub">Connect folders, Drive, Jira or Linear and ask in plain language. AnchorCore finds the decision, who made it and why.</p>
+        <div class="cta">
+          <a id="cta-primary" class="btn primary" href="#download">Download, free for personal use</a>
         </div>
+        <ul class="facts">
+          <li><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="5" width="15" height="10" rx="1.5"/><path d="M2.5 11h15"/><circle cx="14" cy="13" r=".6" class="f"/></svg>Your index stays on your machine</li>
+          <li><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 3.5h7l3 3v10H5z"/><path d="M12 3.5v3h3"/><path d="M7.5 10h5M7.5 13h3" class="hot"/></svg>Every answer cites file, section and lines</li>
+          <li><svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v9M6.5 8.5 10 12l3.5-3.5"/><path d="M3.5 13v3.5h13V13"/></svg>macOS, Windows, Linux · no Docker, no account</li>
+        </ul>
+      </div>
 
-        <!-- Same question, two answer modes (Settings → Who writes the answers). Without JS the agent panel shows and the app panel stays in the DOM. -->
+      <!-- Same question, three ways to use the answer. The agent and app panels are the two answer modes (Settings → Who writes the answers). -->
+      <div class="wrap hero-demo">
         <div class="demo-switch">
-          <div class="tabs" role="tablist" aria-label="Who writes the answer">
-            <button type="button" role="tab" id="tab-term" aria-controls="panel-term" aria-selected="true">Your agent writes it</button>
-            <button type="button" role="tab" id="tab-app" aria-controls="panel-app" aria-selected="false" tabindex="-1">A local model writes it</button>
+          <div class="for" role="tablist" aria-label="Where the answer goes">
+            <button type="button" class="for-item" role="tab" id="tab-term" aria-controls="panel-term" aria-selected="true"><svg class="ic lg" viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="1.5"/><path d="M5.5 8l2.5 2-2.5 2M10 12.5h4"/></svg><span><b><span class="fy">For your </span>agents</b><small>Claude Code, Codex, Cursor over MCP</small></span></button>
+            <button type="button" class="for-item" role="tab" id="tab-app" aria-controls="panel-app" aria-selected="false" tabindex="-1"><svg class="ic lg" viewBox="0 0 20 20" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1"/><rect x="8" y="8" width="4" height="4" class="hot"/><path d="M8 2.5v3M12 2.5v3M8 14.5v3M12 14.5v3M2.5 8h3M2.5 12h3M14.5 8h3M14.5 12h3"/></svg><span><b><span class="fy">For your </span>local LLM</b><small>Ollama writes the answer, nothing leaves</small></span></button>
+            <button type="button" class="for-item" role="tab" id="tab-api" aria-controls="panel-api" aria-selected="false" tabindex="-1"><svg class="ic lg" viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3.5c-2 0-2.5 1-2.5 2.5v2c0 1-.6 2-1.5 2 .9 0 1.5 1 1.5 2v2c0 1.5.5 2.5 2.5 2.5M13 3.5c2 0 2.5 1 2.5 2.5v2c0 1 .6 2 1.5 2-.9 0-1.5 1-1.5 2v2c0 1.5-.5 2.5-2.5 2.5"/><circle cx="10" cy="10" r=".9" class="f hot"/></svg><span><b><span class="fy">For your </span>own apps</b><small>The same search over a local HTTP API</small></span></button>
           </div>
           <div role="tabpanel" id="panel-term" aria-labelledby="tab-term">
             <div class="shot cs" id="cs-hero"><!--session:cs-hero--></div>
+          </div>
+          <div role="tabpanel" id="panel-api" aria-labelledby="tab-api" hidden>
+            <!-- Trimmed example on the sample/ folder: real /qa/search field names, values from sample/ (lines match the app card's S1/S2). -->
+            <div class="api">
+              <div class="api-bar"><span>your app → 127.0.0.1:8000</span><span>REST · JSON</span></div>
+              <pre class="api-req"><span class="v">POST</span> /qa/search
+{"query": "billing provider migration rollback", "limit": 2}</pre>
+              <pre class="api-res"><span class="ok">200 OK</span>
+{"hits": [
+  {"path": <span class="c">"specs/billing-migration-runbook.md"</span>,
+   "breadcrumb": "Runbook: Billing provider migration › Steps",
+   "line_start": <span class="c">6</span>, "line_end": <span class="c">20</span>,
+   "provenance": [{"leg": "keyword", "rank": 1}, {"leg": "vector", "rank": 1}]},
+  {"path": <span class="c">"decisions/d2-billing-provider-approval.md"</span>,
+   "line_start": <span class="c">1</span>, "line_end": <span class="c">18</span>, …}
+]}</pre>
+              <div class="api-foot">trimmed example on the sample folder · the same search your agents call · <a href="/guides/http-api">HTTP API guide</a></div>
+            </div>
           </div>
           <div role="tabpanel" id="panel-app" aria-labelledby="tab-app" hidden>
             <!-- Browser-app card (final frame is real HTML; AppSession.ts only reveals it). The answer is

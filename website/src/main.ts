@@ -3,6 +3,7 @@ import { initAppSession } from "./components/AppSession";
 import { initEmailCapture } from "./capture";
 import { initNavMenu } from "./nav";
 import { initThemeSwitch } from "./themeMode";
+import { initHeroArt } from "./heroArt";
 
 // Direct download assets (release.yml — keep these file names in sync).
 const WIN_ZIP = "https://github.com/Atsirkunov/anchorcore/releases/latest/download/AnchorCore-windows.zip";
@@ -162,8 +163,8 @@ function initSkillCopy(): void {
   });
 }
 
-// Hero demo: one question, two places to ask it (coding agent | browser app).
-// Without JS the agent panel shows; the app panel stays in the DOM, hidden.
+// Hero demo: one question, three ways to use the answer (coding agent | local model | HTTP API).
+// Without JS the agent panel shows; the other panels stay in the DOM, hidden.
 function initDemoTabs(onShow: Record<string, () => void>): void {
   const tabs = [...document.querySelectorAll<HTMLButtonElement>(".demo-switch [role=tab]")];
   const select = (tab: HTMLButtonElement, focus: boolean): void => {
@@ -192,5 +193,6 @@ initHashNav();
 initNavMenu();
 initThemeSwitch();
 initSkillCopy();
+initHeroArt("hero-neurons");
 initClaudeSession("cs-hero");
 initDemoTabs({ "panel-app": initAppSession("ap-hero") });

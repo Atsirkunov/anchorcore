@@ -18,6 +18,12 @@
     "description": "Point AnchorCore at a JSON list API, map its fields once, preview five records, and sync. No per-integration code; items are cited as rest:<id>."
   },
   {
+    "slug": "http-api",
+    "source": "docs/guides/http-api.md",
+    "title": "Search AnchorCore from your own app",
+    "description": "Call AnchorCore's local HTTP API from scripts and internal tools: ranked search hits with file, section and line range, plus reads, decisions and action items."
+  },
+  {
     "slug": "ai-startup",
     "source": "docs/sample-ai.md",
     "title": "Try the AnchorCore AI startup sample",

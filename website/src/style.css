@@ -105,6 +105,70 @@ a.btn,a.nav-cta,a.brand{text-decoration:none}
 .hero-points li::before{content:"✓";position:absolute;left:2px;color:var(--ink);font-weight:700}
 .eyebrow{display:inline-block;margin:0;padding:2px 8px;border:1px solid var(--border2);font-family:var(--sans);font-weight:600;font-size:var(--fs-cap);color:var(--dim)}
 h1{font-family:var(--serif);font-weight:500;letter-spacing:-0.015em;line-height:1.08;font-size:var(--fs-display);margin:20px 0 20px;max-width:clamp(560px,44vw,820px)}
+/* Home hero: line-art band (src/heroArt.ts) · centred copy · proof points · one demo tab per audience */
+.hero.hero-home{padding:0 0 var(--pad-sec)}
+.hero-home .hero-art{margin:0 calc(50% - 50vw);height:clamp(170px,17vw,250px);overflow:hidden;-webkit-mask-image:linear-gradient(to bottom,#000 55%,transparent 100%);mask-image:linear-gradient(to bottom,#000 55%,transparent 100%)}
+.hero-home .hero-art svg{display:block;width:100%;height:100%}
+.hero-center{text-align:center}
+.eyebrow-plain{margin:0;color:var(--cite);font-weight:600;font-size:var(--fs-body)}
+.hero-center h1{margin:10px auto;max-width:none;text-wrap:balance;font-size:clamp(34px,calc(18px + 1.8vw),52px)}
+.hero-center h1 .l2{display:block}
+.hero-center .sub{margin:0 auto 20px;max-width:620px}
+.hero-center .cta{justify-content:center}
+.ic{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
+.ic.lg{width:22px;height:22px;stroke-width:1.3}
+.ic .hot{stroke:var(--cite)}
+.ic .f{fill:currentColor}
+.ic .f.hot{fill:var(--cite)}
+.facts{list-style:none;margin:16px 0 0;padding:0;display:flex;flex-wrap:wrap;justify-content:center;gap:6px 22px;font-size:var(--fs-cap);color:var(--dim)}
+.facts li{display:flex;align-items:center;gap:7px}
+.hero-demo .demo-switch{max-width:var(--wrap-narrow);margin:24px auto 0}
+.for{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid var(--border);border-bottom:1px solid var(--ink)}
+.for-item{display:flex;gap:12px;align-items:flex-start;padding:14px 16px 16px;border:0;background:none;font:inherit;color:var(--dim);text-align:left;cursor:pointer;position:relative;min-height:44px}
+.for-item+.for-item{box-shadow:-1px 0 0 var(--border)}
+.for-item .ic{margin-top:1px}
+.for-item b{display:block;font-size:var(--fs-body);color:var(--ink-h)}
+.for-item small{display:block;margin-top:2px;font-size:var(--fs-cap);color:var(--dim);line-height:1.4}
+.for-item:hover{background:var(--surface)}
+.for-item[aria-selected=true]{background:var(--term-bg);color:var(--ink)}
+.for-item[aria-selected=true]::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:3px;background:var(--cite)}
+.for-item:focus-visible{outline:2px solid var(--cite);outline-offset:-2px}
+.api{background:var(--term-bg);font:13px/1.6 var(--mono);color:var(--term-fg)}
+.api-bar{display:flex;justify-content:space-between;padding:10px 14px;background:var(--term-bar);border-bottom:1px solid var(--term-border);color:var(--term-dim)}
+.api pre{margin:0;padding:14px 16px;white-space:pre-wrap;word-break:break-word;font:inherit}
+.api-req{border-bottom:1px dashed var(--term-border)}
+.api .v{color:var(--term-accent);font-weight:600}
+.api .ok{color:var(--term-ok);font-weight:600}
+.api .c{color:var(--term-accent)}
+.api-foot{padding:10px 14px;border-top:1px solid var(--term-border);color:var(--term-dim);font-size:12px}
+.api-foot a{color:inherit}
+/* neuron band ink: tissue in muted greys, the one search in cite red */
+.lx-faint{fill:none;stroke:var(--muted)}
+.lx-body{fill:var(--term-panel);stroke:var(--dim);stroke-width:1}
+.lx-dot{fill:var(--cite)}
+.lx-label{font:600 12px var(--mono);fill:var(--cite);paint-order:stroke;stroke:var(--paper);stroke-width:5px;stroke-linejoin:round}
+.nx-route{fill:none;stroke:var(--cite);stroke-width:1.7;stroke-linecap:round}
+.nx-halo{fill:none;stroke:var(--paper);stroke-width:6;opacity:.8}
+.nx-lead{fill:none;stroke:var(--ink);stroke-width:1.1;opacity:.5}
+.nx-miss{opacity:.8}
+.nx-miss circle{fill:var(--paper);stroke:var(--ink);stroke-width:1.1}
+.nx-miss path{fill:none;stroke:var(--ink);stroke-width:1.3;stroke-linecap:round}
+.nx-node{fill:var(--paper);stroke:var(--dim);stroke-width:1.2;transition:fill .25s,stroke .25s}
+.nx-node.on{fill:var(--cite);stroke:var(--cite)}
+.nx-word{font:12px var(--mono);fill:var(--faint);paint-order:stroke;stroke:var(--paper);stroke-linejoin:round;transition:fill .25s}
+.nx-word.on{fill:var(--cite);font-weight:600}
+.nx-bang line{stroke:var(--cite);stroke-width:1.6;stroke-linecap:round}
+.nx-ring{fill:none;stroke:var(--cite);stroke-width:1.2}
+.nx-core{fill:var(--cite)}
+.nx-bang,.nx-hit{opacity:0}
+.hero-art .nx-word,.hero-art .lx-label{font-size:var(--lx-fs,12px);stroke-width:calc(var(--lx-fs,12px) * .42)}
+@media(max-width:720px){
+  .for-item{flex-direction:column;align-items:center;gap:6px;padding:12px 6px 14px;text-align:center}
+  .for-item small,.for-item .fy{display:none}
+  .for-item b{font-size:var(--fs-cap)}
+}
+@media(max-width:640px){.hero-home .hero-art{height:auto;aspect-ratio:860/300}}
+@media(min-width:1600px){.hero.hero-home{display:block;min-height:0}}
 .sub{color:var(--dim);font-size:var(--fs-lg);margin:0 0 28px;max-width:clamp(520px,34vw,700px);line-height:1.65}
 .cta{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 8px}
 .btn{display:inline-block;padding:10px 16px;border-radius:var(--radius);font-weight:600;font-size:var(--fs-body);text-decoration:none;cursor:pointer;border:1px solid transparent}
@@ -383,10 +447,6 @@ code{background:var(--paper2);border:1px solid var(--border);border-radius:var(-
 
 /* Hero demo switch (agent | app) — one frame, one offset shadow on the page */
 .demo-switch{min-width:0}
-.tabs{display:flex;gap:0;border-bottom:1px solid var(--ink)}
-.tabs [role=tab]{padding:10px 14px;border:1px solid transparent;border-bottom:0;background:none;font:inherit;font-size:var(--fs-cap);font-weight:600;color:var(--dim);cursor:pointer;margin-bottom:-1px;min-height:44px}
-.tabs [role=tab][aria-selected=true]{color:var(--ink);background:var(--term-bg);border-color:var(--ink)}
-.tabs [role=tab]:hover{color:var(--ink)}
 .demo-switch [role=tabpanel]>*{border:1px solid var(--ink);border-top:0;box-shadow:6px 6px 0 var(--shadow-ink)}
 /* Browser-app card (AppSession.ts) — the app's Ask screen drawn in page tokens.
    Final frame is the default; .ap-playing hides parts without changing layout. */
