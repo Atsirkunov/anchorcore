@@ -51,7 +51,7 @@ export function SettingsTab({
           </a>
         ))}
       </nav>
-      <section style={{ flex: "1 1 420px", minWidth: 0 }}>
+      <section style={{ flex: "1 1 520px", minWidth: 0 }}>
         <h2 style={{ marginTop: 0 }}>{title}</h2>
         <SectionBody section={section} onSection={onSection} onTour={onTour} focusJobs={focusJobs} />
       </section>
@@ -75,7 +75,7 @@ function SectionBody({ section, onSection, onTour, focusJobs }: {
     case "appearance":
       return (
         <div>
-          <p style={{ margin: "0 0 10px", fontSize: 13, color: theme.textMuted }}>
+          <p style={{ margin: "0 0 10px", fontSize: 15, color: theme.textMuted }}>
             Auto follows your computer's light or dark setting.
           </p>
           <ThemeSwitch />
@@ -99,9 +99,9 @@ function SectionBody({ section, onSection, onTour, focusJobs }: {
 
 const styles: Record<string, React.CSSProperties> = {
   // flex-wrap: on a phone the rail sits above the section instead of squeezing it
-  layout: { display: "flex", flexWrap: "wrap", gap: 32, alignItems: "flex-start" },
-  rail: { flex: "0 0 170px", display: "flex", flexDirection: "column", gap: 2 },
-  railItem: { padding: "0.35rem 0.6rem", borderRadius: radius, color: theme.textMuted, textDecoration: "none", fontSize: 14 },
+  layout: { display: "flex", flexWrap: "wrap", gap: 48, alignItems: "flex-start" },
+  rail: { flex: "0 0 210px", display: "flex", flexDirection: "column", gap: 2 },
+  railItem: { padding: "0.55rem 0.8rem", borderRadius: radius, color: theme.textMuted, textDecoration: "none", fontSize: 16 },
   railActive: { background: theme.bgHover, color: theme.text, fontWeight: 600 },
-  button: { padding: "0.5rem 1rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.buttonBg, color: theme.text, cursor: "pointer", fontSize: 13 },
+  button: { padding: "0.5rem 1rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.buttonBg, color: theme.text, cursor: "pointer", fontSize: 15 },
 };

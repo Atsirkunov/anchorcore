@@ -82,7 +82,7 @@ export function StatusSection({ onConfigure, focusJobs }: { onConfigure?: () => 
             <div>version {status.version}</div>
             {/* The server masks the path as "redacted"; never print that as data. */}
             {status.database && status.database !== "redacted" ? (
-              <div style={{ fontSize: 12, color: theme.textMuted, wordBreak: "break-all" }}>{status.database}</div>
+              <div style={{ fontSize: 14, color: theme.textMuted, wordBreak: "break-all" }}>{status.database}</div>
             ) : null}
           </div>
           <div style={styles.card}>
@@ -92,9 +92,9 @@ export function StatusSection({ onConfigure, focusJobs }: { onConfigure?: () => 
                 {status.ollama.reachable ? "up" : "offline"}
               </span>
             </div>
-            <div style={{ fontSize: 12 }}>embeddings: {status.ollama.embed_model}</div>
+            <div style={{ fontSize: 14 }}>embeddings: {status.ollama.embed_model}</div>
             {status.ollama.missing_models.length > 0 && (
-              <div style={{ fontSize: 12, color: theme.red }}>
+              <div style={{ fontSize: 14, color: theme.red }}>
                 missing: {status.ollama.missing_models.join(", ")}
               </div>
             )}
@@ -104,17 +104,17 @@ export function StatusSection({ onConfigure, focusJobs }: { onConfigure?: () => 
                   const done = await pull.startPull(status.ollama.missing_models ?? []);
                   if (done.length > 0) refresh();
                 }}
-                style={{ ...styles.button, background: theme.accent, color: theme.onAccent, fontSize: 12, padding: "0.35rem 0.7rem", marginTop: 6 }}
+                style={{ ...styles.button, background: theme.accent, color: theme.onAccent, fontSize: 14, padding: "0.35rem 0.7rem", marginTop: 6 }}
               >
                 Install missing
               </button>
             )}
             {pull.pulling && (
-              <div style={{ fontSize: 12, marginTop: 6 }}>
+              <div style={{ fontSize: 14, marginTop: 6 }}>
                 Installing… {pull.pulls.filter((p) => p.done).length}/{pull.pulls.length || status.ollama.missing_models.length}
               </div>
             )}
-            {pull.pullError && <div style={{ fontSize: 12, color: theme.red, marginTop: 4 }}>{pull.pullError}</div>}
+            {pull.pullError && <div style={{ fontSize: 14, color: theme.red, marginTop: 4 }}>{pull.pullError}</div>}
             <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
               {!status.ollama.reachable && (
                 <button
@@ -136,23 +136,23 @@ export function StatusSection({ onConfigure, focusJobs }: { onConfigure?: () => 
                     }
                   }}
                   disabled={startingOllama}
-                  style={{ ...styles.button, background: theme.accent, color: theme.onAccent, fontSize: 12, padding: "0.35rem 0.7rem", opacity: startingOllama ? 0.6 : 1 }}
+                  style={{ ...styles.button, background: theme.accent, color: theme.onAccent, fontSize: 14, padding: "0.35rem 0.7rem", opacity: startingOllama ? 0.6 : 1 }}
                 >
                   {startingOllama ? "Starting…" : "Start local LLM"}
                 </button>
               )}
               <button
                 onClick={() => onConfigure?.()}
-                style={{ ...styles.button, background: theme.bgHover, border: `1px solid ${theme.border}`, fontSize: 12, padding: "0.35rem 0.7rem" }}
+                style={{ ...styles.button, background: theme.bgHover, border: `1px solid ${theme.border}`, fontSize: 14, padding: "0.35rem 0.7rem" }}
               >
                 Configure model
               </button>
             </div>
-            {ollamaMsg && <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>{ollamaMsg}</div>}
+            {ollamaMsg && <div style={{ fontSize: 14, color: theme.textMuted, marginTop: 6 }}>{ollamaMsg}</div>}
           </div>
           <div style={styles.card}>
             <div style={styles.cardTitle}>Answer model</div>
-            <div style={{ fontSize: 12 }}>
+            <div style={{ fontSize: 14 }}>
               {status.answer.provider} · {status.answer.model}
               {status.answer_ready === false && <div style={{ color: theme.amber }}>not working: answers show matching passages only</div>}
             </div>
@@ -160,13 +160,13 @@ export function StatusSection({ onConfigure, focusJobs }: { onConfigure?: () => 
           {status.pending_embeddings > 0 && (
             <div style={styles.card}>
               <div style={styles.cardTitle}>Embedding backfill</div>
-              <div style={{ fontSize: 12, color: theme.amber }}>{status.pending_embeddings} chunks pending</div>
+              <div style={{ fontSize: 14, color: theme.amber }}>{status.pending_embeddings} chunks pending</div>
             </div>
           )}
           {status.retrieval.calls > 0 && (
             <div style={styles.card}>
               <div style={styles.cardTitle}>Retrieval latency</div>
-              <div style={{ fontSize: 12 }}>
+              <div style={{ fontSize: 14 }}>
                 avg {status.retrieval.avg_latency_ms} ms · {status.retrieval.calls} calls
                 <div style={{ color: theme.textMuted }}>backend: {status.retrieval.backend}</div>
               </div>
@@ -174,7 +174,7 @@ export function StatusSection({ onConfigure, focusJobs }: { onConfigure?: () => 
           )}
           <div style={styles.card}>
             <div style={styles.cardTitle}>Entity extraction</div>
-            <div style={{ fontSize: 12 }}>
+            <div style={{ fontSize: 14 }}>
               {status.extraction?.mode === "off" ? (
                 <span style={{ color: theme.textDim }}>off: no entities are stored</span>
               ) : (
@@ -184,7 +184,7 @@ export function StatusSection({ onConfigure, focusJobs }: { onConfigure?: () => 
           </div>
           <div style={styles.card}>
             <div style={styles.cardTitle}>Embeddings</div>
-            <div style={{ fontSize: 12 }}>
+            <div style={{ fontSize: 14 }}>
               provider:{" "}
               <span style={{ color: status.embedder.provider === "cloud" ? theme.amber : theme.green }}>
                 {status.embedder.provider}
@@ -197,7 +197,7 @@ export function StatusSection({ onConfigure, focusJobs }: { onConfigure?: () => 
             <div style={styles.card}>
               <div style={styles.cardTitle}>Failing sources</div>
               {status.failing_sources.map((s) => (
-                <div key={s.id} style={{ fontSize: 12, color: theme.red }}>
+                <div key={s.id} style={{ fontSize: 14, color: theme.red }}>
                   {s.name} ×{s.count}: {s.error}
                 </div>
               ))}
@@ -210,7 +210,7 @@ export function StatusSection({ onConfigure, focusJobs }: { onConfigure?: () => 
 
       <h3 ref={jobsRef} id="jobs" style={{ marginBottom: 8 }}>Jobs</h3>
       {jobs.length === 0 ? (
-        <p style={{ color: theme.textDim, fontSize: 13 }}>No jobs yet.</p>
+        <p style={{ color: theme.textDim, fontSize: 15 }}>No jobs yet.</p>
       ) : (
         <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 6, marginBottom: 20 }}>
           {jobs.map((j) => (
@@ -228,12 +228,12 @@ export function StatusSection({ onConfigure, focusJobs }: { onConfigure?: () => 
 
       <h3 style={{ marginBottom: 8 }}>Logs</h3>
       <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 6 }}>
-        {logs.length === 0 && <li style={{ color: theme.textDim, fontSize: 13 }}>No log files yet.</li>}
+        {logs.length === 0 && <li style={{ color: theme.textDim, fontSize: 15 }}>No log files yet.</li>}
         {logs.map((f) => (
           <li key={f.name} style={{ ...styles.row, justifyContent: "space-between" }}>
             <div>
-              <span style={{ fontSize: 13 }}>{f.name}</span>{" "}
-              <span style={{ fontSize: 12, color: theme.textMuted }}>
+              <span style={{ fontSize: 15 }}>{f.name}</span>{" "}
+              <span style={{ fontSize: 14, color: theme.textMuted }}>
                 ({(f.size / 1024).toFixed(0)} KB, {new Date(f.modified).toLocaleString()})
               </span>
             </div>
@@ -255,7 +255,7 @@ function StoppedTasks({ tasks }: { tasks: Record<string, string> }) {
     <div style={styles.card}>
       <div style={styles.cardTitle}>Background tasks</div>
       {stopped.map(([name, state]) => (
-        <div key={name} style={{ fontSize: 12, color: theme.red }}>
+        <div key={name} style={{ fontSize: 14, color: theme.red }}>
           {name}: {state}
         </div>
       ))}
@@ -281,12 +281,12 @@ function JobRow({ job: j, sourceName, busy, onStop, note }: {
   return (
     <li style={styles.row}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-        <div style={{ fontSize: 12, color: theme.textMuted }}>
+        <div style={{ fontSize: 14, color: theme.textMuted }}>
           #{j.id} {j.kind}{sourceName ? ` · ${sourceName}` : ""} · {new Date(j.created_at).toLocaleString()} · {j.processed}/{j.total}
         </div>
         {isActiveJob(j) && <JobStopButton job={j} sourceName={sourceName} busy={busy} onStop={onStop} />}
       </div>
-      <div style={{ fontSize: 13 }}>
+      <div style={{ fontSize: 15 }}>
         <span style={{ fontWeight: 600, color: jobStatusColor(j.status) }}>{j.status}</span>
         {j.status === "done" && j.result && (
           <span> · {j.result.items ?? 0} items, {j.result.entities ?? 0} entities{j.result.purged ? `, ${j.result.purged} purged` : ''}{j.result.unchanged ? `, ${j.result.unchanged} unchanged` : ''}</span>
@@ -300,10 +300,10 @@ function JobRow({ job: j, sourceName, busy, onStop, note }: {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  button: { padding: "0.5rem 1rem", borderRadius: radius, border: "none", background: theme.buttonBg, color: theme.text, cursor: "pointer" },
-  select: { padding: "0.5rem 0.75rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text },
-  card: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.7rem 0.9rem" },
+  button: { padding: "0.5rem 1rem", borderRadius: radius, border: "none", background: theme.buttonBg, color: theme.text, cursor: "pointer", fontSize: 15 },
+  select: { padding: "0.5rem 0.75rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, fontSize: 15 },
+  card: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "1rem 1.2rem" },
   cardTitle: { fontWeight: 600, marginBottom: 4 },
-  row: { display: "flex", flexDirection: "column", gap: 2, background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.5rem 0.75rem" },
-  link: { color: theme.accentAlt, fontSize: 13, textDecoration: "none" },
+  row: { display: "flex", flexDirection: "column", gap: 2, background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.6rem 0.9rem" },
+  link: { color: theme.accentAlt, fontSize: 15, textDecoration: "none" },
 };

@@ -37,19 +37,19 @@ export function UpdateCard({ onGoSettings }: { onGoSettings?: () => void } = {})
     <div style={{ ...commonStyles.card, marginTop: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
         <div style={{ fontWeight: 600 }}>Updates</div>
-        <div style={{ fontSize: 12, color: theme.textMuted }}>current {status?.current ?? "…"}</div>
+        <div style={{ fontSize: 14, color: theme.textMuted }}>current {status?.current ?? "…"}</div>
       </div>
       {status?.update_available && status.latest && (
-        <div style={{ fontSize: 13, color: theme.accentAlt, marginTop: 6 }}>
+        <div style={{ fontSize: 15, color: theme.accentAlt, marginTop: 6 }}>
           AnchorCore {status.latest} is available
           {status.published_at ? ` (released ${new Date(status.published_at).toLocaleDateString()})` : ""}.
         </div>
       )}
       {status?.checked_at && !status.update_available && !status.error && (
-        <div style={{ fontSize: 13, color: theme.green, marginTop: 6 }}>You're on the newest release.</div>
+        <div style={{ fontSize: 15, color: theme.green, marginTop: 6 }}>You're on the newest release.</div>
       )}
-      {status?.error && <div style={{ fontSize: 13, color: theme.red, marginTop: 6 }}>{status.error}</div>}
-      {error && <div style={{ fontSize: 13, color: theme.red, marginTop: 6 }}>{error}</div>}
+      {status?.error && <div style={{ fontSize: 15, color: theme.red, marginTop: 6 }}>{status.error}</div>}
+      {error && <div style={{ fontSize: 15, color: theme.red, marginTop: 6 }}>{error}</div>}
       <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap", alignItems: "center" }}>
         <button style={commonStyles.button} onClick={check} disabled={busy}>
           {busy ? "Checking…" : "Check for updates"}
@@ -64,18 +64,18 @@ export function UpdateCard({ onGoSettings }: { onGoSettings?: () => void } = {})
             href={status.release_url}
             target="_blank"
             rel="noreferrer"
-            style={{ fontSize: 12, color: theme.textMuted }}
+            style={{ fontSize: 14, color: theme.textMuted }}
           >
             Release notes
           </a>
         )}
       </div>
-      <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 8, lineHeight: 1.5 }}>
+      <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 8, lineHeight: 1.5 }}>
         Contacts github.com only when you click: a plain fetch of the public release info; nothing about you or
         your knowledge is sent. Updating replaces the app binary; your knowledge stays in <code>~/.anchorcore</code>.
         On Windows close the app before replacing it, or let your agent run the <code>anchorcore-setup</code> skill.
       </div>
-      <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 4 }}>
+      <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 4 }}>
         Startup checks: <b>{status?.check_enabled ? "on" : "off"}</b>
         {!status?.check_enabled && onGoSettings && (
           <>

@@ -45,13 +45,13 @@ export function SensitiveSharingCard({ refreshKey, only }: { refreshKey: number;
   return (
     <div style={styles.section}>
       <div style={styles.sectionTitle}>Sensitive sources</div>
-      <div style={{ fontSize: 12, color: theme.textDim, lineHeight: 1.5 }}>
+      <div style={{ fontSize: 14, color: theme.textDim, lineHeight: 1.5 }}>
         Content from Sensitive sources (and documents marked Sensitive) stays with local models and this app by default.
         Each switch allows one destination to receive it. You see everything here either way.
       </div>
-      {!state && !error && <div style={{ fontSize: 12, marginTop: 8 }}>Loading…</div>}
+      {!state && !error && <div style={{ fontSize: 14, marginTop: 8 }}>Loading…</div>}
       {state && ORDER.filter((id) => !only || only.includes(id)).map((id) => <DestinationRow key={id} d={state[id]} busy={busy === id} onToggle={toggle} />)}
-      {error && <div style={{ color: theme.red, fontSize: 12, marginTop: 8 }}>{error}</div>}
+      {error && <div style={{ color: theme.red, fontSize: 14, marginTop: 8 }}>{error}</div>}
     </div>
   );
 }
@@ -59,7 +59,7 @@ export function SensitiveSharingCard({ refreshKey, only }: { refreshKey: number;
 function DestinationRow({ d, busy, onToggle }: { d: SharingDestination; busy: boolean; onToggle: (id: SharingDestinationId, on: boolean) => void }) {
   const fixed = d.local || d.env;
   return (
-    <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 10, fontSize: 13, cursor: fixed ? "default" : "pointer" }}>
+    <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 10, fontSize: 15, cursor: fixed ? "default" : "pointer" }}>
       <input
         type="checkbox"
         aria-label={d.label}
@@ -69,10 +69,10 @@ function DestinationRow({ d, busy, onToggle }: { d: SharingDestination; busy: bo
       />
       <span>
         {d.label}
-        <span style={{ display: "block", fontSize: 11, color: theme.textMuted, overflowWrap: "anywhere" }}>
+        <span style={{ display: "block", fontSize: 13, color: theme.textMuted, overflowWrap: "anywhere" }}>
           Allows: {d.destination}
         </span>
-        <span style={{ display: "block", fontSize: 11, color: d.allowed && !d.local ? theme.amber : theme.textMuted }}>
+        <span style={{ display: "block", fontSize: 13, color: d.allowed && !d.local ? theme.amber : theme.textMuted }}>
           {destinationStatus(d)}
         </span>
       </span>
@@ -82,5 +82,5 @@ function DestinationRow({ d, busy, onToggle }: { d: SharingDestination; busy: bo
 
 const styles: Record<string, React.CSSProperties> = {
   section: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.9rem 1rem" },
-  sectionTitle: { fontWeight: 600, fontSize: 14, marginBottom: 4 },
+  sectionTitle: { fontWeight: 600, fontSize: 16, marginBottom: 4 },
 };

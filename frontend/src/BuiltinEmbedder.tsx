@@ -47,10 +47,10 @@ export function BuiltinEmbedder({ onReady }: { onReady?: () => void }) {
     }
   }
 
-  if (!status) return error ? <div style={{ fontSize: 12, color: theme.red }}>{error}</div> : null;
+  if (!status) return error ? <div style={{ fontSize: 14, color: theme.red }}>{error}</div> : null;
   const p = status.progress;
   return (
-    <div style={{ fontSize: 13 }}>
+    <div style={{ fontSize: 15 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <span style={{ width: 8, height: 8, borderRadius: "50%", background: status.ready ? theme.green : theme.amber, flex: "none" }} />
         <span>{embedderLine(status)}</span>
@@ -68,17 +68,17 @@ export function BuiltinEmbedder({ onReady }: { onReady?: () => void }) {
           <div style={{ background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: radius, height: 8, overflow: "hidden" }}>
             <div style={{ background: theme.accentAlt, height: "100%", width: `${downloadPct(p)}%` }} />
           </div>
-          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+          <div style={{ fontSize: 14, color: theme.textDim, marginTop: 4 }}>
             {phase === "converting"
               ? "Converting to f16…"
               : `${p.file ?? ""} · ${Math.round(p.done_bytes / MB)} / ${Math.round(p.total_bytes / MB)} MB`}
           </div>
         </div>
       )}
-      {phase === "failed" && p.error && <div style={{ fontSize: 12, color: theme.red, marginTop: 6 }}>Download failed: {p.error}</div>}
-      {error && <div style={{ fontSize: 12, color: theme.red, marginTop: 6 }}>{error}</div>}
+      {phase === "failed" && p.error && <div style={{ fontSize: 14, color: theme.red, marginTop: 6 }}>Download failed: {p.error}</div>}
+      {error && <div style={{ fontSize: 14, color: theme.red, marginTop: 6 }}>{error}</div>}
       {!status.ready && status.dir && (
-        <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
+        <div style={{ fontSize: 14, color: theme.textDim, marginTop: 6 }}>
           Offline? Put <code>config.json</code>, <code>tokenizer.json</code> and <code>model.safetensors</code> from {status.model} (revision{" "}
           <code>{status.revision.slice(0, 7)}</code>) in <code>{status.dir}</code>, then press Download. Files already there are checked first.
         </div>

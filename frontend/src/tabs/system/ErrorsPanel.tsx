@@ -23,22 +23,22 @@ function EventRow({ group, onToggle, busy }: { group: EventGroup; onToggle: (g: 
   return (
     <li style={{ ...styles.row, opacity: group.dismissed ? 0.6 : 1 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
-        <span style={{ fontSize: 11, fontFamily: theme.sans, fontWeight: 600, textTransform: "uppercase", color: levelColor(group.level) }}>{group.level}</span>
+        <span style={{ fontSize: 13, fontFamily: theme.sans, fontWeight: 600, textTransform: "uppercase", color: levelColor(group.level) }}>{group.level}</span>
         {group.count > 1 && (
           <span style={styles.badge} title={`${group.count} occurrences`}>
             ×{group.count}
           </span>
         )}
-        <span style={{ fontSize: 12, color: theme.textMuted }}>{seenLine(group)}</span>
+        <span style={{ fontSize: 14, color: theme.textMuted }}>{seenLine(group)}</span>
         <span style={styles.tag}>{group.component}</span>
-        {group.source_name && <span style={{ fontSize: 12, color: theme.accentAlt }}>{group.source_name}</span>}
+        {group.source_name && <span style={{ fontSize: 14, color: theme.accentAlt }}>{group.source_name}</span>}
         <button style={{ ...styles.small, marginLeft: "auto" }} disabled={busy} onClick={() => onToggle(group)}>
           {group.dismissed ? "Restore" : "Dismiss"}
         </button>
       </div>
-      <div style={{ fontSize: 13 }}>{group.message}</div>
+      <div style={{ fontSize: 15 }}>{group.message}</div>
       {group.detail && (
-        <div style={{ fontSize: 12, color: theme.textMuted, whiteSpace: open ? "pre-wrap" : undefined, wordBreak: "break-word" }}>
+        <div style={{ fontSize: 14, color: theme.textMuted, whiteSpace: open ? "pre-wrap" : undefined, wordBreak: "break-word" }}>
           {open || !long ? group.detail : `${group.detail.slice(0, DETAIL_PREVIEW)}…`}{" "}
           {long && (
             <button style={styles.linkButton} onClick={() => setOpen((o) => !o)}>
@@ -146,7 +146,7 @@ export function ErrorsPanel({ refreshKey = 0 }: { refreshKey?: number }) {
             ))}
           </select>
         )}
-        <label style={{ fontSize: 12, color: theme.textMuted, display: "flex", gap: 4, alignItems: "center" }}>
+        <label style={{ fontSize: 14, color: theme.textMuted, display: "flex", gap: 4, alignItems: "center" }}>
           <input type="checkbox" checked={showDismissed} onChange={(e) => setShowDismissed(e.target.checked)} />
           Show dismissed ({summary?.dismissed ?? 0})
         </label>
@@ -154,11 +154,11 @@ export function ErrorsPanel({ refreshKey = 0 }: { refreshKey?: number }) {
           Clear shown
         </button>
       </div>
-      {note && <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 6 }}>{note}</div>}
+      {note && <div style={{ fontSize: 14, color: theme.textMuted, marginBottom: 6 }}>{note}</div>}
       {levels.length === 0 ? (
-        <p style={{ color: theme.textDim, fontSize: 13 }}>Pick a level to see events.</p>
+        <p style={{ color: theme.textDim, fontSize: 15 }}>Pick a level to see events.</p>
       ) : visible.length === 0 ? (
-        <p style={{ color: theme.textDim, fontSize: 13 }}>No errors recorded.</p>
+        <p style={{ color: theme.textDim, fontSize: 15 }}>No errors recorded.</p>
       ) : (
         <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 6 }}>
           {visible.map((g) => (
@@ -172,10 +172,10 @@ export function ErrorsPanel({ refreshKey = 0 }: { refreshKey?: number }) {
 
 const styles: Record<string, React.CSSProperties> = {
   row: { display: "flex", flexDirection: "column", gap: 2, background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.5rem 0.75rem" },
-  chip: { padding: "0.2rem 0.6rem", borderRadius: radius, border: "1px solid", background: theme.bgCard, cursor: "pointer", fontSize: 12, fontFamily: theme.sans, textTransform: "uppercase" },
-  select: { padding: "0.3rem 0.5rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, fontSize: 12 },
-  small: { padding: "0.25rem 0.7rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgHover, color: theme.text, cursor: "pointer", fontSize: 12 },
-  badge: { fontSize: 11, fontFamily: theme.sans, background: theme.bgHover, borderRadius: radius, padding: "0 0.35rem" },
-  tag: { fontSize: 12, background: theme.bgHover, borderRadius: radius, padding: "0 0.35rem" },
-  linkButton: { background: "none", border: "none", padding: 0, color: theme.accentAlt, cursor: "pointer", fontSize: 12 },
+  chip: { padding: "0.2rem 0.6rem", borderRadius: radius, border: "1px solid", background: theme.bgCard, cursor: "pointer", fontSize: 14, fontFamily: theme.sans, textTransform: "uppercase" },
+  select: { padding: "0.3rem 0.5rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, fontSize: 14 },
+  small: { padding: "0.25rem 0.7rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgHover, color: theme.text, cursor: "pointer", fontSize: 14 },
+  badge: { fontSize: 13, fontFamily: theme.sans, background: theme.bgHover, borderRadius: radius, padding: "0 0.35rem" },
+  tag: { fontSize: 14, background: theme.bgHover, borderRadius: radius, padding: "0 0.35rem" },
+  linkButton: { background: "none", border: "none", padding: 0, color: theme.accentAlt, cursor: "pointer", fontSize: 14 },
 };

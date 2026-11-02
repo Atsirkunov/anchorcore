@@ -192,7 +192,7 @@ export default function App() {
           </div>
         </div>
       )}
-      <main style={styles.main}>
+      <main style={tab === "settings" ? { ...styles.main, maxWidth: 1120 } : styles.main}>
         {tab === "ask" && notice && !askNoticeHidden && (
           <p style={styles.askNotice}>
             {notice}{" "}

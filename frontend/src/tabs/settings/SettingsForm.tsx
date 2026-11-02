@@ -173,7 +173,7 @@ export function SettingsForm({ section }: { section: FormSection }) {
 
   return (
     <div>
-      <div style={{ display: "grid", gap: 8, maxWidth: 560 }}>
+      <div style={{ display: "grid", gap: 12, maxWidth: 720 }}>
         {section === "search" && (
         <div style={styles.section}>
           <div style={styles.sectionTitle}>Search model (embeddings)</div>
@@ -202,7 +202,7 @@ export function SettingsForm({ section }: { section: FormSection }) {
           <label style={styles.label}>Model</label>
           <input style={styles.input} value={form.embed_model} onChange={set("embed_model")} placeholder="nomic-embed-text / text-embedding-3-small" />
           {embedderProvider === "cloud" && (
-            <div style={{ fontSize: 12, color: theme.amber, marginTop: 6 }}>
+            <div style={{ fontSize: 14, color: theme.amber, marginTop: 6 }}>
               Note: changing the embedding model means re-embedding all chunks (reclassify sources or wait for the backfill job).
             </div>
           )}
@@ -217,7 +217,7 @@ export function SettingsForm({ section }: { section: FormSection }) {
         {section === "advanced" && (
         <div style={styles.section}>
           <div style={styles.sectionTitle}>Sections and tags</div>
-          <div style={{ fontSize: 12, color: theme.textDim, lineHeight: 1.5 }}>
+          <div style={{ fontSize: 14, color: theme.textDim, lineHeight: 1.5 }}>
             Sections are split at headings (<code>§434</code>, <code>4.2.1</code>, <code>Article 12</code>) into a tree (<code>level/path</code>) with per-section summaries. Each section gets up to four keyword tags, picked by rules from its text (no model). A new keyword joins an existing tag when the two are similar enough; otherwise it becomes a new tag.
           </div>
           <label style={styles.label}>Tag reuse threshold (similarity 0–1, default 0.82)</label>
@@ -227,7 +227,7 @@ export function SettingsForm({ section }: { section: FormSection }) {
             onChange={(e) => setForm({ ...(form as unknown as Record<string, string>), tag_reuse_threshold: e.target.value } as unknown as AppSettings)}
             placeholder="0.82 (higher = stricter reuse, lower = more merging)"
           />
-          <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 4 }}>
+          <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 4 }}>
             Higher values reuse an existing tag only for very close keywords, so you get more tags; lower values merge more. Applies to documents indexed after the change. Env <code>ANCHOR_TAG_REUSE_THRESHOLD</code> overrides.
           </div>
         </div>
@@ -237,11 +237,11 @@ export function SettingsForm({ section }: { section: FormSection }) {
         {section === "updates" && (
         <div style={styles.section}>
           <div style={styles.sectionTitle}>Check at startup</div>
-          <div style={{ fontSize: 12, color: theme.textDim, lineHeight: 1.5 }}>
+          <div style={{ fontSize: 14, color: theme.textDim, lineHeight: 1.5 }}>
             AnchorCore never checks for new releases on its own. Use <b>Check for updates</b> above, or turn on
             the opt-in below for one check when the app starts.
           </div>
-          <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 10, fontSize: 13, cursor: "pointer" }}>
+          <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 10, fontSize: 15, cursor: "pointer" }}>
             <input
               type="checkbox"
               checked={["1", "true", "yes", "on"].includes(
@@ -256,7 +256,7 @@ export function SettingsForm({ section }: { section: FormSection }) {
             />
             <span>
               Check for new releases once at startup
-              <span style={{ display: "block", fontSize: 11, color: theme.textMuted }}>
+              <span style={{ display: "block", fontSize: 13, color: theme.textMuted }}>
                 One request to github.com at launch: a plain fetch of the public release info; nothing about you
                 is sent. Off unless you turn it on.
               </span>
@@ -277,7 +277,7 @@ export function SettingsForm({ section }: { section: FormSection }) {
             <option value="agent">My AI agent (MCP or the ask-docs skill)</option>
             <option value="local">A local model on this computer</option>
           </select>
-          <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 4, lineHeight: 1.5 }}>
+          <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 4, lineHeight: 1.5 }}>
             Agent: AnchorCore runs no chat model for answers. <code>ask</code> returns ranked, cited passages
             (<code>mode: agent_compose</code>) and your agent composes. Local: the answer model below writes them.
             Switching needs no re-ingest.
@@ -308,10 +308,10 @@ export function SettingsForm({ section }: { section: FormSection }) {
             <option value="medium">medium</option>
             <option value="high">high</option>
           </select>
-          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+          <div style={{ fontSize: 14, color: theme.textDim, marginTop: 4 }}>
             Cloud (o-series, gpt-5): sends <code>reasoning_effort</code>. Local Ollama: enables thinking on reasoning models (deepseek-r1, qwen3, llama3.3-thinking).
           </div>
-          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+          <div style={{ fontSize: 14, color: theme.textDim, marginTop: 4 }}>
             Local-only? Set the Ollama URL explicitly here. Answers never fall back to Ollama on their own (embeddings do).
           </div>
           <div style={{ display: "flex", gap: 8 }}>
@@ -327,7 +327,7 @@ export function SettingsForm({ section }: { section: FormSection }) {
               {probeBusy ? "Probing…" : "Run compose probe"}
             </button>
           </div>
-          <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
+          <div style={{ fontSize: 14, color: theme.textDim, marginTop: 4 }}>
             One flow: pick local Ollama or your own endpoint → Save → Test → Probe. Only a probe reporting mode: composed means answers really work.
           </div>
           {probeResult && (
@@ -338,7 +338,7 @@ export function SettingsForm({ section }: { section: FormSection }) {
                 borderRadius: radius,
                 background: probeResult.status === "pass" ? theme.greenBg : probeResult.status === "fail" ? theme.redBg : theme.amberBg,
                 color: probeResult.status === "pass" ? theme.greenText : probeResult.status === "fail" ? theme.redText : theme.amber,
-                fontSize: 13,
+                fontSize: 15,
               }}
             >
               {probeResult.message}
@@ -357,7 +357,7 @@ export function SettingsForm({ section }: { section: FormSection }) {
               borderRadius: radius,
               background: testResult.ok ? theme.greenBg : theme.redBg,
               color: testResult.ok ? theme.greenText : theme.redText,
-              fontSize: 13,
+              fontSize: 15,
             }}
           >
             {testResult.provider}: {testResult.message}
@@ -370,7 +370,7 @@ export function SettingsForm({ section }: { section: FormSection }) {
           <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} disabled={busy} onClick={save}>
             {busy ? "Saving…" : "Save"}
           </button>
-          {saved && <span style={{ color: theme.green, fontSize: 13 }}>Saved and applied, no restart needed</span>}
+          {saved && <span style={{ color: theme.green, fontSize: 15 }}>Saved and applied, no restart needed</span>}
         </div>
         )}
       </div>
@@ -379,9 +379,9 @@ export function SettingsForm({ section }: { section: FormSection }) {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  label: { display: "block", fontSize: 12, color: theme.textMuted, marginBottom: 4, marginTop: 8 },
-  input: { width: "100%", padding: "0.5rem 0.75rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, boxSizing: "border-box" },
-  button: { marginTop: 10, padding: "0.5rem 1rem", borderRadius: radius, border: "none", background: theme.buttonBg, color: theme.text, cursor: "pointer", fontSize: 13 },
-  section: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.9rem 1rem" },
-  sectionTitle: { fontWeight: 600, fontSize: 14, marginBottom: 4 },
+  label: { display: "block", fontSize: 14, color: theme.textMuted, marginBottom: 4, marginTop: 8 },
+  input: { width: "100%", padding: "0.6rem 0.8rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, boxSizing: "border-box", fontSize: 15 },
+  button: { marginTop: 10, padding: "0.5rem 1rem", borderRadius: radius, border: "none", background: theme.buttonBg, color: theme.text, cursor: "pointer", fontSize: 15 },
+  section: { background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "1.25rem 1.4rem" },
+  sectionTitle: { fontWeight: 600, fontSize: 16, marginBottom: 4 },
 };

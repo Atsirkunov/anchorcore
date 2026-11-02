@@ -13,7 +13,7 @@ function CountsLine({ title, counts }: { title: string; counts: Record<string, n
   const entries = Object.entries(counts).filter(([, v]) => v > 0);
   if (entries.length === 0) return null;
   return (
-    <div style={{ fontSize: 12, color: theme.textMuted }}>
+    <div style={{ fontSize: 14, color: theme.textMuted }}>
       {title}: {entries.map(([k, v]) => `${k} ${v}`).join(" · ")}
     </div>
   );
@@ -55,7 +55,7 @@ function ReembedProgress({ jobIds }: { jobIds: number[] }) {
   const done = jobs.filter((j) => j.status === "done").length;
   const failed = jobs.some((j) => j.status === "failed");
   return (
-    <div style={{ fontSize: 12, marginTop: 6, color: failed ? theme.red : theme.textMuted }}>
+    <div style={{ fontSize: 14, marginTop: 6, color: failed ? theme.red : theme.textMuted }}>
       Re-embedding imported chunks: {done}/{jobIds.length} job(s)
       {total > 0 ? ` · ${processed}/${total} chunks` : " · queued"}
       {failed ? ". A job failed (see Settings → Status & logs). Answers stay keyword-only for those chunks." : ""}
@@ -163,7 +163,7 @@ export function BackupCard() {
   return (
     <div style={{ ...styles.card, marginBottom: 16 }}>
       <div style={styles.cardTitle}>Backup &amp; restore</div>
-      <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 8 }}>
+      <div style={{ fontSize: 14, color: theme.textMuted, marginBottom: 8 }}>
         A portable <code>.anchorcore-backup</code> archive carries your memory (sources, documents, records,
         glossary) to another device. Credentials stay out unless you opt in with a passphrase; embeddings are
         recomputed on the new device.
@@ -210,7 +210,7 @@ export function BackupCard() {
           type="file"
           accept=".anchorcore-backup,application/zip"
           onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
-          style={{ fontSize: 12 }}
+          style={{ fontSize: 14 }}
         />
         {file && (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -228,13 +228,13 @@ export function BackupCard() {
             <CountsLine title={report.dry_run ? "Would import" : "Imported"} counts={report.imported} />
             <CountsLine title="Kept local" counts={report.skipped} />
             {report.conflicts.length > 0 && (
-              <div style={{ fontSize: 12, color: theme.amber }}>
+              <div style={{ fontSize: 14, color: theme.amber }}>
                 {report.conflicts.length} conflict(s) resolved {report.dry_run ? "(would be)" : ""}, local newer
                 state wins.
               </div>
             )}
             {report.needs_secret.length > 0 && (
-              <div style={{ fontSize: 12, marginTop: 4 }}>
+              <div style={{ fontSize: 14, marginTop: 4 }}>
                 <div style={{ color: theme.amber }}>
                   Credentials to re-enter ({report.needs_secret.length}), in the Library tab:
                 </div>
@@ -246,7 +246,7 @@ export function BackupCard() {
               </div>
             )}
             {report.folder_paths.length > 0 && (
-              <div style={{ fontSize: 12, marginTop: 4 }}>
+              <div style={{ fontSize: 14, marginTop: 4 }}>
                 <div style={{ color: theme.textMuted }}>Folder paths on this machine:</div>
                 {report.folder_paths.map((fp) => (
                   <div key={fp.source_uid} style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 2 }}>
@@ -254,14 +254,14 @@ export function BackupCard() {
                     <input
                       value={remap[fp.source_uid] ?? fp.path}
                       onChange={(e) => setRemap((r) => ({ ...r, [fp.source_uid]: e.target.value }))}
-                      style={{ ...styles.input, flex: 1, fontSize: 12 }}
+                      style={{ ...styles.input, flex: 1, fontSize: 14 }}
                     />
                   </div>
                 ))}
               </div>
             )}
             {report.warnings.length > 0 && (
-              <div style={{ fontSize: 12, color: theme.amber, marginTop: 4 }}>
+              <div style={{ fontSize: 14, color: theme.amber, marginTop: 4 }}>
                 {report.warnings.slice(0, 3).map((w) => (
                   <div key={w}>{w}</div>
                 ))}
@@ -272,7 +272,7 @@ export function BackupCard() {
         )}
         {file && (
           <div style={{ marginTop: 8, borderTop: `1px solid ${theme.borderSoft}`, paddingTop: 6 }}>
-            <div style={{ fontSize: 12, color: theme.red }}>
+            <div style={{ fontSize: 14, color: theme.red }}>
               Replace deletes all local data first (a safety backup is taken automatically). Type{" "}
               <code>replace</code> to enable it.
             </div>
@@ -281,7 +281,7 @@ export function BackupCard() {
                 value={confirmText}
                 onChange={(e) => setConfirmText(e.target.value)}
                 placeholder="replace"
-                style={{ ...styles.input, fontSize: 12, width: 140 }}
+                style={{ ...styles.input, fontSize: 14, width: 140 }}
               />
               <button
                 style={{ ...styles.button, borderColor: theme.red, color: theme.redText }}
@@ -295,9 +295,9 @@ export function BackupCard() {
         )}
       </div>
 
-      {note && <div style={{ fontSize: 12, color: theme.green, marginTop: 8 }}>{note}</div>}
+      {note && <div style={{ fontSize: 14, color: theme.green, marginTop: 8 }}>{note}</div>}
       {error && (
-        <div style={{ fontSize: 12, color: theme.red, marginTop: 8, wordBreak: "break-word" }}>
+        <div style={{ fontSize: 14, color: theme.red, marginTop: 8, wordBreak: "break-word" }}>
           {error}
         </div>
       )}
@@ -317,30 +317,31 @@ const styles = {
     borderRadius: radius,
     padding: "0.5rem 0.75rem",
   },
-  check: { display: "flex", gap: 6, alignItems: "center", fontSize: 13 },
+  check: { display: "flex", gap: 6, alignItems: "center", fontSize: 15 },
   input: {
-    padding: "0.4rem 0.6rem",
+    padding: "0.5rem 0.7rem",
+    fontSize: 15,
     borderRadius: radius,
     border: `1px solid ${theme.border}`,
     background: theme.bg,
     color: theme.text,
   },
   button: {
-    padding: "0.4rem 0.8rem",
+    padding: "0.5rem 1rem",
     borderRadius: radius,
     border: `1px solid ${theme.border}`,
     background: theme.buttonBg,
     color: theme.text,
     cursor: "pointer",
-    fontSize: 13,
+    fontSize: 15,
   },
   primary: {
-    padding: "0.4rem 0.8rem",
+    padding: "0.5rem 1rem",
     borderRadius: radius,
     border: `1px solid ${theme.accent}`,
     background: theme.accent,
     color: theme.onAccent,
     cursor: "pointer",
-    fontSize: 13,
+    fontSize: 15,
   },
 };
