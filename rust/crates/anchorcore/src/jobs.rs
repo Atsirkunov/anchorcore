@@ -162,10 +162,31 @@ fn promote_pending_inner(conn: &Connection) -> Vec<i64> {
         .unwrap()
         .filter_map(|r| r.ok())
         .collect();
-    for id in &pending {
-        let _ = conn.execute("UPDATE jobs SET status = 'running', started_at = datetime('now') WHERE id = ?1 AND status='pending'", [*id]);
-    }
+    // R48.12: only rows that actually flipped count as promoted.
     pending
+        .into_iter()
+        .filter(|id| {
+            match conn.execute("UPDATE jobs SET status = 'running', started_at = datetime('now') WHERE id = ?1 AND status='pending'", [*id]) {
+                Ok(n) => n == 1,
+                Err(e) => {
+                    tracing::warn!(target: "anchorcore::jobs", "job {id} not promoted: {e}");
+                    false
+                }
+            }
+        })
+        .collect()
+}
+
+/// R48.12: run `f` inside `BEGIN IMMEDIATE`, committing on `Ok`. A failed
+/// BEGIN or COMMIT is the caller's error — never a silent autocommit run or
+/// a result that was rolled back after it was reported.
+fn in_immediate_tx<T, E: From<rusqlite::Error>>(conn: &Connection, f: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let out = f().and_then(|v| conn.execute_batch("COMMIT").map(|_| v).map_err(E::from));
+    if out.is_err() {
+        let _ = conn.execute_batch("ROLLBACK"); // nothing to undo if COMMIT already ended it
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -240,24 +261,19 @@ impl JobManager {
     /// through. A duplicate fails with `Conflict(active_id)`, no new row.
     pub fn create_job(&self, conn: &Connection, source_id: i64, kind: &str) -> Result<i64, CreateJobError> {
         let _guard = promote_lock();
-        let _ = conn.execute("BEGIN IMMEDIATE", []);
-        if is_sync_family(kind) {
-            if let Some(active) = active_sync_job(conn, source_id) {
-                let _ = conn.execute("ROLLBACK", []);
-                return Err(CreateJobError::Conflict(active));
+        let (id, promoted) = in_immediate_tx(conn, || {
+            if is_sync_family(kind) {
+                if let Some(active) = active_sync_job(conn, source_id) {
+                    return Err(CreateJobError::Conflict(active));
+                }
             }
-        }
-        if let Err(e) = conn.execute(
-            "INSERT INTO jobs (source_id, kind, status, total, processed, result, created_at) VALUES (?1, ?2, 'pending', 0, 0, '{}', datetime('now'))",
-            rusqlite::params![source_id, kind],
-        ) {
-            let _ = conn.execute("ROLLBACK", []);
-            return Err(CreateJobError::Db(e));
-        }
-        let id = conn.last_insert_rowid();
-        // enforce MAX_CONCURRENT immediately, in the same transaction
-        let promoted = promote_pending_inner(conn);
-        let _ = conn.execute("COMMIT", []);
+            conn.execute(
+                "INSERT INTO jobs (source_id, kind, status, total, processed, result, created_at) VALUES (?1, ?2, 'pending', 0, 0, '{}', datetime('now'))",
+                rusqlite::params![source_id, kind],
+            )?;
+            // enforce MAX_CONCURRENT immediately, in the same transaction
+            Ok((conn.last_insert_rowid(), promote_pending_inner(conn)))
+        })?;
         let mut running = lock_recover(&self.running);
         for pid in promoted {
             running.insert(pid, Instant::now());
@@ -269,9 +285,13 @@ impl JobManager {
     /// Uses `BEGIN IMMEDIATE` + global `PROMOTE_LOCK` so concurrent `create_job` cannot double-promote same pending.
     pub fn maybe_promote(&self, conn: &Connection) {
         let _guard = promote_lock();
-        let _ = conn.execute("BEGIN IMMEDIATE", []);
-        let promoted = promote_pending_inner(conn);
-        let _ = conn.execute("COMMIT", []);
+        let promoted = match in_immediate_tx(conn, || Ok::<_, rusqlite::Error>(promote_pending_inner(conn))) {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::warn!(target: "anchorcore::jobs", "promotion skipped, retried on the next finish/poll: {e}");
+                return;
+            }
+        };
         let mut running = lock_recover(&self.running);
         for id in promoted {
             running.insert(id, Instant::now());
@@ -301,10 +321,17 @@ impl JobManager {
     /// Finish a job without ever overwriting a concurrent cancel (R9.1).
     pub fn complete(&self, conn: &Connection, job_id: i64, success: bool, error: Option<&str>) {
         let status = if success { "done" } else { "failed" };
-        let _ = conn.execute(
-            "UPDATE jobs SET status = ?1, error = ?2, finished_at = datetime('now') WHERE id = ?3 AND status <> 'cancelled'",
-            rusqlite::params![status, error, job_id],
-        );
+        // R48.12: a lost finish leaves the row `running` and holds a job slot
+        // until restart (boot marks it orphaned) — retry once, then say so.
+        let finish = || {
+            conn.execute(
+                "UPDATE jobs SET status = ?1, error = ?2, finished_at = datetime('now') WHERE id = ?3 AND status <> 'cancelled'",
+                rusqlite::params![status, error, job_id],
+            )
+        };
+        if let Err(e) = finish().or_else(|_| finish()) {
+            tracing::error!(target: "anchorcore::jobs", "job {job_id} could not be marked {status}; its slot stays taken until restart: {e}");
+        }
         lock_recover(&self.running).remove(&job_id);
         self.maybe_promote(conn);
     }

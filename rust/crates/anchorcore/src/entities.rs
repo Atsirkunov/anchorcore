@@ -192,21 +192,17 @@ pub async fn patch_handler(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let conn = crate::common::open_data_db(&data_dir);
+        use crate::common::db_err;
+        let conn = crate::common::try_open_data_db(&data_dir).map_err(db_err)?;
         crate::common::require_row(&conn, "entities", entity_id, "Entity not found")?;
-        if let Some(k) = payload.kind {
-            let _ = conn.execute("UPDATE entities SET kind = ?1 WHERE id = ?2", rusqlite::params![k, entity_id]);
-        }
-        if let Some(s) = payload.status {
-            let _ = conn.execute("UPDATE entities SET status = ?1 WHERE id = ?2", rusqlite::params![s, entity_id]);
-        }
-        if let Some(o) = payload.owner {
-            let _ = conn.execute("UPDATE entities SET owner = ?1 WHERE id = ?2", rusqlite::params![o, entity_id]);
-        }
-        let _ = conn.execute("UPDATE entities SET updated_at = datetime('now') WHERE id = ?1", [entity_id]);
-        let mut stmt = conn.prepare(&format!("{} WHERE id = ?1", entity_select_list())).unwrap();
-        let v = stmt.query_row([entity_id], |r| entity_json_from_row(r)).unwrap();
-        Ok(v)
+        // R48.12: one update, all fields or none (each used to be ignored on failure).
+        conn.execute(
+            "UPDATE entities SET kind = COALESCE(?1, kind), status = COALESCE(?2, status), owner = COALESCE(?3, owner), \
+             updated_at = datetime('now') WHERE id = ?4",
+            rusqlite::params![payload.kind, payload.status, payload.owner, entity_id],
+        )
+        .map_err(db_err)?;
+        conn.query_row(&format!("{} WHERE id = ?1", entity_select_list()), [entity_id], entity_json_from_row).map_err(db_err)
     })
     .await
     .unwrap();
@@ -279,13 +275,15 @@ pub async fn dispute_handler(
     let reason = payload.reason.unwrap_or_default().trim().to_string();
     let user = payload.user.unwrap_or_default().trim().to_string();
     let result = tokio::task::spawn_blocking(move || {
-        let conn = crate::common::open_data_db(&data_dir);
+        use crate::common::db_err;
+        let conn = crate::common::try_open_data_db(&data_dir).map_err(db_err)?;
         crate::common::require_row(&conn, "entities", entity_id, "Entity not found")?;
-        let _ = conn.execute("INSERT INTO disputes (entity_id, reason, user) VALUES (?1, ?2, ?3)", rusqlite::params![entity_id, reason, user]);
-        let _ = conn.execute("UPDATE entities SET dispute_count = COALESCE(dispute_count,0)+1, status='disputed', updated_at=datetime('now') WHERE id=?1", [entity_id]);
-        let mut stmt = conn.prepare(&format!("{} WHERE id = ?1", entity_select_list())).unwrap();
-        let v = stmt.query_row([entity_id], |r| entity_json_from_row(r)).unwrap();
-        Ok(v)
+        // R48.12: the dispute row and the entity's disputed status land together.
+        let tx = conn.unchecked_transaction().map_err(db_err)?;
+        tx.execute("INSERT INTO disputes (entity_id, reason, user) VALUES (?1, ?2, ?3)", rusqlite::params![entity_id, reason, user]).map_err(db_err)?;
+        tx.execute("UPDATE entities SET dispute_count = COALESCE(dispute_count,0)+1, status='disputed', updated_at=datetime('now') WHERE id=?1", [entity_id]).map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        conn.query_row(&format!("{} WHERE id = ?1", entity_select_list()), [entity_id], entity_json_from_row).map_err(db_err)
     })
     .await
     .unwrap();
