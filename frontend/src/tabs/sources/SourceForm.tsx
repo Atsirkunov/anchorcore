@@ -5,6 +5,7 @@ import { LABEL_OPTIONS } from "./labels";
 import { stripPlaceholders } from "../../placeholders";
 import { theme, commonStyles, radius } from "../../theme";
 import type { Source } from "../../types";
+import { REST_DEFAULTS } from "./restDefaults";
 
 function LabelSelect({
   value,
@@ -28,7 +29,7 @@ function parseProjectKeys(project: string): Set<string> {
   return new Set(project.split(",").map((p) => p.trim()).filter(Boolean));
 }
 
-function JiraProjectPicker({
+export function JiraProjectPicker({
   base_url,
   email,
   token,
@@ -97,38 +98,8 @@ function JiraProjectPicker({
   );
 }
 
-const REST_DEFAULTS: Record<string, string> = {
-  base_url: "",
-  list_path: "",
-  method: "GET",
-  auth_mode: "none",
-  email: "",
-  token: "",
-  password: "",
-  api_key: "",
-  header_name: "X-Api-Key",
-  items_path: "",
-  map_id: "/id",
-  map_title: "/title",
-  map_text: "/body",
-  map_author: "/author",
-  map_updated: "/updated_at",
-  page_mode: "none",
-  page_param: "",
-  next_token_path: "/nextPageToken",
-  page_size_param: "",
-  page_size: "50",
-  page_start: "1",
-  offset_param: "",
-  limit_param: "",
-  max_pages: "20",
-  since_param: "",
-  body_json: "",
-  ref_prefix: "rest",
-};
-
 /** Generic REST API mapping form (B44): endpoint + auth, JSON-pointer field map, pagination, live preview. */
-function RestFields({
+export function RestFields({
   value,
   onChange,
 }: {
@@ -253,125 +224,6 @@ function RestFields({
         </div>
       )}
     </div>
-  );
-}
-
-/** B37: the "add source" form (folder, Jira, Linear, Miro, Drive or generic REST), extracted from SourcesTab (now LibraryTab). */
-export function SourceForm({ onAdded }: { onAdded: () => void }) {
-  const [connector, setConnector] = useState("folder");
-  const [name, setName] = useState("");
-  const [path, setPath] = useState("");
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [label, setLabel] = useState("internal");
-  const [jira, setJira] = useState({ base_url: "", email: "", token: "", project: "" });
-  const [gdrive, setGdrive] = useState({ folder_id: "", token: "" });
-  const [linear, setLinear] = useState({ api_key: "", team: "" });
-  const [miro, setMiro] = useState({ token: "", boards: "", team_id: "" });
-  const [rest, setRest] = useState<Record<string, string>>({ ...REST_DEFAULTS });
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function addSource() {
-    setBusy(true);
-    setError(null);
-    try {
-      const config: Record<string, string> =
-        connector === "folder"
-          ? { path }
-          : connector === "gdrive"
-            ? { folder_id: gdrive.folder_id, token: gdrive.token }
-            : connector === "linear"
-              ? { api_key: linear.api_key, team: linear.team }
-              : connector === "miro"
-                ? { token: miro.token, boards: miro.boards, team_id: miro.team_id }
-              : connector === "rest"
-                ? { ...rest }
-                : { base_url: jira.base_url, email: jira.email, token: jira.token, project: jira.project };
-      await api.createSource({ connector, name, config, label });
-      setName("");
-      setPath("");
-      setJira({ base_url: "", email: "", token: "", project: "" });
-      setGdrive({ folder_id: "", token: "" });
-      setLinear({ api_key: "", team: "" });
-      setMiro({ token: "", boards: "", team_id: "" });
-      setRest({ ...REST_DEFAULTS });
-      setLabel("internal");
-      onAdded();
-    } catch (e) {
-      setError(errMsg(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <>
-      <div style={{ display: "grid", gap: 8, marginBottom: 16 }}>
-        <select value={connector} onChange={(e) => setConnector(e.target.value)} style={commonStyles.input}>
-          <option value="folder">Local folder</option>
-          <option value="jira">Jira</option>
-          <option value="linear">Linear</option>
-          <option value="miro">Miro</option>
-          <option value="gdrive">Google Drive</option>
-          <option value="rest">Generic REST API</option>
-        </select>
-        <input style={commonStyles.input} placeholder="Source name" value={name} onChange={(e) => setName(e.target.value)} />
-        {connector === "folder" ? (
-          <>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input style={{ ...commonStyles.input, flex: 1 }} placeholder="Folder path (absolute)" value={path} onChange={(e) => setPath(e.target.value)} />
-              <button type="button" style={commonStyles.button} title="Browse folders on this machine" onClick={() => setPickerOpen((v) => !v)}>
-                Browse…
-              </button>
-            </div>
-            {pickerOpen && (
-              <FolderPicker
-                initialPath={path}
-                onSelect={(p) => {
-                  setPath(p);
-                  setPickerOpen(false);
-                }}
-                onCancel={() => setPickerOpen(false)}
-              />
-            )}
-          </>
-        ) : connector === "gdrive" ? (
-          <>
-            <input style={commonStyles.input} placeholder="Drive folder ID (from URL …/folders/…)" value={gdrive.folder_id} onChange={(e) => setGdrive({ ...gdrive, folder_id: e.target.value })} />
-            <input style={commonStyles.input} type="password" placeholder="OAuth access token (Bearer)" value={gdrive.token} onChange={(e) => setGdrive({ ...gdrive, token: e.target.value })} />
-            <div style={{ fontSize: 12, color: theme.textDim }}>Needs a Google Cloud OAuth token. See docs/sample-dataset.md or hosting/README for setup. Token is stored in OS keychain.</div>
-          </>
-        ) : connector === "linear" ? (
-          <>
-            <input style={commonStyles.input} type="password" placeholder="Linear API key (lin_api_...)" value={linear.api_key} onChange={(e) => setLinear({ ...linear, api_key: e.target.value })} />
-            <input style={commonStyles.input} placeholder="Team key, e.g. ENG or ENG,PM" value={linear.team} onChange={(e) => setLinear({ ...linear, team: e.target.value })} />
-            <div style={{ fontSize: 12, color: theme.textDim }}>Find API key at linear.app/settings/api · Team key is the 2–3 letter prefix (e.g. ENG). Token stored in OS keychain.</div>
-          </>
-        ) : connector === "miro" ? (
-          <>
-            <input style={commonStyles.input} type="password" placeholder="Miro access token" value={miro.token} onChange={(e) => setMiro({ ...miro, token: e.target.value })} />
-            <input style={commonStyles.input} placeholder="Board IDs, comma-separated (from …/app/board/<id>/)" value={miro.boards} onChange={(e) => setMiro({ ...miro, boards: e.target.value })} />
-            <input style={commonStyles.input} placeholder="or Team ID (every board of the team)" value={miro.team_id} onChange={(e) => setMiro({ ...miro, team_id: e.target.value })} />
-            <div style={{ fontSize: 12, color: theme.textDim }}>Create a token in a Miro app with boards:read · Each board becomes one document (frames → sections, connectors → steps). Token stored in OS keychain.</div>
-          </>
-        ) : connector === "rest" ? (
-          <RestFields value={rest} onChange={setRest} />
-        ) : (
-          <>
-            <input style={commonStyles.input} placeholder="Jira base URL, e.g. https://x.atlassian.net" value={jira.base_url} onChange={(e) => setJira({ ...jira, base_url: e.target.value })} />
-            <input style={commonStyles.input} placeholder="Email" value={jira.email} onChange={(e) => setJira({ ...jira, email: e.target.value })} />
-            <input style={commonStyles.input} type="password" placeholder="API token" value={jira.token} onChange={(e) => setJira({ ...jira, token: e.target.value })} />
-            <input style={commonStyles.input} placeholder="Project keys, e.g. PM or PM,TEST (or pick below)" value={jira.project} onChange={(e) => setJira({ ...jira, project: e.target.value })} />
-            <JiraProjectPicker base_url={jira.base_url} email={jira.email} token={jira.token} project={jira.project} onChange={(v) => setJira({ ...jira, project: v })} />
-          </>
-        )}
-        <LabelSelect value={label} onChange={setLabel} />
-        <button onClick={addSource} disabled={busy} style={{ ...commonStyles.button, background: theme.accent, color: theme.onAccent, borderColor: theme.accent, fontWeight: 600 }}>
-          {busy ? "Adding…" : "Add source"}
-        </button>
-      </div>
-      {error && <p style={{ color: theme.red }}>{error}</p>}
-    </>
   );
 }
 

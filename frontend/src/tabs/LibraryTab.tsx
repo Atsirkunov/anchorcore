@@ -5,8 +5,8 @@ import { radius, theme } from "../theme";
 import { isActiveJob } from "../jobControlsText";
 import type { Job, Source } from "../types";
 import { ProjectSection } from "./sources/ProjectSection";
+import { SourceAddPanel } from "./sources/SourceAddPanel";
 import { SourceDetail } from "./sources/SourceDetail";
-import { SourceForm } from "./sources/SourceForm";
 import { SourceRow } from "./sources/SourceRow";
 import { UnplacedImages } from "./sources/UnplacedImages";
 
@@ -70,20 +70,19 @@ export function LibraryTab({ sourceId, onOpen }: { sourceId: number | null; onOp
     <div>
       <div style={styles.head}>
         <h2 style={{ margin: 0 }}>Library</h2>
-        <button onClick={() => setAdding((a) => !a)} style={adding ? styles.secondary : styles.primary} aria-expanded={adding}>
-          {adding ? "Close" : "+ Add source"}
+        <button onClick={() => setAdding(true)} style={styles.primary} aria-expanded={adding} aria-haspopup="dialog">
+          Add source
         </button>
       </div>
       {sourceId !== null && loaded && <p style={{ color: theme.textDim }}>That source no longer exists.</p>}
       {adding && (
-        <div style={styles.drawer}>
-          <SourceForm
-            onAdded={() => {
-              refresh();
-              setAdding(false);
-            }}
-          />
-        </div>
+        <SourceAddPanel
+          onClose={() => setAdding(false)}
+          onAdded={(syncError) => {
+            refresh();
+            setError(syncError);
+          }}
+        />
       )}
       {error && <p style={{ color: theme.red }}>{error}</p>}
       <ul style={{ listStyle: "none", padding: 0, margin: "0 0 24px", display: "grid", gap: 8 }}>
@@ -116,7 +115,5 @@ export function LibraryTab({ sourceId, onOpen }: { sourceId: number | null; onOp
 const styles: Record<string, React.CSSProperties> = {
   head: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 16 },
   primary: { padding: "0.5rem 1rem", borderRadius: radius, border: "none", background: theme.accent, color: theme.onAccent, cursor: "pointer", fontSize: 13 },
-  secondary: { padding: "0.5rem 1rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.buttonBg, color: theme.text, cursor: "pointer", fontSize: 13 },
-  drawer: { border: `1px solid ${theme.border}`, borderRadius: radius, background: theme.bgCard, padding: "1rem", marginBottom: 16 },
   link: { background: "none", border: "none", padding: 0, color: theme.text, textDecoration: "underline", cursor: "pointer", fontSize: "inherit" },
 };

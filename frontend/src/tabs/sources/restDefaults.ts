@@ -1,0 +1,32 @@
+/** Default config for the generic REST connector form (B44), shared by the
+ *  add panel and the edit form. Lives here so SourceForm.tsx only exports
+ *  components (react-refresh). */
+export const REST_DEFAULTS: Record<string, string> = {
+  base_url: "",
+  list_path: "",
+  method: "GET",
+  auth_mode: "none",
+  email: "",
+  token: "",
+  password: "",
+  api_key: "",
+  header_name: "X-Api-Key",
+  items_path: "",
+  map_id: "/id",
+  map_title: "/title",
+  map_text: "/body",
+  map_author: "/author",
+  map_updated: "/updated_at",
+  page_mode: "none",
+  page_param: "",
+  next_token_path: "/nextPageToken",
+  page_size_param: "",
+  page_size: "50",
+  page_start: "1",
+  offset_param: "",
+  limit_param: "",
+  max_pages: "20",
+  since_param: "",
+  body_json: "",
+  ref_prefix: "rest",
+};
