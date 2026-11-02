@@ -4,6 +4,15 @@ ADR log. Append newest first.
 
 ---
 
+## 2026-11-02 — R48.5: remove the `/review/*` API
+
+* **Decision:** `GET /review/low-confidence`, `GET /review/duplicates` and `POST /review/merge` are removed (routes, `review.rs`, setup-skill section, tests). The `merge_actions` table stays: backups round-trip it and source cleanup still deletes its rows. Owner: "remove review for now until we see the need for it".
+* **Context:** whole-app review 2026-11-02. Records come only from structure and are stored with confidence 1.0 (R45.8, R45.18), so the low-confidence queue (threshold 0.6) only returned legacy rows. Duplicates/merge had live bugs: any decision other than `"dismiss"` merged (a typo deleted a record), eight writes ran outside a transaction, and every GET inserted proposals that later pages skipped. Nothing in the UI called these routes since R45.25.
+* **Alternatives considered:**
+  - *Fix them (R48.6)* — rejected for now: no caller and no observed need; the fix is filed as R48.6 if one appears.
+  - *Drop `merge_actions` too* — rejected: a migration plus a backup-format change for no gain; existing rows stay readable.
+* **Consequences:** agents that called `/review/*` get the SPA fallback / 404. Bringing it back means re-opening R48.6 (typed decision, one transaction, stable proposals) and a new decision entry.
+
 ## 2026-10-30 — R45.25: the Entities tab becomes Records; no "Looks right" review queue
 
 * **Decision:** the tab is **Records** with three views — Decisions (default), Actions, Glossary. The "All entities" review queue is removed from the UI: Looks right (row + bulk), the confidence badge, the kind dropdown, the New/In-answers badges, duplicates and per-row conflict flagging. Decision and action rows gain **Dispute…** (reason required, `POST /entities/:id/dispute`, history kept) and **Restore** (`PATCH /entities/:id {"status":"unverified"}`); `GET /decisions` / `GET /actions` take `disputed=true` to list only disputed rows (the UI's "Disputed" filter). Every `/entities*` and `/review/*` endpoint stays for REST and MCP callers; no schema change.

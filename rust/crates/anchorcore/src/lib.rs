@@ -54,7 +54,6 @@ pub mod records;
 pub mod records_api;
 pub mod report;
 pub mod retrieval;
-pub mod review;
 pub mod routes;
 pub mod runtime;
 pub mod scheduler;

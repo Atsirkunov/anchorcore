@@ -164,7 +164,7 @@ sequenceDiagram
 | `chunks` | `document` / `entity` / `caption` leaves + `section_summary` / `doc_summary`; path, line range, embedding + `embed_fp` |
 | `chunks_fts`, `vec_chunks` | FTS5 index; plain embeddings table (no `sqlite-vec` linked — retrieval scans) |
 | `entities` | decisions / actions / notes with record fields, owner, status `unverified\|verified\|disputed\|stale` |
-| `relationships`, `disputes`, `merge_actions` | `conflicts_with` etc. links, dispute audit, duplicate merges |
+| `relationships`, `disputes`, `merge_actions` | `conflicts_with` etc. links, dispute audit, past duplicate merges (kept for backups; the `/review/*` API was removed in R48.5) |
 | `tags`, `chunk_tags` | deterministic topic tags |
 | `vocabulary` | glossary terms (`manual` · `glossary` · `rule`) |
 | `assets`, `asset_blobs` | image metadata + content-addressed bytes |

@@ -238,8 +238,6 @@ repo's `sample/` corpus (release zips do not include it; clone
   the provider. Mark before connecting a cloud embedder — vectors already sent
   are not recalled. The auto-detect/review endpoints are retired — do not call
   `/pii/*`.
-- Housekeeping: `GET /review/low-confidence`, `GET /review/duplicates`,
-  `POST /review/merge {"proposal_id":…,"decision":"merge"|"dismiss"}`.
 
 ## 5. Connect the user's agent (MCP preferred, API fallback)
 

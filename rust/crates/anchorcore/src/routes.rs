@@ -11,7 +11,7 @@ use tower_http::catch_panic::CatchPanicLayer;
 
 use crate::{
     answer, assets_api, auth, backup, entities, frontend, fsbrowse, glossary, health, items, jobs,
-    mcp_setup, ollama, projects, records_api, report, review, sections, security, settings,
+    mcp_setup, ollama, projects, records_api, report, sections, security, settings,
     skills_setup, sources, stubs, system, tags,
 };
 
@@ -50,9 +50,6 @@ pub fn build_router(state: health::AppState) -> Router {
         .route("/media", get(assets_api::list_handler))
         .route("/media/:uid", get(assets_api::media_handler).patch(assets_api::patch_handler))
         .route("/entities/:id/context", get(entities::context_handler))
-        .route("/review/low-confidence", get(review::low_confidence_handler))
-        .route("/review/duplicates", get(review::duplicates_handler))
-        .route("/review/merge", post(review::merge_handler))
         // R45.13: people-owned glossary (replaces /review/vocabulary)
         .route("/glossary", get(glossary::list_handler).post(glossary::create_handler))
         .route("/glossary/:id", delete(glossary::delete_handler))
