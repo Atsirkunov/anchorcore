@@ -543,7 +543,7 @@ fn line_ranges_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> std::collecti
 
 fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content: bool, limit: usize, query: &str) -> Vec<Citation> {
     let db_path = crate::db::resolve_db_path(data_dir);
-    let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+    let conn = crate::common::open_db_path(&db_path);
     let ids: Vec<i64> = hits.iter().take(limit).map(|h| h.chunk_id).collect();
     let conflict_map = conflicts_for_chunks(&conn, &ids);
     let tag_map = tags_for_chunks(&conn, &ids);
@@ -619,7 +619,7 @@ pub async fn ask(
     let q_for_block = retrieval_q.clone();
     let hits = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir_for_hits);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         retrieve_sync(&conn, &q_for_block, project_id, public_only, &settings_clone, query_embedding)
     })
     .await
@@ -676,7 +676,7 @@ async fn gate_search_hits(data_dir: &str, hits: Vec<crate::retrieval::Hit>, gate
     let data_dir_gate = data_dir.to_string();
     let (filtered, blocked) = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir_gate);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         gate_answer_hits(&conn, &hits_for_gate)
     })
     .await
@@ -708,7 +708,7 @@ async fn gate_ask_hits(
     let data_dir_gate = data_dir.to_string();
     let (filtered, blocked) = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir_gate);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         gate_answer_hits(&conn, &hits_for_gate)
     })
     .await
@@ -1016,7 +1016,7 @@ pub async fn search(
     let _settings_clone = settings_snapshot(settings);
     let hits = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir_for_block);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         // Same downstream tail (provider gate, pagination, hit mapping) —
         // only the candidate leg differs.
         if is_exact {
@@ -1038,7 +1038,7 @@ pub async fn search(
     let page: Vec<crate::retrieval::Hit> = hits.into_iter().skip(cursor).take(limit).collect();
     let next_cursor = if cursor + page.len() < total_allowed { Some(cursor + page.len()) } else { None };
     let db_path = crate::db::resolve_db_path(&data_dir_string);
-    let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+    let conn = crate::common::open_db_path(&db_path);
     let ids: Vec<i64> = page.iter().map(|h| h.chunk_id).collect();
     let conflict_map = conflicts_for_chunks(&conn, &ids);
     let tag_map = tags_for_chunks(&conn, &ids);

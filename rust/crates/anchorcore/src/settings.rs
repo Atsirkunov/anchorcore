@@ -370,7 +370,7 @@ pub async fn get_handler(State(state): State<AppState>) -> Json<Value> {
     let settings = state.settings.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         settings.snapshot(Some(&conn))
     })
     .await
@@ -405,7 +405,7 @@ pub async fn put_handler(
     let settings = state.settings.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         for (k, v) in obj.iter() {
             if v.is_null() {
                 settings.clear(k, &conn);

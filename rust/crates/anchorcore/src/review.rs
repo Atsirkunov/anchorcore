@@ -65,7 +65,7 @@ pub async fn low_confidence_handler(State(state): State<AppState>, headers: Head
     let threshold: f64 = std::env::var("ANCHOR_LOW_CONFIDENCE_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(0.6);
     let (result, blocked) = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let mut stmt = conn.prepare("SELECT id, item_id, kind, summary, reasoning, confidence, author, source_ref, status, owner, window_text, dispute_count, created_at, updated_at, (SELECT doc_type FROM ingested_items WHERE ingested_items.id = entities.item_id), (SELECT s.label FROM ingested_items i JOIN sources s ON s.id = i.source_id WHERE i.id = entities.item_id), (SELECT i.sensitive_override FROM ingested_items i WHERE i.id = entities.item_id) FROM entities WHERE confidence < ?1 AND status = 'unverified' ORDER BY confidence ASC LIMIT 100").unwrap();
         let rows = stmt.query_map([threshold], |r| {
             let label = r.get::<_, Option<String>>(15).ok().flatten().unwrap_or_else(|| "internal".to_string());
@@ -135,7 +135,7 @@ pub async fn duplicates_handler(State(state): State<AppState>, Query(q): Query<D
     let dup_threshold: f64 = std::env::var("ANCHOR_DUPLICATE_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(0.92);
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let mut sql = "SELECT id, summary, kind, created_at FROM entities WHERE status != 'stale'".to_string();
         if let Some(k) = kind {
             sql.push_str(&format!(" AND kind = '{}'", k.replace('\'', "''")));
@@ -195,7 +195,7 @@ fn fetch_entity(conn: &rusqlite::Connection, id: i64) -> Option<(String, String,
 
 fn run_merge(data_dir: &str, proposal_id: i64, decision: &str) -> Value {
     let db_path = crate::db::resolve_db_path(data_dir);
-    let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+    let conn = crate::common::open_db_path(&db_path);
     let Some((a_id, b_id, _status)) = fetch_proposal(&conn, proposal_id) else {
         return serde_json::json!({"detail":"Proposal not found"});
     };

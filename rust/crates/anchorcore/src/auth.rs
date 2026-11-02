@@ -320,7 +320,7 @@ pub async fn signup_handler(
     let hash = hash_password(&payload.password);
     let res = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let exists: bool = conn.query_row("SELECT 1 FROM users WHERE email=?1", [&email_clone], |_| Ok(())).is_ok();
         if exists {
             return Err((StatusCode::CONFLICT, Json(json!({"detail": "Email already registered"}))));
@@ -370,7 +370,7 @@ pub async fn login_handler(
     let pw = payload.password.clone();
     let row: Option<(i64, String)> = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let res: Result<(i64, String), _> = conn.query_row("SELECT id, password_hash FROM users WHERE email=?1", [&email_clone], |r| Ok((r.get(0)?, r.get(1)?)));
         res.ok()
     })
@@ -417,7 +417,7 @@ pub async fn me_handler(
     let data_dir = state.data_dir.clone();
     let exists: bool = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         conn.query_row("SELECT 1 FROM users WHERE id=?1", [uid], |_| Ok(())).is_ok()
     })
     .await

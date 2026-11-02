@@ -85,7 +85,7 @@ pub async fn status_handler(State(state): State<AppState>) -> Json<Value> {
     let extraction = extraction_mode(&state.settings);
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let pending: i64 = conn.query_row("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL", [], |r| r.get(0)).unwrap_or(0);
         let (active_fp, stale_vectors) = crate::embed_fp::stale_vector_status(&conn);
         let mut stmt = conn.prepare("SELECT id, name, last_error, error_count FROM sources WHERE error_count > 0 AND enabled = 1").unwrap();
@@ -147,7 +147,7 @@ pub async fn mcp_info_handler(State(state): State<AppState>) -> Json<Value> {
     let args = crate::runtime::mcp_args(std::path::Path::new(&data_dir));
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let calls: i64 = conn
             .query_row("SELECT COUNT(*) FROM system_events WHERE component = 'mcp'", [], |r| r.get(0))
             .unwrap_or(0);
@@ -174,7 +174,7 @@ pub async fn onboarding_handler(State(state): State<AppState>) -> Json<Value> {
     let answer_ready = crate::answer::answer_ready(&settings, readiness.answer_ready);
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let sources_count: i64 = conn.query_row("SELECT COUNT(*) FROM sources", [], |r| r.get(0)).unwrap_or(0);
         let needs_wizard = sources_count == 0;
         let ollama_base = settings.get("ollama_base_url", None).unwrap_or_else(|| "http://localhost:11434".to_string());

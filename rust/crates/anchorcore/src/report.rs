@@ -403,7 +403,7 @@ pub async fn report_handler(
     let data_dir = state.data_dir.clone();
     let report = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         generate(&conn, &entry, &llm_mode, &ollama)
     })
     .await

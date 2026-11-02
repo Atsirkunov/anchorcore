@@ -46,7 +46,7 @@ pub async fn list_handler(State(state): State<AppState>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let mut stmt = conn.prepare("SELECT id FROM projects ORDER BY created_at").unwrap();
         let ids: Vec<i64> = stmt.query_map([], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
         let out: Vec<Value> = ids.into_iter().filter_map(|id| project_json(&conn, id)).collect();
@@ -66,7 +66,7 @@ pub async fn create_handler(State(state): State<AppState>, Json(payload): Json<P
     let source_ids = payload.source_ids.unwrap_or_default();
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         // validate source_ids before write (parametrized)
         if !source_ids.is_empty() {
             let placeholders = source_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
@@ -96,7 +96,7 @@ pub async fn default_handler(State(state): State<AppState>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let pid: Option<i64> = conn.query_row("SELECT id FROM projects WHERE is_default = 1 LIMIT 1", [], |r| r.get(0)).ok();
         if let Some(id) = pid {
             project_json(&conn, id).unwrap_or(Value::Null)
@@ -113,7 +113,7 @@ pub async fn get_handler(State(state): State<AppState>, Path(project_id): Path<i
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         match project_json(&conn, project_id) {
             Some(v) => Ok(Json(v)),
             None => Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Project not found"})))),
@@ -128,7 +128,7 @@ pub async fn patch_handler(State(state): State<AppState>, Path(project_id): Path
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let exists: bool = conn.query_row("SELECT 1 FROM projects WHERE id = ?1", [project_id], |_| Ok(())).is_ok();
         if !exists {
             return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Project not found"}))));
@@ -174,7 +174,7 @@ pub async fn delete_handler(State(state): State<AppState>, Path(project_id): Pat
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let exists: bool = conn.query_row("SELECT 1 FROM projects WHERE id = ?1", [project_id], |_| Ok(())).is_ok();
         if !exists {
             return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Project not found"}))));

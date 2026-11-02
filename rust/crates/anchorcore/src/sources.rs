@@ -247,32 +247,50 @@ pub async fn update_handler(State(state): State<AppState>, Path(source_id): Path
 
 pub async fn delete_handler(State(state): State<AppState>, Path(source_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let conn = crate::common::open_data_db(&data_dir);
-        crate::common::require_row(&conn, "sources", source_id, "Source not found")?;
-        // Snapshot for the audit trail before the cascade removes everything
-        let name: String = conn.query_row("SELECT name FROM sources WHERE id=?1", [source_id], |r| r.get(0)).unwrap_or_else(|_| format!("source {}", source_id));
-        let items: i64 = conn.query_row("SELECT COUNT(*) FROM ingested_items WHERE source_id=?1", [source_id], |r| r.get(0)).unwrap_or(0);
-        let jobs: i64 = conn.query_row("SELECT COUNT(*) FROM jobs WHERE source_id=?1", [source_id], |r| r.get(0)).unwrap_or(0);
-        // FK cascade will delete items/entities/chunks/jobs via ON DELETE CASCADE, but we also need to clean project_sources
-        let _ = conn.execute("DELETE FROM project_sources WHERE source_id=?1", [source_id]);
-        let _ = conn.execute("DELETE FROM sources WHERE id=?1", [source_id]);
-        // F-09: credentials live in the SecretStore, outside the FK cascade —
-        // without this a recycled id inherits the deleted source's secrets.
-        let secret_store = secret_store(&data_dir);
-        for &field in SECRET_FIELDS {
-            secret_store.delete(&crate::secrets::source_secret_key(source_id, field));
-        }
-        // Flag the removal: hard-delete the data (privacy product — delete means
-        // delete), but keep an audit row with what was removed and when.
-        let detail = format!("deleted source '{}' (id {}); cascaded {} items (+entities/chunks) and {} jobs", name, source_id, items, jobs);
-        let _ = conn.execute("INSERT INTO system_events (component, level, source_id, message, detail) VALUES ('sources','info',NULL,?1,?2)", rusqlite::params!["source deleted", detail]);
-        if let Some(sched) = scheduler::global() {
-            sched.reload_sources(&conn);
-        }
-        Ok(Json(serde_json::json!({"deleted": true})))
-    }).await.unwrap();
-    result
+    tokio::task::spawn_blocking(move || delete_source(&data_dir, source_id))
+        .await
+        .map_err(crate::common::db_err)?
+}
+
+/// R48.3: the rows, the cascade and the audit row commit together or not at
+/// all; credentials go only after the commit, so a failed delete (e.g. the
+/// lock held past the busy timeout by this source's own sync) leaves the
+/// source whole and reports the error instead of `{"deleted": true}`.
+fn delete_source(data_dir: &str, source_id: i64) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    use crate::common::db_err;
+    let conn = crate::common::try_open_data_db(data_dir).map_err(db_err)?;
+    crate::common::require_row(&conn, "sources", source_id, "Source not found")?;
+    // Snapshot for the audit trail before the cascade removes everything.
+    let (name, items, jobs): (String, i64, i64) = conn
+        .query_row(
+            "SELECT name, (SELECT COUNT(*) FROM ingested_items WHERE source_id=?1), \
+                    (SELECT COUNT(*) FROM jobs WHERE source_id=?1) FROM sources WHERE id=?1",
+            [source_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(db_err)?;
+    let detail = format!("deleted source '{}' (id {}); cascaded {} items (+entities/chunks) and {} jobs", name, source_id, items, jobs);
+    let tx = conn.unchecked_transaction().map_err(db_err)?;
+    // FK cascade removes items/entities/chunks/jobs; project links are cleaned here.
+    tx.execute("DELETE FROM project_sources WHERE source_id=?1", [source_id]).map_err(db_err)?;
+    tx.execute("DELETE FROM sources WHERE id=?1", [source_id]).map_err(db_err)?;
+    // Hard-delete the data (delete means delete) but keep an audit row of what went.
+    tx.execute(
+        "INSERT INTO system_events (component, level, source_id, message, detail) VALUES ('sources','info',NULL,?1,?2)",
+        rusqlite::params!["source deleted", detail],
+    )
+    .map_err(db_err)?;
+    tx.commit().map_err(db_err)?;
+    // F-09: credentials live in the SecretStore, outside the FK cascade —
+    // without this a recycled id inherits the deleted source's secrets.
+    let secret_store = secret_store(data_dir);
+    for &field in SECRET_FIELDS {
+        secret_store.delete(&crate::secrets::source_secret_key(source_id, field));
+    }
+    if let Some(sched) = scheduler::global() {
+        sched.reload_sources(&conn);
+    }
+    Ok(Json(serde_json::json!({"deleted": true})))
 }
 
 pub async fn config_handler(State(state): State<AppState>, Path(source_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -429,6 +447,47 @@ mod tests {
         drop(conn);
         let cfg = config_handler(State(state), Path(fresh)).await.unwrap().0;
         assert!(cfg.get("token").is_none(), "recycled id must show no token, got {}", cfg);
+
+        match prev {
+            Some(v) => std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", v),
+            None => std::env::remove_var("ANCHOR_SECRETS_NO_KEYRING"),
+        }
+    }
+
+    /// R48.3: a delete that fails in the database keeps the source, its
+    /// credentials and writes no "deleted" audit row.
+    #[test]
+    fn failed_delete_keeps_source_secrets_and_audit_clean() {
+        let _lock = crate::secrets::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("ANCHOR_SECRETS_NO_KEYRING").ok();
+        std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", "1");
+
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let conn = crate::common::try_open_data_db(&data_dir).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config) VALUES ('jira','jira','{}')", []).unwrap();
+        let sid: i64 = conn.query_row("SELECT id FROM sources", [], |r| r.get(0)).unwrap();
+        let key = crate::secrets::source_secret_key(sid, "token");
+        secret_store(&data_dir).set(&key, "tok123");
+        conn.execute_batch("CREATE TRIGGER block_delete BEFORE DELETE ON sources BEGIN SELECT RAISE(ABORT, 'locked'); END;").unwrap();
+
+        let (status, body) = delete_source(&data_dir, sid).unwrap_err();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(body.0["detail"].as_str().unwrap().contains("locked"));
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM sources", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 1);
+        assert_eq!(secret_store(&data_dir).get(&key).as_deref(), Some("tok123"));
+        let audit: i64 = conn
+            .query_row("SELECT COUNT(*) FROM system_events WHERE message='source deleted'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(audit, 0);
+
+        // Once the block is gone the same call deletes everything.
+        conn.execute_batch("DROP TRIGGER block_delete;").unwrap();
+        assert!(delete_source(&data_dir, sid).is_ok());
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM sources", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0);
+        assert_eq!(secret_store(&data_dir).get(&key), None);
 
         match prev {
             Some(v) => std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", v),

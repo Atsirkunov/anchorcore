@@ -34,8 +34,9 @@ pub fn open_db(path: &Path) -> Result<Connection> {
         std::fs::create_dir_all(parent).ok();
     }
     let conn = Connection::open(path)?;
+    // R48.1: the wait comes first so the PRAGMAs below don't fail on a busy DB.
+    conn.busy_timeout(std::time::Duration::from_millis(5000))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "busy_timeout", 5000)?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     Ok(conn)

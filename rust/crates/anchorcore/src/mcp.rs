@@ -206,7 +206,7 @@ async fn http_call(method: &str, path: &str, body: Option<Value>) -> Result<Valu
 fn audit_mcp(tool: &str, detail: &str) {
     // best-effort audit to system_events (component=mcp) — like Python backend's system_events for MCP
     let db_path = crate::db::resolve_db_path(&mcp_data_dir().to_string_lossy());
-    if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+    if let Ok(conn) = crate::db::open_db(&db_path) {
         let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('mcp','info',?1,?2)",
             rusqlite::params![format!("mcp tool {}", tool), detail.chars().take(800).collect::<String>()]);
     }

@@ -375,7 +375,7 @@ pub async fn list_handler(State(state): State<AppState>, Query(q): Query<JobsQue
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let mut sql = "SELECT id, source_id, kind, status, total, processed, result, error, created_at, started_at, finished_at FROM jobs".to_string();
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![];
         if let Some(sid) = q.source_id {
@@ -404,7 +404,7 @@ pub async fn running_handler(State(state): State<AppState>) -> Json<serde_json::
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let mut stmt = conn.prepare("SELECT id, source_id, kind, status, total, processed, result, error, created_at, started_at, finished_at FROM jobs WHERE status = 'running' ORDER BY created_at").unwrap();
         let rows = stmt.query_map([], |r| job_json(r)).unwrap();
         let out: Vec<serde_json::Value> = rows.filter_map(|r| r.ok()).collect();
@@ -417,7 +417,7 @@ pub async fn get_handler(State(state): State<AppState>, Path(job_id): Path<i64>)
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let mut stmt = conn.prepare("SELECT id, source_id, kind, status, total, processed, result, error, created_at, started_at, finished_at FROM jobs WHERE id = ?1").unwrap();
         match stmt.query_row([job_id], |r| job_json(r)) {
             Ok(v) => Ok(Json(v)),

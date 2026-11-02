@@ -81,9 +81,9 @@ async fn record_pdf_quality(data_dir: &str, source_id: i64, detail: String) {
     .await;
 }
 // R13.1: single DB-open boilerplate — every spawn_blocking DB task goes through this.
-fn with_db<T>(data_dir: &str, f: impl FnOnce(&Connection) -> T) -> T {
-    let db_path = crate::db::resolve_db_path(data_dir);
-    let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+// R48.1: an open failure is the task's `Err`, never a degraded connection.
+fn with_db<T>(data_dir: &str, f: impl FnOnce(&Connection) -> Result<T, String>) -> Result<T, String> {
+    let conn = crate::common::try_open_data_db(data_dir)?;
     f(&conn)
 }
 
@@ -613,7 +613,7 @@ impl Pipeline {
     /// nothing to do (cancelled/failed/done — promotion already handled).
     async fn wait_for_slot(&self, data_dir: &str, job_id: i64) -> bool {
         let db_path = crate::db::resolve_db_path(data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let status: String = conn.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "pending".to_string());
         if status == "cancelled" {
             self.jobs.maybe_promote(&conn);
@@ -625,7 +625,7 @@ impl Pipeline {
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 let db_path2 = crate::db::resolve_db_path(data_dir);
-                let conn2 = crate::db::init_db(&db_path2).unwrap_or_else(|_| Connection::open(&db_path2).unwrap());
+                let conn2 = crate::common::open_db_path(&db_path2);
                 let cur: String = conn2.query_row("SELECT status FROM jobs WHERE id=?1", [job_id], |r| r.get(0)).unwrap_or_else(|_| "pending".to_string());
                 if cur == "cancelled" {
                     crate::jobs::JobManager::new().maybe_promote(&conn2);

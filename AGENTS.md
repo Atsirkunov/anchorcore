@@ -65,7 +65,7 @@ Local-first "company memory": connect sources (folder, Jira, Linear, Drive, Miro
 ## Gotchas by area
 
 **Database**
-- `PRAGMA foreign_keys=ON` must stay — source deletes cascade through it. An `ON DELETE` child column without an index makes every parent delete scan the child table — index it whenever parents are deleted in bulk (R41.8, R41.10).
+- `PRAGMA foreign_keys=ON` must stay — source deletes cascade through it. Open the DB only through `common::try_open_data_db` / `open_data_db` (or `run_db`) — never a bare `Connection::open` fallback, which has neither foreign keys nor the busy timeout (R48.1). Multi-step writes that report success go in one transaction with `?`, side effects outside the DB (secrets) after the commit (R48.3). An `ON DELETE` child column without an index makes every parent delete scan the child table — index it whenever parents are deleted in bulk (R41.8, R41.10).
 - Validate before opening a write tx (single writer): a failure after the write starts stalls everything behind the scheduler.
 - `RENAME COLUMN` keeps the column's constraints: to make a `try_add_column` column nullable, add a new one, copy, drop. Migration sims must build legacy columns with their real `ensure_columns` definition.
 - One-shot backfills go in real migration SQL, never `ensure_columns` (re-runs every boot). Extend the v10-sim migration test with each migration.

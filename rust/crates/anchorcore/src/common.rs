@@ -5,12 +5,38 @@
 use axum::{http::StatusCode, Json};
 use serde_json::Value;
 
-/// Open the data-dir DB with migrations, falling back to a plain open.
-/// Replaces the `resolve_db_path + init_db + Connection::open` prelude
-/// previously copied into every `spawn_blocking` handler.
+/// R48.1: open the data-dir DB (migrated at boot) with its PRAGMAs. Never
+/// falls back to a bare `Connection::open`: that connection has no
+/// `foreign_keys=ON` (source deletes skip their cascade) and no busy
+/// timeout (writes fail on the first lock).
+pub fn try_open_data_db(data_dir: &str) -> Result<rusqlite::Connection, String> {
+    try_open_db_path(&crate::db::resolve_db_path(data_dir))
+}
+
+pub fn try_open_db_path(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
+    crate::db::init_db(path).map_err(|e| {
+        tracing::error!(target: "anchorcore::db", "cannot open the database {}: {e}", path.display());
+        format!("cannot open the database: {e}")
+    })
+}
+
+/// [`try_open_data_db`] for callers without an error path: a failure panics
+/// (handlers → 500 via the catch-panic layer, job bodies → `failed` via
+/// `guard_job`) instead of continuing on a degraded connection.
 pub fn open_data_db(data_dir: &str) -> rusqlite::Connection {
-    let db_path = crate::db::resolve_db_path(data_dir);
-    crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap())
+    open_db_path(&crate::db::resolve_db_path(data_dir))
+}
+
+pub fn open_db_path(path: &std::path::Path) -> rusqlite::Connection {
+    try_open_db_path(path).unwrap_or_else(|e| panic!("{e}"))
+}
+
+pub type ApiError = (StatusCode, Json<Value>);
+
+/// A database failure as a 500 `{"detail"}` (logged).
+pub fn db_err(e: impl std::fmt::Display) -> ApiError {
+    tracing::error!(target: "anchorcore::db", "{e}");
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": format!("database error: {e}")})))
 }
 
 /// R43.11: the message of a caught panic payload (`panic!("…")` carries a
@@ -142,6 +168,27 @@ pub(crate) static TRUST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new((
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pragma(conn: &rusqlite::Connection, name: &str) -> i64 {
+        conn.query_row(&format!("PRAGMA {name}"), [], |r| r.get(0)).unwrap()
+    }
+
+    /// R48.1: both the migrating open and the per-process fast path keep FK
+    /// cascades and the busy wait; an unopenable path is an error, never a
+    /// bare connection without them.
+    #[test]
+    fn data_db_opens_keep_foreign_keys_and_busy_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        for _ in 0..2 {
+            let conn = try_open_data_db(&data_dir).unwrap();
+            assert_eq!(pragma(&conn, "foreign_keys"), 1);
+            assert_eq!(pragma(&conn, "busy_timeout"), 5000);
+        }
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, b"x").unwrap();
+        assert!(try_open_db_path(&blocker.join("anchorcore.db")).is_err());
+    }
 
     struct EnvGuard {
         key: &'static str,
