@@ -16,7 +16,9 @@ export function stripMatchMarks(text: string): string {
 }
 
 export type Inline = { t: "text"; v: string } | { t: "bold"; v: string } | { t: "cite"; n: number };
-export type Block = { t: "p"; parts: Inline[] } | { t: "ul" | "ol"; items: Inline[][] };
+/** `start` is the first number of an ordered list (model output may begin at 3). */
+type ListBlock = { t: "ul"; items: Inline[][] } | { t: "ol"; items: Inline[][]; start: number };
+export type Block = { t: "p"; parts: Inline[] } | ListBlock;
 
 /** `**bold**` and `[S3]` within one line of text. */
 export function parseInline(line: string): Inline[] {
@@ -35,42 +37,115 @@ export function parseInline(line: string): Inline[] {
 }
 
 const BULLET = /^\s*[-*•]\s+/;
-const NUMBERED = /^\s*\d+[.)]\s+/;
+const NUMBERED = /^\s*(\d+)[.)]\s+/;
+const HEADING = /^\s*#{1,6}\s+(.*?)\s*#*\s*$/;
+
+type Line = { kind: "ul" | "ol" | "h" | "text"; text: string; n: number };
+
+function classify(raw: string): Line {
+  const num = raw.match(NUMBERED);
+  if (num) return { kind: "ol", text: raw.replace(NUMBERED, ""), n: Number(num[1]) };
+  if (BULLET.test(raw)) return { kind: "ul", text: raw.replace(BULLET, ""), n: 0 };
+  const h = raw.match(HEADING);
+  if (h) return { kind: "h", text: h[1], n: 0 };
+  return { kind: "text", text: raw.trim(), n: 0 };
+}
+
+/** Builds blocks from lines. Rules (Wave 1, UX audit #1):
+ *  - a heading is a bold run-in: it leads the paragraph that follows it,
+ *    never a `#` and never its own block;
+ *  - hard-wrapped lines re-flow: a plain line joins the paragraph or the
+ *    list item above it (no blank line in between);
+ *  - an ordered list keeps going across blank lines and keeps the first
+ *    number it was given, so "1. … (blank) 1. … (blank) 1. …" reads 1, 2, 3. */
+class Builder {
+  blocks: Block[] = [];
+  private para: string[] = [];
+  private lead: string | null = null;
+  private list: ListBlock | null = null;
+
+  add(line: Line, afterBlank: boolean) {
+    if (line.kind === "h") return this.heading(line.text);
+    if (line.kind === "text") {
+      if (this.list && !afterBlank) return this.continueItem(line.text);
+      this.closeList();
+      this.para.push(line.text);
+      return;
+    }
+    this.flushPara();
+    this.listItem(line);
+  }
+
+  finish() {
+    this.flushPara();
+    this.closeList();
+    if (this.lead) this.blocks.push({ t: "p", parts: [{ t: "bold", v: this.lead }] });
+    this.lead = null;
+  }
+
+  /** Blank line: ends a paragraph; a list stays open for the next item. */
+  blank() {
+    this.flushPara();
+  }
+
+  private heading(text: string) {
+    this.flushPara();
+    this.closeList();
+    if (this.lead) this.blocks.push({ t: "p", parts: [{ t: "bold", v: this.lead }] });
+    this.lead = text.replace(/\*\*/g, "") || null;
+  }
+
+  private continueItem(text: string) {
+    const items = this.list?.items;
+    if (!items || items.length === 0) return;
+    const last = items[items.length - 1];
+    items[items.length - 1] = [...last, { t: "text", v: " " }, ...parseInline(text)];
+  }
+
+  private listItem(line: Line) {
+    const kind = line.kind as "ul" | "ol";
+    if (!this.list || this.list.t !== kind) {
+      this.closeList();
+      this.flushLead();
+      this.list = kind === "ol" ? { t: "ol", items: [], start: line.n } : { t: "ul", items: [] };
+    }
+    this.list.items.push(parseInline(line.text));
+  }
+
+  private flushLead() {
+    if (this.lead) this.blocks.push({ t: "p", parts: [{ t: "bold", v: this.lead }] });
+    this.lead = null;
+  }
+
+  private flushPara() {
+    if (this.para.length === 0) return;
+    const parts = parseInline(this.para.join(" "));
+    this.blocks.push({ t: "p", parts: this.lead ? [{ t: "bold", v: this.lead }, { t: "text", v: " " }, ...parts] : parts });
+    this.lead = null;
+    this.para = [];
+  }
+
+  private closeList() {
+    if (this.list) this.blocks.push(this.list);
+    this.list = null;
+  }
+}
 
 /** Paragraphs and lists from a model answer (blank lines separate blocks). */
 export function parseAnswer(text: string): Block[] {
-  const blocks: Block[] = [];
-  for (const chunk of stripMatchMarks(text).split(/\n\s*\n/)) {
-    const lines = chunk.split("\n").filter((l) => l.trim() !== "");
-    if (lines.length === 0) continue;
-    let para: string[] = [];
-    let list: { t: "ul" | "ol"; items: Inline[][] } | null = null;
-    const flushPara = () => {
-      if (para.length) blocks.push({ t: "p", parts: parseInline(para.join(" ")) });
-      para = [];
-    };
-    const flushList = () => {
-      if (list) blocks.push(list);
-      list = null;
-    };
-    for (const line of lines) {
-      const kind = BULLET.test(line) ? "ul" : NUMBERED.test(line) ? "ol" : null;
-      if (kind) {
-        flushPara();
-        if (!list || list.t !== kind) {
-          flushList();
-          list = { t: kind, items: [] };
-        }
-        list.items.push(parseInline(line.replace(kind === "ul" ? BULLET : NUMBERED, "")));
-      } else {
-        flushList();
-        para.push(line.trim());
-      }
+  const b = new Builder();
+  let afterBlank = false;
+  for (const raw of stripMatchMarks(text).split("\n")) {
+    if (raw.trim() === "") {
+      b.blank();
+      afterBlank = true;
+      continue;
     }
-    flushPara();
-    flushList();
+    b.add(classify(raw), afterBlank);
+    afterBlank = false;
   }
-  return blocks;
+  b.finish();
+  return b.blocks;
 }
 
 /** A readable excerpt: no marks, no markdown syntax, whitespace collapsed, capped. */

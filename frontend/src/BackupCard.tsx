@@ -164,8 +164,8 @@ export function BackupCard() {
     <div style={{ ...styles.card, marginBottom: 16 }}>
       <div style={styles.cardTitle}>Backup &amp; restore</div>
       <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 8 }}>
-        A portable <code>.anchorcore-backup</code> archive carries your memory (sources, documents, entities,
-        review state) to another device. Credentials stay out unless you opt in with a passphrase; embeddings are
+        A portable <code>.anchorcore-backup</code> archive carries your memory (sources, documents, records,
+        glossary) to another device. Credentials stay out unless you opt in with a passphrase; embeddings are
         recomputed on the new device.
       </div>
 

@@ -211,9 +211,9 @@ export function SettingsTab() {
         <div style={styles.section}>
           <div style={styles.sectionTitle}>TOC & Tags — hierarchical retrieval</div>
           <div style={{ fontSize: 12, color: theme.textDim, lineHeight: 1.5 }}>
-            Sections are split at headings (<code>§434</code>, <code>4.2.1</code>, <code>Article 12</code>) into a tree (<code>level/path</code>) with per-section summaries. Tags are a dynamic taxonomy — per-section keywords are proposed and reused if cosine &gt; threshold else a new tag is created.
+            Sections are split at headings (<code>§434</code>, <code>4.2.1</code>, <code>Article 12</code>) into a tree (<code>level/path</code>) with per-section summaries. Each section gets up to four keyword tags, picked by rules from its text (no model). A new keyword joins an existing tag when the two are similar enough; otherwise it becomes a new tag.
           </div>
-          <label style={styles.label}>Tag reuse threshold (cosine 0–1, default 0.82)</label>
+          <label style={styles.label}>Tag reuse threshold (similarity 0–1, default 0.82)</label>
           <input
             style={styles.input}
             value={form ? (form as unknown as Record<string, string>)["tag_reuse_threshold"] ?? "0.82" : "0.82"}
@@ -221,7 +221,7 @@ export function SettingsTab() {
             placeholder="0.82 — higher = stricter reuse, lower = more new tags"
           />
           <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 4 }}>
-            Env <code>ANCHOR_TAG_REUSE_THRESHOLD</code> overrides. Lower values create more tags, higher values reuse more aggressively. Effective threshold is read at ingest time.
+            Higher values reuse an existing tag only for very close keywords, so you get more tags; lower values merge more. Applies to documents indexed after the change. Env <code>ANCHOR_TAG_REUSE_THRESHOLD</code> overrides.
           </div>
         </div>
 

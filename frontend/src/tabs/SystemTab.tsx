@@ -93,7 +93,10 @@ export function SystemTab({ onConfigure, focusJobs }: { onConfigure?: () => void
           <div style={styles.card}>
             <div style={styles.cardTitle}>API</div>
             <div>version {status.version}</div>
-            <div style={{ fontSize: 12, color: theme.textMuted, wordBreak: "break-all" }}>{status.database}</div>
+            {/* The server masks the path as "redacted"; never print that as data. */}
+            {status.database && status.database !== "redacted" ? (
+              <div style={{ fontSize: 12, color: theme.textMuted, wordBreak: "break-all" }}>{status.database}</div>
+            ) : null}
           </div>
           <div style={styles.card}>
             <div style={styles.cardTitle}>

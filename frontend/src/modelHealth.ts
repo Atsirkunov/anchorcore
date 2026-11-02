@@ -41,3 +41,14 @@ export function modelIssues(health: Health | undefined): string[] {
   }
   return issues;
 }
+
+// Wave 1 (one notice rule): the single Ask-tab line for local mode without a
+// working answer model. Agent mode is never "not ready" for answers
+// (`answer_ready` is mode-aware), so it gets nothing. Older backends without
+// the flag stay silent.
+export const NO_ANSWER_MODEL_NOTICE = "Answers show matching passages until an answer model is set up.";
+
+export function askNotice(health: Health | undefined): string | null {
+  if (!health || health.components.answer_ready !== false) return null;
+  return NO_ANSWER_MODEL_NOTICE;
+}

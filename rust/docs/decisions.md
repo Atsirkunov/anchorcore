@@ -4,6 +4,18 @@ ADR log. Append newest first.
 
 ---
 
+## 2026-11-02 — R49.1/R49.3: Ask keeps its conversation by staying mounted; model health is a dot, not a banner
+
+* **Decision:** Ask stays mounted (hidden when another tab is open); the other tabs keep conditional rendering. The open tab lives in the URL hash (`#/sources`), not component state. Model-health issues move from the red app banner to a header status dot plus one dismissible line on Ask; the banner is kept for sources whose sync keeps failing.
+* **Context:** UX audit #2/#3 — switching tabs threw away the Ask conversation, and there was no reload/back/deep link. Audit #1 — a no-model setup showed four warnings at once, including a red banner on every tab for a supported configuration.
+* **Alternatives considered:**
+  - *Keep every tab mounted* — rejected: System, errors, MCP and the built-in embedder card poll every 1–15 s and would keep polling while hidden.
+  - *Lift Ask turns into a context* — workable, but touches `AskTab.tsx` throughout while R48.7 is open on it; staying mounted needs only `App.tsx`.
+  - *Path routes (`/ask`)* — rejected for now: the server already serves the SPA shell on every path, but hash routes need no server or `frontend.rs` change and never collide with API paths.
+* **Consequences:** Ask's state (turns, input, public-only) survives tab switches but not reloads. A Settings section route waits for the Settings rail (proposal §4). Old `banner-dismissed` localStorage only covers sync failures now.
+
+---
+
 ## 2026-10-30 — R45.25: the Entities tab becomes Records; no "Looks right" review queue
 
 * **Decision:** the tab is **Records** with three views — Decisions (default), Actions, Glossary. The "All entities" review queue is removed from the UI: Looks right (row + bulk), the confidence badge, the kind dropdown, the New/In-answers badges, duplicates and per-row conflict flagging. Decision and action rows gain **Dispute…** (reason required, `POST /entities/:id/dispute`, history kept) and **Restore** (`PATCH /entities/:id {"status":"unverified"}`); `GET /decisions` / `GET /actions` take `disputed=true` to list only disputed rows (the UI's "Disputed" filter). Every `/entities*` and `/review/*` endpoint stays for REST and MCP callers; no schema change.

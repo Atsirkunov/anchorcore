@@ -118,7 +118,7 @@ app URL, not shared storage.
 
 * `Ask your memory` — perfect, keep.
 * Follow-up hint ("N questions in context — follow-ups work") — excellent, keep.
-* Offline banner (`modelHealth.ts`): `Ollama is offline — …` followed by what actually degrades for the current mode (search keyword-only, local answers basic) — keep it mode-aware.
+* Model health (`modelHealth.ts`, R49.3): `Ollama is offline — …` followed by what actually degrades for the current mode (search keyword-only, local answers basic) — keep it mode-aware. It is the header status dot's tooltip, not a banner; Ask adds one dismissible line when no answer model works. Banners are for failures (a source whose sync keeps failing).
 
 ---
 

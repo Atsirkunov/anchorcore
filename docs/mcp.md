@@ -107,8 +107,9 @@ AnchorCore never picks a model behind the user's back. The contract:
   and — whenever `mode` is `context_only` or `none` — a plain-language
   `warning` (`agent_compose` is by design, §2.2, and never warns). Agents must not quote
   warned text as an answer: use the citations, or fall back to `search` +
-  their own model. The Ask tab renders the same warning as an amber
-  banner, so humans see it too.
+  their own model. The Ask tab shows `context_only` turns as
+  "Matching passages" with one hint line (R49.2) — the cited passages, never
+  the fallback text as an answer.
 - **No Ollama fallback for answers.** `answer_base_url` defaults to
   `https://api.openai.com/v1` — unlike embeddings, it never falls
   back to Ollama. A local-only setup must set

@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
+import { useRoute, type Tab } from "./useRoute";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
 import { ThemeSwitch } from "./ThemeSwitch";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { modelIssues } from "./modelHealth";
+import { askNotice, modelIssues } from "./modelHealth";
 import { useProjects } from "./useProjects";
 import { theme, radius } from "./theme";
 import { OnboardingWizard } from "./OnboardingWizard";
@@ -15,8 +16,6 @@ import { SourcesTab } from "./tabs/SourcesTab";
 import { SystemTab } from "./tabs/SystemTab";
 import { isActiveJob } from "./jobControlsText";
 import type { Job } from "./types";
-
-type Tab = "ask" | "sources" | "records" | "settings" | "system";
 
 function badgeText(jobs: Job[]): string {
   const running = jobs.filter((j) => j.status === "running").length;
@@ -38,7 +37,9 @@ const SECONDARY_TABS: { id: Tab; label: string }[] = [
 ];
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("ask");
+  // Wave 1: the tab is in the URL hash (reload, back, deep links).
+  const [tab, setTab] = useRoute();
+  const [askNoticeHidden, setAskNoticeHidden] = useState(() => readSession("ask-notice-dismissed") === "1");
   const [dismissedSig, setDismissedSig] = useState<string | null>(() => localStorage.getItem("banner-dismissed"));
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
   const [showWizard, setShowWizard] = useState(false);
@@ -89,7 +90,12 @@ export default function App() {
   const others = failingForBanner.map((s) => `Sync failing: ${s.name} (${s.count}×) — ${s.error ?? "unknown error"}`);
   const othersSig = JSON.stringify(others);
   const visibleOthers = dismissedSig === othersSig ? [] : others;
-  const bannerVisible = model.length > 0 || visibleOthers.length > 0;
+  // Wave 1 (one notice rule): model issues are a header dot plus one
+  // dismissible line on Ask — no longer a red banner on every tab. The
+  // banner is left for real failures (a source whose sync keeps failing).
+  const bannerVisible = visibleOthers.length > 0;
+  const notice = askNotice(health);
+  const status = statusDot(online, model, others.length);
 
   return (
     <div style={styles.wrap}>
@@ -172,33 +178,28 @@ export default function App() {
             </option>
           ))}
         </select>
-        <span style={{ color: online === false ? theme.red : online ? theme.green : theme.textDim, fontSize: 12, fontFamily: theme.mono }}>
-          {online === false ? "API offline" : online ? "API online" : "checking…"}
-        </span>
+        {status && (
+          <button
+            onClick={() => setTab(status.target)}
+            title={status.title}
+            aria-label={status.title}
+            style={{ ...styles.statusDot, color: status.color }}
+          >
+            <span aria-hidden="true" style={{ ...styles.dot, background: status.color }} />
+            {status.label}
+          </button>
+        )}
         <ThemeSwitch />
       </header>
       <UpdateBanner onOpen={() => setTab("system")} />
       {bannerVisible && (
         <div style={styles.banner}>
           <div style={{ flex: 1 }}>
-            {model.map((issue, i) => (
-              <div key={`m${i}`}>• {issue}</div>
-            ))}
             {visibleOthers.map((issue, i) => (
               <div key={`o${i}`}>• {issue}</div>
             ))}
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start", flexShrink: 0 }}>
-            {model.length > 0 && (
-              <>
-                <button onClick={() => setShowWizard(true)} style={styles.dismiss}>
-                  Set up models
-                </button>
-                <button onClick={() => setTab("settings")} style={styles.dismiss}>
-                  Settings
-                </button>
-              </>
-            )}
             {visibleOthers.length > 0 && (
               <button
                 onClick={() => {
@@ -214,9 +215,32 @@ export default function App() {
         </div>
       )}
       <main style={styles.main}>
-        <ErrorBoundary label="Ask">
-          {tab === "ask" && <AskTab projectId={effectiveProject ?? undefined} onGoSources={() => setTab("sources")} />}
-        </ErrorBoundary>
+        {tab === "ask" && notice && !askNoticeHidden && (
+          <p style={styles.askNotice}>
+            {notice}{" "}
+            <button onClick={() => setShowWizard(true)} style={styles.noticeLink}>
+              Set up
+            </button>
+            <button
+              onClick={() => {
+                writeSession("ask-notice-dismissed", "1");
+                setAskNoticeHidden(true);
+              }}
+              style={styles.noticeClose}
+              aria-label="Dismiss for this session"
+              title="Dismiss for this session"
+            >
+              ×
+            </button>
+          </p>
+        )}
+        {/* Wave 1 (UX audit #2): Ask stays mounted so switching tabs keeps
+            the conversation; the other tabs are server views and remount. */}
+        <div hidden={tab !== "ask"}>
+          <ErrorBoundary label="Ask">
+            <AskTab projectId={effectiveProject ?? undefined} onGoSources={() => setTab("sources")} />
+          </ErrorBoundary>
+        </div>
         <ErrorBoundary label="Sources">
           {tab === "sources" && <SourcesTab />}
         </ErrorBoundary>
@@ -234,7 +258,58 @@ export default function App() {
   );
 }
 
+function readSession(key: string): string | null {
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeSession(key: string, value: string) {
+  try {
+    sessionStorage.setItem(key, value);
+  } catch {
+    /* private mode: the notice just comes back on reload */
+  }
+}
+
+type Status = { color: string; label: string; title: string; target: Tab };
+
+/** One header dot for every health state; null when all is well. */
+function statusDot(online: boolean | null, model: string[], failing: number): Status | null {
+  if (online === false) return { color: theme.red, label: "Offline", title: "The AnchorCore server is not answering", target: "system" };
+  if (failing > 0) {
+    const title = `${failing} source${failing === 1 ? "" : "s"} failing to sync`;
+    return { color: theme.red, label: "Sync failing", title, target: "sources" };
+  }
+  if (model.length > 0) return { color: theme.amber, label: "Models", title: model.join("\n"), target: "settings" };
+  return null;
+}
+
 const styles: Record<string, React.CSSProperties> = {
+  statusDot: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    background: "none",
+    border: "none",
+    padding: 0,
+    fontSize: 12,
+    cursor: "pointer",
+  },
+  dot: { width: 8, height: 8, borderRadius: "50%", display: "inline-block", flexShrink: 0 },
+  askNotice: {
+    display: "flex",
+    alignItems: "baseline",
+    gap: 8,
+    flexWrap: "wrap",
+    margin: "0 0 20px",
+    fontSize: 13,
+    color: theme.textMuted,
+  },
+  noticeLink: { background: "none", border: "none", padding: 0, color: theme.text, textDecoration: "underline", cursor: "pointer", fontSize: 13 },
+  noticeClose: { marginLeft: "auto", background: "none", border: "none", padding: "0 4px", color: theme.textDim, cursor: "pointer", fontSize: 16, lineHeight: 1 },
   wrap: { minHeight: "100vh", background: theme.bg, color: theme.text, fontFamily: theme.sans },
   header: {
     display: "flex",

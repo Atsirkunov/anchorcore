@@ -3,17 +3,12 @@ import { api, RequestAbortedError } from "../api";
 import { theme, radius } from "../theme";
 import type { AskResponse, AskTurn } from "../types";
 import { AnswerView, type AnswerTurn } from "./AnswerView";
+import { onlySampleSources, SAMPLE_QUESTIONS, startersFromRecords } from "../starters";
 
 // R23.4: the server warns in plain language whenever no answer model ran
 // (`AskResponse.warning`, Some unless mode == "composed"). Carried per turn
 // so degraded output can never render without the banner.
 type Turn = AskTurn & { warning?: string | null };
-
-const SAMPLE_QUESTIONS = [
-  "What was decided about instant payments, and why?",
-  "Who owns billing migration?",
-  "Show the steps for it",
-];
 
 /** Question/answer pairs, newest first — the question reads above its answer. */
 function pairs(turns: Turn[]): AnswerTurn[] {
@@ -35,6 +30,7 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
   // folder roots, so citations read "specs/runbook.md" instead of an absolute path
   const [roots, setRoots] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
+  const starters = useStarters(roots, sourceCount, projectId);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,19 +51,19 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
     };
   }, []);
 
-  async function submit() {
-    if (!question.trim() || busy) return;
+  async function submit(text: string = question) {
+    if (!text.trim() || busy) return;
     setBusy(true);
     setError(null);
     const history = turns.slice(-6); // bound context; rewrite uses last 6 turns
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      const response = await api.ask(question, history, projectId, controller.signal, publicOnly);
+      const response = await api.ask(text, history, projectId, controller.signal, publicOnly);
       const warning = (response as AskResponse).warning ?? null;
       setTurns((prev) => [
         ...prev,
-        { role: "user", content: question },
+        { role: "user", content: text },
         { role: "assistant", content: response.answer, citations: response.citations, mode: response.mode, retrieval: response.retrieval, warning },
       ]);
       setQuestion("");
@@ -116,7 +112,7 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
           placeholder={turns.length ? "Follow-up… e.g. show the steps for it" : "What was decided about X, and why?"}
           style={{ flex: 1, padding: "0.8rem 1rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, fontSize: 14 }}
         />
-        <button onClick={submit} disabled={busy} style={{ padding: "0.6rem 1.2rem", borderRadius: radius, border: "none", background: theme.accent, color: theme.onAccent, cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.6 : 1 }}>
+        <button onClick={() => submit()} disabled={busy} style={{ padding: "0.6rem 1.2rem", borderRadius: radius, border: "none", background: theme.accent, color: theme.onAccent, cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.6 : 1 }}>
           {busy ? "Thinking…" : "Ask"}
         </button>
         {busy && (
@@ -165,14 +161,25 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
       )}
       {turns.length === 0 && !busy && (
         <div style={styles.starter}>
-          <p style={styles.starterLabel}>Try one</p>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {SAMPLE_QUESTIONS.map((q) => (
-              <button key={q} onClick={() => setQuestion(q)} style={styles.chip}>
-                {q}
-              </button>
-            ))}
-          </div>
+          {starters.length > 0 && (
+            <>
+              <p style={styles.starterLabel}>Try one</p>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {starters.map((q) => (
+                  <button
+                    key={q}
+                    onClick={() => {
+                      setQuestion(q);
+                      void submit(q);
+                    }}
+                    style={styles.chip}
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
           <p style={{ color: theme.textDim, margin: "12px 0 0", fontSize: 13 }}>
             Ask a question, then follow up naturally — e.g. "refund details" → "show the steps for it".
           </p>
@@ -189,6 +196,28 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
       )}
     </div>
   );
+}
+
+/** Wave 1: the bundled sample's questions on the sample corpus only;
+ *  otherwise up to two built from the person's newest records. */
+function useStarters(roots: string[], sourceCount: number | null, projectId?: number): string[] {
+  const sample = onlySampleSources(roots, sourceCount);
+  const [fromRecords, setFromRecords] = useState<string[]>([]);
+  useEffect(() => {
+    if (sample || !sourceCount) return;
+    let cancelled = false;
+    Promise.all([api.listDecisions({ project_id: projectId }), api.listActions({ project_id: projectId, state: "open" })])
+      .then(([d, a]) => {
+        if (!cancelled) setFromRecords(startersFromRecords(d.decisions, a.actions));
+      })
+      .catch(() => {
+        if (!cancelled) setFromRecords([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sample, sourceCount, projectId]);
+  return sample ? SAMPLE_QUESTIONS : fromRecords;
 }
 
 const styles: Record<string, React.CSSProperties> = {

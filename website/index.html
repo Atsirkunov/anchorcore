@@ -189,9 +189,8 @@
               <tr><th scope="row">internal (default)</th><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
               <tr><th scope="row">public</th><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
               <tr><th scope="row">sensitive</th><td class="y">✓</td><td class="y">✓</td><td class="n">✗ held back, audited</td></tr>
-              <tr><th scope="row">pii</th><td class="y">✓</td><td class="y">✓</td><td class="n">✗ held back, audited</td></tr>
             </table>
-            <p class="small">"Approved" means a local endpoint, one you list in <code>ANCHOR_TRUSTED_PROVIDERS</code>, or <code>ANCHOR_CLOUD_TRUST=1</code>. Sensitive and pii sources also skip cloud embedding. <code>pii</code> is a source label you choose; the separate per-document PII mark is manual and advisory today. Public sharing and agent <code>public_only</code> mode see only sources you marked public. Nothing is detected as PII automatically, and there is no SSO or role system in the local app.</p>
+            <p class="small">"Approved" means a local endpoint, one you list in <code>ANCHOR_TRUSTED_PROVIDERS</code>, <code>ANCHOR_CLOUD_TRUST=1</code>, or one you switch on in Settings → Sensitive sources. Sensitive sources also skip an unapproved cloud embedder, and AI agents reading through MCP or the skill need their own switch. A single document can be marked Sensitive too; the mark gates it like the label. Public sharing and agent <code>public_only</code> mode see only sources you marked public, minus anything Sensitive. Nothing is detected as personal data automatically, and there is no SSO or role system in the local app.</p>
           </div>
         </div>
       </div>

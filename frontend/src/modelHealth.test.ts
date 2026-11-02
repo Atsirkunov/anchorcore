@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { modelIssues } from "./modelHealth";
+import { askNotice, modelIssues } from "./modelHealth";
 import type { Health } from "./types";
 
 function health(over: Partial<Health["components"]> = {}): Health {
@@ -81,5 +81,13 @@ describe("modelIssues", () => {
     delete (h.components as Partial<Health["components"]>).answer_ready;
     delete (h.components as Partial<Health["components"]>).missing_models;
     expect(modelIssues(h).join(" ")).toMatch(/answer model/);
+  });
+});
+
+describe("askNotice (Wave 1)", () => {
+  it("speaks only when the answer model is not ready", () => {
+    expect(askNotice(health({ answer_ready: false }))).toMatch(/matching passages/);
+    expect(askNotice(health())).toBeNull();
+    expect(askNotice(undefined)).toBeNull();
   });
 });

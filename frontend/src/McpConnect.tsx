@@ -159,7 +159,7 @@ export function McpConnectCard() {
             </button>
           </details>
           <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6 }}>
-            Tools: ask + search (read-only) · audited as component=mcp
+            Read-only tools: search, ask, decisions, actions, documents, outlines and more. Every call is audited.
             {mcp.calls > 0 && (
               <span>
                 {" "}· {mcp.calls} {mcp.calls === 1 ? "call" : "calls"} audited

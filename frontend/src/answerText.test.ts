@@ -28,6 +28,36 @@ describe("parseAnswer", () => {
     expect(list.t === "ol" && list.items.length).toBe(2);
   });
 
+  it("renders headings as bold run-ins, never #", () => {
+    const blocks = parseAnswer("## Decision\nUse ledger v2 [S1].\n\n# Steps");
+    expect(blocks).toEqual([
+      { t: "p", parts: [{ t: "bold", v: "Decision" }, { t: "text", v: " " }, { t: "text", v: "Use ledger v2 " }, { t: "cite", n: 1 }, { t: "text", v: "." }] },
+      { t: "p", parts: [{ t: "bold", v: "Steps" }] },
+    ]);
+  });
+
+  it("keeps one ordered list across blank lines and honours its start", () => {
+    const blocks = parseAnswer("1. Flag\n\n1. Drain\n\n1. Monitor");
+    expect(blocks).toHaveLength(1);
+    const list = blocks[0];
+    expect(list.t === "ol" && list.items.length).toBe(3);
+    expect(list.t === "ol" && list.start).toBe(1);
+    const later = parseAnswer("3. Third\n4. Fourth")[0];
+    expect(later.t === "ol" && later.start).toBe(3);
+  });
+
+  it("re-flows hard-wrapped paragraphs and list items", () => {
+    const blocks = parseAnswer("The webhook\ndelivery retries.\n\n- first item that\nwraps here\n- second");
+    expect(blocks[0]).toEqual({ t: "p", parts: [{ t: "text", v: "The webhook delivery retries." }] });
+    const list = blocks[1];
+    expect(list.t === "ul" && list.items.length).toBe(2);
+    expect(JSON.stringify(list)).toContain("wraps here");
+  });
+
+  it("ends a list at a paragraph after a blank line", () => {
+    expect(parseAnswer("- a\n\nAfter.").map((b) => b.t)).toEqual(["ul", "p"]);
+  });
+
   it("never shows match marks", () => {
     const text = JSON.stringify(parseAnswer("Owned by Sarah, as stated in [S1] [match 7]."));
     expect(text).not.toContain("match");
