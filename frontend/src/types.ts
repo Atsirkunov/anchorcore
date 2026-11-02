@@ -81,6 +81,8 @@ export type Source = {
   last_error: string | null;
   error_count: number;
   created_at: string;
+  /** R48.14: the stored config with secrets masked (`***set***`), list only. */
+  config?: Record<string, string>;
 };
 
 export type Project = {

@@ -25,7 +25,7 @@ function badgeText(jobs: Job[]): string {
 
 // Primary = everyday flow; secondary = configure & inspect (airy grouped nav)
 // R45.25: Entities became Records (decisions, actions, glossary); the review
-// queue is gone from the UI, /entities* and /review/* stay for agents.
+// queue is gone from the UI, /entities* stay for agents (/review/* removed, R48.5).
 const PRIMARY_TABS: { id: Tab; label: string }[] = [
   { id: "ask", label: "Ask" },
   { id: "sources", label: "Sources" },

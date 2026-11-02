@@ -34,8 +34,9 @@ pub fn open_db(path: &Path) -> Result<Connection> {
         std::fs::create_dir_all(parent).ok();
     }
     let conn = Connection::open(path)?;
+    // R48.1: the wait comes first so the PRAGMAs below don't fail on a busy DB.
+    conn.busy_timeout(std::time::Duration::from_millis(5000))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "busy_timeout", 5000)?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     Ok(conn)
@@ -213,7 +214,7 @@ fn ensure_columns(conn: &Connection) -> Result<()> {
     // relationships.note (R27.4 conflict links)
     try_add_column(conn, "ALTER TABLE relationships ADD COLUMN note TEXT NOT NULL DEFAULT ''");
     // ensure sections table exists even on old DBs that migrated before 11_sections.sql
-    let _ = conn.execute(
+    crate::common::best_effort("ensure_columns", conn.execute(
         "CREATE TABLE IF NOT EXISTS sections (
             id INTEGER PRIMARY KEY,
             item_id INTEGER NOT NULL REFERENCES ingested_items(id) ON DELETE CASCADE,
@@ -230,13 +231,13 @@ fn ensure_columns(conn: &Connection) -> Result<()> {
             kind TEXT NOT NULL DEFAULT 'section',
             meta TEXT NOT NULL DEFAULT '{}',
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_sections_item_id ON sections(item_id)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_sections_parent_id ON sections(parent_id)", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_chunks_section_id ON chunks(section_id)", []);
+        )", []));
+    crate::common::best_effort("ensure_columns", conn.execute("CREATE INDEX IF NOT EXISTS ix_sections_item_id ON sections(item_id)", []));
+    crate::common::best_effort("ensure_columns", conn.execute("CREATE INDEX IF NOT EXISTS ix_sections_parent_id ON sections(parent_id)", []));
+    crate::common::best_effort("ensure_columns", conn.execute("CREATE INDEX IF NOT EXISTS ix_chunks_section_id ON chunks(section_id)", []));
     // R41.10: mirrors migration 31 for DBs whose migration run stopped early
     // (the re-chunk check below does one lookup per item).
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_chunks_item_id ON chunks(item_id)", []);
+    crate::common::best_effort("ensure_columns", conn.execute("CREATE INDEX IF NOT EXISTS ix_chunks_item_id ON chunks(item_id)", []));
     try_add_column(conn, "ALTER TABLE sections ADD COLUMN summary_hash TEXT NOT NULL DEFAULT ''");
     // R38.1 markdown ranges (mirrors 19_markdown_ranges.sql for straggler DBs)
     try_add_column(conn, "ALTER TABLE sections ADD COLUMN line_start INTEGER NOT NULL DEFAULT 0");
@@ -246,7 +247,7 @@ fn ensure_columns(conn: &Connection) -> Result<()> {
     try_add_column(conn, "ALTER TABLE chunks ADD COLUMN line_start INTEGER NOT NULL DEFAULT 0");
     try_add_column(conn, "ALTER TABLE chunks ADD COLUMN line_end INTEGER NOT NULL DEFAULT 0");
     // R14.4 tags
-    let _ = conn.execute(
+    crate::common::best_effort("ensure_columns", conn.execute(
         "CREATE TABLE IF NOT EXISTS tags (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL UNIQUE,
@@ -254,15 +255,15 @@ fn ensure_columns(conn: &Connection) -> Result<()> {
             embedding BLOB,
             count INTEGER NOT NULL DEFAULT 1,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_tags_name ON tags(name)", []);
-    let _ = conn.execute(
+        )", []));
+    crate::common::best_effort("ensure_columns", conn.execute("CREATE INDEX IF NOT EXISTS ix_tags_name ON tags(name)", []));
+    crate::common::best_effort("ensure_columns", conn.execute(
         "CREATE TABLE IF NOT EXISTS chunk_tags (
             chunk_id INTEGER NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
             tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
             PRIMARY KEY (chunk_id, tag_id)
-        )", []);
-    let _ = conn.execute("CREATE INDEX IF NOT EXISTS ix_chunk_tags_tag_id ON chunk_tags(tag_id)", []);
+        )", []));
+    crate::common::best_effort("ensure_columns", conn.execute("CREATE INDEX IF NOT EXISTS ix_chunk_tags_tag_id ON chunk_tags(tag_id)", []));
     ensure_uid_columns(conn);
     Ok(())
 }
@@ -290,7 +291,7 @@ fn ensure_uid_columns(conn: &Connection) {
     for table in UID_TABLES {
         try_add_column(conn, &format!("ALTER TABLE {} ADD COLUMN uid TEXT", table));
         let idx = format!("CREATE UNIQUE INDEX IF NOT EXISTS ix_{}_uid ON {}(uid)", table, table);
-        let _ = conn.execute(&idx, []);
+        crate::common::best_effort("ensure_uid_columns", conn.execute(&idx, []));
     }
 }
 
@@ -337,14 +338,14 @@ fn ensure_vec(conn: &Connection) {
             // fallback when sqlite-vec is not statically linked (Rust bundled sqlite):
             // plain table + sync triggers so the scan-backed stack has a stable
             // shape (pinned by tests/api_smoke.rs::fts_and_vec_tables_exist_without_vec0)
-            let _ = conn.execute("CREATE TABLE IF NOT EXISTS vec_chunks (rowid INTEGER PRIMARY KEY, embedding BLOB)", []);
+            crate::common::best_effort("ensure_vec", conn.execute("CREATE TABLE IF NOT EXISTS vec_chunks (rowid INTEGER PRIMARY KEY, embedding BLOB)", []));
             let fallbacks = [
                 r#"CREATE TRIGGER IF NOT EXISTS vec_chunks_ai AFTER INSERT ON chunks WHEN new.embedding IS NOT NULL BEGIN INSERT OR IGNORE INTO vec_chunks(rowid, embedding) VALUES (new.id, new.embedding); END"#,
                 r#"CREATE TRIGGER IF NOT EXISTS vec_chunks_ad AFTER DELETE ON chunks BEGIN DELETE FROM vec_chunks WHERE rowid = old.id; END"#,
                 r#"CREATE TRIGGER IF NOT EXISTS vec_chunks_au AFTER UPDATE OF embedding ON chunks WHEN new.embedding IS NOT NULL BEGIN DELETE FROM vec_chunks WHERE rowid = old.id; INSERT OR IGNORE INTO vec_chunks(rowid, embedding) VALUES (new.id, new.embedding); END"#,
             ];
             for trg in fallbacks {
-                let _ = conn.execute(trg, []);
+                crate::common::best_effort("ensure_vec", conn.execute(trg, []));
             }
             return;
         }
@@ -370,7 +371,7 @@ fn ensure_vec(conn: &Connection) {
     }
     // Backfill existing embeddings (like Python migration)
     let backfill = format!("INSERT OR IGNORE INTO vec_chunks(rowid, embedding) SELECT id, embedding FROM chunks WHERE embedding IS NOT NULL AND length(embedding) = {}", dim_bytes);
-    let _ = conn.execute(&backfill, []);
+    crate::common::best_effort("ensure_vec", conn.execute(&backfill, []));
 }
 
 fn vec_trigger_defs(conn: &Connection) -> Vec<(String, String)> {
@@ -393,7 +394,7 @@ fn run_migrations(conn: &mut Connection, plan: &mut UpgradePlan) -> Result<(), I
     // leaves the schema untouched). Fresh DBs have no such triggers: no-op.
     let saved = if plan.to > plan.from { vec_trigger_defs(conn) } else { Vec::new() };
     for (name, _) in &saved {
-        let _ = conn.execute(&format!("DROP TRIGGER IF EXISTS \"{}\"", name.replace('"', "\"\"")), []);
+        crate::common::best_effort("run_migrations", conn.execute(&format!("DROP TRIGGER IF EXISTS \"{}\"", name.replace('"', "\"\"")), []));
     }
     let result = apply_pending(conn, plan);
     // Migration 21 removes an orphaned vec0 table; its triggers then point at

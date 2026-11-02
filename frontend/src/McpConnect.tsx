@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "./api";
+import { api, errMsg } from "./api";
 import { theme, radius } from "./theme";
 import type { McpClient, McpInfo } from "./types";
 
@@ -88,7 +88,7 @@ export function McpConnectCard() {
         : r.error ?? "Failed";
       setNotes((n) => ({ ...n, [id]: note }));
     } catch (e) {
-      setNotes((n) => ({ ...n, [id]: e instanceof Error ? e.message : String(e) }));
+      setNotes((n) => ({ ...n, [id]: errMsg(e) }));
     } finally {
       setBusy(null);
       refresh();

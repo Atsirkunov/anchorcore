@@ -213,14 +213,11 @@ async fn reclassify_runs_as_job_and_rebuilds_entities() {
 }
 
 #[tokio::test]
-async fn review_endpoints_verify_entity() {
+async fn verify_entity_by_patch() {
     let srv = TestServer::start().await;
     let doc = decision_doc("Ship v1", "We decided to ship v1 in June", "Ann");
     let source = srv.mk_folder_source("notes", &[("a.md", &doc)], None).await;
     srv.sync_and_wait(source["id"].as_i64().unwrap(), "sync").await;
-
-    let low = srv.get("/review/low-confidence").await;
-    assert_eq!(low.status(), StatusCode::OK);
 
     let entities: Value = srv.get("/entities").await.json().await.expect("entities");
     let eid = entities[0]["id"].as_i64().unwrap();
@@ -473,42 +470,6 @@ async fn duplicate_sync_while_pending_returns_409() {
 }
 
 #[tokio::test]
-async fn merge_cleans_references() {
-    let srv = TestServer::start().await;
-    let d0 = decision_doc("Adopt stack zero", "We decided to adopt stack number zero", "Zed");
-    let d1 = decision_doc("Adopt stack one", "We decided to adopt stack number one", "Uma");
-    let source = srv.mk_folder_source("merge", &[("d0.md", &d0), ("d1.md", &d1)], None).await;
-    srv.sync_and_wait(source["id"].as_i64().unwrap(), "sync").await;
-
-    let entities: Value = srv.get("/entities").await.json().await.expect("entities");
-    assert!(entities.as_array().unwrap().len() >= 2, "{entities}");
-    let (a, b) = (
-        entities[0]["id"].as_i64().unwrap(),
-        entities[1]["id"].as_i64().unwrap(),
-    );
-    srv.db()
-        .execute(
-            "INSERT INTO merge_actions (entity_a_id, entity_b_id, status) VALUES (?1, ?2, 'proposed')",
-            [a, b],
-        )
-        .expect("plant proposal");
-    let proposal: i64 = srv
-        .db()
-        .query_row("SELECT id FROM merge_actions ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
-        .expect("proposal id");
-    srv.db()
-        .execute(
-            "INSERT INTO relationships (from_entity_id, to_entity_id, kind) VALUES (?1, ?2, 'related')",
-            [a, b],
-        )
-        .expect("plant relationship");
-
-    let resp = srv.post("/review/merge", &json!({"proposal_id": proposal, "decision": "merge"})).await;
-    assert_eq!(resp.status(), StatusCode::OK, "POST /review/merge");
-    assert_eq!(resp.json::<Value>().await.expect("merge")["merged"], true);
-}
-
-#[tokio::test]
 async fn full_document_chunking_with_citations() {
     let srv = TestServer::start().await;
     let mut paras = vec![decision_doc(
@@ -671,87 +632,6 @@ async fn onboarding_reports_ram_and_a_sized_answer_model() {
             }
         }
     }
-}
-
-#[tokio::test]
-async fn duplicates_paginate_and_filter() {
-    let srv = TestServer::start().await;
-    let source = srv.mk_folder_source("dups", &[("seed.md", "seed")], None).await;
-    let sid = source["id"].as_i64().unwrap();
-
-    // Near-identical entities, planted directly (the rules classifier is not
-    // guaranteed to produce duplicates from a corpus).
-    let summaries = [
-        "Annual budget approved for the fiscal year by the board",
-        "Fiscal year annual budget approved by the board",
-        "Hiring freeze stays in place until the third quarter",
-        "The hiring freeze remains until Q3 of this year",
-        "New Berlin office opens in January for the sales team",
-        "The Berlin office opens in January for sales",
-    ];
-    {
-        let db = srv.db();
-        for (i, s) in summaries.iter().enumerate() {
-            db.execute(
-                "INSERT INTO ingested_items (source_id, external_id, title, text, content_hash) VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![sid, format!("dup-{i}"), s, s, format!("hash-{i}")],
-            )
-            .expect("plant item");
-            let item_id = db.last_insert_rowid();
-            db.execute(
-                "INSERT INTO entities (item_id, kind, summary, reasoning, confidence, author, source_ref, status) VALUES (?1, 'decision', ?2, 'test fixture', 0.8, 'fixture', 'dups-fixture', 'unverified')",
-                rusqlite::params![item_id, s],
-            )
-            .expect("plant entity");
-        }
-    }
-
-    let all: Value = srv.get("/review/duplicates").await.json().await.expect("dups");
-    assert!(all.as_array().map(|a| !a.is_empty()).unwrap_or(false), "{all}");
-
-    let limited: Value = srv
-        .get("/review/duplicates?limit=1")
-        .await
-        .json()
-        .await
-        .expect("limited");
-    assert!(limited.as_array().unwrap().len() <= 1, "{limited}");
-
-    let page0: Value = srv
-        .get("/review/duplicates?limit=1&offset=0")
-        .await
-        .json()
-        .await
-        .expect("page0");
-    let page1: Value = srv
-        .get("/review/duplicates?limit=1&offset=1")
-        .await
-        .json()
-        .await
-        .expect("page1");
-    if !page0.as_array().unwrap().is_empty() && !page1.as_array().unwrap().is_empty() {
-        assert_ne!(page0[0]["id"], page1[0]["id"], "offset must skip the previous page");
-    }
-
-    let by_kind: Value = srv
-        .get("/review/duplicates?kind=decision")
-        .await
-        .json()
-        .await
-        .expect("by_kind");
-    assert!(by_kind.is_array(), "{by_kind}");
-    assert!(
-        by_kind.as_array().unwrap().iter().all(|p| p.get("entity_a_id").is_some() && p.get("entity_b_id").is_some()),
-        "{by_kind}"
-    );
-
-    let huge: Value = srv
-        .get("/review/duplicates?limit=9999")
-        .await
-        .json()
-        .await
-        .expect("huge");
-    assert!(huge.as_array().unwrap().len() <= 100, "limit must clamp");
 }
 
 #[test]

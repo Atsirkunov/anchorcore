@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { AGENT_COMPOSE_HINT, isAgentCompose } from "../answerMode";
-import { api } from "../api";
+import { api, errMsg } from "../api";
 import { theme } from "../theme";
 import type { Citation, LlmMode, OnboardingState } from "../types";
 import { styles } from "./styles";
@@ -23,7 +23,7 @@ export function AskStep({ state, mode }: { state: OnboardingState | null; mode: 
       const warning = (res as unknown as { warning?: string | null }).warning ?? null;
       setAnswer({ text: res.answer, citations: res.citations, mode: res.mode, warning });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(false);
     }

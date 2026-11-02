@@ -192,7 +192,7 @@ environment"). If the user is not comfortable sharing, use a local model.
 
 ## 3. Index the knowledge (sources)
 
-`GET /sources` first. Create with `POST /sources`:
+`GET /sources` first (each row carries its config, secrets shown as `***set***`). Create with `POST /sources`:
 
 ```json
 {"connector":"folder","name":"Handbook","label":"internal","config":{"path":"/abs/path"}}
@@ -238,8 +238,6 @@ repo's `sample/` corpus (release zips do not include it; clone
   the provider. Mark before connecting a cloud embedder — vectors already sent
   are not recalled. The auto-detect/review endpoints are retired — do not call
   `/pii/*`.
-- Housekeeping: `GET /review/low-confidence`, `GET /review/duplicates`,
-  `POST /review/merge {"proposal_id":…,"decision":"merge"|"dismiss"}`.
 
 ## 5. Connect the user's agent (MCP preferred, API fallback)
 

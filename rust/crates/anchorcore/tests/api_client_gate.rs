@@ -262,11 +262,10 @@ async fn entity_reads_follow_the_caller_rule() {
 }
 
 #[tokio::test]
-async fn related_and_review_lists_drop_sensitive_rows_for_agents() {
+async fn related_list_drops_sensitive_rows_for_agents() {
     let srv = TestServer::start().await;
     let (sens_item, open_item) = synced_pair(&srv, "gate-rel").await;
-    // Planted links: a sensitive entity related to an open one, and a
-    // low-confidence row on each side.
+    // Planted link: a sensitive entity related to an open one.
     let db = srv.db();
     let sens_eid: i64 = db
         .query_row(
@@ -284,30 +283,12 @@ async fn related_and_review_lists_drop_sensitive_rows_for_agents() {
         .expect("open entity");
     db.execute("INSERT INTO relationships (from_entity_id, to_entity_id) VALUES (?1, ?2)", rusqlite::params![open_eid, sens_eid])
         .expect("relationship");
-    db.execute(
-        "INSERT INTO entities (item_id, kind, summary, window_text, confidence, status) VALUES (?1, 'person', 'gate-rel-sensitive-low', 'low sealed text', 0.1, 'unverified')",
-        [sens_item],
-    )
-    .expect("low sensitive");
-    db.execute(
-        "INSERT INTO entities (item_id, kind, summary, window_text, confidence, status) VALUES (?1, 'person', 'gate-rel-open-low', 'low open text', 0.1, 'unverified')",
-        [open_item],
-    )
-    .expect("low open");
     drop(db);
 
     let agent: Value = srv.get_json(&format!("/entities/{open_eid}/related")).await;
     assert!(agent.as_array().unwrap().iter().all(|e| e["id"] != sens_eid), "sensitive related drops: {agent}");
     let ui: Value = srv.get_ui_json(&format!("/entities/{open_eid}/related")).await;
     assert!(ui.as_array().unwrap().iter().any(|e| e["id"] == sens_eid), "UI sees the link: {ui}");
-
-    let agent: Value = srv.get_json("/review/low-confidence").await;
-    assert!(
-        agent.as_array().unwrap().iter().all(|e| e["summary"] != "gate-rel-sensitive-low"),
-        "sensitive review rows drop: {agent}"
-    );
-    let ui: Value = srv.get_ui_json("/review/low-confidence").await;
-    assert!(ui.as_array().unwrap().iter().any(|e| e["summary"] == "gate-rel-sensitive-low"), "UI reviews everything: {ui}");
 }
 
 #[tokio::test]

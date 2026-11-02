@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "./api";
+import { api, errMsg } from "./api";
 import { radius, theme } from "./theme";
 import { downloadPct, embedderLine, MB } from "./builtinEmbedderText";
 import type { EmbedModelStatus } from "./types";
@@ -24,7 +24,7 @@ export function BuiltinEmbedder({ onReady }: { onReady?: () => void }) {
         setStatus(s);
         if (s.ready) onReadyRef.current?.();
       })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setError(errMsg(e)));
   }, []);
 
   useEffect(() => refresh(), [refresh]);
@@ -43,7 +43,7 @@ export function BuiltinEmbedder({ onReady }: { onReady?: () => void }) {
       await api.downloadEmbedModel();
       refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   }
 

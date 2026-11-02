@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "./api";
+import { api, errMsg } from "./api";
 import { theme } from "./theme";
 import type { LlmMode, OnboardingState } from "./types";
 import { AgentChannelStep } from "./wizard/AgentChannelStep";
@@ -34,7 +34,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
       setError(null);
       return fresh;
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
       return null;
     }
   }, []);
@@ -43,7 +43,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
     api
       .onboarding()
       .then(setState)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setError(errMsg(e)));
     api
       .getSettings()
       .then((s) => {
@@ -61,7 +61,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
       await api.updateSettings({ llm_mode: m });
       await recheck();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   }
 

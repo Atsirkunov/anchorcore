@@ -264,8 +264,7 @@ async fn trigger_sync(state: AppState, sid: i64) {
     // Box pipeline future to reduce stack (huge `classify_and_store` future)
     tokio::spawn(Box::pin(async move {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path)
-            .unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let job_id = match jobs.create_job(&conn, sid, "sync") {
             Ok(id) => id,
             // R30.1: background triggers coalesce silently onto the active job

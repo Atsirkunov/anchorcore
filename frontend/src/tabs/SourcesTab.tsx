@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api } from "../api";
+import { api, errMsg } from "../api";
 import { useJobsPoll } from "../hooks/useJobsPoll";
 import { theme } from "../theme";
 import { isActiveJob } from "../jobControlsText";
@@ -24,19 +24,10 @@ export function SourcesTab() {
       .listSources()
       .then((list) => {
         setSources(list);
-        Promise.all(
-          list.map((s) =>
-            api.sourceConfig(s.id).then((cfg) => ({ id: s.id, cfg })).catch(() => null),
-          ),
-        )
-          .then((all) => {
-            const map: Record<number, Record<string, string>> = {};
-            for (const entry of all) if (entry) map[entry.id] = entry.cfg;
-            setConfigs(map);
-          })
-          .catch(() => {});
+        // R48.14: the list carries each masked config — no request per source.
+        setConfigs(Object.fromEntries(list.map((s) => [s.id, s.config ?? {}])));
       })
-      .catch((e) => setError(String(e)));
+      .catch((e) => setError(errMsg(e)));
   }, []);
 
   useEffect(() => {

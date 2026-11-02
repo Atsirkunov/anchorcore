@@ -7,10 +7,11 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
+use tower_http::catch_panic::CatchPanicLayer;
 
 use crate::{
     answer, assets_api, auth, backup, entities, frontend, fsbrowse, glossary, health, items, jobs,
-    mcp_setup, ollama, projects, records_api, report, review, sections, security, settings,
+    mcp_setup, ollama, projects, records_api, report, sections, security, settings,
     skills_setup, sources, stubs, system, tags,
 };
 
@@ -49,9 +50,6 @@ pub fn build_router(state: health::AppState) -> Router {
         .route("/media", get(assets_api::list_handler))
         .route("/media/:uid", get(assets_api::media_handler).patch(assets_api::patch_handler))
         .route("/entities/:id/context", get(entities::context_handler))
-        .route("/review/low-confidence", get(review::low_confidence_handler))
-        .route("/review/duplicates", get(review::duplicates_handler))
-        .route("/review/merge", post(review::merge_handler))
         // R45.13: people-owned glossary (replaces /review/vocabulary)
         .route("/glossary", get(glossary::list_handler).post(glossary::create_handler))
         .route("/glossary/:id", delete(glossary::delete_handler))
@@ -116,7 +114,8 @@ pub fn build_router(state: health::AppState) -> Router {
         )
         // frontend (R5.1) — must be last, SPA fallback to index.html
         .fallback(frontend::handler)
-        // Layers: outermost -> innermost: Host/Origin -> CORS -> Startup -> CSRF -> Auth
+        // Layers: outermost -> innermost: Host/Origin -> CORS -> Startup -> CSRF -> Auth -> CatchPanic
+        .layer(panic_layer())
         .layer(middleware::from_fn_with_state(state.clone(), auth::require_auth_middleware))
         .layer(middleware::from_fn_with_state(state.clone(), security::csrf_middleware))
         // R41.7: while the database upgrades, only /health + the SPA shell
@@ -169,4 +168,42 @@ async fn search_handler(
     let resp = answer::search(&state.settings, &state.embedder, req, &state.data_dir, ui_caller).await;
     report::record_search(&query, scope, &resp);
     Ok(axum::Json(resp))
+}
+
+/// R48.2: a panicking handler answers 500 `{"detail"}` (and is logged)
+/// instead of dropping the connection, which the UI shows as "Failed to fetch".
+fn panic_layer() -> CatchPanicLayer<fn(Box<dyn std::any::Any + Send + 'static>) -> axum::response::Response> {
+    CatchPanicLayer::custom(panic_response as fn(_) -> _)
+}
+
+fn panic_response(payload: Box<dyn std::any::Any + Send + 'static>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let msg = crate::common::panic_message(&*payload);
+    tracing::error!(target: "anchorcore::http", "handler panicked: {msg}");
+    (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        axum::Json(serde_json::json!({"detail": format!("internal error: {msg}")})),
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+mod panic_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn panicking_handler_answers_500_with_detail() {
+        let app: Router = Router::new()
+            .route("/boom", get(|| async { panic!("disk on fire") as &'static str }))
+            .layer(panic_layer());
+        let res = app
+            .oneshot(axum::http::Request::get("/boom").body(axum::body::Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 16).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["detail"], "internal error: disk on fire");
+    }
 }

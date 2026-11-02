@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { sensitiveHint } from "../../sharingText";
 import { SHARING_QUERY_KEY } from "../../sharingText";
-import { api } from "../../api";
+import { api, errMsg } from "../../api";
 import { theme, commonStyles, radius } from "../../theme";
 import type { Job, Source } from "../../types";
 import { JobStopButton, StopNoteLine } from "../../JobStopButton";
@@ -80,7 +80,7 @@ export function SourceRow({
       await queryClient.invalidateQueries({ queryKey: ["jobs"] });
     } catch (e) {
       // R30.1: a 409 here names the live job ("…already active…(job N)").
-      setActionError(e instanceof Error ? e.message : String(e));
+      setActionError(errMsg(e));
     } finally {
       setBusy(false);
     }
@@ -93,7 +93,7 @@ export function SourceRow({
       await api.deleteSource(id);
       onChanged();
     } catch (e) {
-      setActionError(e instanceof Error ? e.message : String(e));
+      setActionError(errMsg(e));
     }
   }
 

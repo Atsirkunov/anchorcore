@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, RequestAbortedError } from "../api";
+import { api, errMsg, RequestAbortedError } from "../api";
 import { theme, radius } from "../theme";
 import type { AskResponse, AskTurn } from "../types";
 import { AnswerView, type AnswerTurn } from "./AnswerView";
@@ -36,12 +36,12 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
     let cancelled = false;
     api
       .listSources()
-      .then(async (sources) => {
+      .then((sources) => {
         if (cancelled) return;
         setSourceCount(sources.length);
+        // R48.14: folder roots come from the masked config on the list.
         const folders = sources.filter((s) => s.connector === "folder");
-        const configs = await Promise.all(folders.map((s) => api.sourceConfig(s.id).catch(() => ({}) as Record<string, string>)));
-        if (!cancelled) setRoots(configs.map((c) => c.path).filter((p): p is string => !!p));
+        setRoots(folders.map((s) => s.config?.path).filter((p): p is string => !!p));
       })
       .catch(() => {
         if (!cancelled) setSourceCount(null);
@@ -68,11 +68,8 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
       ]);
       setQuestion("");
     } catch (e) {
-      if (e instanceof RequestAbortedError) {
-        setError("Question cancelled.");
-      } else {
-        setError(e instanceof Error ? e.message : String(e));
-      }
+      // R48.7: only a real cancel says so; a timeout explains itself.
+      setError(e instanceof RequestAbortedError ? "Question cancelled." : errMsg(e));
     } finally {
       abortRef.current = null;
       setBusy(false);

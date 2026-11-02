@@ -604,7 +604,7 @@ fn fetch_item(conn: &rusqlite::Connection, item_id: i64) -> Option<Value> {
                     r.get(2)?,
                     r.get(3)?,
                     r.get::<_, Option<String>>(4)?.unwrap_or_default(),
-                    r.get::<_, Option<i64>>(5).ok().flatten().is_some_and(|v| v == 1),
+                    crate::common::gate_marked(r, 5),
                 ))
             },
         )
@@ -688,7 +688,8 @@ pub async fn patch_handler(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let conn = crate::common::open_data_db(&data_dir);
+        use crate::common::db_err;
+        let conn = crate::common::try_open_data_db(&data_dir).map_err(db_err)?;
         crate::common::require_row(&conn, "ingested_items", item_id, "Item not found")?;
         if payload.is_pii {
             return Err((
@@ -696,26 +697,24 @@ pub async fn patch_handler(
                 Json(json!({"detail": "is_pii is removed; use sensitive_override (true to mark Sensitive, null to clear)"})),
             ));
         }
+        if payload.sensitive_override == Some(Some(false)) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"detail": "sensitive_override false is reserved; send true to mark Sensitive or null to clear"})),
+            ));
+        }
+        // R48.12: the Sensitive mark and the glossary mark land together, and a
+        // failed mark is an error — it used to answer 200 with the item unprotected.
+        let tx = conn.unchecked_transaction().map_err(db_err)?;
         if let Some(write) = payload.sensitive_override {
-            match write {
-                Some(true) => {
-                    let _ = conn.execute("UPDATE ingested_items SET sensitive_override = 1, updated_at = datetime('now') WHERE id = ?1", [item_id]);
-                }
-                None => {
-                    let _ = conn.execute("UPDATE ingested_items SET sensitive_override = NULL, updated_at = datetime('now') WHERE id = ?1", [item_id]);
-                }
-                Some(false) => {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({"detail": "sensitive_override false is reserved; send true to mark Sensitive or null to clear"})),
-                    ));
-                }
-            }
+            let value: Option<i64> = write.map(|_| 1);
+            tx.execute("UPDATE ingested_items SET sensitive_override = ?1, updated_at = datetime('now') WHERE id = ?2", rusqlite::params![value, item_id])
+                .map_err(db_err)?;
         }
         if let Some(mark) = payload.is_glossary {
-            apply_glossary_mark(&conn, item_id, mark)
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": e}))))?;
+            apply_glossary_mark(&tx, item_id, mark).map_err(db_err)?;
         }
+        tx.commit().map_err(db_err)?;
         match fetch_item(&conn, item_id) {
             Some(v) => Ok(v),
             None => Err((StatusCode::NOT_FOUND, Json(json!({"detail": "Item not found"})))),

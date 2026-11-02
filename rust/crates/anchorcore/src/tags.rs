@@ -280,7 +280,7 @@ pub async fn list_handler(State(state): State<AppState>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let mut stmt = match conn.prepare("SELECT id, name, description, count, created_at FROM tags ORDER BY count DESC, name ASC") {
             Ok(s) => s,
             Err(e) => return Json(json!({"error": e.to_string()})),
@@ -331,7 +331,7 @@ pub async fn chunks_handler(
     let gate = crate::read_gate::Gate::from_request(&headers, &state.settings);
     let (result, blocked) = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let mut stmt = match conn.prepare(
             "SELECT c.id, c.item_id, c.section_id, c.kind, c.source_ref, c.content, c.path, c.created_at, \
              COALESCE(s.label, 'internal'), COALESCE(i.sensitive_override, 0) \

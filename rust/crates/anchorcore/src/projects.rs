@@ -8,6 +8,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::common::{db_err, ApiError};
 use crate::health::AppState;
 
 #[derive(Deserialize)]
@@ -46,7 +47,7 @@ pub async fn list_handler(State(state): State<AppState>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let mut stmt = conn.prepare("SELECT id FROM projects ORDER BY created_at").unwrap();
         let ids: Vec<i64> = stmt.query_map([], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
         let out: Vec<Value> = ids.into_iter().filter_map(|id| project_json(&conn, id)).collect();
@@ -64,39 +65,56 @@ pub async fn create_handler(State(state): State<AppState>, Json(payload): Json<P
     let data_dir = state.data_dir.clone();
     let name = payload.name.trim().to_string();
     let source_ids = payload.source_ids.unwrap_or_default();
-    let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        // validate source_ids before write (parametrized)
-        if !source_ids.is_empty() {
-            let placeholders = source_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let sql = format!("SELECT id FROM sources WHERE id IN ({})", placeholders);
-            let mut stmt = conn.prepare(&sql).unwrap();
-            let found: Vec<i64> = stmt.query_map(rusqlite::params_from_iter(source_ids.iter()), |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
-            if found.len() != source_ids.len() {
-                let found_set: std::collections::HashSet<i64> = found.into_iter().collect();
-                let missing: Vec<i64> = source_ids.iter().filter(|id| !found_set.contains(id)).cloned().collect();
-                return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"detail": format!("unknown source ids: {:?}", missing)}))));
-            }
-        }
-        conn.execute("INSERT INTO projects (name, uid) VALUES (?1, ?2)", rusqlite::params![name, crate::db::new_uid()]).unwrap();
-        let pid = conn.last_insert_rowid();
-        for sid in &source_ids {
-            let _ = conn.execute("INSERT INTO project_sources (project_id, source_id) VALUES (?1, ?2)", rusqlite::params![pid, sid]);
-        }
-        let j = project_json(&conn, pid).unwrap();
-        Ok((StatusCode::CREATED, Json(j)))
+    tokio::task::spawn_blocking(move || {
+        let conn = crate::common::try_open_data_db(&data_dir).map_err(db_err)?;
+        let source_ids = checked_source_ids(&conn, &source_ids)?;
+        let tx = conn.unchecked_transaction().map_err(db_err)?;
+        tx.execute("INSERT INTO projects (name, uid) VALUES (?1, ?2)", rusqlite::params![name, crate::db::new_uid()]).map_err(db_err)?;
+        let pid = tx.last_insert_rowid();
+        set_project_sources(&tx, pid, &source_ids)?;
+        tx.commit().map_err(db_err)?;
+        Ok((StatusCode::CREATED, Json(read_project(&conn, pid)?)))
     })
     .await
-    .unwrap();
-    result
+    .map_err(db_err)?
+}
+
+/// R48.12: requested source ids, deduplicated, all existing — checked before
+/// any write (a repeated id used to fail as "unknown source ids: []").
+fn checked_source_ids(conn: &rusqlite::Connection, ids: &[i64]) -> Result<Vec<i64>, ApiError> {
+    let wanted: Vec<i64> = ids.iter().copied().collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    if wanted.is_empty() {
+        return Ok(wanted);
+    }
+    let sql = format!("SELECT id FROM sources WHERE id IN ({})", crate::common::placeholders(wanted.len()));
+    let found: std::collections::HashSet<i64> = conn
+        .prepare(&sql)
+        .and_then(|mut stmt| stmt.query_map(rusqlite::params_from_iter(wanted.iter()), |r| r.get(0))?.collect())
+        .map_err(db_err)?;
+    let missing: Vec<i64> = wanted.iter().filter(|id| !found.contains(id)).copied().collect();
+    if !missing.is_empty() {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"detail": format!("unknown source ids: {:?}", missing)}))));
+    }
+    Ok(wanted)
+}
+
+fn set_project_sources(tx: &rusqlite::Connection, project_id: i64, source_ids: &[i64]) -> Result<(), ApiError> {
+    tx.execute("DELETE FROM project_sources WHERE project_id = ?1", [project_id]).map_err(db_err)?;
+    for sid in source_ids {
+        tx.execute("INSERT INTO project_sources (project_id, source_id) VALUES (?1, ?2)", rusqlite::params![project_id, sid]).map_err(db_err)?;
+    }
+    Ok(())
+}
+
+fn read_project(conn: &rusqlite::Connection, project_id: i64) -> Result<Value, ApiError> {
+    project_json(conn, project_id).ok_or_else(|| (StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Project not found"}))))
 }
 
 pub async fn default_handler(State(state): State<AppState>) -> Json<Value> {
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let pid: Option<i64> = conn.query_row("SELECT id FROM projects WHERE is_default = 1 LIMIT 1", [], |r| r.get(0)).ok();
         if let Some(id) = pid {
             project_json(&conn, id).unwrap_or(Value::Null)
@@ -113,7 +131,7 @@ pub async fn get_handler(State(state): State<AppState>, Path(project_id): Path<i
     let data_dir = state.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         match project_json(&conn, project_id) {
             Some(v) => Ok(Json(v)),
             None => Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Project not found"})))),
@@ -126,64 +144,51 @@ pub async fn get_handler(State(state): State<AppState>, Path(project_id): Path<i
 
 pub async fn patch_handler(State(state): State<AppState>, Path(project_id): Path<i64>, Json(payload): Json<ProjectUpdate>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        let exists: bool = conn.query_row("SELECT 1 FROM projects WHERE id = ?1", [project_id], |_| Ok(())).is_ok();
-        if !exists {
-            return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Project not found"}))));
-        }
-        if let Some(name) = payload.name {
-            if name.trim().is_empty() {
-                return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"detail":"project name cannot be empty"}))));
-            }
-            let _ = conn.execute("UPDATE projects SET name = ?1 WHERE id = ?2", rusqlite::params![name.trim(), project_id]);
-        }
-        if let Some(is_default) = payload.is_default {
-            if is_default {
-                let _ = conn.execute("UPDATE projects SET is_default = 0 WHERE id != ?1", [project_id]);
-                let _ = conn.execute("UPDATE projects SET is_default = 1 WHERE id = ?1", [project_id]);
-            }
-        }
-        if let Some(sids) = payload.source_ids {
-            // validate (parametrized)
-            if !sids.is_empty() {
-                let placeholders = sids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-                let sql = format!("SELECT id FROM sources WHERE id IN ({})", placeholders);
-                let mut stmt = conn.prepare(&sql).unwrap();
-                let found: Vec<i64> = stmt.query_map(rusqlite::params_from_iter(sids.iter()), |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
-                if found.len() != sids.len() {
-                    let found_set: std::collections::HashSet<i64> = found.into_iter().collect();
-                    let missing: Vec<i64> = sids.iter().filter(|id| !found_set.contains(id)).cloned().collect();
-                    return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"detail": format!("unknown source ids: {:?}", missing)}))));
-                }
-            }
-            let _ = conn.execute("DELETE FROM project_sources WHERE project_id = ?1", [project_id]);
-            for sid in sids {
-                let _ = conn.execute("INSERT INTO project_sources (project_id, source_id) VALUES (?1, ?2)", rusqlite::params![project_id, sid]);
-            }
-        }
-        Ok(Json(project_json(&conn, project_id).unwrap()))
-    })
-    .await
-    .unwrap();
-    result
+    tokio::task::spawn_blocking(move || patch_project(&data_dir, project_id, payload))
+        .await
+        .map_err(db_err)?
+}
+
+/// R48.12: validate everything first, then one transaction.
+fn patch_project(data_dir: &str, project_id: i64, payload: ProjectUpdate) -> Result<Json<Value>, ApiError> {
+    let conn = crate::common::try_open_data_db(data_dir).map_err(db_err)?;
+    read_project(&conn, project_id)?;
+    let name = payload.name.map(|n| n.trim().to_string());
+    if name.as_deref() == Some("") {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"detail":"project name cannot be empty"}))));
+    }
+    let source_ids = payload.source_ids.map(|ids| checked_source_ids(&conn, &ids)).transpose()?;
+    let tx = conn.unchecked_transaction().map_err(db_err)?;
+    write_project_patch(&tx, project_id, name, payload.is_default == Some(true), source_ids)?;
+    tx.commit().map_err(db_err)?;
+    Ok(Json(read_project(&conn, project_id)?))
+}
+
+/// `make_default: false` is a no-op: some project is always the default once one was picked.
+fn write_project_patch(tx: &rusqlite::Connection, project_id: i64, name: Option<String>, make_default: bool, source_ids: Option<Vec<i64>>) -> Result<(), ApiError> {
+    if let Some(name) = name {
+        tx.execute("UPDATE projects SET name = ?1 WHERE id = ?2", rusqlite::params![name, project_id]).map_err(db_err)?;
+    }
+    if make_default {
+        tx.execute("UPDATE projects SET is_default = (id = ?1)", [project_id]).map_err(db_err)?;
+    }
+    if let Some(ids) = source_ids {
+        set_project_sources(tx, project_id, &ids)?;
+    }
+    Ok(())
 }
 
 pub async fn delete_handler(State(state): State<AppState>, Path(project_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
-        let exists: bool = conn.query_row("SELECT 1 FROM projects WHERE id = ?1", [project_id], |_| Ok(())).is_ok();
-        if !exists {
-            return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"detail":"Project not found"}))));
-        }
-        let _ = conn.execute("DELETE FROM project_sources WHERE project_id = ?1", [project_id]);
-        let _ = conn.execute("DELETE FROM projects WHERE id = ?1", [project_id]);
+    tokio::task::spawn_blocking(move || {
+        let conn = crate::common::try_open_data_db(&data_dir).map_err(db_err)?;
+        read_project(&conn, project_id)?;
+        let tx = conn.unchecked_transaction().map_err(db_err)?;
+        tx.execute("DELETE FROM project_sources WHERE project_id = ?1", [project_id]).map_err(db_err)?;
+        tx.execute("DELETE FROM projects WHERE id = ?1", [project_id]).map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
         Ok(Json(serde_json::json!({"deleted": true})))
     })
     .await
-    .unwrap();
-    result
+    .map_err(db_err)?
 }

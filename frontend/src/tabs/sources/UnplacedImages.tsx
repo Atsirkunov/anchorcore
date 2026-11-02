@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "../../api";
+import { api, errMsg } from "../../api";
 import { Thumb } from "../../ImageStrip";
 import { theme, commonStyles, radius } from "../../theme";
 import type { ItemMeta, MediaRow, Source } from "../../types";
@@ -27,7 +27,7 @@ export function UnplacedImages({ sources }: { sources: Source[] }) {
         setRows(list.items);
         setTotal(list.total);
       })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setError(errMsg(e)));
     // Both counts: the badge, and whether the panel shows at all (ignored
     // images must stay restorable when nothing is left unplaced).
     Promise.all([api.media({ attribution: "none", limit: 1 }), api.media({ attribution: "ignored", limit: 1 })])
@@ -104,7 +104,7 @@ function ImageCard({ row, onDone }: { row: MediaRow; onDone: () => void }) {
       await api.patchMedia(row.asset_id, body);
       onDone();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(false);
     }

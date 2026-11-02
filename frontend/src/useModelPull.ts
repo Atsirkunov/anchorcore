@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api } from "./api";
+import { api, errMsg } from "./api";
 import type { PullProgress } from "./types";
 
 export type PullSummary = {
@@ -54,7 +54,7 @@ export function useModelPull() {
       }
       throw new Error("timed out waiting for the model download. Check the connection and retry.");
     } catch (e) {
-      setPullError(e instanceof Error ? e.message : String(e));
+      setPullError(errMsg(e));
       return [];
     } finally {
       setPulling(false);

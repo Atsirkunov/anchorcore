@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use crate::{db, embedder::Embedder, jobs::JobManager, settings::SettingsService};
+use crate::{embedder::Embedder, jobs::JobManager, settings::SettingsService};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -15,14 +15,17 @@ pub struct AppState {
 }
 
 pub async fn health(State(state): State<AppState>) -> Json<Value> {
-    let (failing_sources, pending_embeddings) = {
-        let db_path = crate::db::resolve_db_path(&state.data_dir);
-        let conn = db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
-        let failing = failing_sources(&conn);
-        let pending: i64 = conn
-            .query_row("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL", [], |r| r.get(0))
-            .unwrap_or(0);
-        (failing, pending)
+    // R48.1: read-only, so an unopenable DB reports nothing here (the error is
+    // logged) rather than failing the whole health check.
+    let (failing_sources, pending_embeddings) = match crate::common::try_open_data_db(&state.data_dir) {
+        Ok(conn) => {
+            let failing = failing_sources(&conn);
+            let pending: i64 = conn
+                .query_row("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL", [], |r| r.get(0))
+                .unwrap_or(0);
+            (failing, pending)
+        }
+        Err(_) => (Vec::new(), 0),
     };
 
     // Mirrors backend/app/status.py:19 ollama_reachable + answer_provider via SettingsService

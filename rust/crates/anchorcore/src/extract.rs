@@ -1701,139 +1701,143 @@ const RTF_SKIP_DESTS: &[&str] = &[
 
 /// Minimal RTF reader: control words, `\uN` escapes, `\'hh` (cp1252) bytes,
 /// paragraph breaks, and skipped destination groups (`{\*\...}`, font/color
-/// tables, styles, embedded pictures).
+/// tables, styles, embedded pictures). The input is already-decoded text, so
+/// plain characters are copied whole (R48.9).
 fn rtf_to_text(rtf: &str) -> String {
-    let b = rtf.as_bytes();
-    let mut out = String::new();
-    let mut stack: Vec<bool> = Vec::new(); // per group: skipped?
-    let mut skip = false;
-    let mut uc = 1usize; // `\uc<N>` fallback char count
-    let mut i = 0usize;
-    while i < b.len() {
-        match b[i] {
-            b'{' => {
-                stack.push(skip);
-                let mut dest = false;
-                let next = i + 1;
-                let mut after = next;
-                if next < b.len() && b[next] == b'\\' && next + 1 < b.len() && b[next + 1] == b'*' {
-                    dest = true;
-                    after = skip_control_word(b, next + 2);
-                } else if next < b.len() && b[next] == b'\\' {
-                    let (word, _param, word_end) = read_control(b, next + 1);
-                    if RTF_SKIP_DESTS.contains(&word.as_str()) {
-                        dest = true;
-                        after = word_end;
-                    }
-                }
-                if dest {
-                    skip = true;
-                    i = after;
-                } else {
-                    i = next;
-                }
-            }
+    let mut r = Rtf { src: rtf, b: rtf.as_bytes(), i: 0, skip: false, uc: 1, stack: Vec::new(), out: String::new() };
+    while r.i < r.b.len() {
+        match r.b[r.i] {
+            b'{' => r.open_group(),
             b'}' => {
-                skip = stack.pop().unwrap_or(false);
-                i += 1;
+                r.skip = r.stack.pop().unwrap_or(false);
+                r.i += 1;
             }
-            b'\\' => {
-                i += 1;
-                if i >= b.len() {
-                    break;
-                }
-                match b[i] {
-                    b'\'' | b'\\' | b'{' | b'}' => {
-                        if b[i] == b'\'' {
-                            if i + 2 < b.len() {
-                                let hex = std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("");
-                                if let Ok(v) = u8::from_str_radix(hex, 16) {
-                                    if !skip {
-                                        out.push(cp1252_byte(v));
-                                    }
-                                }
-                                i += 3;
-                            } else {
-                                i = b.len();
-                            }
-                        } else {
-                            if !skip {
-                                out.push(b[i] as char);
-                            }
-                            i += 1;
-                        }
-                    }
-                    b'~' => {
-                        if !skip {
-                            out.push('\u{a0}');
-                        }
-                        i += 1;
-                    }
-                    b'-' | b'_' => i += 1,
-                    b'*' => {
-                        skip = true;
-                        i += 1;
-                        i = skip_control_word(b, i);
-                    }
-                    b'u' => {
-                        i += 1;
-                        let (_, param, next) = read_control(b, i);
-                        i = next;
-                        let n = param.unwrap_or(-1);
-                        // RTF stores `\uN` as a signed 16-bit value.
-                        let code = if n < 0 { n + 65536 } else { n };
-                        if let Some(c) = char::from_u32(code as u32) {
-                            if !skip {
-                                out.push(c);
-                            }
-                        }
-                        // skip the `\uc<N>` fallback characters
-                        let mut remaining = uc;
-                        while remaining > 0 && i < b.len() {
-                            if b[i] == b'\\'
-                                && i + 1 < b.len()
-                                && (b[i + 1] == b'\''
-                                    || b[i + 1] == b'\\'
-                                    || b[i + 1] == b'{'
-                                    || b[i + 1] == b'}')
-                            {
-                                i += if b[i + 1] == b'\'' { 4 } else { 2 };
-                            } else if b[i] == b'{' || b[i] == b'}' {
-                                break;
-                            } else {
-                                i += 1;
-                            }
-                            remaining -= 1;
-                        }
-                    }
-                    _ => {
-                        let (word, param, next) = read_control(b, i);
-                        i = next;
-                        if word == "uc" {
-                            if let Some(n) = param {
-                                if n >= 0 {
-                                    uc = n as usize;
-                                }
-                            }
-                        } else if !skip {
-                            match word.as_str() {
-                                "par" | "line" | "sect" | "page" => out.push('\n'),
-                                "tab" => out.push('\t'),
-                                _ => {}
-                            }
-                        }
-                    }
-                }
+            b'\\' => r.escape(),
+            // Raw line breaks are not text in RTF: writers wrap long lines anywhere.
+            b'\r' | b'\n' => r.i += 1,
+            _ => r.text_char(),
+        }
+    }
+    normalize_lines(&r.out)
+}
+
+struct Rtf<'a> {
+    src: &'a str,
+    b: &'a [u8],
+    i: usize,
+    /// Inside a destination group we don't read.
+    skip: bool,
+    /// `\uc<N>`: fallback characters that follow each `\uN`.
+    uc: usize,
+    stack: Vec<bool>,
+    out: String,
+}
+
+impl Rtf<'_> {
+    fn emit(&mut self, c: char) {
+        if !self.skip {
+            self.out.push(c);
+        }
+    }
+
+    fn peek(&self, at: usize) -> Option<u8> {
+        self.b.get(at).copied()
+    }
+
+    /// `{`: a destination we don't read (`{\*\…}` or one in `RTF_SKIP_DESTS`) is skipped whole.
+    fn open_group(&mut self) {
+        self.stack.push(self.skip);
+        let next = self.i + 1;
+        let skipped_to = match (self.peek(next), self.peek(next + 1)) {
+            (Some(b'\\'), Some(b'*')) => Some(skip_control_word(self.b, next + 2)),
+            (Some(b'\\'), _) => {
+                let (word, _, end) = read_control(self.b, next + 1);
+                RTF_SKIP_DESTS.contains(&word.as_str()).then_some(end)
             }
-            c => {
-                if !skip {
-                    out.push(cp1252_byte(c));
-                }
-                i += 1;
+            _ => None,
+        };
+        match skipped_to {
+            Some(end) => {
+                self.skip = true;
+                self.i = end;
+            }
+            None => self.i = next,
+        }
+    }
+
+    /// `\`: an escaped symbol, a `\'hh` byte, a line-break paragraph, or a control word.
+    fn escape(&mut self) {
+        self.i += 1;
+        let Some(c) = self.peek(self.i) else { return };
+        match c {
+            b'\'' => self.hex_byte(),
+            b'\\' | b'{' | b'}' => self.symbol(c as char),
+            b'~' => self.symbol('\u{a0}'),
+            b'\r' | b'\n' => self.symbol('\n'),
+            b'-' | b'_' => self.i += 1,
+            b'*' => {
+                self.skip = true;
+                self.i = skip_control_word(self.b, self.i + 1);
+            }
+            c if c.is_ascii_alphabetic() => self.control_word(),
+            // Any other symbol (`\:`, `\|`) reads as its character.
+            _ => {}
+        }
+    }
+
+    fn symbol(&mut self, c: char) {
+        self.emit(c);
+        self.i += 1;
+    }
+
+    /// `\'hh`: one cp1252 byte. A malformed escape is dropped, never a panic.
+    fn hex_byte(&mut self) {
+        let hex = self.b.get(self.i + 1..self.i + 3).and_then(|h| std::str::from_utf8(h).ok());
+        if let Some(v) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+            self.emit(cp1252_byte(v));
+        }
+        self.i += 3;
+    }
+
+    fn control_word(&mut self) {
+        let (word, param, next) = read_control(self.b, self.i);
+        self.i = next;
+        match (word.as_str(), param) {
+            ("u", Some(n)) => self.unicode(n),
+            ("uc", Some(n)) if n >= 0 => self.uc = n as usize,
+            ("par" | "line" | "sect" | "page", _) => self.emit('\n'),
+            ("tab", _) => self.emit('\t'),
+            _ => {}
+        }
+    }
+
+    /// `\uN` (a signed 16-bit value), then skip its `\uc` fallback characters.
+    fn unicode(&mut self, n: i32) {
+        let code = if n < 0 { n + 65536 } else { n };
+        if let Some(c) = char::from_u32(code as u32) {
+            self.emit(c);
+        }
+        for _ in 0..self.uc {
+            match (self.peek(self.i), self.peek(self.i + 1)) {
+                (None | Some(b'{' | b'}'), _) => return,
+                (Some(b'\\'), Some(b'\'')) => self.i += 4,
+                (Some(b'\\'), Some(b'\\' | b'{' | b'}')) => self.i += 2,
+                _ => self.i += 1,
             }
         }
     }
-    normalize_lines(&out)
+
+    /// One plain character, copied whole; a byte inside a multi-byte char
+    /// (after a malformed `\'` escape) is stepped over.
+    fn text_char(&mut self) {
+        match self.src.get(self.i..).and_then(|s| s.chars().next()) {
+            Some(c) => {
+                self.emit(c);
+                self.i += c.len_utf8();
+            }
+            None => self.i += 1,
+        }
+    }
 }
 
 /// Read a control word at `i` (letters) plus an optional numeric parameter.
@@ -2266,6 +2270,39 @@ Hello \b bold\b0  and \'93quoted\'94.\par Second \u8364? paragraph.\par}";
         assert!(!text.contains("Calibri"));
         assert!(!text.contains("generator"));
         assert!(!text.contains('\u{0}'));
+    }
+
+    /// R48.9: text that is already decoded stays whole — literal UTF-8 is not
+    /// re-read byte by byte as cp1252 (`é` became `Ã©`), and a malformed
+    /// hex escape before a multi-byte char does not panic or lose the rest.
+    #[test]
+    fn rtf_keeps_literal_non_ascii_text() {
+        // `^` stands for the apostrophe of the hex escape (a literal one trips the lizard tokenizer).
+        let rtf = r"{\rtf1\ansi Café déjà vu — 東京 \^e9t\^e9.\par Broken \^é escape, then more.}".replace('^', "\u{27}");
+        let text = extract_bytes("rtf", rtf.as_bytes()).unwrap();
+        assert!(text.contains("Café déjà vu — 東京 été."), "{text}");
+        assert!(text.contains("then more."), "{text}");
+        assert!(!text.contains("Ã"), "{text}");
+    }
+
+    /// R48.9: only `\uN` is a unicode escape — `\ul` (underline) used to emit
+    /// U+FFFF and eat the next letter, and `\uc` never reached its handler.
+    #[test]
+    fn rtf_underline_and_uc_are_control_words() {
+        let rtf = "{\\rtf1\\ansi Plain \\ul underlined\\ulnone  text. \\uc3\\u8364 EUR left.}";
+        let text = extract_bytes("rtf", rtf.as_bytes()).unwrap();
+        assert!(text.contains("Plain underlined text."), "{text}");
+        assert!(text.contains("€ left."), "{text}");
+        assert!(!text.contains('\u{FFFF}'), "{text:?}");
+    }
+
+    /// R48.9: per the RTF spec a raw line break in the body is ignored (writers
+    /// wrap long lines mid-sentence) and a backslash before one is a paragraph.
+    #[test]
+    fn rtf_ignores_raw_line_breaks_and_reads_escaped_ones_as_paragraphs() {
+        let rtf = "{\\rtf1\\ansi First sentence wraps\r\n here.\\\n Second paragraph.\\par Third.}";
+        let text = extract_bytes("rtf", rtf.as_bytes()).unwrap();
+        assert_eq!(text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>(), ["First sentence wraps here.", "Second paragraph.", "Third."], "{text}");
     }
 
     #[test]

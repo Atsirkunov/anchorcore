@@ -6,7 +6,7 @@ import { GlossaryPanel } from "./GlossaryPanel";
 /** R45.25: the Records tab — the decision log, the action tracker and the
  *  glossary. The old "All entities" review queue is gone: nothing reads
  *  `verified`, so confirming rows changed nothing (decision 2026-10-30).
- *  `/entities*` and `/review/*` stay for REST and MCP callers. */
+ *  `/entities*` stay for REST and MCP callers; `/review/*` was removed (R48.5). */
 type RecordsView = "decisions" | "actions" | "glossary";
 // Kept from the Entities tab so a remembered Decisions/Actions choice survives;
 // its retired "all" value falls back to Decisions.

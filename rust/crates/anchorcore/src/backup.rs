@@ -949,6 +949,7 @@ pub fn export_to_file(data_dir: &Path, opts: &ExportOptions) -> Result<ExportRes
     // while ingestion keeps writing.
     conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
     let inner = export_inner(&conn, &mut zip, opts, &store);
+    // Ends a read-only snapshot: nothing is written, so a failed COMMIT loses nothing.
     let _ = conn.execute_batch("COMMIT");
     let summary = match inner {
         Ok(summary) => summary,
@@ -986,10 +987,10 @@ pub fn export_to_file(data_dir: &Path, opts: &ExportOptions) -> Result<ExportRes
 
 fn record_export_event(conn: &Connection, level: &str, detail: &str) {
     let message = if level == "error" { "export failed" } else { "export completed" };
-    let _ = conn.execute(
+    crate::common::best_effort("record_export_event", conn.execute(
         "INSERT INTO system_events (component, level, message, detail) VALUES ('backup', ?1, ?2, ?3)",
         rusqlite::params![level, message, detail],
-    );
+    ));
 }
 
 // ---------------------------------------------------------------------------

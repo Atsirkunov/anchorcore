@@ -3,7 +3,7 @@
 // a person can dispute a wrong record (hidden from these lists and the agent
 // tools until restored) and find disputed rows under the "Disputed" filter.
 import { useCallback, useEffect, useState } from "react";
-import { api } from "../api";
+import { api, errMsg } from "../api";
 import { theme, radius } from "../theme";
 import type { ActionFilters, ActionRecord, DecisionRecord, RecordProvenance } from "../types";
 
@@ -44,7 +44,7 @@ function DisputeControl({ entityId, reviewStatus, onStatus }: { entityId: number
       setEditing(false);
       setReason("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(false);
     }

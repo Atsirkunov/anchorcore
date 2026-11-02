@@ -132,72 +132,8 @@ impl SecretStore {
     }
 }
 
-#[allow(dead_code)]
 pub fn source_secret_key(source_id: i64, field: &str) -> String {
     format!("source:{}:{}", source_id, field)
-}
-
-/// Mirrors `backend/app/secrets.py:105` store_source_config
-#[allow(dead_code)]
-pub fn store_source_config(
-    conn: &rusqlite::Connection,
-    source_id: i64,
-    mut config: serde_json::Value,
-    secrets: &SecretStore,
-) -> serde_json::Value {
-    let obj = config.as_object_mut().expect("config must be object");
-    for &field in SECRET_SOURCE_FIELDS {
-        let value = obj.remove(field);
-        match value {
-            None => continue, // absent -> keep stored
-            Some(v) if v == serde_json::Value::String("***set***".to_string()) => continue,
-            Some(serde_json::Value::String(s)) if s.is_empty() => {
-                secrets.delete(&source_secret_key(source_id, field));
-            }
-            Some(serde_json::Value::String(s)) => {
-                secrets.set(&source_secret_key(source_id, field), &s);
-            }
-            Some(other) => {
-                let s = other.as_str().unwrap_or("").to_string();
-                if s.is_empty() {
-                    secrets.delete(&source_secret_key(source_id, field));
-                } else {
-                    secrets.set(&source_secret_key(source_id, field), &s);
-                }
-            }
-        }
-    }
-    // persist safe config (without secrets) as JSON in sources.config
-    let safe_str = serde_json::to_string(&config).unwrap_or_else(|_| "{}".to_string());
-    let _ = conn.execute(
-        "UPDATE sources SET config = ?1 WHERE id = ?2",
-        rusqlite::params![safe_str, source_id],
-    );
-    config
-}
-
-#[allow(dead_code)]
-pub fn resolve_source_config(
-    conn: &rusqlite::Connection,
-    source_id: i64,
-    secrets: &SecretStore,
-) -> serde_json::Value {
-    let config_str: String = conn
-        .query_row(
-            "SELECT config FROM sources WHERE id = ?1",
-            rusqlite::params![source_id],
-            |r| r.get(0),
-        )
-        .unwrap_or_else(|_| "{}".to_string());
-    let mut config: serde_json::Value =
-        serde_json::from_str(&config_str).unwrap_or_else(|_| serde_json::json!({}));
-    let obj = config.as_object_mut().unwrap();
-    for &field in SECRET_SOURCE_FIELDS {
-        if let Some(v) = secrets.get(&source_secret_key(source_id, field)) {
-            obj.insert(field.to_string(), serde_json::Value::String(v));
-        }
-    }
-    config
 }
 
 #[cfg(test)]

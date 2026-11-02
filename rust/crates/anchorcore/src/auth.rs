@@ -146,16 +146,7 @@ pub fn verify_password(password: &str, stored: &str) -> bool {
     let expected = parts[3];
     let mut dk = [0u8; 32];
     pbkdf2::pbkdf2_hmac::<Sha256>(password.as_bytes(), salt.as_bytes(), it, &mut dk);
-    let got = hex::encode(dk);
-    // constant-time compare
-    if got.len() != expected.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (a, b) in got.bytes().zip(expected.bytes()) {
-        diff |= a ^ b;
-    }
-    diff == 0
+    crate::common::ct_eq(&hex::encode(dk), expected)
 }
 
 // --- JWT HS256 ---
@@ -320,7 +311,7 @@ pub async fn signup_handler(
     let hash = hash_password(&payload.password);
     let res = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let exists: bool = conn.query_row("SELECT 1 FROM users WHERE email=?1", [&email_clone], |_| Ok(())).is_ok();
         if exists {
             return Err((StatusCode::CONFLICT, Json(json!({"detail": "Email already registered"}))));
@@ -370,7 +361,7 @@ pub async fn login_handler(
     let pw = payload.password.clone();
     let row: Option<(i64, String)> = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let res: Result<(i64, String), _> = conn.query_row("SELECT id, password_hash FROM users WHERE email=?1", [&email_clone], |r| Ok((r.get(0)?, r.get(1)?)));
         res.ok()
     })
@@ -417,7 +408,7 @@ pub async fn me_handler(
     let data_dir = state.data_dir.clone();
     let exists: bool = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         conn.query_row("SELECT 1 FROM users WHERE id=?1", [uid], |_| Ok(())).is_ok()
     })
     .await
@@ -573,9 +564,6 @@ mod tests {
             ("GET", "/items/1/outline"),
             ("GET", "/media/abc"),
             ("GET", "/entities/1/context"),
-            ("GET", "/review/low-confidence"),
-            ("GET", "/review/duplicates"),
-            ("POST", "/review/merge"),
             ("GET", "/glossary"), ("POST", "/glossary"), ("DELETE", "/glossary/1"),
             ("GET", "/projects"), ("POST", "/projects"),
             ("GET", "/projects/default"),

@@ -54,8 +54,7 @@ pub async fn list_handler(
     let depth = q.depth;
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path)
-            .unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         let mut sql = String::from(
             "SELECT id, item_id, parent_id, level, title, path, chunk_range, summary, line_start, line_end, kind, meta, created_at FROM sections WHERE 1=1",
         );
@@ -350,8 +349,7 @@ pub async fn chunks_handler(
     let gate = crate::read_gate::Gate::from_request(&headers, &state.settings);
     let result = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
-        let conn = crate::db::init_db(&db_path)
-            .unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         // R35.5: a section's chunks are one item's bytes — one byte gate.
         // A missing section reads as an empty list (pre-R35.5 contract).
         if let Some(node) = one_section(&conn, section_id) {
