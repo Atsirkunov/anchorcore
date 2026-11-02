@@ -777,3 +777,13 @@ ADR log. Append newest first.
   - *Exit with a native dialog on failure* — rejected: three platforms, no tray state, and the person still sees nothing on Linux/Team; serving the error page works everywhere.
   - *Gate per route inside handlers* — rejected: auth middleware already opens the DB; one layer outside CSRF/auth is the only place that keeps every path off the DB mid-migration.
 * **Consequences:** every schema version is a valid resting state (each was already a released state), so a failed step leaves the library at version N-1 with earlier steps kept and the next start resumes. A new migration adds a `db::MIGRATIONS` row with its screen wording. Test hooks are debug-build only.
+
+
+## 2026-11-02 — R49.12–R49.14: olive palette for the site and the app
+
+* **Decision:** the Archive palette (ink on cool paper) becomes olive: olive-tinted ink on olive-cream paper, dark olive-black, oxblood kept as the only citation colour, and the site hero's search path in olive with only the hit in oxblood. The app's status green moves teal-leaning (`#23604F` / dark `#84C4B0`). Site and app change together.
+* **Context:** the owner liked an olive mockup of the website (2026-11-02). One rule carries it: olive is the surface, oxblood means "sourced", green means "healthy".
+* **Alternatives considered:**
+  - *All-olive, citations included* — rejected: olive citations blend into the olive base, and green already means "OK" in the app (Synced, Saved, up).
+  - *Keep the old status green* — rejected: next to olive surfaces it reads as more olive; teal keeps "healthy" its own hue.
+* **Consequences:** dark primary buttons use a brighter, less tinted ink (`#EEEEE4` on `#12140D`) than the mockup, which looked muddy. Every token pair passes `scripts/check_contrast.py` (app) and the same pairs on the site tokens. Values live in `frontend/src/theme.css` and `website/src/style.css`; `docs/design-system.md` §2 is the table.

@@ -16,11 +16,15 @@
 
 ## 2. Color — one palette, light + dark
 
-Archive: ink `#1F1B16` on paper `#F6F5F2`; oxblood `#8C2F2B` means "this is
-sourced": citation marks, source ids, the active citation card and the brand
-mark, nothing else (owner decision 2026-11-02). Links are ink + underline,
-oxblood on hover. Primary buttons are ink, never oxblood (red reads as
-"delete" on a button).
+Olive (R49.12–R49.14, owner decision 2026-11-02): olive-tinted ink `#23251A`
+on olive-cream paper `#F2F1E8`. One rule carries the colour: **olive is the
+surface, oxblood means "sourced", green means "healthy".** Oxblood `#8C2F2B`
+marks citations: citation marks, source ids, the active citation card and the
+brand mark, nothing else. The status green is teal-leaning (`#23604F`) so
+"Synced/Saved/up" never blends into the olive surfaces. On the site the hero's
+search path travels in olive (`--nx-path`) and only the hit turns oxblood.
+Links are ink + underline, oxblood on hover. Primary buttons are ink, never
+oxblood (red reads as "delete" on a button).
 
 ### 2.1 Tokens (single sources of truth)
 
@@ -32,13 +36,14 @@ pre-paint script in `index.html`; the choice is stored as `theme-mode` in localS
 
 | Role | App light (`--ac-*`) | App dark | Site (`style.css`) |
 |---|---|---|---|
-| page bg | `bg #F6F5F2` | `#17171A` | `--paper #F6F5F2` |
-| card / panel | `bg-card #FFFFFF`, `bg-elevated #FFFFFF` | `#1F1F23`, `#1B1B1F` | `--surface #ffffff` |
-| borders | `border #D6D1C7`, `border-soft #E6E2DB` | `#3A3A41`, `#2B2B31` | `--border #DCD8D0` |
-| text | `text #1F1B16`, `text-muted #4F473D`, `text-dim #6B6257` | `#E9E8E5`, `#C1BFBA`, `#9D9B96` | `--ink`, `--dim #5E554A` |
-| primary button | `accent #1F1B16` on `#FFFFFF` | `#E9E8E5` on `#17171A` | `--ink` |
-| citations (links are ink) | `cite #8C2F2B`, `cite-soft #F3E6E3` | `#CC8A80`, `#33242A` | `--cite #8C2F2B`, `--cite-soft` |
-| status | `green #2F5D46`, `amber #85550F`, `red #A3332C`, `blue #2F5577`, `slate #4E5B69` | lighter tints | (n/a) |
+| page bg | `bg #F2F1E8` | `#181A12` | `--paper #F2F1E8` |
+| card / panel | `bg-card #FAFAF4`, `bg-elevated #FAFAF4` | `#22251A`, `#1D2016` | `--surface #FAFAF4` |
+| borders | `border #D6D4C2`, `border-soft #E3E2D3` | `#383C2B`, `#2A2E20` | `--border #D6D4C2` |
+| text | `text #23251A`, `text-muted #45473A`, `text-dim #64674C` | `#EEEEE4`, `#C6C8B0`, `#A3A58C` | `--ink`, `--dim #55583F` |
+| primary button | `accent #23251A` on `#FAFAF4` | `#EEEEE4` on `#12140D` | `--ink` on `--on-ink` |
+| citations (links are ink) | `cite #8C2F2B`, `cite-soft #F1E4DC` | `#CC8A80`, `#36261F` | `--cite #8C2F2B`, `--cite-soft` |
+| status | `green #23604F`, `amber #85550F`, `red #A3332C`, `blue #2F5577`, `slate #4E5B69` | lighter tints (`green #84C4B0`) | `--term-ok` |
+| hero search path | (n/a) | (n/a) | `--nx-path #5A6B23` / dark `#B5C47A` |
 | type | `--ac-sans` / `--ac-serif` / `--ac-mono` = IBM Plex Sans / Serif / Mono | same | `--sans` / `--serif` / `--mono` |
 
 **Rules for non-designers:**
@@ -49,8 +54,8 @@ pre-paint script in `index.html`; the choice is stored as `theme-mode` in localS
 5. When changing a shared hue, change `theme.css` and `website/src/style.css` in the same commit.
 
 ### 2.2 Contrast (WCAG AA)
-* `text #1F1B16` on `bg #F6F5F2` ≈ 15:1 ✓ · `text-dim #6B6257` on `bg` ≈ 5.6:1 ✓
-* `cite #8C2F2B` on white ≈ 8:1 ✓ · dark `cite #CC8A80` on `#1F1F23` 5.9:1 ✓, on `#17171A` 6.4:1 ✓
+* App: lowest text on card 5.6:1 light / 6.2:1 dark ✓ · `cite` on card 7.8:1 / 5.6:1 ✓ · `text-dim` on hover 4.5:1 / 5.4:1 ✓
+* Site: `--nx-path` on paper 5.2:1 / 9.3:1 · `--cite` on paper 7.3:1 / 6.3:1 · button text 14.8:1 / 15.9:1
 * Check every pair before changing a token: `python3 scripts/check_contrast.py frontend/src/theme.css` (text, status and cite on every surface, both modes; AA 4.5:1).
 
 ---

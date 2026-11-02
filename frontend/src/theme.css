@@ -1,5 +1,7 @@
-/* Visual tokens (theme.ts reads these as var(--ac-*)). Archive palette, shared
-   with anchorcore.dev: ink on paper, IBM Plex, oxblood (--ac-cite) reserved for
+/* Visual tokens (theme.ts reads these as var(--ac-*)). Olive palette, shared
+   with anchorcore.dev (R49.13): olive-tinted ink on olive-cream paper, IBM
+   Plex. Olive is the surface, green (teal-leaning, apart from olive) means
+   healthy, oxblood (--ac-cite) reserved for
    citations: [S1] marks, source ids, the active citation card, the brand mark
    (R49.7). Links are ink + underline, oxblood on hover. Light by default; the dark set applies
    when <html data-theme="dark"> — set from the Auto/Light/Dark switch
@@ -13,23 +15,23 @@
 
 :root {
   color-scheme: light;
-  --ac-bg: #F6F5F2;
-  --ac-bg-elevated: #FFFFFF;
-  --ac-bg-card: #FFFFFF;
-  --ac-bg-hover: #E7E4DD;
-  --ac-border: #D6D1C7;
-  --ac-border-soft: #E6E2DB;
-  --ac-text: #1F1B16;
-  --ac-text-muted: #4F473D;
-  --ac-text-dim: #6B6257;
-  --ac-accent: #1F1B16;
-  --ac-on-accent: #FFFFFF;
+  --ac-bg: #F2F1E8;
+  --ac-bg-elevated: #FAFAF4;
+  --ac-bg-card: #FAFAF4;
+  --ac-bg-hover: #E4E3D4;
+  --ac-border: #D6D4C2;
+  --ac-border-soft: #E3E2D3;
+  --ac-text: #23251A;
+  --ac-text-muted: #45473A;
+  --ac-text-dim: #64674C;
+  --ac-accent: #23251A;
+  --ac-on-accent: #FAFAF4;
   --ac-cite: #8C2F2B;
-  --ac-cite-soft: #F3E6E3;
-  --ac-button-bg: #E7E4DD;
-  --ac-green: #2F5D46;
-  --ac-green-bg: #E1ECE4;
-  --ac-green-text: #24493A;
+  --ac-cite-soft: #F1E4DC;
+  --ac-button-bg: #E4E3D4;
+  --ac-green: #23604F;
+  --ac-green-bg: #DCEAE5;
+  --ac-green-text: #1B4A3D;
   --ac-amber: #85550F;
   --ac-amber-bg: #F5EAD2;
   --ac-red: #A3332C;
@@ -39,10 +41,10 @@
   --ac-blue: #2F5577;
   --ac-blue-bg: #E3EAF2;
   --ac-slate: #4E5B69;
-  --ac-muted-bg: #E7E4DD;
-  --ac-mark-text: #1F1B16;
-  --ac-overlay: rgba(31, 27, 22, 0.45);
-  --ac-shadow: 6px 6px 0 #1F1B16;
+  --ac-muted-bg: #E4E3D4;
+  --ac-mark-text: #23251A;
+  --ac-overlay: rgba(35, 37, 26, 0.45);
+  --ac-shadow: 6px 6px 0 #23251A;
   --ac-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --ac-serif: "IBM Plex Serif", Georgia, serif;
   --ac-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
@@ -50,23 +52,23 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --ac-bg: #17171A;
-  --ac-bg-elevated: #1B1B1F;
-  --ac-bg-card: #1F1F23;
-  --ac-bg-hover: #2A2A2F;
-  --ac-border: #3A3A41;
-  --ac-border-soft: #2B2B31;
-  --ac-text: #E9E8E5;
-  --ac-text-muted: #C1BFBA;
-  --ac-text-dim: #9D9B96;
-  --ac-accent: #E9E8E5;
-  --ac-on-accent: #17171A;
+  --ac-bg: #181A12;
+  --ac-bg-elevated: #1D2016;
+  --ac-bg-card: #22251A;
+  --ac-bg-hover: #2C3022;
+  --ac-border: #383C2B;
+  --ac-border-soft: #2A2E20;
+  --ac-text: #EEEEE4;
+  --ac-text-muted: #C6C8B0;
+  --ac-text-dim: #A3A58C;
+  --ac-accent: #EEEEE4;
+  --ac-on-accent: #12140D;
   --ac-cite: #CC8A80;
-  --ac-cite-soft: #33242A;
-  --ac-button-bg: #2A2A2F;
-  --ac-green: #8CC2A2;
-  --ac-green-bg: #1E3127;
-  --ac-green-text: #B5DCC4;
+  --ac-cite-soft: #36261F;
+  --ac-button-bg: #2C3022;
+  --ac-green: #84C4B0;
+  --ac-green-bg: #19302A;
+  --ac-green-text: #B2DDD0;
   --ac-amber: #DDB167;
   --ac-amber-bg: #3A2C13;
   --ac-red: #E8968B;
@@ -76,8 +78,8 @@
   --ac-blue: #9BBAD6;
   --ac-blue-bg: #1C2834;
   --ac-slate: #A9B5C2;
-  --ac-muted-bg: #2E2E34;
-  --ac-mark-text: #17171A;
+  --ac-muted-bg: #303424;
+  --ac-mark-text: #181A12;
   --ac-overlay: rgba(0, 0, 0, 0.6);
   --ac-shadow: 6px 6px 0 #000000;
 }
