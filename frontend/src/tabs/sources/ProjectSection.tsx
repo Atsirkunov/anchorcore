@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { api } from "../../api";
+import { api, errMsg } from "../../api";
 import { useProjects } from "../../useProjects";
 import { theme, commonStyles, radius } from "../../theme";
 import type { Source } from "../../types";
 
 /** B37: project create + per-source membership toggles (moved out of the
- * god SourcesTab). Consumes the shared ProjectsContext so there's exactly one
+ * god SourcesTab, now LibraryTab). Consumes the shared ProjectsContext so there's exactly one
  * /projects fetch. */
 export function ProjectSection({ sources, onChanged }: { sources: Source[]; onChanged: () => void }) {
   const { projects, refreshProjects } = useProjects();
@@ -21,7 +21,7 @@ export function ProjectSection({ sources, onChanged }: { sources: Source[]; onCh
       refreshProjects();
       onChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   }
 
@@ -36,7 +36,7 @@ export function ProjectSection({ sources, onChanged }: { sources: Source[]; onCh
       refreshProjects();
       onChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   }
 
@@ -47,7 +47,7 @@ export function ProjectSection({ sources, onChanged }: { sources: Source[]; onCh
       refreshProjects();
       onChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   }
 
@@ -58,7 +58,7 @@ export function ProjectSection({ sources, onChanged }: { sources: Source[]; onCh
       refreshProjects();
       onChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   }
 
@@ -90,7 +90,7 @@ export function ProjectSection({ sources, onChanged }: { sources: Source[]; onCh
       {error && <p style={{ color: theme.red }}>{error}</p>}
       {projects.length === 0 ? (
         <div style={{ fontSize: 12, color: theme.textDim }}>
-          No projects yet — create one, then tick sources to include them.
+          No projects yet. Create one, then tick sources to include them.
         </div>
       ) : (
         <div style={{ display: "grid", gap: 8 }}>
@@ -129,7 +129,7 @@ export function ProjectSection({ sources, onChanged }: { sources: Source[]; onCh
                         fontSize: 12,
                         padding: "0.2rem 0.6rem",
                         ...(inProject
-                          ? { background: theme.citeSoft, color: theme.accentAlt }
+                          ? { background: theme.bgHover, color: theme.text }
                           : { background: theme.buttonBg, color: theme.textMuted }),
                       }}
                     >

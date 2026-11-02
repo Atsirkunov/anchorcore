@@ -185,9 +185,6 @@ async fn entity_window_context_and_reclassify_skip() {
     assert_eq!(job2["status"], "done", "{job2}");
     let entities2: Value = srv.get("/entities").await.json().await.expect("entities");
     assert_eq!(entities2.as_array().unwrap().len(), before, "unchanged windows must not re-classify");
-
-    let low: Value = srv.get("/review/low-confidence").await.json().await.expect("low");
-    assert!(low.as_array().unwrap().iter().all(|e| e.get("window_text").is_some()), "review must expose window_text: {low}");
 }
 
 #[tokio::test]

@@ -1,7 +1,7 @@
 /** Shared secret-placeholder handling (B36).
 
 The UI masks stored secrets as the literal string `***set***` (both the
-Settings and Sources tabs do). When submitting a payload back to the backend
+Settings and Library tabs do). When submitting a payload back to the backend
 that string must never be sent as a real value — it would overwrite the stored
 secret with the placeholder text. `stripPlaceholders` removes those keys so the
 backend keeps the stored secret untouched.

@@ -1,26 +1,24 @@
 import { useState } from "react";
 import { theme, radius } from "../theme";
 import { ActionsView, DecisionsView } from "./RecordsViews";
-import { GlossaryPanel } from "./GlossaryPanel";
 
-/** R45.25: the Records tab — the decision log, the action tracker and the
- *  glossary. The old "All entities" review queue is gone: nothing reads
+/** R45.25: the Records tab — the decision log and the action tracker (the
+ *  glossary moved to Settings → Glossary in R49.9). The old "All entities" review queue is gone: nothing reads
  *  `verified`, so confirming rows changed nothing (decision 2026-10-30).
- *  `/entities*` and `/review/*` stay for REST and MCP callers. */
-type RecordsView = "decisions" | "actions" | "glossary";
+ *  `/entities*` stay for REST and MCP callers; `/review/*` was removed (R48.5). */
+type RecordsView = "decisions" | "actions";
 // Kept from the Entities tab so a remembered Decisions/Actions choice survives;
-// its retired "all" value falls back to Decisions.
+// its retired "all" and "glossary" values fall back to Decisions.
 const VIEW_KEY = "entities-view";
 const VIEWS: { id: RecordsView; label: string }[] = [
   { id: "decisions", label: "Decisions" },
   { id: "actions", label: "Actions" },
-  { id: "glossary", label: "Glossary" },
 ];
 
 function readView(): RecordsView {
   try {
     const v = localStorage.getItem(VIEW_KEY);
-    return v === "actions" || v === "glossary" ? v : "decisions";
+    return v === "actions" ? v : "decisions";
   } catch {
     return "decisions";
   }
@@ -47,7 +45,6 @@ export function RecordsTab() {
       </div>
       {view === "decisions" && <DecisionsView />}
       {view === "actions" && <ActionsView />}
-      {view === "glossary" && <GlossaryPanel defaultOpen />}
     </div>
   );
 }

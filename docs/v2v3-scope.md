@@ -135,7 +135,7 @@ lapsed). Still missing:
 - **Auto-release notes** — generate from commits between tags (later; manual
   curated notes are better quality at this stage).
 - **Update checks** — ✅ shipped ([updates.md](./updates.md)): manual check in
-  the System tab + opt-in startup check, "update available" banner.
+  Settings → Updates + the opt-in startup check, "update available" banner.
 
 ## 6. Free tier & pricing (aligns with product-plan §10–11)
 

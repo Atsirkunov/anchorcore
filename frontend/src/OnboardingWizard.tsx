@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "./api";
+import { api, errMsg } from "./api";
 import { theme } from "./theme";
 import type { LlmMode, OnboardingState } from "./types";
 import { AgentChannelStep } from "./wizard/AgentChannelStep";
@@ -34,7 +34,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
       setError(null);
       return fresh;
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
       return null;
     }
   }, []);
@@ -43,7 +43,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
     api
       .onboarding()
       .then(setState)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setError(errMsg(e)));
     api
       .getSettings()
       .then((s) => {
@@ -61,7 +61,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
       await api.updateSettings({ llm_mode: m });
       await recheck();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   }
 
@@ -86,7 +86,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
             </div>
             <button
               onClick={onClose}
-              title="Skip the wizard — you can connect a source later in Sources"
+              title="Skip the wizard. You can connect a source later in the Library"
               style={{ ...styles.button, ...styles.ghost, flexShrink: 0 }}
             >
               Skip →
@@ -130,7 +130,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
           )}
           {step === "answers" || (step === "agent" && mode === "local") ? (
             <button style={{ ...styles.button, ...styles.ghost }} onClick={next}>
-              {last ? "Skip — open AnchorCore" : "Skip"}
+              {last ? "Skip and open AnchorCore" : "Skip"}
             </button>
           ) : null}
           <button
@@ -139,7 +139,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
             title={sourceMissing ? "Connect a folder or the sample first" : undefined}
             onClick={next}
           >
-            {last ? "Done — open AnchorCore" : "Continue →"}
+            {last ? "Open AnchorCore" : "Continue →"}
           </button>
         </div>
       </div>

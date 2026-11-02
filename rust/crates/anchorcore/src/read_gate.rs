@@ -94,13 +94,21 @@ pub fn check_public(label: &str, sensitive_override: bool, public_only: bool, no
 /// An item's source label (`internal` when the source row is missing) plus
 /// its per-document override — the effective rule's two inputs.
 pub fn item_sensitivity(conn: &rusqlite::Connection, item_id: i64) -> Option<(String, bool)> {
-    conn.query_row(
+    let read = conn.query_row(
         "SELECT COALESCE(s.label, 'internal'), COALESCE(i.sensitive_override, 0) \
          FROM ingested_items i LEFT JOIN sources s ON s.id = i.source_id WHERE i.id = ?1",
         [item_id],
         |r| Ok((r.get(0)?, r.get::<_, i64>(1)? == 1)),
-    )
-    .ok()
+    );
+    match read {
+        Ok(v) => Some(v),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        // R48.11: a failed read must not open the gate.
+        Err(e) => {
+            tracing::warn!(target: "anchorcore::gate", "item {item_id} sensitivity unreadable, treated as sensitive: {e}");
+            Some(("sensitive".to_string(), true))
+        }
+    }
 }
 
 /// Refusal → HTTP error (`{"detail": …}`), recording the gate event first.

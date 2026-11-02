@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { api } from "./api";
+import { api, errMsg } from "./api";
 import { commonStyles, theme, radius } from "./theme";
 import type { UpdateStatus } from "./types";
 
 /**
- * R29.1 "Updates" card (System tab).
+ * R29.1 "Updates" card (Settings → Updates).
  *
  * Trust contract: the Check button is the ONLY thing in this component that can
  * make a network request. Loading the card / the banner performs a plain
@@ -26,7 +26,7 @@ export function UpdateCard({ onGoSettings }: { onGoSettings?: () => void } = {})
     try {
       setStatus(await api.updateStatus(true));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(false);
     }
@@ -71,7 +71,7 @@ export function UpdateCard({ onGoSettings }: { onGoSettings?: () => void } = {})
         )}
       </div>
       <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 8, lineHeight: 1.5 }}>
-        Contacts github.com only when you click — a plain fetch of the public release info; nothing about you or
+        Contacts github.com only when you click: a plain fetch of the public release info; nothing about you or
         your knowledge is sent. Updating replaces the app binary; your knowledge stays in <code>~/.anchorcore</code>.
         On Windows close the app before replacing it, or let your agent run the <code>anchorcore-setup</code> skill.
       </div>
@@ -79,7 +79,7 @@ export function UpdateCard({ onGoSettings }: { onGoSettings?: () => void } = {})
         Startup checks: <b>{status?.check_enabled ? "on" : "off"}</b>
         {!status?.check_enabled && onGoSettings && (
           <>
-            {" — "}
+            {" · "}
             <button onClick={onGoSettings} style={styles.linkButton}>
               enable in Settings
             </button>
@@ -126,7 +126,7 @@ export function UpdateBanner({ onOpen }: { onOpen: () => void }) {
   return (
     <div style={styles.banner}>
       <div style={{ flex: 1 }}>
-        AnchorCore {latest} is available — you're on {status.current}.
+        AnchorCore {latest} is available. You're on {status.current}.
       </div>
       <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
         <button onClick={onOpen} style={styles.bannerButton}>

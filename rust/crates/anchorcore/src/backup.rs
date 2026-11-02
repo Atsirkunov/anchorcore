@@ -468,7 +468,7 @@ fn export_items(conn: &Connection, zip: &mut ArchiveWriter, opts: &ExportOptions
     let sql = format!(
         "SELECT json_object('type','item','uid',i.uid,'source_uid',s.uid,'external_id',i.external_id, \
             'title',i.title,'doc_type',i.doc_type,'text',i.text,'content_hash',i.content_hash, \
-            'processed_hash',i.processed_hash,'chunker_version',i.chunker_version, \
+            'processed_hash',i.processed_hash,'chunker_version',i.chunker_version,'extractor_gen',i.extractor_gen, \
             'author',i.author,'updated_at',i.updated_at,'stale',{stale},'sensitive_override',{sensitive_override}, \
             'is_glossary',{is_glossary},'created_at',i.created_at) \
          FROM ingested_items i JOIN sources s ON s.id = i.source_id WHERE 1=1{} ORDER BY i.id",
@@ -888,11 +888,11 @@ fn readme_text() -> String {
         "AnchorCore backup — {}\n\
          ============================\n\n\
          This file is a portable AnchorCore export (format version {}).\n\n\
-         To restore it: open AnchorCore -> System tab -> Backup & restore -> Import,\n\
+         To restore it: open AnchorCore -> Settings -> Backup & restore -> Import,\n\
          or run: anchorcore import --file <this file>\n\n\
          What is inside:\n\
          - manifest.json  — version, counts, options, which sources need credentials\n\
-         - data.jsonl     — your memory: sources, documents, entities, chunks, review state\n\
+         - data.jsonl     — your memory: sources, documents, entities, chunks\n\
          - assets/        — image bytes (one file per distinct image, named by its SHA-256)\n\
          - secrets.bundle — only if the export included secrets; it is encrypted with\n           your passphrase and CANNOT be recovered if you lose the passphrase.\n\n\
          Secrets are not stored in plaintext. After importing you may need to\n\
@@ -949,6 +949,7 @@ pub fn export_to_file(data_dir: &Path, opts: &ExportOptions) -> Result<ExportRes
     // while ingestion keeps writing.
     conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
     let inner = export_inner(&conn, &mut zip, opts, &store);
+    // Ends a read-only snapshot: nothing is written, so a failed COMMIT loses nothing.
     let _ = conn.execute_batch("COMMIT");
     let summary = match inner {
         Ok(summary) => summary,
@@ -986,10 +987,10 @@ pub fn export_to_file(data_dir: &Path, opts: &ExportOptions) -> Result<ExportRes
 
 fn record_export_event(conn: &Connection, level: &str, detail: &str) {
     let message = if level == "error" { "export failed" } else { "export completed" };
-    let _ = conn.execute(
+    crate::common::best_effort("record_export_event", conn.execute(
         "INSERT INTO system_events (component, level, message, detail) VALUES ('backup', ?1, ?2, ?3)",
         rusqlite::params![level, message, detail],
-    );
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -1351,12 +1352,15 @@ fn apply_item(ctx: &mut ImportCtx, rec: &Value) -> Result<(), String> {
 /// R36.2: so does the chunker generation of the archived chunks (old
 /// archives read as generation 1); `finalize_report` re-chunks whatever
 /// arrived older than the current chunker.
+/// R48.18: and the extractor generation (old archives read as 1); the next
+/// folder sync re-extracts whatever arrived older than its format.
 fn apply_item_glossary(ctx: &mut ImportCtx, rec: &Value, id: i64) -> Result<(), String> {
     let generation = rec.get("chunker_version").and_then(Value::as_i64).unwrap_or(crate::chunking::BASE_CHUNKER_VERSION);
+    let egen = rec.get("extractor_gen").and_then(Value::as_i64).unwrap_or(crate::extract::BASE_EXTRACTOR_VERSION);
     ctx.conn
         .execute(
-            "UPDATE ingested_items SET is_glossary = ?1, chunker_version = ?2 WHERE id = ?3",
-            rusqlite::params![bool_int(rec, "is_glossary"), generation, id],
+            "UPDATE ingested_items SET is_glossary = ?1, chunker_version = ?2, extractor_gen = ?3 WHERE id = ?4",
+            rusqlite::params![bool_int(rec, "is_glossary"), generation, egen, id],
         )
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -2074,7 +2078,7 @@ fn clear_data(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-/// A pre-replace copy that is never swept (documents + review state, no secrets).
+/// A pre-replace copy that is never swept (documents + records, no secrets).
 fn safety_backup(data_dir: &Path) -> Result<String, String> {
     let res = export_to_file(data_dir, &ExportOptions::default())?;
     let name = res.filename.replacen("anchorcore-backup", "safety-backup", 1);
@@ -3088,6 +3092,25 @@ mod tests {
     }
 
     #[test]
+    fn item_extractor_gen_survives_export_import() {
+        // R48.18: the extractor generation travels with the item, so a
+        // restore of current text is not re-extracted (and an old archive
+        // is, on its next folder sync).
+        let _env = EnvGuard::file_only();
+        let src = tempdir().unwrap();
+        let sid = seed(src.path());
+        let conn = db(src.path());
+        conn.execute("UPDATE ingested_items SET extractor_gen = 7 WHERE source_id = ?1", [sid]).unwrap();
+        drop(conn);
+        let archive = exported(src.path(), ExportOptions::default());
+        let dst = tempdir().unwrap();
+        import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
+        let conn = db(dst.path());
+        let got: i64 = conn.query_row("SELECT extractor_gen FROM ingested_items", [], |r| r.get(0)).unwrap();
+        assert_eq!(got, 7);
+    }
+
+    #[test]
     fn import_with_wrong_passphrase_leaves_nothing_behind() {
         let _env = EnvGuard::file_only();
         let src = tempdir().unwrap();
@@ -3182,7 +3205,7 @@ mod tests {
         let archive = exported(src.path(), ExportOptions::default());
         let dst = tempdir().unwrap();
         import_archive(dst.path(), &archive.path, &ImportOptions::default()).unwrap();
-        // local review state moves forward after the export…
+        // local record state moves forward after the export…
         let conn = db(dst.path());
         conn.execute("UPDATE entities SET status='disputed', owner='me', updated_at='2999-01-01 00:00:00'", []).unwrap();
         // …and a re-import must not clobber it (LWW)

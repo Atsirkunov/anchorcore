@@ -1,7 +1,7 @@
 # AnchorCore — Design System & Messaging
 
 > For a non-UX owner: copy-paste tokens + rules. No taste required — pick the preset, don't invent.
-> App and website share one look (**Archive**, 2026-10-22): ink on paper, IBM Plex, oxblood for citations. The app is light by default with a matching dark set, chosen by the header Auto / Light / Dark switch (Auto follows the OS).
+> App and website share one look (**Archive**, 2026-10-22, tuned by R49.7 on 2026-11-02): ink on paper, IBM Plex, oxblood for citations only. The app is light by default with a matching cool-black dark set, chosen by the header Auto / Light / Dark switch (Auto follows the OS; the switch moves to Settings → Appearance with R49.9). The website opens in Light, with Light / Auto / Dark in the footer.
 
 ---
 
@@ -17,8 +17,10 @@
 ## 2. Color — one palette, light + dark
 
 Archive: ink `#1F1B16` on paper `#F6F5F2`; oxblood `#8C2F2B` means "this is
-sourced" (citation marks, `§` numbers, links, selected state). Primary buttons
-are ink, never oxblood (red reads as "delete" on a button).
+sourced": citation marks, source ids, the active citation card and the brand
+mark, nothing else (owner decision 2026-11-02). Links are ink + underline,
+oxblood on hover. Primary buttons are ink, never oxblood (red reads as
+"delete" on a button).
 
 ### 2.1 Tokens (single sources of truth)
 
@@ -30,32 +32,33 @@ pre-paint script in `index.html`; the choice is stored as `theme-mode` in localS
 
 | Role | App light (`--ac-*`) | App dark | Site (`style.css`) |
 |---|---|---|---|
-| page bg | `bg #F6F5F2` | `#151412` | `--paper #F6F5F2` |
-| card / panel | `bg-card #FFFFFF`, `bg-elevated #FFFFFF` | `#221F1B`, `#1C1A17` | `--surface #ffffff` |
-| borders | `border #D6D1C7`, `border-soft #E6E2DB` | `#3D372F`, `#2E2A24` | `--border #DCD8D0` |
-| text | `text #1F1B16`, `text-muted #4F473D`, `text-dim #6B6257` | `#ECE8E1`, `#C4BBAE`, `#A1978A` | `--ink`, `--dim #5E554A` |
-| primary button | `accent #1F1B16` on `#FFFFFF` | `#ECE8E1` on `#151412` | `--ink` |
-| citations / links | `cite #8C2F2B`, `cite-soft #F3E6E3` | `#E39A8F`, `#3A2421` | `--cite #8C2F2B`, `--cite-soft` |
+| page bg | `bg #F6F5F2` | `#17171A` | `--paper #F6F5F2` |
+| card / panel | `bg-card #FFFFFF`, `bg-elevated #FFFFFF` | `#1F1F23`, `#1B1B1F` | `--surface #ffffff` |
+| borders | `border #D6D1C7`, `border-soft #E6E2DB` | `#3A3A41`, `#2B2B31` | `--border #DCD8D0` |
+| text | `text #1F1B16`, `text-muted #4F473D`, `text-dim #6B6257` | `#E9E8E5`, `#C1BFBA`, `#9D9B96` | `--ink`, `--dim #5E554A` |
+| primary button | `accent #1F1B16` on `#FFFFFF` | `#E9E8E5` on `#17171A` | `--ink` |
+| citations (links are ink) | `cite #8C2F2B`, `cite-soft #F3E6E3` | `#CC8A80`, `#33242A` | `--cite #8C2F2B`, `--cite-soft` |
 | status | `green #2F5D46`, `amber #85550F`, `red #A3332C`, `blue #2F5577`, `slate #4E5B69` | lighter tints | (n/a) |
 | type | `--ac-sans` / `--ac-serif` / `--ac-mono` = IBM Plex Sans / Serif / Mono | same | `--sans` / `--serif` / `--mono` |
 
 **Rules for non-designers:**
 1. Never invent a hex. App: only `theme.*` (add a token to `theme.css` + `theme.ts` first). Site: only `:root` vars.
-2. Oxblood only for citations, `§` marks, links and "selected". Errors use `red`, which is brighter.
-3. No coloured left-border stripes on cards; say the status in words (a coloured mono label).
+2. Oxblood only for citations (marks, source ids, the active citation card) and the brand mark. Links, selected state, step numbers and labels are ink or dim. Errors use `red`, which is brighter.
+3. No coloured left-border stripes on cards; say the status in words (a coloured label).
 4. Danger bg/border only for banners and destructive buttons.
 5. When changing a shared hue, change `theme.css` and `website/src/style.css` in the same commit.
 
 ### 2.2 Contrast (WCAG AA)
 * `text #1F1B16` on `bg #F6F5F2` ≈ 15:1 ✓ · `text-dim #6B6257` on `bg` ≈ 5.6:1 ✓
-* `cite #8C2F2B` on white ≈ 8:1 ✓ · dark `cite #E39A8F` on `#221F1B` ≈ 7:1 ✓
+* `cite #8C2F2B` on white ≈ 8:1 ✓ · dark `cite #CC8A80` on `#1F1F23` 5.9:1 ✓, on `#17171A` 6.4:1 ✓
+* Check every pair before changing a token: `python3 scripts/check_contrast.py frontend/src/theme.css` (text, status and cite on every surface, both modes; AA 4.5:1).
 
 ---
 
 ## 3. Typography & spacing
 
-* **Fonts:** IBM Plex, bundled with the app and the site (`@fontsource/*`, latin subsets) — the app works offline and the site loads nothing from third parties. Sans for UI, Serif for headings, questions and answer text, Mono for paths, line ranges, badges and labels.
-* **Scale:** `11` mono labels / `12` meta / `14` body / `16` serif answer / `20` question / page titles serif.
+* **Fonts:** IBM Plex, bundled with the app and the site (`@fontsource/*`, latin subsets) — the app works offline and the site loads nothing from third parties. Sans for UI, labels and badges; Serif for headings, questions and answer text; Mono only for code, paths, line ranges, record ids and citation marks (R44.14, R49.7).
+* **Scale:** `11` labels / `12` meta / `14` body / `16` serif answer / `20` question / page titles serif.
 * **Radius:** `radius = 2` from `theme.ts` everywhere; `50%` only for dots and spinners.
 * **Spacing:** `8` tight, `12` card gap, `16-28` between answers/sections.
 
@@ -63,7 +66,7 @@ pre-paint script in `index.html`; the choice is stored as `theme-mode` in localS
 
 ## 4. App UX
 
-Five tabs (Ask, Sources, Records, Settings, System). Header: brand mark, text tabs with an ink underline on the active one, one ink rule under the bar.
+Five tabs, each with a hash route (R49.1, R49.9): Ask · Library (list first, `#/library/<id>` per source) · Records (decisions, actions) · Agents (MCP + skills + the agents switch) · Settings on the right (rail: Answers · Search · Sensitive sharing · Glossary · Backup & restore · Updates · Status & logs · Appearance · Advanced). Header: brand mark, tabs with an ink underline on the active one, one ink rule under the bar; a status dot replaces the "API online" pill (R49.3).
 
 **Ask (R-archive, 2026-10-22):** each question reads above its answer (newest pair first). Local mode: serif answer with `[S1]` marks (mono, oxblood, hover highlights the source card), then numbered source cards: breadcrumb title, path relative to the folder source + `§` + line range (mono), one excerpt. Agent mode: no answer block; the same cards are the content ("Evidence for your agent"). `answerText.ts` strips `[match N]` marks and renders a safe markdown subset (paragraphs, lists, bold) as React nodes — never HTML.
 
@@ -110,7 +113,7 @@ app URL, not shared storage.
 4. **Live demo** — connect `sample/`, 4 questions answered (scripts in `docs/sample-dataset.md`); browser + MCP columns; abbreviated agent-session replay.
 5. **Guides** — entry cards linking to prerendered guide pages `/guides/*` (R44.15, built from repo markdown at build time), plus a projects card. A `#trust` section sits before the demo; `/security`, `/vs/notebooklm`, `/team` and `/hosted` are separate pages.
 6. **FAQ, Pricing, Roadmap** — FAQ (JSON-LD generated from the visible text), 3 tiers without prices (Team = request a quote), download + waitlist capture.
-7. **Privacy notice + Footer** — GDPR notice section; `v1 local · free for personal use · Team self-hosted licensed · Hosted soon.`
+7. **Privacy notice + Footer** — GDPR notice section; `AnchorCore is free for personal use · Team self-hosted on request · Hosted soon.` Light / Auto / Dark switch at the end.
 
 **Voice:** short, factual, no superlatives. Same as app: `No relevant knowledge found yet.` not "Oops!"
 
@@ -118,7 +121,7 @@ app URL, not shared storage.
 
 * `Ask your memory` — perfect, keep.
 * Follow-up hint ("N questions in context — follow-ups work") — excellent, keep.
-* Offline banner (`modelHealth.ts`): `Ollama is offline — …` followed by what actually degrades for the current mode (search keyword-only, local answers basic) — keep it mode-aware.
+* Model health (`modelHealth.ts`, R49.3): `Ollama is offline — …` followed by what actually degrades for the current mode (search keyword-only, local answers basic) — keep it mode-aware. It is the header status dot's tooltip, not a banner; Ask adds one dismissible line when no answer model works. Banners are for failures (a source whose sync keeps failing).
 
 ---
 

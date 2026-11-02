@@ -8,11 +8,11 @@
 <link rel="canonical" href="https://anchorcore.dev/security" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <script>
-    // Theme before first paint (no flash) — same resolution as src/themeMode.ts.
+    // Theme before first paint (no flash): Light unless the visitor chose Auto or Dark (src/themeMode.ts).
     (function () {
       var m = null;
       try { m = localStorage.getItem("theme-mode"); } catch (e) {}
-      var dark = m === "dark" || (m !== "light" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
+      var dark = m === "dark" || (m === "auto" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
       document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
     })();
   </script>
@@ -21,7 +21,7 @@
 <body>
   <header class="site-header">
     <div class="wrap">
-      <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-sage"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-stone"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-stone"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-stone"/></svg>AnchorCore</a>
+      <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-accent"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-muted"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-muted"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-muted"/></svg>AnchorCore</a>
       <!-- Nav IA (R18.3): every nav label matches its section heading verbatim; section ids stay stable (#roadmap is the legacy anchor for "Get started") -->
       <nav class="nav">
         <a href="/#how">How it works</a>
@@ -74,23 +74,23 @@
 <p>Two further notes. The web interface loads no third-party scripts, fonts or analytics; its only external addresses are links you click, such as the releases page and Ollama's download page. And Ollama's own model downloads happen inside Ollama: AnchorCore only asks your local Ollama to pull a model. The source contains no analytics, usage-tracking or crash-reporting code.</p>
 
 <h2 id="labels">Source labels and the cloud gate</h2>
-<p>Every source carries one label: <code>internal</code> (the default), <code>public</code>, <code>sensitive</code> or <code>pii</code>. A provider counts as approved when it is a local endpoint (<code>http://</code> to <code>localhost</code>, <code>127.0.0.1</code> or <code>::1</code>), when its URL is listed in <code>ANCHOR_TRUSTED_PROVIDERS</code>, or when <code>ANCHOR_CLOUD_TRUST=1</code> is set. Localhost is always approved; any cloud endpoint needs one of the other two. Evidence: <code>common.rs</code> (<code>provider_is_local</code>, <code>provider_trusted</code>).</p>
+<p>Every source carries one label: <code>internal</code> (the default), <code>public</code> or <code>sensitive</code>. (Older versions had a separate <code>pii</code> label; it now migrates to <code>sensitive</code>.) A provider counts as approved when it is a local endpoint (<code>http://</code> to <code>localhost</code>, <code>127.0.0.1</code> or <code>::1</code>, or the built-in embedder), when its host is listed in <code>ANCHOR_TRUSTED_PROVIDERS</code>, when <code>ANCHOR_CLOUD_TRUST=1</code> is set, or when you switch it on in Settings → Sensitive sources. A switch is bound to the host it was given for and closes if you point that setting at a different host; every change is recorded as a system event. AI agents (MCP or the skill) are a separate destination with their own switch, and a local answer model does not open it. Evidence: <code>sharing.rs</code> (<code>allowed</code>), <code>common.rs</code> (<code>provider_is_local</code>).</p>
 <div class="table-scroll"><table>
 <thead><tr><th scope="col">Label</th><th scope="col">Local model</th><th scope="col">Approved cloud</th><th scope="col">Unapproved cloud</th></tr></thead>
 <tbody>
 <tr><td><code>internal</code>, <code>public</code></td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
-<tr><td><code>sensitive</code>, <code>pii</code></td><td>Yes</td><td>Yes</td><td>Held back</td></tr>
+<tr><td><code>sensitive</code></td><td>Yes</td><td>Yes</td><td>Held back</td></tr>
 </tbody></table></div>
 <ul>
-<li><strong>Answers.</strong> Hits from sensitive or pii sources are removed before passages go to an unapproved cloud answer model, and a <code>system_events</code> warning records how many were excluded. If nothing survives, the app says relevant knowledge exists but cannot be used, instead of guessing. (<code>answer.rs</code>: <code>gate_answer_hits</code>, <code>record_gate_event</code>.)</li>
-<li><strong>Indexing.</strong> Indexing uses no chat model at all. Sensitive and pii sources skip an unapproved cloud embedder, and the background backfill leaves their chunks unembedded. They stay keyword-searchable. (<code>pipeline.rs</code>, <code>scheduler.rs</code>.)</li>
+<li><strong>Answers.</strong> Sensitive hits are removed before passages go to an unapproved cloud answer model, and a <code>system_events</code> warning records how many were excluded. If nothing survives, the app says relevant knowledge exists but cannot be used, instead of guessing. (<code>answer.rs</code>: <code>gate_answer_hits</code>, <code>record_gate_event</code>.)</li>
+<li><strong>Indexing.</strong> Indexing uses no chat model at all. Sensitive content skips an unapproved cloud embedder, and the background backfill leaves their chunks unembedded. They stay keyword-searchable. (<code>pipeline.rs</code>, <code>scheduler.rs</code>.)</li>
 <li><strong>Follow-up rewrite.</strong> Skipped when the answer provider is not approved. (<code>answer.rs</code>.)</li>
 <li><strong>Public answers.</strong> <code>POST /qa/public</code> answers only from sources labelled <code>public</code>, and the MCP <code>public_only</code> option calls that path. (<code>answer.rs</code>, <code>main.rs</code>, <code>mcp.rs</code>.)</li>
 </ul>
-<p>The gate keys on the source label. It is a decision you make when connecting a source, so it is only as good as the label you picked.</p>
+<p>The gate keys on the source label and the per-document mark below. Both are decisions a person makes, so the gate is only as good as the labels you picked.</p>
 
-<h2 id="pii">PII marks are manual</h2>
-<p>There is no automatic PII detection. A person can mark a whole document as PII (<code>PATCH /items/:id</code> with <code>is_pii</code>, or the toggle in the Entities view). The mark is visible and survives backup, but it does <em>not</em> gate cloud flows on its own yet: gating is by source label, as above. If a document must never reach an unapproved cloud model, keep it in a source labelled <code>sensitive</code> or <code>pii</code>. (<code>items.rs</code>; the decision is recorded in <a href="https://github.com/Atsirkunov/anchorcore/blob/main/rust/docs/decisions.md" rel="noopener noreferrer">rust/docs/decisions.md</a>.)</p>
+<h2 id="document-mark">Marking one document Sensitive</h2>
+<p>There is no automatic detection of personal data. A person can mark a single document Sensitive inside a source that is not (<code>PATCH /items/:id</code> with <code>sensitive_override: true</code>; <code>null</code> clears it). The mark only escalates: it cannot make a document in a Sensitive source less protected. A document is Sensitive when its source is labelled <code>sensitive</code> or it carries the mark, and every gate above reads that one rule. The mark survives backup. (<code>common.rs</code> <code>effective_sensitive</code>, <code>items.rs</code>; the decision is recorded in <a href="https://github.com/Atsirkunov/anchorcore/blob/main/rust/docs/decisions.md" rel="noopener noreferrer">rust/docs/decisions.md</a>.)</p>
 
 <h2 id="secrets">Where credentials are stored</h2>
 <ul>
@@ -125,7 +125,7 @@ Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
 <ul>
 <li><strong>The JSON API connector has no address guard.</strong> It sends requests to whatever address you enter, including <code>localhost</code> and private network addresses, and a full URL in <code>list_path</code> is used as-is. There is no SSRF or private-address protection. Enter only addresses you trust, and treat anyone who can edit sources as able to make the app send requests from your machine or server. The Team edition has no roles to restrict who that is.</li>
 <li>Personal has no sign-in; it relies on being bound to your own machine.</li>
-<li>The gate works on source labels. Per-document PII marks are advisory today.</li>
+<li>The gate works on labels and marks people set. Nothing is classified as Sensitive automatically.</li>
 <li>Once passages go to a cloud model you approved, that provider's own handling applies; AnchorCore cannot see or control it.</li>
 <li>The index is a SQLite file that AnchorCore does not encrypt at rest. Use full-disk encryption if the device can be lost.</li>
 <li>No SOC 2, ISO 27001, SSO, role-based access control or third-party penetration test.</li>
@@ -133,7 +133,7 @@ Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
 
 <h2 id="report">Reporting an issue</h2>
 <p>Open an issue on <a href="https://github.com/Atsirkunov/anchorcore/issues" rel="noopener noreferrer">GitHub</a>. If a statement on this page no longer matches the source, that is a bug in this page; tell us. For data this website itself collects (the waitlist and quote forms), see the <a href="/privacy">privacy notice</a>.</p>
-<p><a class="btn primary" href="/#download">Download — free for personal use</a> <a class="btn secondary" href="/team">For teams</a></p>
+<p><a class="btn primary" href="/#download">Download, free for personal use</a> <a class="btn secondary" href="/team">For teams</a></p>
 </div>
       </div>
     </article>
@@ -141,7 +141,7 @@ Windows:        Get-FileHash .\AnchorCore-windows.zip -Algorithm SHA256
 
   <footer>
     <div class="wrap foot">
-      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-sage"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-stone"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-stone"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-stone"/></svg><b>AnchorCore</b> v1 local · free for personal use · Team self-hosted on request · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="/team">For teams</a> · <a href="/hosted">Hosted waitlist</a> · <a href="/privacy">Privacy notice</a> · <a href="/#trust">Trust &amp; verification</a> · <a href="/security">Security notes</a> · <a href="/vs/notebooklm">vs NotebookLM</a></div>
+      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-accent"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-muted"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-muted"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-muted"/></svg><b>AnchorCore</b> is free for personal use · Team self-hosted on request · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="/team">For teams</a> · <a href="/hosted">Hosted waitlist</a> · <a href="/privacy">Privacy notice</a> · <a href="/#trust">Trust &amp; verification</a> · <a href="/security">Security notes</a> · <a href="/vs/notebooklm">vs NotebookLM</a></div>
       <div>Private by default · cited by design</div>
     </div>
   </footer>

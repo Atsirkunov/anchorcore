@@ -1,6 +1,6 @@
 //! B54 — dummy-proof local model setup: readiness probe + pull progress.
 //!
-//! The wizard and System tab drive model installs through here instead of
+//! The wizard and Status & logs drive model installs through here instead of
 //! copy-pasted terminal commands. Pull progress lives in a process-global map
 //! (same OnceLock pattern as the auth rate limits) so no AppState change is
 //! needed and in-flight pulls survive handler boundaries.

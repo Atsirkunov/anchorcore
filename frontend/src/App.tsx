@@ -1,22 +1,21 @@
 import { useEffect, useState } from "react";
+import { settingsSection, useRoute, type Tab } from "./useRoute";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
-import { ThemeSwitch } from "./ThemeSwitch";
+import { followSystem, readMode } from "./themeMode";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { modelIssues } from "./modelHealth";
+import { askNotice, modelIssues } from "./modelHealth";
 import { useProjects } from "./useProjects";
 import { theme, radius } from "./theme";
 import { OnboardingWizard } from "./OnboardingWizard";
 import { UpdateBanner } from "./Updates";
 import { AskTab } from "./tabs/AskTab";
+import { AgentsTab } from "./tabs/AgentsTab";
+import { LibraryTab } from "./tabs/LibraryTab";
 import { RecordsTab } from "./tabs/RecordsTab";
 import { SettingsTab } from "./tabs/SettingsTab";
-import { SourcesTab } from "./tabs/SourcesTab";
-import { SystemTab } from "./tabs/SystemTab";
 import { isActiveJob } from "./jobControlsText";
 import type { Job } from "./types";
-
-type Tab = "ask" | "sources" | "records" | "settings" | "system";
 
 function badgeText(jobs: Job[]): string {
   const running = jobs.filter((j) => j.status === "running").length;
@@ -24,25 +23,27 @@ function badgeText(jobs: Job[]): string {
   return queued > 0 ? `${running} running · ${queued} queued` : `${running} running`;
 }
 
-// Primary = everyday flow; secondary = configure & inspect (airy grouped nav)
-// R45.25: Entities became Records (decisions, actions, glossary); the review
-// queue is gone from the UI, /entities* and /review/* stay for agents.
+// R49.9 (owner decision 2026-11-02): Ask · Library · Records · Agents, with
+// Settings on the right. System folded into Settings → Status & logs.
 const PRIMARY_TABS: { id: Tab; label: string }[] = [
   { id: "ask", label: "Ask" },
-  { id: "sources", label: "Sources" },
+  { id: "library", label: "Library" },
   { id: "records", label: "Records" },
-];
-const SECONDARY_TABS: { id: Tab; label: string }[] = [
-  { id: "settings", label: "Settings" },
-  { id: "system", label: "System" },
+  { id: "agents", label: "Agents" },
 ];
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("ask");
+  // Wave 1: the tab is in the URL hash (reload, back, deep links).
+  const [route, navigate] = useRoute();
+  const tab = route.tab;
+  const setTab = (t: Tab) => navigate(t);
+  const [askNoticeHidden, setAskNoticeHidden] = useState(() => readSession("ask-notice-dismissed") === "1");
   const [dismissedSig, setDismissedSig] = useState<string | null>(() => localStorage.getItem("banner-dismissed"));
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
   const [showWizard, setShowWizard] = useState(false);
-  // R30.4: bumping this scrolls the System tab to its job list
+  // Auto theme follows the OS wherever the switch lives (Settings → Appearance).
+  useEffect(() => followSystem(readMode), []);
+  // R30.4: bumping this scrolls Status & logs to its job list
   const [focusJobs, setFocusJobs] = useState(0);
   // B37: projects come from the shared context (no duplicate fetch here)
   const { projects } = useProjects();
@@ -86,10 +87,19 @@ export default function App() {
         (s) => !runningJobs?.some((j) => j.source_id === s.id && (j.status === "running" || j.status === "pending")),
       )
     : [];
-  const others = failingForBanner.map((s) => `Sync failing: ${s.name} (${s.count}×) — ${s.error ?? "unknown error"}`);
+  const others = failingForBanner.map((s) => `Sync failing: ${s.name} (${s.count}×): ${s.error ?? "unknown error"}`);
   const othersSig = JSON.stringify(others);
   const visibleOthers = dismissedSig === othersSig ? [] : others;
-  const bannerVisible = model.length > 0 || visibleOthers.length > 0;
+  // Wave 1 (one notice rule): model issues are a header dot plus one
+  // dismissible line on Ask — no longer a red banner on every tab. The
+  // banner is left for real failures (a source whose sync keeps failing).
+  const bannerVisible = visibleOthers.length > 0;
+  const notice = askNotice(health);
+  const status = statusDot(online, model, others.length);
+  const openJobs = () => {
+    navigate("settings", "status");
+    setFocusJobs((n) => n + 1);
+  };
 
   return (
     <div style={styles.wrap}>
@@ -126,28 +136,11 @@ export default function App() {
               {t.label}
             </button>
           ))}
-          <span style={styles.navDivider} aria-hidden="true" />
-          {SECONDARY_TABS.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              title="Configure & inspect"
-              style={{
-                ...styles.tab,
-                ...styles.tabSecondary,
-                ...(tab === t.id ? styles.tabActive : {}),
-              }}
-            >
-              {t.label}
-            </button>
-          ))}
         </nav>
+        <span style={{ flex: 1 }} />
         {runningJobs && runningJobs.length > 0 && (
           <button
-            onClick={() => {
-              setTab("system");
-              setFocusJobs((n) => n + 1);
-            }}
+            onClick={openJobs}
             title={[
               ...runningJobs.map((j) => `#${j.id} ${j.kind} ${j.status}${j.total > 0 ? ` ${j.processed}/${j.total}` : ""}`),
               "Open the job list to stop a job",
@@ -158,47 +151,33 @@ export default function App() {
             {badgeText(runningJobs)}
           </button>
         )}
-        <select
-          value={effectiveProject ?? ""}
-          onChange={(e) => setSelectedProject(e.target.value ? Number(e.target.value) : null)}
-          style={styles.projectPicker}
-          title="Scope questions to a project"
+        {status && (
+          <button
+            onClick={() => navigate(status.target.tab, status.target.sub)}
+            title={status.title}
+            aria-label={status.title}
+            style={{ ...styles.statusDot, color: status.color }}
+          >
+            <span aria-hidden="true" style={{ ...styles.dot, background: status.color }} />
+            {status.label}
+          </button>
+        )}
+        <button
+          onClick={() => setTab("settings")}
+          style={{ ...styles.tab, ...(tab === "settings" ? styles.tabActive : {}) }}
         >
-          <option value="">All sources</option>
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-              {p.is_default ? " ★" : ""}
-            </option>
-          ))}
-        </select>
-        <span style={{ color: online === false ? theme.red : online ? theme.green : theme.textDim, fontSize: 12, fontFamily: theme.mono }}>
-          {online === false ? "API offline" : online ? "API online" : "checking…"}
-        </span>
-        <ThemeSwitch />
+          Settings
+        </button>
       </header>
-      <UpdateBanner onOpen={() => setTab("system")} />
+      <UpdateBanner onOpen={() => navigate("settings", "updates")} />
       {bannerVisible && (
         <div style={styles.banner}>
           <div style={{ flex: 1 }}>
-            {model.map((issue, i) => (
-              <div key={`m${i}`}>• {issue}</div>
-            ))}
             {visibleOthers.map((issue, i) => (
               <div key={`o${i}`}>• {issue}</div>
             ))}
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start", flexShrink: 0 }}>
-            {model.length > 0 && (
-              <>
-                <button onClick={() => setShowWizard(true)} style={styles.dismiss}>
-                  Set up models
-                </button>
-                <button onClick={() => setTab("settings")} style={styles.dismiss}>
-                  Settings
-                </button>
-              </>
-            )}
             {visibleOthers.length > 0 && (
               <button
                 onClick={() => {
@@ -214,27 +193,120 @@ export default function App() {
         </div>
       )}
       <main style={styles.main}>
-        <ErrorBoundary label="Ask">
-          {tab === "ask" && <AskTab projectId={effectiveProject ?? undefined} onGoSources={() => setTab("sources")} />}
-        </ErrorBoundary>
-        <ErrorBoundary label="Sources">
-          {tab === "sources" && <SourcesTab />}
+        {tab === "ask" && notice && !askNoticeHidden && (
+          <p style={styles.askNotice}>
+            {notice}{" "}
+            <button onClick={() => setShowWizard(true)} style={styles.noticeLink}>
+              Set up
+            </button>
+            <button
+              onClick={() => {
+                writeSession("ask-notice-dismissed", "1");
+                setAskNoticeHidden(true);
+              }}
+              style={styles.noticeClose}
+              aria-label="Dismiss for this session"
+              title="Dismiss for this session"
+            >
+              ×
+            </button>
+          </p>
+        )}
+        {/* Wave 1 (UX audit #2): Ask stays mounted so switching tabs keeps
+            the conversation; the other tabs are server views and remount. */}
+        <div hidden={tab !== "ask"}>
+          <ErrorBoundary label="Ask">
+            <AskTab
+              projectId={effectiveProject ?? undefined}
+              projects={projects}
+              onProject={setSelectedProject}
+              onGoSources={() => setTab("library")}
+              onTour={() => setShowWizard(true)}
+            />
+          </ErrorBoundary>
+        </div>
+        <ErrorBoundary label="Library">
+          {tab === "library" && <LibraryTab sourceId={sourceIdOf(route.sub)} onOpen={(id) => navigate("library", id)} />}
         </ErrorBoundary>
         <ErrorBoundary label="Records">
           {tab === "records" && <RecordsTab />}
         </ErrorBoundary>
-        <ErrorBoundary label="Settings">
-          {tab === "settings" && <SettingsTab />}
+        <ErrorBoundary label="Agents">
+          {tab === "agents" && <AgentsTab />}
         </ErrorBoundary>
-        <ErrorBoundary label="System">
-          {tab === "system" && <SystemTab onConfigure={() => setTab("settings")} focusJobs={focusJobs} />}
+        <ErrorBoundary label="Settings">
+          {tab === "settings" && (
+            <SettingsTab
+              section={settingsSection(route.sub)}
+              onSection={(sec) => navigate("settings", sec)}
+              onTour={() => setShowWizard(true)}
+              focusJobs={focusJobs}
+            />
+          )}
         </ErrorBoundary>
       </main>
     </div>
   );
 }
 
+function readSession(key: string): string | null {
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeSession(key: string, value: string) {
+  try {
+    sessionStorage.setItem(key, value);
+  } catch {
+    /* private mode: the notice just comes back on reload */
+  }
+}
+
+/** `#/library/12` → 12; anything else is the list. */
+function sourceIdOf(sub: string | null): number | null {
+  const n = Number(sub);
+  return sub && Number.isInteger(n) && n > 0 ? n : null;
+}
+
+type Status = { color: string; label: string; title: string; target: { tab: Tab; sub?: string } };
+
+/** One header dot for every health state; null when all is well. */
+function statusDot(online: boolean | null, model: string[], failing: number): Status | null {
+  if (online === false) return { color: theme.red, label: "Offline", title: "The AnchorCore server is not answering", target: { tab: "settings", sub: "status" } };
+  if (failing > 0) {
+    const title = `${failing} source${failing === 1 ? "" : "s"} failing to sync`;
+    return { color: theme.red, label: "Sync failing", title, target: { tab: "library" } };
+  }
+  if (model.length > 0) return { color: theme.amber, label: "Models", title: model.join("\n"), target: { tab: "settings", sub: "answers" } };
+  return null;
+}
+
 const styles: Record<string, React.CSSProperties> = {
+  statusDot: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    background: "none",
+    border: "none",
+    padding: 0,
+    fontSize: 12,
+    cursor: "pointer",
+  },
+  dot: { width: 8, height: 8, borderRadius: "50%", display: "inline-block", flexShrink: 0 },
+  askNotice: {
+    display: "flex",
+    alignItems: "baseline",
+    gap: 8,
+    flexWrap: "wrap",
+    margin: "0 0 20px",
+    fontSize: 13,
+    color: theme.textMuted,
+  },
+  noticeLink: { background: "none", border: "none", padding: 0, color: theme.text, textDecoration: "underline", cursor: "pointer", fontSize: 13 },
+  noticeClose: { marginLeft: "auto", background: "none", border: "none", padding: "0 4px", color: theme.textDim, cursor: "pointer", fontSize: 16, lineHeight: 1 },
   wrap: { minHeight: "100vh", background: theme.bg, color: theme.text, fontFamily: theme.sans },
   header: {
     display: "flex",
@@ -248,8 +320,6 @@ const styles: Record<string, React.CSSProperties> = {
   },
   title: { display: "flex", alignItems: "center", gap: 8, fontFamily: theme.sans, fontSize: 17, fontWeight: 600, letterSpacing: "-0.01em", margin: "0 8px 0 0" },
   nav: { display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap", alignSelf: "stretch" },
-  navDivider: { width: 1, height: 18, background: theme.border, margin: "0 8px" },
-  tabSecondary: { color: theme.textDim, fontSize: 13 },
   tab: {
     background: "none",
     border: "none",
@@ -286,16 +356,6 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: radius,
     fontSize: 12,
     cursor: "pointer",
-  },
-  projectPicker: {
-    background: theme.bgCard,
-    border: `1px solid ${theme.border}`,
-    color: theme.text,
-    borderRadius: radius,
-    padding: "0.3rem 0.6rem",
-    fontSize: 13,
-    maxWidth: 180,
-
   },
   spinner: {
     width: 10,

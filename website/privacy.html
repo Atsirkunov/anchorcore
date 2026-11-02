@@ -8,11 +8,11 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="canonical" href="https://anchorcore.dev/privacy" />
   <script>
-    // Theme before first paint (no flash) — same resolution as src/themeMode.ts.
+    // Theme before first paint (no flash): Light unless the visitor chose Auto or Dark (src/themeMode.ts).
     (function () {
       var m = null;
       try { m = localStorage.getItem("theme-mode"); } catch (e) {}
-      var dark = m === "dark" || (m !== "light" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
+      var dark = m === "dark" || (m === "auto" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
       document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
     })();
   </script>
@@ -25,7 +25,7 @@
 <body>
   <header class="site-header">
     <div class="wrap">
-      <div class="brand"><svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-sage"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-stone"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-stone"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-stone"/></svg>AnchorCore</div>
+      <div class="brand"><svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-accent"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-muted"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-muted"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-muted"/></svg>AnchorCore</div>
       <a class="nav-cta" href="/">← anchorcore.dev</a>
     </div>
   </header>
@@ -36,9 +36,9 @@
         <h2>Privacy notice</h2>
         <p class="sub">Short version: this site doesn't track you. The only personal data we receive is what you type into a waitlist or Team quote form.</p>
         <div class="faq">
-          <div class="qa"><h3>Who is responsible?</h3><p>Aleksandr Tsirkunov — <a href="mailto:alex@anchorcore.dev">alex@anchorcore.dev</a>.</p></div>
-          <div class="qa"><h3>Visiting this site</h3><p>No cookies, no analytics, no fingerprinting. Your browser only talks to this server (and to GitHub if you click a download or docs link — then GitHub's privacy policy applies). This site does not store anything in your browser.</p></div>
-          <div class="qa"><h3>AI agent bridge (Cloudflare WebMCP)</h3><p>Cloudflare's edge adds one script to this site, <code>/.webmcp/bridge.js</code>, so that browser-based AI agents can use structured tools here instead of scraping the page. It is the only script on this site that is not part of the site's own code. It runs on this origin, sets no cookies, stores nothing in your browser, and its code contains no third-party endpoints; its image-provenance tool can read images that are already on this page when an agent asks it to. It is served from this domain like any other asset — your browser does not talk to Cloudflare because of it.</p></div>
+          <div class="qa"><h3>Who is responsible?</h3><p>Aleksandr Tsirkunov, <a href="mailto:alex@anchorcore.dev">alex@anchorcore.dev</a>.</p></div>
+          <div class="qa"><h3>Visiting this site</h3><p>No cookies, no analytics, no fingerprinting. Your browser only talks to this server (and to GitHub if you click a download or docs link; then GitHub's privacy policy applies). This site does not store anything in your browser.</p></div>
+          <div class="qa"><h3>AI agent bridge (Cloudflare WebMCP)</h3><p>Cloudflare's edge adds one script to this site, <code>/.webmcp/bridge.js</code>, so that browser-based AI agents can use structured tools here instead of scraping the page. It is the only script on this site that is not part of the site's own code. It runs on this origin, sets no cookies, stores nothing in your browser, and its code contains no third-party endpoints; its image-provenance tool can read images that are already on this page when an agent asks it to. It is served from this domain like any other asset, and your browser does not talk to Cloudflare because of it.</p></div>
           <div class="qa"><h3>Waitlist signup</h3><p>If you join a waitlist we receive your email address plus which list you picked (updates / download link / Hosted). Legal basis is your consent (Art. 6(1)(a) GDPR), given by submitting the form. We use it only to email you product updates. To unsubscribe, reply to any update email or write to <a href="mailto:alex@anchorcore.dev">alex@anchorcore.dev</a> — your address is then deleted.</p></div>
           <div class="qa"><h3>Team quote request</h3><p>If you request a Team quote on <a href="/team">/team</a> we receive your work email, company name, number of seats, deployment choice and the optional note you write. Legal basis is taking steps at your request before a contract (Art. 6(1)(b) GDPR). We use it only to reply to your request. To have it removed, write to <a href="mailto:alex@anchorcore.dev">alex@anchorcore.dev</a> — your data is then deleted.</p></div>
           <div class="qa"><h3>Who processes the data?</h3><p>Form submissions are handled by Formspree Inc. (Austin, TX, USA) as our processor under a data-processing agreement; transfers to the US rely on standard contractual clauses. Nobody else receives your data.</p></div>

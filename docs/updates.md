@@ -4,7 +4,7 @@ AnchorCore checks for a newer release **only when you ask it to** — there is n
 background update ping. That is deliberate: the app is local-first, and an idle
 connection to a server you never asked for would contradict that.
 
-## In the app (System tab → Updates)
+## In the app (Settings → Updates)
 
 - **Check for updates** performs one request to `api.github.com` for the newest
   release tag (a plain fetch of public release info — nothing about you or your

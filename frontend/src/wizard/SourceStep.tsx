@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api } from "../api";
+import { api, errMsg } from "../api";
 import { FolderPicker } from "../FolderPicker";
 import { theme } from "../theme";
 import type { OnboardingState } from "../types";
@@ -33,7 +33,7 @@ export function SourceStep({ state, onSynced }: { state: OnboardingState | null;
       }
       onSynced();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(false);
     }
@@ -44,13 +44,13 @@ export function SourceStep({ state, onSynced }: { state: OnboardingState | null;
   return (
     <div style={styles.body}>
       <div style={styles.note}>
-        AnchorCore ingests a folder of notes, code and business docs (Markdown, source code, Office, OpenDocument, RTF, email, PDF) — cloned git
+        AnchorCore ingests a folder of notes, code and business docs (Markdown, source code, Office, OpenDocument, RTF, email, PDF), including cloned git
         repos work like any folder, honoring .gitignore.
         {state?.sample.available ? " You can also use the bundled sample corpus to try it." : null}
       </div>
-      {state && state.sources_count > 0 && <div style={styles.hint}>You already have {state.sources_count} source(s) — Continue, or add another.</div>}
+      {state && state.sources_count > 0 && <div style={styles.hint}>You already have {state.sources_count} source(s). Continue, or add another.</div>}
       {state?.sample.available && state.sample.path && (
-        <button style={{ ...styles.button, background: theme.citeSoft, color: theme.accentAlt }} disabled={busy} onClick={() => runSync(state.sample.path!, "Sample company memory")}>
+        <button style={{ ...styles.button, background: theme.bgHover, color: theme.text }} disabled={busy} onClick={() => runSync(state.sample.path!, "Sample company memory")}>
           {busy ? "Syncing…" : "Try the sample corpus"}
         </button>
       )}

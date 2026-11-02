@@ -121,7 +121,7 @@ passphrase and writes `secrets.bundle` (Argon2id + XChaCha20-Poly1305, §7).
 Re-embed on import: enqueue the embed job for chunks missing vectors; retrieval
 degrades to `keyword_only` honestly (B58) until it finishes.
 
-UI: System tab "Backup & restore" card — Export (options + passphrase), Import
+UI: Settings → Backup & restore — Export (options + passphrase), Import
 (file → report → confirm), credentials list, path-remap inputs.
 CLI (headless/Team): `anchorcore export --out …`, `anchorcore import …` — same
 engine; talks to the running app (single DB owner), or opens the DB directly

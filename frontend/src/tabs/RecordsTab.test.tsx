@@ -83,7 +83,7 @@ async function renderTab() {
   return container;
 }
 
-describe("RecordsTab R45.25 (Decisions + Actions + Glossary)", () => {
+describe("RecordsTab R45.25 / R49.9 (Decisions + Actions)", () => {
   it("defaults to Decisions and shows supersession with provenance", async () => {
     const c = await renderTab();
     expect(api.listDecisions).toHaveBeenCalledWith({ status: "current", q: undefined });
@@ -95,7 +95,8 @@ describe("RecordsTab R45.25 (Decisions + Actions + Glossary)", () => {
   it("offers no review queue: no All entities view, no Looks right, no confidence", async () => {
     const c = await renderTab();
     const labels = Array.from(c.querySelectorAll("button")).map((b) => b.textContent);
-    expect(labels.slice(0, 3)).toEqual(["Decisions", "Actions", "Glossary"]);
+    expect(labels.slice(0, 2)).toEqual(["Decisions", "Actions"]);
+    expect(labels).not.toContain("Glossary");
     expect(c.textContent).not.toContain("All entities");
     expect(c.textContent).not.toContain("Looks right");
     expect(c.textContent).not.toContain("conf ");
@@ -118,13 +119,11 @@ describe("RecordsTab R45.25 (Decisions + Actions + Glossary)", () => {
     expect(c.textContent).toContain("hidden because the answer provider");
   });
 
-  it("Glossary view opens the glossary and remembers the choice", async () => {
-    const c = await renderTab();
-    await act(async () => click(button(c, "Glossary")));
-    await act(async () => {});
-    expect(api.glossary).toHaveBeenCalled();
-    expect(c.querySelector("[aria-expanded]")?.getAttribute("aria-expanded")).toBe("true");
-    expect(localStorage.getItem("entities-view")).toBe("glossary");
+  it("falls back to Decisions when the moved Glossary view is remembered (R49.9)", async () => {
+    localStorage.setItem("entities-view", "glossary");
+    await renderTab();
+    expect(api.listDecisions).toHaveBeenCalled();
+    expect(api.glossary).not.toHaveBeenCalled();
   });
 
   it("disputes a decision with a required reason, then restores it", async () => {
@@ -138,7 +137,7 @@ describe("RecordsTab R45.25 (Decisions + Actions + Glossary)", () => {
     await act(async () => click(button(c, "Record dispute")));
     await act(async () => {});
     expect(dispute).toHaveBeenCalledWith(1, "wrong vendor");
-    expect(c.textContent).toContain("Disputed — hidden from this list and from AI agents until restored.");
+    expect(c.textContent).toContain("Disputed: hidden from this list and from AI agents until restored.");
     expect(c.textContent).toContain("Stripe provider");
 
     await act(async () => click(button(c, "Restore")));

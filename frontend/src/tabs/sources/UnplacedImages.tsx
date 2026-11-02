@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "../../api";
+import { api, errMsg } from "../../api";
 import { Thumb } from "../../ImageStrip";
 import { theme, commonStyles, radius } from "../../theme";
 import type { ItemMeta, MediaRow, Source } from "../../types";
@@ -27,7 +27,7 @@ export function UnplacedImages({ sources }: { sources: Source[] }) {
         setRows(list.items);
         setTotal(list.total);
       })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setError(errMsg(e)));
     // Both counts: the badge, and whether the panel shows at all (ignored
     // images must stay restorable when nothing is left unplaced).
     Promise.all([api.media({ attribution: "none", limit: 1 }), api.media({ attribution: "ignored", limit: 1 })])
@@ -59,7 +59,7 @@ export function UnplacedImages({ sources }: { sources: Source[] }) {
         </button>
       </div>
       <p style={styles.help}>
-        No synced document links these images. Write what each one shows and pick the document it belongs to — your caption is
+        No synced document links these images. Write what each one shows and pick the document it belongs to. Your caption is
         how questions find it. Nothing is suggested automatically.
       </p>
       {error && <p style={{ color: theme.red, margin: "0 0 8px" }}>{error}</p>}
@@ -104,7 +104,7 @@ function ImageCard({ row, onDone }: { row: MediaRow; onDone: () => void }) {
       await api.patchMedia(row.asset_id, body);
       onDone();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(false);
     }
@@ -172,7 +172,7 @@ function ImageCard({ row, onDone }: { row: MediaRow; onDone: () => void }) {
 const styles: Record<string, React.CSSProperties> = {
   panel: { background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.9rem 1rem", marginBottom: 16 },
   header: { display: "flex", alignItems: "center", gap: 8, marginBottom: 4 },
-  badge: { fontFamily: theme.mono, fontSize: 11, padding: "0 6px", borderRadius: radius, background: theme.amberBg, color: theme.text, border: `1px solid ${theme.border}` },
+  badge: { fontFamily: theme.sans, fontSize: 11, padding: "0 6px", borderRadius: radius, background: theme.amberBg, color: theme.text, border: `1px solid ${theme.border}` },
   tab: { ...commonStyles.button, fontSize: 12, padding: "0.2rem 0.6rem" },
   tabOn: { ...commonStyles.button, fontSize: 12, padding: "0.2rem 0.6rem", background: theme.accent, color: theme.onAccent },
   help: { fontSize: 12, color: theme.textDim, margin: "0 0 10px" },

@@ -5,7 +5,7 @@
 Key facts, each stated on the pages below:
 
 - Runs locally by default. The index is a database on your disk; there is no telemetry code in the source.
-- Source labels (internal, public, sensitive, pii) keep chosen sources out of cloud models you have not approved.
+- Source labels (internal, public, sensitive) keep chosen sources out of cloud models and AI agents you have not approved; one document can also be marked Sensitive.
 - Coding agents can use the same cited search through an MCP server.
 - Team edition is one self-hosted container, quote-based, with optional password sign-in. No SSO, no roles.
 - Hosted edition is a waitlist only.

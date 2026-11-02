@@ -17,10 +17,9 @@ holds only what is specific to working inside `rust/`.
   phase helpers (`pipeline.rs` `ClassifyCtx` phases, `system.rs` `status_snapshot`) and prefer guard
   clauses (`let Some(x) = y else { return … }`) over nested `if let`/`match`.
 - **Gate:** `lizard -l rust -w rust/crates/anchorcore/src -C 15` prints no new warnings. Accepted baseline
-  (7, re-measured 2026-10-26): `rtf_to_text` 31 (R36.14), `create_summaries_inner` 32,
-  `create_tags_inner` 19, `conflicts_for_chunks` / `load_hits_filtered` /
-  `load_chunks_with_embedding_filtered` 17, and the `text_decodes_utf8_utf16_and_cp1252` test-span
-  tokenizer artifact. If lizard flags a function your diff never touched, suspect the tokenizer (root
+  (5, re-measured 2026-11-02 after R48.9/R48.10): `conflicts_for_chunks` 17, `load_hits_filtered` 16,
+  `load_chunks_with_embedding_filtered` 16 (test code, `retrieval.rs` `mod tests`), and two tokenizer artifacts in `extract.rs`: the `text_decodes_utf8_utf16_and_cp1252` test span and
+  `resolve_ref` (CCN 4, flagged for a misread 1800-line span since R48.9 grew the file). If lizard flags a function your diff never touched, suspect the tokenizer (root
   `AGENTS.md` gotcha) before believing it.
 - Reusable patterns: `with_db` / `run_db` for all blocking DB work; row-mapper helper fns instead of
   inline closures; `params_from_iter` vecs instead of repeated match arms.

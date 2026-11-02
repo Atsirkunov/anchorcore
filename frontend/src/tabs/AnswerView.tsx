@@ -1,12 +1,14 @@
+import { errMsg } from "../api";
 import { useState } from "react";
 import { theme, radius } from "../theme";
-import { AGENT_COMPOSE_HINT, isAgentCompose, modeBannerNotes } from "../answerMode";
+import { AGENT_COMPOSE_HINT, CONTEXT_ONLY_HINT, isAgentCompose, isEvidenceView, modeBannerNotes } from "../answerMode";
 import { excerpt, parseAnswer, relativeTo, splitSourceRef, type Inline } from "../answerText";
 import type { Citation } from "../types";
 import { ImageStrip } from "../ImageStrip";
 
 /** One asked question and what came back: a written answer (local model) or
- *  the cited passages an agent composes from (R45.2 agent mode). */
+ *  the cited passages — what an agent composes from (R45.2 agent mode), or
+ *  what matched when no answer model ran (`context_only`). */
 export type AnswerTurn = {
   question: string;
   answer: string;
@@ -19,15 +21,20 @@ export type AnswerTurn = {
 export function AnswerView({ turn, roots, latest }: { turn: AnswerTurn; roots: string[]; latest: boolean }) {
   const [active, setActive] = useState<number | null>(null);
   const agent = isAgentCompose(turn.mode);
+  // Evidence turns show ranked passages, never the server's fallback text.
+  // The server's `warning` is written for agents ("do not quote this"); the
+  // person gets the one calm hint instead (UX audit #1).
+  const evidence = isEvidenceView(turn.mode);
+  const label = agent ? "Evidence for your agent" : evidence ? "Matching passages" : "Sources";
   return (
     <article className="animated" style={{ ...styles.turn, ...(latest ? styles.latest : {}), animation: "popIn 0.45s ease both" }}>
       <p style={styles.question}>{turn.question}</p>
-      {turn.warning ? <div style={styles.degradedNote}>{turn.warning}</div> : null}
+      {turn.warning && !evidence ? <div style={styles.degradedNote}>{turn.warning}</div> : null}
       {modeBannerNotes(turn.mode, turn.retrieval).map((note) => (
         <div key={note} style={styles.degradedNote}>{note}</div>
       ))}
-      {agent ? (
-        <p style={styles.agentNote}>{AGENT_COMPOSE_HINT}</p>
+      {evidence ? (
+        <p style={styles.agentNote}>{agent ? AGENT_COMPOSE_HINT : CONTEXT_ONLY_HINT}</p>
       ) : (
         <div style={styles.answer}>
           <p style={styles.label}>Answer</p>
@@ -36,10 +43,10 @@ export function AnswerView({ turn, roots, latest }: { turn: AnswerTurn; roots: s
       )}
       {turn.citations.length > 0 && (
         <div style={styles.sources}>
-          <p style={styles.label}>{agent ? "Evidence for your agent" : "Sources"} · {turn.citations.length}</p>
+          <p style={styles.label}>{label} · {turn.citations.length}</p>
           <ol style={styles.list}>
             {turn.citations.map((c, i) => (
-              <SourceCard key={`${c.source_ref}-${i}`} c={c} n={i + 1} roots={roots} agent={agent} active={active === i + 1} />
+              <SourceCard key={`${c.source_ref}-${i}`} c={c} n={i + 1} roots={roots} evidence={evidence} active={active === i + 1} />
             ))}
           </ol>
         </div>
@@ -71,7 +78,7 @@ function ReportButton() {
       URL.revokeObjectURL(url);
       setDone(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(false);
     }
@@ -81,7 +88,7 @@ function ReportButton() {
       <button onClick={download} disabled={busy} style={styles.reportLink} title="Download a redacted diagnostics bundle for this answer (no document text) to send to support">
         {busy ? "Preparing report…" : "Report issue"}
       </button>
-      {done && !error ? <span style={styles.reportNote}>saved — safe to share after a glance at the query text</span> : null}
+      {done && !error ? <span style={styles.reportNote}>saved. Safe to share after a glance at the query text.</span> : null}
       {error ? <span style={styles.reportError}>{error}</span> : null}
     </p>
   );
@@ -113,7 +120,7 @@ function AnswerBody({ text, onCite, count }: { text: string; onCite: (n: number 
         b.t === "p" ? (
           <p key={i} style={styles.para}>{inline(b.parts)}</p>
         ) : b.t === "ol" ? (
-          <ol key={i} style={styles.answerList}>{b.items.map((it, j) => <li key={j}>{inline(it)}</li>)}</ol>
+          <ol key={i} start={b.start} style={styles.answerList}>{b.items.map((it, j) => <li key={j}>{inline(it)}</li>)}</ol>
         ) : (
           <ul key={i} style={styles.answerList}>{b.items.map((it, j) => <li key={j}>{inline(it)}</li>)}</ul>
         ),
@@ -122,13 +129,18 @@ function AnswerBody({ text, onCite, count }: { text: string; onCite: (n: number 
   );
 }
 
-function SourceCard({ c, n, roots, agent, active }: { c: Citation; n: number; roots: string[]; agent: boolean; active: boolean }) {
+/** Evidence cards are the whole result, so they get the longer passage. */
+function cardText(c: Citation, evidence: boolean): string {
+  return evidence ? excerpt(c.content || c.snippet || c.summary, 600) : excerpt(c.snippet || c.summary, 240);
+}
+
+function SourceCard({ c, n, roots, evidence, active }: { c: Citation; n: number; roots: string[]; evidence: boolean; active: boolean }) {
   const { location, section } = splitSourceRef(c.source_ref);
   const crumbs = (c.path ?? "").split(" > ").filter(Boolean);
   const title = crumbs.length ? crumbs.join(" › ") : c.item_title || relativeTo(location, roots);
   const lines = c.line_start && c.line_end ? `lines ${c.line_start}–${c.line_end}` : null;
   const where = [relativeTo(location, roots), section ? `§${section}` : null, lines].filter(Boolean).join(" · ");
-  const text = excerpt(agent ? c.content || c.snippet : c.snippet || c.summary, agent ? 600 : 240);
+  const text = cardText(c, evidence);
   return (
     <li id={`cite-${n}`} style={{ ...styles.card, ...(active ? styles.cardActive : {}) }} title={`${c.kind} · score ${c.score}`}>
       <span style={styles.sid}>S{n}</span>
@@ -153,7 +165,7 @@ const styles: Record<string, React.CSSProperties> = {
   turn: { borderTop: `1px solid ${theme.border}`, paddingTop: 20 },
   latest: { borderTop: `1px solid ${theme.text}` },
   question: { margin: "0 0 14px", fontFamily: theme.serif, fontWeight: 500, fontSize: 20, lineHeight: 1.35 },
-  label: { margin: "0 0 8px", fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", color: theme.textDim },
+  label: { margin: "0 0 8px", fontFamily: theme.sans, fontWeight: 600, fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", color: theme.textDim },
   answer: { fontFamily: theme.serif, fontSize: 16, lineHeight: 1.65 },
   para: { margin: "0 0 10px" },
   answerList: { margin: "0 0 10px", paddingLeft: "1.4em" },
@@ -174,10 +186,10 @@ const styles: Record<string, React.CSSProperties> = {
   cardActive: { borderColor: theme.cite, background: theme.citeSoft },
   sid: { flexShrink: 0, fontFamily: theme.mono, fontWeight: 600, color: theme.cite, paddingTop: 1 },
   cardTitle: { fontWeight: 600 },
-  badge: { marginLeft: 8, fontFamily: theme.mono, fontSize: 11, color: theme.blue },
+  badge: { marginLeft: 8, fontFamily: theme.sans, fontSize: 11, color: theme.blue },
   where: { fontFamily: theme.mono, fontSize: 12, color: theme.textDim, overflowWrap: "anywhere" },
   quote: { margin: "4px 0 0", fontFamily: theme.serif, fontSize: 14, color: theme.text, whiteSpace: "pre-wrap" },
-  tags: { marginTop: 4, fontFamily: theme.mono, fontSize: 11, color: theme.textDim },
+  tags: { marginTop: 4, fontFamily: theme.sans, fontSize: 11, color: theme.textDim },
   degradedNote: {
     background: theme.amberBg,
     color: theme.amber,
@@ -189,7 +201,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   agentNote: { margin: "0 0 4px", fontSize: 13, lineHeight: 1.55, color: theme.textMuted },
   reportRow: { margin: "14px 0 0", fontSize: 12 },
-  reportLink: { background: "none", border: "none", padding: 0, fontFamily: theme.mono, fontSize: 12, color: theme.textDim, cursor: "pointer", textDecoration: "underline" },
+  reportLink: { background: "none", border: "none", padding: 0, fontFamily: theme.sans, fontSize: 12, color: theme.textDim, cursor: "pointer", textDecoration: "underline" },
   reportNote: { marginLeft: 8, color: theme.textDim },
   reportError: { marginLeft: 8, color: theme.red },
 };

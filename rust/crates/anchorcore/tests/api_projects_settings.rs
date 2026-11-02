@@ -290,3 +290,23 @@ async fn reasoning_effort_setting_persists() {
     let body: Value = srv.get("/settings").await.json().await.expect("get");
     assert_eq!(body["answer_reasoning_effort"], "high", "{body}");
 }
+
+/// R48.12: a repeated source id is accepted once (it used to fail as
+/// "unknown source ids: []"), and a bad id rejects the whole patch — the
+/// name is not changed first.
+#[tokio::test]
+async fn project_source_ids_dedupe_and_bad_patch_changes_nothing() {
+    let srv = TestServer::start().await;
+    let source = srv.mk_folder_source("docs", &[("a.md", "alpha")], None).await;
+    let sid = source["id"].as_i64().unwrap();
+
+    let resp = srv.post("/projects", &json!({"name": "p", "source_ids": [sid, sid]})).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let created: Value = resp.json().await.expect("project");
+    let pid = created["id"].as_i64().unwrap();
+
+    let bad = srv.patch(&format!("/projects/{pid}"), &json!({"name": "renamed", "source_ids": [sid, 999_999]})).await;
+    assert_eq!(bad.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let after: Value = srv.get(&format!("/projects/{pid}")).await.json().await.expect("get");
+    assert_eq!(after["name"], "p", "a rejected patch changes nothing: {after}");
+}

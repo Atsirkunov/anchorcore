@@ -8,11 +8,11 @@
 <link rel="canonical" href="https://anchorcore.dev/vs/notebooklm" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <script>
-    // Theme before first paint (no flash) — same resolution as src/themeMode.ts.
+    // Theme before first paint (no flash): Light unless the visitor chose Auto or Dark (src/themeMode.ts).
     (function () {
       var m = null;
       try { m = localStorage.getItem("theme-mode"); } catch (e) {}
-      var dark = m === "dark" || (m !== "light" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
+      var dark = m === "dark" || (m === "auto" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
       document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
     })();
   </script>
@@ -21,7 +21,7 @@
 <body>
   <header class="site-header">
     <div class="wrap">
-      <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-sage"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-stone"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-stone"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-stone"/></svg>AnchorCore</a>
+      <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-accent"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-muted"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-muted"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-muted"/></svg>AnchorCore</a>
       <!-- Nav IA (R18.3): every nav label matches its section heading verbatim; section ids stay stable (#roadmap is the legacy anchor for "Get started") -->
       <nav class="nav">
         <a href="/#how">How it works</a>
@@ -63,7 +63,7 @@
 <tr><th scope="row">Which model answers</th><td>Your choice: local Ollama, or any OpenAI-compatible API you bring. Without a model, keyword search still works.</td><td>Google's models.</td></tr>
 <tr><th scope="row">What it reads</th><td>A local folder (including an Obsidian vault) kept in sync, Jira, Linear, Google Drive, Miro boards, and any JSON list API with a field mapping. Documents are read as Word, PowerPoint, Excel, PDF, Markdown, HTML and plain text; draw.io, Excalidraw and Visio diagrams as text. Images in documents are stored and shown with the passage they belong to.</td><td>Per Google's help: Google Docs, Slides and Sheets, PDFs, Word, text and Markdown files, web URLs, public YouTube URLs, audio files, images and more. See their page for the current list.</td></tr>
 <tr><th scope="row">Answers cite</th><td>The document and the section, for example <code>Art 12 › 12.3</code>, in the browser and for coding agents.</td><td>Answers grounded in your sources, with citations. Check Google's documentation for their citation format.</td></tr>
-<tr><th scope="row">Sensitive data</th><td>Label a source <code>sensitive</code> or <code>pii</code> and it is withheld from any cloud model you have not approved. See the <a href="/security">security notes</a>.</td><td>Governed by Google's data-protection terms. Read the current policy for your account type.</td></tr>
+<tr><th scope="row">Sensitive data</th><td>Label a source <code>sensitive</code> and it is withheld from any cloud model you have not approved. See the <a href="/security">security notes</a>.</td><td>Governed by Google's data-protection terms. Read the current policy for your account type.</td></tr>
 <tr><th scope="row">Use from coding agents</th><td>Yes: an MCP server (<code>ask</code>, <code>search</code>) for Claude Code, Codex, Cursor and others, with a public-only mode and a log of agent calls.</td><td>We did not find this in Google's documentation; check their docs.</td></tr>
 <tr><th scope="row">Teams, sign-in</th><td>Team edition adds optional password sign-in. No SSO and no roles.</td><td>Workspace and enterprise options are described by Google.</td></tr>
 <tr><th scope="row">Audio overviews</th><td>No.</td><td>Yes: "deep-dive discussions between AI hosts" generated from your sources (<a href="https://support.google.com/notebooklm/answer/16212820" rel="noopener noreferrer">Google's help</a>).</td></tr>
@@ -91,7 +91,7 @@
 
 <h2 id="try">Try it</h2>
 <p>The quickest test is the sample company: <a href="/guides/sample">download <code>sample.zip</code></a>, sync it, and ask a cited question. How it handles your data is on the <a href="/security">security notes</a>; running it for a team is on <a href="/team">For teams</a>.</p>
-<p><a class="btn primary" href="/#download">Download — free for personal use</a> <a class="btn secondary" href="/guides/sample">Try the sample</a></p>
+<p><a class="btn primary" href="/#download">Download, free for personal use</a> <a class="btn secondary" href="/guides/sample">Try the sample</a></p>
 </div>
       </div>
     </article>
@@ -99,7 +99,7 @@
 
   <footer>
     <div class="wrap foot">
-      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-sage"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-stone"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-stone"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-stone"/></svg><b>AnchorCore</b> v1 local · free for personal use · Team self-hosted on request · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="/team">For teams</a> · <a href="/hosted">Hosted waitlist</a> · <a href="/privacy">Privacy notice</a> · <a href="/#trust">Trust &amp; verification</a> · <a href="/security">Security notes</a> · <a href="/vs/notebooklm">vs NotebookLM</a></div>
+      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-accent"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-muted"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-muted"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-muted"/></svg><b>AnchorCore</b> is free for personal use · Team self-hosted on request · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="/team">For teams</a> · <a href="/hosted">Hosted waitlist</a> · <a href="/privacy">Privacy notice</a> · <a href="/#trust">Trust &amp; verification</a> · <a href="/security">Security notes</a> · <a href="/vs/notebooklm">vs NotebookLM</a></div>
       <div>Private by default · cited by design</div>
     </div>
   </footer>

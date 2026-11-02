@@ -242,8 +242,8 @@ async fn record_degraded(data_dir: &str) {
     let _ = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir);
         if let Ok(conn) = crate::db::init_db(&db_path) {
-            let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning','retrieval degraded to keyword-only','qa fallback')", []);
-            let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning','answer generation failed; returning matching context only','qa fallback')", []);
+            crate::common::best_effort("record_degraded", conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning','retrieval degraded to keyword-only','qa fallback')", []));
+            crate::common::best_effort("record_degraded", conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning','answer generation failed; returning matching context only','qa fallback')", []));
         }
     })
     .await;
@@ -258,7 +258,7 @@ pub(crate) async fn record_gate_event(data_dir: &str, blocked: &[String]) {
         if let Ok(conn) = crate::db::init_db(&db_path) {
             let msg = format!("answer gate: {} hit(s) excluded from a cloud answer provider or AI agent (Sensitive source or Sensitive-marked item)", blocked_len);
             let detail = format!("labels={:?}; allow it under Settings → Sensitive sources (or ANCHOR_CLOUD_TRUST=1)", labels);
-            let _ = conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning',?1,?2)", rusqlite::params![msg, detail]);
+            crate::common::best_effort("record_gate_event", conn.execute("INSERT INTO system_events (component, level, message, detail) VALUES ('qa','warning',?1,?2)", rusqlite::params![msg, detail]));
         }
     })
     .await;
@@ -543,7 +543,7 @@ fn line_ranges_for_chunks(conn: &Connection, chunk_ids: &[i64]) -> std::collecti
 
 fn build_citations(hits: &[crate::retrieval::Hit], data_dir: &str, want_content: bool, limit: usize, query: &str) -> Vec<Citation> {
     let db_path = crate::db::resolve_db_path(data_dir);
-    let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+    let conn = crate::common::open_db_path(&db_path);
     let ids: Vec<i64> = hits.iter().take(limit).map(|h| h.chunk_id).collect();
     let conflict_map = conflicts_for_chunks(&conn, &ids);
     let tag_map = tags_for_chunks(&conn, &ids);
@@ -619,7 +619,7 @@ pub async fn ask(
     let q_for_block = retrieval_q.clone();
     let hits = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir_for_hits);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         retrieve_sync(&conn, &q_for_block, project_id, public_only, &settings_clone, query_embedding)
     })
     .await
@@ -676,7 +676,7 @@ async fn gate_search_hits(data_dir: &str, hits: Vec<crate::retrieval::Hit>, gate
     let data_dir_gate = data_dir.to_string();
     let (filtered, blocked) = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir_gate);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         gate_answer_hits(&conn, &hits_for_gate)
     })
     .await
@@ -708,7 +708,7 @@ async fn gate_ask_hits(
     let data_dir_gate = data_dir.to_string();
     let (filtered, blocked) = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir_gate);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         gate_answer_hits(&conn, &hits_for_gate)
     })
     .await
@@ -880,15 +880,25 @@ fn public_source_ids(conn: &Connection) -> HashSet<i64> {
 }
 
 fn gate_answer_hits(conn: &Connection, hits: &[retrieval::Hit]) -> (Vec<retrieval::Hit>, Vec<String>) {
-    let labels = hit_source_labels(conn, hits);
-    let marked = sensitive_marked_chunks(conn, hits);
+    // R48.11: if the gate inputs can't be read, nothing passes — every hit is
+    // held back as Sensitive instead of defaulting to "internal".
+    let (labels, marked) = match (hit_source_labels(conn, hits), sensitive_marked_chunks(conn, hits)) {
+        (Ok(labels), Ok(marked)) => (labels, marked),
+        (Err(e), _) | (_, Err(e)) => {
+            tracing::warn!(target: "anchorcore::gate", "answer gate inputs unreadable, holding back {} hits: {e}", hits.len());
+            return (Vec::new(), vec!["sensitive".to_string(); hits.len()]);
+        }
+    };
     let mut allowed = Vec::new();
     let mut blocked = Vec::new();
     for h in hits {
         // R35.4: the per-document override gates like a `sensitive` label
         // (chunks resolve via their item); `cloud_gate_reason` reads the
-        // effective value.
-        let label = h.source_id.and_then(|id| labels.get(&id).cloned()).unwrap_or_else(|| "internal".to_string());
+        // effective value. A hit whose source row is gone counts as Sensitive.
+        let label = match h.source_id {
+            None => "internal".to_string(),
+            Some(id) => labels.get(&id).cloned().unwrap_or_else(|| "sensitive".to_string()),
+        };
         match crate::common::cloud_gate_reason(&label, marked.contains(&h.chunk_id)) {
             Some(reason) => blocked.push(reason),
             None => allowed.push(h.clone()),
@@ -897,26 +907,22 @@ fn gate_answer_hits(conn: &Connection, hits: &[retrieval::Hit]) -> (Vec<retrieva
     (allowed, blocked)
 }
 
-fn hit_source_labels(conn: &Connection, hits: &[retrieval::Hit]) -> std::collections::HashMap<i64, String> {
+fn hit_source_labels(conn: &Connection, hits: &[retrieval::Hit]) -> rusqlite::Result<std::collections::HashMap<i64, String>> {
     let sids: HashSet<i64> = hits.iter().filter_map(|h| h.source_id).collect();
-    let mut labels = std::collections::HashMap::new();
     if sids.is_empty() {
-        return labels;
+        return Ok(std::collections::HashMap::new());
     }
     let sql = format!("SELECT id, label FROM sources WHERE id IN ({})", crate::common::placeholders(sids.len()));
-    if let Ok(mut stmt) = conn.prepare(&sql) {
-        if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(sids.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))) {
-            labels.extend(rows.flatten());
-        }
-    }
-    labels
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(sids.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+    rows.collect()
 }
 
 /// R35.4: hit chunk ids whose item carries the Sensitive override — the
 /// hit's own `item_id`, else the chunk's item (entity chunks via entity).
-fn sensitive_marked_chunks(conn: &Connection, hits: &[retrieval::Hit]) -> HashSet<i64> {
+fn sensitive_marked_chunks(conn: &Connection, hits: &[retrieval::Hit]) -> rusqlite::Result<HashSet<i64>> {
     if hits.is_empty() {
-        return HashSet::new();
+        return Ok(HashSet::new());
     }
     let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
     let sql = format!(
@@ -925,23 +931,21 @@ fn sensitive_marked_chunks(conn: &Connection, hits: &[retrieval::Hit]) -> HashSe
          WHERE c.id IN ({}) AND i.sensitive_override = 1",
         crate::common::placeholders(ids.len())
     );
-    let mut out: HashSet<i64> = HashSet::new();
-    if let Ok(mut stmt) = conn.prepare(&sql) {
-        if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| r.get::<_, i64>(0)) {
-            out.extend(rows.flatten());
-        }
-    }
+    let mut out: HashSet<i64> = conn
+        .prepare(&sql)?
+        .query_map(rusqlite::params_from_iter(ids.iter()), |r| r.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<_>>()?;
     let item_ids: HashSet<i64> = hits.iter().filter_map(|h| h.item_id).collect();
     if item_ids.is_empty() {
-        return out;
+        return Ok(out);
     }
     let sql = format!("SELECT id FROM ingested_items WHERE sensitive_override = 1 AND id IN ({})", crate::common::placeholders(item_ids.len()));
     let marked_items: HashSet<i64> = conn
-        .prepare(&sql)
-        .and_then(|mut stmt| stmt.query_map(rusqlite::params_from_iter(item_ids.iter()), |r| r.get::<_, i64>(0)).map(|rows| rows.flatten().collect()))
-        .unwrap_or_default();
+        .prepare(&sql)?
+        .query_map(rusqlite::params_from_iter(item_ids.iter()), |r| r.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<_>>()?;
     out.extend(hits.iter().filter(|h| h.item_id.is_some_and(|i| marked_items.contains(&i))).map(|h| h.chunk_id));
-    out
+    Ok(out)
 }
 
 /// R45.2: answers are ready in agent mode with no model at all — the agent
@@ -1016,7 +1020,7 @@ pub async fn search(
     let _settings_clone = settings_snapshot(settings);
     let hits = tokio::task::spawn_blocking(move || {
         let db_path = crate::db::resolve_db_path(&data_dir_for_block);
-        let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+        let conn = crate::common::open_db_path(&db_path);
         // Same downstream tail (provider gate, pagination, hit mapping) —
         // only the candidate leg differs.
         if is_exact {
@@ -1038,7 +1042,7 @@ pub async fn search(
     let page: Vec<crate::retrieval::Hit> = hits.into_iter().skip(cursor).take(limit).collect();
     let next_cursor = if cursor + page.len() < total_allowed { Some(cursor + page.len()) } else { None };
     let db_path = crate::db::resolve_db_path(&data_dir_string);
-    let conn = crate::db::init_db(&db_path).unwrap_or_else(|_| Connection::open(&db_path).unwrap());
+    let conn = crate::common::open_db_path(&db_path);
     let ids: Vec<i64> = page.iter().map(|h| h.chunk_id).collect();
     let conflict_map = conflicts_for_chunks(&conn, &ids);
     let tag_map = tags_for_chunks(&conn, &ids);
@@ -1677,6 +1681,21 @@ mod tests {
         assert_eq!(blocked, vec![crate::common::ITEM_SENSITIVE_MARK.to_string()]);
         let via_item = crate::retrieval::Hit { chunk_id: 999_999, item_id: Some(item), ..mk_hit(ord) };
         assert!(gate_answer_hits(&conn, &[via_item]).0.is_empty(), "hit item_id alone resolves the mark");
+    }
+
+    /// R48.11: the gate fails closed — unreadable gate inputs hold every hit
+    /// back, and a hit whose source row is gone counts as Sensitive.
+    #[test]
+    fn gate_answer_hits_fails_closed() {
+        let (_dir, conn, _settings) = seed_gate_db();
+        let ord: i64 = conn.query_row("SELECT id FROM sources WHERE name='ordinary'", [], |r| r.get(0)).unwrap();
+        let (allowed, blocked) = gate_answer_hits(&conn, &[mk_hit(999_999)]);
+        assert!(allowed.is_empty(), "missing source row is not internal");
+        assert_eq!(blocked, vec!["sensitive".to_string()]);
+        conn.execute_batch("PRAGMA foreign_keys=OFF; ALTER TABLE sources RENAME TO sources_moved;").unwrap();
+        let (allowed, blocked) = gate_answer_hits(&conn, &[mk_hit(ord), mk_hit(ord)]);
+        assert!(allowed.is_empty(), "unreadable labels must not open the gate");
+        assert_eq!(blocked.len(), 2);
     }
 
     #[tokio::test]

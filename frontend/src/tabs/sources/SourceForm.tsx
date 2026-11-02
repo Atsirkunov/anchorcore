@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api } from "../../api";
+import { api, errMsg } from "../../api";
 import { FolderPicker } from "../../FolderPicker";
 import { LABEL_OPTIONS } from "./labels";
 import { stripPlaceholders } from "../../placeholders";
@@ -57,7 +57,7 @@ function JiraProjectPicker({
       setProjects(res);
       if (res.length === 0) setErr("No projects found or no permission");
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errMsg(e));
     } finally {
       setLoading(false);
     }
@@ -92,7 +92,7 @@ function JiraProjectPicker({
           ))}
         </div>
       )}
-      <div style={{ fontSize: 11, color: theme.textMuted }}>Selected: {project || "(none — pick above or type manually)"}</div>
+      <div style={{ fontSize: 11, color: theme.textMuted }}>Selected: {project || "(none: pick above or type one)"}</div>
     </div>
   );
 }
@@ -151,7 +151,7 @@ function RestFields({
       }
       setPreview(await api.previewRest(value));
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errMsg(e));
     } finally {
       setLoading(false);
     }
@@ -249,14 +249,14 @@ function RestFields({
               <div style={{ color: theme.textMuted }}>{d.text_preview.slice(0, 160)}{d.text_preview.length > 160 ? "…" : ""}</div>
             </div>
           ))}
-          {preview.docs.length === 0 && <div style={{ fontSize: 12, color: theme.textDim }}>No docs — check items pointer and field map.</div>}
+          {preview.docs.length === 0 && <div style={{ fontSize: 12, color: theme.textDim }}>No docs. Check the items pointer and field map.</div>}
         </div>
       )}
     </div>
   );
 }
 
-/** B37: the "add source" form (folder, Jira, Linear, Miro, Drive or generic REST), extracted from SourcesTab. */
+/** B37: the "add source" form (folder, Jira, Linear, Miro, Drive or generic REST), extracted from SourcesTab (now LibraryTab). */
 export function SourceForm({ onAdded }: { onAdded: () => void }) {
   const [connector, setConnector] = useState("folder");
   const [name, setName] = useState("");
@@ -298,7 +298,7 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
       setLabel("internal");
       onAdded();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(false);
     }
@@ -339,7 +339,7 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
           <>
             <input style={commonStyles.input} placeholder="Drive folder ID (from URL …/folders/…)" value={gdrive.folder_id} onChange={(e) => setGdrive({ ...gdrive, folder_id: e.target.value })} />
             <input style={commonStyles.input} type="password" placeholder="OAuth access token (Bearer)" value={gdrive.token} onChange={(e) => setGdrive({ ...gdrive, token: e.target.value })} />
-            <div style={{ fontSize: 12, color: theme.textDim }}>Needs a Google Cloud OAuth token — see docs/sample-dataset.md or hosting/README for setup. Token is stored in OS keychain.</div>
+            <div style={{ fontSize: 12, color: theme.textDim }}>Needs a Google Cloud OAuth token. See docs/sample-dataset.md or hosting/README for setup. Token is stored in OS keychain.</div>
           </>
         ) : connector === "linear" ? (
           <>
@@ -375,7 +375,7 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
   );
 }
 
-/** B37: inline edit form for one source (B7), extracted from SourcesTab. */
+/** B37: inline edit form for one source (B7), extracted from SourcesTab (now LibraryTab). */
 export function SourceEditForm({
   source,
   config,
@@ -440,7 +440,7 @@ export function SourceEditForm({
       await api.updateSource(source.id, payload);
       onSaved();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   }
 
@@ -472,7 +472,7 @@ export function SourceEditForm({
           <input
             style={commonStyles.input}
             type="password"
-            placeholder={editGdrive.token === "***set***" ? "•••••••• (stored — type to replace)" : "OAuth token"}
+            placeholder={editGdrive.token === "***set***" ? "•••••••• (stored; type to replace)" : "OAuth token"}
             value={editGdrive.token}
             onChange={(e) => setEditGdrive({ ...editGdrive, token: e.target.value })}
           />
@@ -482,7 +482,7 @@ export function SourceEditForm({
           <input
             style={commonStyles.input}
             type="password"
-            placeholder={editLinear.api_key === "***set***" ? "•••••••• (stored — type to replace)" : "Linear API key"}
+            placeholder={editLinear.api_key === "***set***" ? "•••••••• (stored; type to replace)" : "Linear API key"}
             value={editLinear.api_key}
             onChange={(e) => setEditLinear({ ...editLinear, api_key: e.target.value })}
           />
@@ -493,7 +493,7 @@ export function SourceEditForm({
           <input
             style={commonStyles.input}
             type="password"
-            placeholder={editMiro.token === "***set***" ? "•••••••• (stored — type to replace)" : "Miro access token"}
+            placeholder={editMiro.token === "***set***" ? "•••••••• (stored; type to replace)" : "Miro access token"}
             value={editMiro.token}
             onChange={(e) => setEditMiro({ ...editMiro, token: e.target.value })}
           />
@@ -509,7 +509,7 @@ export function SourceEditForm({
           <input
             style={commonStyles.input}
             type="password"
-            placeholder={editJira.token === "***set***" ? "•••••••• (stored — type to replace)" : "API token"}
+            placeholder={editJira.token === "***set***" ? "•••••••• (stored; type to replace)" : "API token"}
             value={editJira.token}
             onChange={(e) => setEditJira({ ...editJira, token: e.target.value })}
           />

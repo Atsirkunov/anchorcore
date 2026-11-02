@@ -92,10 +92,10 @@ fn row_from_sql(r: &rusqlite::Row) -> rusqlite::Result<Row> {
         path: text(r, 11),
         title: text(r, 12),
         source_id: r.get(13)?,
-        label: text(r, 14),
+        label: crate::common::gate_label(r, 14),
         chunk_id: r.get::<_, Option<i64>>(15).ok().flatten(),
         created_at: text(r, 16),
-        sensitive_override: r.get::<_, Option<i64>>(17).ok().flatten().is_some_and(|v| v == 1),
+        sensitive_override: crate::common::gate_marked(r, 17),
     })
 }
 

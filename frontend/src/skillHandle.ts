@@ -9,7 +9,7 @@ const HANDLE_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 export function handleError(handle: string): string | null {
   const h = handle.trim();
   if (!HANDLE_RE.test(h)) return "Use 1–64 lowercase letters, digits or inner hyphens, like ask-docs.";
-  if (h === "anchorcore-setup") return "That's the setup skill's folder — pick another.";
+  if (h === "anchorcore-setup") return "That's the setup skill's folder. Pick another.";
   return null;
 }
 

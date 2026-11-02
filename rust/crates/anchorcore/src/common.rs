@@ -5,12 +5,38 @@
 use axum::{http::StatusCode, Json};
 use serde_json::Value;
 
-/// Open the data-dir DB with migrations, falling back to a plain open.
-/// Replaces the `resolve_db_path + init_db + Connection::open` prelude
-/// previously copied into every `spawn_blocking` handler.
+/// R48.1: open the data-dir DB (migrated at boot) with its PRAGMAs. Never
+/// falls back to a bare `Connection::open`: that connection has no
+/// `foreign_keys=ON` (source deletes skip their cascade) and no busy
+/// timeout (writes fail on the first lock).
+pub fn try_open_data_db(data_dir: &str) -> Result<rusqlite::Connection, String> {
+    try_open_db_path(&crate::db::resolve_db_path(data_dir))
+}
+
+pub fn try_open_db_path(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
+    crate::db::init_db(path).map_err(|e| {
+        tracing::error!(target: "anchorcore::db", "cannot open the database {}: {e}", path.display());
+        format!("cannot open the database: {e}")
+    })
+}
+
+/// [`try_open_data_db`] for callers without an error path: a failure panics
+/// (handlers → 500 via the catch-panic layer, job bodies → `failed` via
+/// `guard_job`) instead of continuing on a degraded connection.
 pub fn open_data_db(data_dir: &str) -> rusqlite::Connection {
-    let db_path = crate::db::resolve_db_path(data_dir);
-    crate::db::init_db(&db_path).unwrap_or_else(|_| rusqlite::Connection::open(&db_path).unwrap())
+    open_db_path(&crate::db::resolve_db_path(data_dir))
+}
+
+pub fn open_db_path(path: &std::path::Path) -> rusqlite::Connection {
+    try_open_db_path(path).unwrap_or_else(|e| panic!("{e}"))
+}
+
+pub type ApiError = (StatusCode, Json<Value>);
+
+/// A database failure as a 500 `{"detail"}` (logged).
+pub fn db_err(e: impl std::fmt::Display) -> ApiError {
+    tracing::error!(target: "anchorcore::db", "{e}");
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"detail": format!("database error: {e}")})))
 }
 
 /// R43.11: the message of a caught panic payload (`panic!("…")` carries a
@@ -20,6 +46,62 @@ pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
         return (*s).to_string();
     }
     payload.downcast_ref::<String>().cloned().unwrap_or_else(|| "non-string panic payload".to_string())
+}
+
+/// R48.11: a Sensitive-gate input that fails to read counts as Sensitive —
+/// the gate fails closed. NULL keeps its meaning (no item/source: internal).
+pub fn gate_label(r: &rusqlite::Row, idx: usize) -> String {
+    match r.get::<_, Option<String>>(idx) {
+        Ok(label) => label.unwrap_or_else(|| "internal".to_string()),
+        Err(e) => {
+            tracing::warn!(target: "anchorcore::gate", "label column unreadable, treated as sensitive: {e}");
+            "sensitive".to_string()
+        }
+    }
+}
+
+/// R48.11: the per-document override column, failing closed like [`gate_label`].
+pub fn gate_marked(r: &rusqlite::Row, idx: usize) -> bool {
+    match r.get::<_, Option<i64>>(idx) {
+        Ok(v) => v == Some(1),
+        Err(e) => {
+            tracing::warn!(target: "anchorcore::gate", "sensitive_override column unreadable, treated as set: {e}");
+            true
+        }
+    }
+}
+
+/// Constant-time string equality for secrets (tokens, password hashes): the
+/// time taken never depends on where the first difference is. Length is not
+/// secret here (fixed-size tokens and hex digests).
+pub fn ct_eq(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
+}
+
+/// R48.12: a write whose failure must not stop the caller — audit/event rows,
+/// progress counters, tidy-ups, boot-time indexes — logged instead of ignored.
+/// Anything the operation's result depends on uses `?` instead.
+pub fn best_effort(what: &str, result: rusqlite::Result<usize>) {
+    if let Err(e) = result {
+        tracing::warn!(target: "anchorcore::db", "{what} failed: {e}");
+    }
+}
+
+/// R48.11: rows that fail to decode are skipped but logged — never dropped
+/// silently. For read paths where one bad row must not fail the whole list.
+pub fn logged_rows<T>(rows: impl Iterator<Item = rusqlite::Result<T>>) -> impl Iterator<Item = T> {
+    rows.filter_map(row_ok)
+}
+
+/// One row of [`logged_rows`]: `.filter_map(row_ok)`.
+pub fn row_ok<T>(r: rusqlite::Result<T>) -> Option<T> {
+    r.map_err(|e| tracing::warn!(target: "anchorcore::db", "row skipped: {e}")).ok()
+}
+
+/// R48.11: a read query that could not run, logged; the caller answers empty.
+pub fn query_failed<T>(e: rusqlite::Error) -> Vec<T> {
+    tracing::warn!(target: "anchorcore::db", "query failed: {e}");
+    Vec::new()
 }
 
 /// `IN (?, ?, ...)` placeholders for `count` ids.
@@ -142,6 +224,46 @@ pub(crate) static TRUST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new((
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pragma(conn: &rusqlite::Connection, name: &str) -> i64 {
+        conn.query_row(&format!("PRAGMA {name}"), [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn ct_eq_matches_plain_equality() {
+        assert!(ct_eq("abc123", "abc123"));
+        assert!(!ct_eq("abc123", "abc124"));
+        assert!(!ct_eq("abc", "abc1"));
+        assert!(ct_eq("", ""));
+    }
+
+    /// R48.11: gate columns fail closed on a read error; NULL keeps "internal" / unmarked.
+    #[test]
+    fn gate_columns_fail_closed() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let read = |sql: &str| conn.query_row(sql, [], |r| Ok((gate_label(r, 0), gate_marked(r, 1)))).unwrap();
+        assert_eq!(read("SELECT 'public', 0"), ("public".to_string(), false));
+        assert_eq!(read("SELECT NULL, NULL"), ("internal".to_string(), false));
+        assert_eq!(read("SELECT 'internal', 1"), ("internal".to_string(), true));
+        assert_eq!(read("SELECT 42, 'yes'"), ("sensitive".to_string(), true), "unreadable columns read as Sensitive");
+    }
+
+    /// R48.1: both the migrating open and the per-process fast path keep FK
+    /// cascades and the busy wait; an unopenable path is an error, never a
+    /// bare connection without them.
+    #[test]
+    fn data_db_opens_keep_foreign_keys_and_busy_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        for _ in 0..2 {
+            let conn = try_open_data_db(&data_dir).unwrap();
+            assert_eq!(pragma(&conn, "foreign_keys"), 1);
+            assert_eq!(pragma(&conn, "busy_timeout"), 5000);
+        }
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, b"x").unwrap();
+        assert!(try_open_db_path(&blocker.join("anchorcore.db")).is_err());
+    }
 
     struct EnvGuard {
         key: &'static str,

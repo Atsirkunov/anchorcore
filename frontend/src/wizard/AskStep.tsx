@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { AGENT_COMPOSE_HINT, isAgentCompose } from "../answerMode";
-import { api } from "../api";
+import { api, errMsg } from "../api";
 import { theme } from "../theme";
 import type { Citation, LlmMode, OnboardingState } from "../types";
 import { styles } from "./styles";
@@ -23,7 +23,7 @@ export function AskStep({ state, mode }: { state: OnboardingState | null; mode: 
       const warning = (res as unknown as { warning?: string | null }).warning ?? null;
       setAnswer({ text: res.answer, citations: res.citations, mode: res.mode, warning });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(false);
     }
@@ -33,11 +33,11 @@ export function AskStep({ state, mode }: { state: OnboardingState | null; mode: 
     <div style={styles.body}>
       <div style={styles.note}>
         {mode === "agent"
-          ? "Ask something about what you just connected — you'll see the ranked, cited passages your agent receives."
-          : "Ask a question about what you just connected — the answer cites its sources."}
+          ? "Ask something about what you just connected. You'll see the ranked, cited passages your agent receives."
+          : "Ask a question about what you just connected. The answer cites its sources."}
       </div>
       {mode === "local" && state && !state.answer_ready && (
-        <div style={styles.note}>Heads up: no working answer model yet — this answer will be excerpts. Go back to Answer model to set one up.</div>
+        <div style={styles.note}>Heads up: no working answer model yet, so this shows matching passages. Go back to Answer model to set one up.</div>
       )}
       <div style={{ display: "flex", gap: 8 }}>
         <input
@@ -59,7 +59,7 @@ export function AskStep({ state, mode }: { state: OnboardingState | null; mode: 
           ) : isAgentCompose(answer.mode) ? (
             <div style={{ ...styles.note, marginBottom: 10 }}>{AGENT_COMPOSE_HINT}</div>
           ) : answer.mode && answer.mode !== "composed" ? (
-            <div style={styles.degradedNote}>Not a composed answer (mode: {answer.mode}) — go back to Answer model and set one up.</div>
+            <div style={styles.degradedNote}>Not a composed answer (mode: {answer.mode}). Go back to Answer model and set one up.</div>
           ) : null}
           {!isAgentCompose(answer.mode) && <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{answer.text}</div>}
           {answer.citations.length > 0 && (
@@ -67,7 +67,7 @@ export function AskStep({ state, mode }: { state: OnboardingState | null; mode: 
               Sources:
               {answer.citations.map((c, i) => (
                 <div key={i} style={{ marginTop: 4 }}>
-                  [{c.kind}] {c.summary} — {c.source_ref}
+                  [{c.kind}] {c.summary} · {c.source_ref}
                 </div>
               ))}
             </div>

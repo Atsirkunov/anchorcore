@@ -8,10 +8,10 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export type Interest = "hosted" | "team" | "updates" | "download";
 
 const THANKS: Record<Interest, string> = {
-  hosted: "Thanks — you're on the hosted waitlist.",
-  team: "Thanks — we'll be in touch about Team.",
-  updates: "Thanks — we'll email you product updates.",
-  download: "Thanks — we'll email you the download link.",
+  hosted: "Thanks, you're on the hosted waitlist.",
+  team: "Thanks, we'll be in touch about Team.",
+  updates: "Thanks, we'll email you product updates.",
+  download: "Thanks, we'll email you the download link.",
 };
 
 // Landing form: the entry point that led to it decides the interest.
@@ -37,9 +37,9 @@ async function post(payload: Record<string, string>): Promise<string | null> {
     });
     if (res.ok) return null;
     const data = (await res.json().catch(() => ({}))) as { errors?: { message: string }[] };
-    return data.errors?.map((e) => e.message).join(" ") || "Something went wrong — try again.";
+    return data.errors?.map((e) => e.message).join(" ") || "Something went wrong. Try again.";
   } catch {
-    return "Couldn't reach the signup service — check your connection and retry.";
+    return "Couldn't reach the signup service. Check your connection and retry.";
   }
 }
 

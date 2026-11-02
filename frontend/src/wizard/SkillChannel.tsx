@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { api, errMsg } from "../api";
 import { theme } from "../theme";
 import { styles } from "./styles";
 import { SkillHandleField } from "../SkillHandleField";
@@ -30,7 +30,7 @@ export function SkillChannel() {
         const first = usable.find((c) => c.detected) ?? usable[0];
         if (first) setClientId(first.id);
       })
-      .catch((e) => setNote(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setNote(errMsg(e)));
   }, []);
 
   const client = clients?.find((c) => c.id === clientId) ?? null;
@@ -45,7 +45,7 @@ export function SkillChannel() {
       const r = await api.skillInstall(SKILL, client.id, handle.trim());
       setNote(installNote(r, target ?? "", client.name));
     } catch (e) {
-      setNote(e instanceof Error ? e.message : String(e));
+      setNote(errMsg(e));
     } finally {
       setBusy(false);
       setConfirming(false);
@@ -58,7 +58,7 @@ export function SkillChannel() {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch (e) {
-      setNote(e instanceof Error ? e.message : String(e));
+      setNote(errMsg(e));
     }
   }
 
@@ -66,7 +66,7 @@ export function SkillChannel() {
     <div style={styles.note}>
       <div style={{ fontWeight: 600, marginBottom: 4 }}>REST skill (ask-docs)</div>
       <div style={{ fontSize: 13, color: theme.textMuted }}>
-        A read-only skill file: your agent calls this app&apos;s local HTTP API (search, whole files, outlines) — no MCP server needed.
+        A read-only skill file: your agent calls this app&apos;s local HTTP API (search, whole files, outlines). No MCP server needed.
       </div>
       {clients && (
         <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -113,7 +113,7 @@ export function SkillChannel() {
       <div style={{ ...styles.hint, marginTop: 8 }}>
         {customUrl ? (
           <>
-            This app runs at <code>{origin}</code>, not the skill&apos;s default — give your agent{" "}
+            This app runs at <code>{origin}</code>, not the skill&apos;s default. Give your agent{" "}
             <code>ANCHOR_BACKEND_URL={origin}</code>.
           </>
         ) : (

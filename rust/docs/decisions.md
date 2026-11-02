@@ -4,6 +4,72 @@ ADR log. Append newest first.
 
 ---
 
+## 2026-11-02 — Owner (UX proposal ⚑5): dark mode is a cool black with a desaturated oxblood
+
+* **Decision:** dark tokens move from warm black to neutral/slightly cool: `--ac-bg` `#17171A`, `--ac-bg-card` `#1F1F23` (elevated and hover follow the same hue), dark `--ac-cite` `#CC8A80`. Measured contrast of `#CC8A80`: 5.88:1 on `#1F1F23`, 6.40:1 on `#17171A` (WCAG AA 4.5:1). App `theme.css` and `website/src/style.css` change in the same commit (design-system rule 5).
+* **Context:** the audit found warm black + cream text + salmon `#E39A8F` reads as a generic AI tool; light mode's intent is "cool paper", and dark did not follow it.
+* **Alternatives considered:** *neutral black, salmon kept* — rejected: 7.3:1 but no longer reads as oxblood; *keep the warm set and rely on the site's Light default* — rejected: app users in dark mode still see it.
+* **Consequences:** Wave 2 (R49.7). Every dark token pair is re-checked with a contrast script before shipping, not only `cite`. Source: `docs/ux-audit-2026-11.md`, `docs/ux-proposal-2026-11.md` (§2, §3.1, §4.1, §6).
+
+---
+
+## 2026-11-02 — Owner (UX proposal ⚑4): app tabs are Ask · Library · Records · Agents · Settings
+
+* **Decision:** Sources becomes **Library** (sources list → source detail, Add source in a drawer, jobs, projects). A new **Agents** tab holds MCP setup, agent skills and the "AI agents" sharing switch. **System folds into Settings** as a left rail (Answers · Search · Sensitive sharing · Glossary · Backup · Updates · Status & logs · Appearance · Advanced). **Glossary moves from Records to Settings**; Records keeps Decisions and Actions. The project picker moves from the header into Ask. Every tab and Settings section gets a hash route (`#/library`, `#/settings/answers`); old `#/sources` / `#/system` hashes redirect.
+* **Context:** the site sells two equal paths ("your agent writes it" / "a local model writes it") while agent setup was buried in System; Settings and System split topics (updates, embeddings) across two tabs.
+* **Alternatives considered:** *add Agents only* — rejected: leaves the Settings/System duplication; *keep current tabs* — rejected: the audit's navigation findings stay.
+* **Consequences:** Wave 3 (R49.9). No API change; `/glossary` and every endpoint stay. The header keeps only brand, tabs and the status dot (R49.3), which then links to Settings → Status & logs. Source: `docs/ux-audit-2026-11.md`, `docs/ux-proposal-2026-11.md` (§2, §3.1, §4.1, §6).
+
+---
+
+## 2026-11-02 — Owner (UX proposal ⚑3): no `§` counters on the marketing site
+
+* **Decision:** drop the CSS `§1–§8` heading counters (`main{counter-reset:sec}`) and the mono eyebrow pills on the website. `§` stays in citations, where it names a real section (`runbook.md §2`).
+* **Context:** partly reverses `871c8df` (Archive, 2026-10-22). Numbering marketing sections borrowed the "filed document" look without meaning anything; in citations the mark is information.
+* **Alternatives considered:** *keep the counters as a brand mark* — rejected: they compete with the citation `§`, which is the brand's actual claim.
+* **Consequences:** Wave 4 (R49.10), with the 8 → 6 section restructure. Source: `docs/ux-audit-2026-11.md`, `docs/ux-proposal-2026-11.md` (§2, §3.1, §4.1, §6).
+
+---
+
+## 2026-11-02 — Owner (UX proposal ⚑2): the website defaults to Light; the app's theme switch moves to Settings
+
+* **Decision:** anchorcore.dev opens in Light; Auto and Dark are offered in the footer and remembered per visitor. The app keeps Auto as its default, but its theme switch leaves the header for Settings → Appearance.
+* **Context:** the site is the brand's "filed document" and should show the designed palette first; following the OS showed most developer visitors the dark set first.
+* **Alternatives considered:** *Light default, app switch stays in the header* — rejected: the header is being reduced to tabs + status; *Auto everywhere* — rejected: the first impression depends on the visitor's OS.
+* **Consequences:** website change in Wave 2 (R49.7); the app switch moves with the Settings rail (R49.9) — until then it stays in the header. Source: `docs/ux-audit-2026-11.md`, `docs/ux-proposal-2026-11.md` (§2, §3.1, §4.1, §6).
+
+---
+
+## 2026-11-02 — Owner (UX proposal ⚑1): oxblood means "this is sourced" — links are ink
+
+* **Decision:** design-system rule 2 changes: oxblood (`--ac-cite`) is for citations only (`[S1]` marks, source ids, the active citation card, the brand mark). Links are ink with an underline, oxblood on hover. Step numbers, eyebrows and the active tab go ink / `--ac-text-dim`.
+* **Context:** the Archive palette (R45.15 + `871c8df`, 2026-10-22) made oxblood the sourced signal but also allowed it on links, `§` marks and selected state, so on a busy page it stopped meaning anything. Archive itself never got a decisions entry: its rationale (ink on cool paper, IBM Plex self-hosted for the no-third-parties promise, 2 px radius, no emoji or stripes) lives in `docs/design-system.md` and the 2026-10-22 handover, and stays in force.
+* **Alternatives considered:** *keep oxblood links, cut it only from step numbers and eyebrows* — rejected: links are the most frequent oxblood on both site and app.
+* **Consequences:** Wave 2 (R49.7) edits `theme.css`, `website/src/style.css` and `docs/design-system.md` rule 2 in the same commit. Source: `docs/ux-audit-2026-11.md`, `docs/ux-proposal-2026-11.md` (§2, §3.1, §4.1, §6).
+
+---
+
+## 2026-11-02 — R49.1/R49.3: Ask keeps its conversation by staying mounted; model health is a dot, not a banner
+
+* **Decision:** Ask stays mounted (hidden when another tab is open); the other tabs keep conditional rendering. The open tab lives in the URL hash (`#/sources`), not component state. Model-health issues move from the red app banner to a header status dot plus one dismissible line on Ask; the banner is kept for sources whose sync keeps failing.
+* **Context:** UX audit #2/#3 — switching tabs threw away the Ask conversation, and there was no reload/back/deep link. Audit #1 — a no-model setup showed four warnings at once, including a red banner on every tab for a supported configuration.
+* **Alternatives considered:**
+  - *Keep every tab mounted* — rejected: System, errors, MCP and the built-in embedder card poll every 1–15 s and would keep polling while hidden.
+  - *Lift Ask turns into a context* — workable, but touches `AskTab.tsx` throughout while R48.7 is open on it; staying mounted needs only `App.tsx`.
+  - *Path routes (`/ask`)* — rejected for now: the server already serves the SPA shell on every path, but hash routes need no server or `frontend.rs` change and never collide with API paths.
+* **Consequences:** Ask's state (turns, input, public-only) survives tab switches but not reloads. A Settings section route waits for the Settings rail (proposal §4). Old `banner-dismissed` localStorage only covers sync failures now.
+
+---
+
+## 2026-11-02 — R48.5: remove the `/review/*` API
+
+* **Decision:** `GET /review/low-confidence`, `GET /review/duplicates` and `POST /review/merge` are removed (routes, `review.rs`, setup-skill section, tests). The `merge_actions` table stays: backups round-trip it and source cleanup still deletes its rows. Owner: "remove review for now until we see the need for it".
+* **Context:** whole-app review 2026-11-02. Records come only from structure and are stored with confidence 1.0 (R45.8, R45.18), so the low-confidence queue (threshold 0.6) only returned legacy rows. Duplicates/merge had live bugs: any decision other than `"dismiss"` merged (a typo deleted a record), eight writes ran outside a transaction, and every GET inserted proposals that later pages skipped. Nothing in the UI called these routes since R45.25.
+* **Alternatives considered:**
+  - *Fix them (R48.6)* — rejected for now: no caller and no observed need; the fix is filed as R48.6 if one appears.
+  - *Drop `merge_actions` too* — rejected: a migration plus a backup-format change for no gain; existing rows stay readable.
+* **Consequences:** agents that called `/review/*` get the SPA fallback / 404. Bringing it back means re-opening R48.6 (typed decision, one transaction, stable proposals) and a new decision entry.
+
 ## 2026-10-30 — R45.25: the Entities tab becomes Records; no "Looks right" review queue
 
 * **Decision:** the tab is **Records** with three views — Decisions (default), Actions, Glossary. The "All entities" review queue is removed from the UI: Looks right (row + bulk), the confidence badge, the kind dropdown, the New/In-answers badges, duplicates and per-row conflict flagging. Decision and action rows gain **Dispute…** (reason required, `POST /entities/:id/dispute`, history kept) and **Restore** (`PATCH /entities/:id {"status":"unverified"}`); `GET /decisions` / `GET /actions` take `disputed=true` to list only disputed rows (the UI's "Disputed" filter). Every `/entities*` and `/review/*` endpoint stays for REST and MCP callers; no schema change.

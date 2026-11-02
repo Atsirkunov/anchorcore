@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { sensitiveHint } from "../../sharingText";
 import { SHARING_QUERY_KEY } from "../../sharingText";
-import { api } from "../../api";
+import { api, errMsg } from "../../api";
 import { theme, commonStyles, radius } from "../../theme";
 import type { Job, Source } from "../../types";
 import { JobStopButton, StopNoteLine } from "../../JobStopButton";
@@ -33,12 +33,15 @@ export function SourceRow({
   config,
   jobs,
   onChanged,
+  onOpen,
 }: {
   source: Source;
   config: Record<string, string>;
   /** All pending/running jobs of this source, oldest first. */
   jobs: Job[];
   onChanged: () => void;
+  /** R49.9: opens the source's Library page (documents, images, jobs). */
+  onOpen?: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -80,7 +83,7 @@ export function SourceRow({
       await queryClient.invalidateQueries({ queryKey: ["jobs"] });
     } catch (e) {
       // R30.1: a 409 here names the live job ("…already active…(job N)").
-      setActionError(e instanceof Error ? e.message : String(e));
+      setActionError(errMsg(e));
     } finally {
       setBusy(false);
     }
@@ -93,7 +96,7 @@ export function SourceRow({
       await api.deleteSource(id);
       onChanged();
     } catch (e) {
-      setActionError(e instanceof Error ? e.message : String(e));
+      setActionError(errMsg(e));
     }
   }
 
@@ -109,7 +112,20 @@ export function SourceRow({
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 600 }}>
-            {source.name}
+            {onOpen ? (
+              <a
+                href={`#/library/${source.id}`}
+                onClick={(e) => {
+                  e.preventDefault();
+                  onOpen();
+                }}
+                style={{ color: theme.text }}
+              >
+                {source.name}
+              </a>
+            ) : (
+              source.name
+            )}
             {source.error_count > 0 && (
               <span
                 style={{
@@ -134,7 +150,7 @@ export function SourceRow({
         </div>
         {source.label !== "internal" && (
           <div style={{ fontSize: 11, color: source.label === "sensitive" ? theme.amber : theme.textMuted, marginTop: 2 }}>
-            label: {source.label} — {LABEL_ALLOWS[source.label] ?? sensitiveHint(sharing.data)}
+            label: {source.label} · {LABEL_ALLOWS[source.label] ?? sensitiveHint(sharing.data)}
           </div>
         )}
           {jobs.map((job) => (

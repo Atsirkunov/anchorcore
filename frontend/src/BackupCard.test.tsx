@@ -121,7 +121,7 @@ describe("BackupCard", () => {
 
     expect(importSpy).toHaveBeenCalledWith(expect.any(File), expect.objectContaining({ dry_run: true, mode: "merge" }));
     expect(host.textContent).toContain("source 1");
-    expect(host.textContent).toContain("payments — token");
+    expect(host.textContent).toContain("payments: token");
     expect(host.textContent).toContain("1 conflict(s)");
     const remapInput = [...host.querySelectorAll("input")].find(
       (i) => (i as HTMLInputElement).value === "C:\\Docs\\payments"

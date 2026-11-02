@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "./api";
+import { api, errMsg } from "./api";
 import { radius, theme } from "./theme";
 import { downloadPct, embedderLine, MB } from "./builtinEmbedderText";
 import type { EmbedModelStatus } from "./types";
@@ -24,7 +24,7 @@ export function BuiltinEmbedder({ onReady }: { onReady?: () => void }) {
         setStatus(s);
         if (s.ready) onReadyRef.current?.();
       })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setError(errMsg(e)));
   }, []);
 
   useEffect(() => refresh(), [refresh]);
@@ -43,7 +43,7 @@ export function BuiltinEmbedder({ onReady }: { onReady?: () => void }) {
       await api.downloadEmbedModel();
       refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   }
 
@@ -71,7 +71,7 @@ export function BuiltinEmbedder({ onReady }: { onReady?: () => void }) {
           <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
             {phase === "converting"
               ? "Converting to f16…"
-              : `${p.file ?? ""} — ${Math.round(p.done_bytes / MB)} / ${Math.round(p.total_bytes / MB)} MB`}
+              : `${p.file ?? ""} · ${Math.round(p.done_bytes / MB)} / ${Math.round(p.total_bytes / MB)} MB`}
           </div>
         </div>
       )}
@@ -80,7 +80,7 @@ export function BuiltinEmbedder({ onReady }: { onReady?: () => void }) {
       {!status.ready && status.dir && (
         <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
           Offline? Put <code>config.json</code>, <code>tokenizer.json</code> and <code>model.safetensors</code> from {status.model} (revision{" "}
-          <code>{status.revision.slice(0, 7)}</code>) in <code>{status.dir}</code>, then press Download — present files are checked first.
+          <code>{status.revision.slice(0, 7)}</code>) in <code>{status.dir}</code>, then press Download. Files already there are checked first.
         </div>
       )}
     </div>

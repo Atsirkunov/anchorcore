@@ -1,3 +1,4 @@
+import { errMsg } from "./api";
 import type { CancelJobResult, Job } from "./types";
 
 /** R30.4: active = what a Stop control may target. */
@@ -19,7 +20,7 @@ export function jobStopTitle(job: Pick<Job, "id" | "kind" | "status">, sourceNam
 
 /** `cancelled — X/Y docs kept`: partial ingestion stays (docs/architecture.md, "Jobs and stopping them"). */
 export function cancelledLine(processed: number, total: number): string {
-  return `cancelled — ${processed}/${total} docs kept`;
+  return `cancelled, ${processed}/${total} docs kept`;
 }
 
 /** Feedback after a successful Stop. */
@@ -29,6 +30,6 @@ export function stopSuccessText(job: Pick<Job, "id" | "kind">, res: CancelJobRes
 }
 
 export function stopErrorText(job: Pick<Job, "id" | "kind">, err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err);
+  const msg = errMsg(err);
   return `Stop ${job.kind} #${job.id} failed: ${msg}`;
 }

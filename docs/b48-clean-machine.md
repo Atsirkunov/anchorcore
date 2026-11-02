@@ -169,7 +169,7 @@ Expected: same shape as 1.8; answer names **Sarah**, cited (decisions/notes).
 ### 1.10 UI spot-check (human, 30 seconds)
 
 Open `http://127.0.0.1:8123` in a browser: Ask tab shows the two answers with
-visible citations; Sources tab shows the synced source. Any white screen /
+visible citations; Library tab shows the synced source. Any white screen /
 missing feature that's in source = stale-embed symptom — file it.
 
 ### 1.11 Stop + data-dir hygiene
