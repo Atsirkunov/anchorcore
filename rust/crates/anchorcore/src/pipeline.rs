@@ -362,25 +362,36 @@ async fn update_sync_progress(data_dir: &str, job_id: i64, processed: i64, items
     .await;
 }
 
-/// Stored stat fingerprints for a folder source: `external_id -> (mtime_ms, len)`.
-/// Rows without one (other connectors, pre-migration rows) are absent — the
-/// caller always extracts those.
-async fn load_fingerprints(data_dir: &str, source_id: i64) -> std::collections::HashMap<String, (u64, u64)> {
+/// Stored stat fingerprints for a folder source: `external_id -> (mtime_ms, len,
+/// extractor_gen)`. Rows without one (other connectors, pre-migration rows)
+/// are absent — the caller always extracts those.
+async fn load_fingerprints(data_dir: &str, source_id: i64) -> std::collections::HashMap<String, (u64, u64, i64)> {
     run_db(data_dir, move |conn| {
         let mut stmt = conn
-            .prepare("SELECT external_id, file_mtime_ms, file_size FROM ingested_items WHERE source_id=?1 AND file_mtime_ms IS NOT NULL AND file_size IS NOT NULL")
+            .prepare("SELECT external_id, file_mtime_ms, file_size, extractor_gen FROM ingested_items WHERE source_id=?1 AND file_mtime_ms IS NOT NULL AND file_size IS NOT NULL")
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([source_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+            .query_map([source_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)))
             .map_err(|e| e.to_string())?;
         let mut out = std::collections::HashMap::new();
         for row in rows.filter_map(|r| r.ok()) {
-            out.insert(row.0, (row.1 as u64, row.2 as u64));
+            out.insert(row.0, (row.1 as u64, row.2 as u64, row.3));
         }
         Ok(out)
     })
     .await
     .unwrap_or_default()
+}
+
+/// R48.18: stamp the generation of the extraction that produced `item_id`'s
+/// text (connector ids without an extension read as the base generation).
+fn stamp_extractor_gen(conn: &Connection, item_id: i64, external_id: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE ingested_items SET extractor_gen=?1 WHERE id=?2",
+        rusqlite::params![crate::extract::extractor_version(external_id), item_id],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 /// Persist a file's stat fingerprint alongside its content (`None` leaves the
@@ -793,18 +804,23 @@ impl Pipeline {
 
     /// One listed file: skip when the stored fingerprint matches, else extract
     /// (unreadable counts as processed, never purged) and run the shared
-    /// upsert → classify tail.
+    /// upsert → classify tail. R48.18: an item whose extractor generation is
+    /// older than its format's current one is re-extracted even when its
+    /// fingerprint matches — only the fingerprint check is bypassed, the
+    /// content hash below still decides whether anything changed.
     async fn sync_listed_file(
         &self,
         data_dir: &str,
         source_id: i64,
         job_id: i64,
         force: bool,
-        known: &std::collections::HashMap<String, (u64, u64)>,
+        known: &std::collections::HashMap<String, (u64, u64, i64)>,
         f: &ListedFile,
     ) -> Result<FileOutcome, String> {
-        let unchanged = known.get(&f.rel).map(|fp| *fp == (f.mtime_ms, f.len)).unwrap_or(false);
-        if !force && unchanged {
+        let stored = known.get(&f.rel);
+        let unchanged = stored.map(|fp| (fp.0, fp.1) == (f.mtime_ms, f.len)).unwrap_or(false);
+        let stale_gen = stored.map(|fp| fp.2 < crate::extract::extractor_version(&f.rel)).unwrap_or(false);
+        if !force && unchanged && !stale_gen {
             return Ok(FileOutcome::Skipped);
         }
         // R46.7: raster images are asset items (no text); SVG keeps its
@@ -924,12 +940,15 @@ impl Pipeline {
                     // Touched-but-identical: still refresh the stat fingerprint
                     // so the next sync skips extraction instead of retrying it.
                     store_fingerprint(conn, id, fp);
+                    // R48.18: same for the generation — a stale item whose
+                    // bytes didn't change must not re-extract every sync.
+                    stamp_extractor_gen(conn, id, &doc.external_id)?;
                     return Ok(false);
                 }
-                conn.execute("UPDATE ingested_items SET content_hash=?1, title=?2, author=?3, text=?4, stale=0 WHERE id=?5", rusqlite::params![digest, doc.title, doc.author, doc.text, id]).map_err(|e| e.to_string())?;
+                conn.execute("UPDATE ingested_items SET content_hash=?1, title=?2, author=?3, text=?4, extractor_gen=?5, stale=0 WHERE id=?6", rusqlite::params![digest, doc.title, doc.author, doc.text, crate::extract::extractor_version(&doc.external_id), id]).map_err(|e| e.to_string())?;
                 Ok(true)
             } else {
-                conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, stale, created_at, uid) VALUES (?1,?2,?3,?4,?5,?6, 0, datetime('now'),?7)", rusqlite::params![source_id, doc.external_id, doc.title, doc.text, digest, doc.author, crate::db::new_uid()]).map_err(|e| e.to_string())?;
+                conn.execute("INSERT INTO ingested_items (source_id, external_id, title, text, content_hash, author, extractor_gen, stale, created_at, uid) VALUES (?1,?2,?3,?4,?5,?6,?7, 0, datetime('now'),?8)", rusqlite::params![source_id, doc.external_id, doc.title, doc.text, digest, doc.author, crate::extract::extractor_version(&doc.external_id), crate::db::new_uid()]).map_err(|e| e.to_string())?;
                 Ok(true)
             }
         }).await
@@ -2846,6 +2865,64 @@ mod tests {
         write_doc(folder, "empty.md", "# Now\n\nThe file has text.\n");
         let (items, _, _, _, _) = run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
         assert_eq!(items, 1);
+    }
+
+    /// R48.18: an RTF indexed under the old extractor generation is re-read
+    /// on sync without a file change — the stale generation bypasses the
+    /// fingerprint skip (the content hash still decides). A
+    /// current-generation file with an equally unchanged fingerprint stays
+    /// skipped.
+    #[tokio::test]
+    async fn stale_extractor_generation_re_extracts_without_file_change() {
+        let data_tmp = tempdir().unwrap();
+        let folder_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().to_string_lossy().to_string();
+        let folder = folder_tmp.path();
+        // Same byte length, different words — the fingerprint can't tell them apart.
+        let v1 = "{\\rtf1\\ansi First release notes draft here.}";
+        let v2 = "{\\rtf1\\ansi Final release notes draft here!}";
+        assert_eq!(v1.len(), v2.len());
+        write_doc(folder, "notes.rtf", v1);
+        write_doc(folder, "plan.md", "# Plan\n\nThe roadmap stands.\n");
+        let (settings, sid) = seed_folder_source(&data_dir, folder);
+        let classifier = Arc::new(crate::classifier::Classifier::new(settings.clone()));
+        let embedder = Arc::new(crate::embedder::Embedder::new(settings.clone()));
+        let pipe = Pipeline::new_for_test(classifier, embedder, settings, data_dir.clone());
+        let cfg = serde_json::json!({"path": folder.to_string_lossy()});
+        let (items, _, _, _, _) = run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        assert_eq!(items, 2, "first sync ingests both files");
+        let db_path = crate::db::resolve_db_path(&data_dir);
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let gen: i64 =
+            conn.query_row("SELECT extractor_gen FROM ingested_items WHERE external_id='notes.rtf'", [], |r| r.get(0)).unwrap();
+        assert_eq!(gen, crate::extract::RTF_EXTRACTOR_VERSION);
+        // Simulate a pre-R48.18 index: same text, generation 1.
+        conn.execute("UPDATE ingested_items SET extractor_gen = 1 WHERE external_id = 'notes.rtf'", []).unwrap();
+        drop(conn);
+        // Rewrite both files with different words at the same size, then
+        // restore their mtimes — both fingerprints read unchanged.
+        for (name, body) in [("notes.rtf", v2), ("plan.md", "# Plan\n\nThe roadmap stalls.\n")] {
+            let p = folder.join(name);
+            assert_eq!(std::fs::metadata(&p).unwrap().len() as usize, body.len(), "{name} must keep its size");
+            let mtime = std::fs::metadata(&p).unwrap().modified().unwrap();
+            write_doc(folder, name, body);
+            std::fs::File::options().write(true).open(&p).unwrap().set_modified(mtime).unwrap();
+        }
+        let (items, _, _, unchanged, _) = run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        assert_eq!((items, unchanged), (1, 1), "only the stale RTF re-extracts; the .md skips");
+        let conn = crate::db::init_db(&db_path).unwrap();
+        let text: String =
+            conn.query_row("SELECT text FROM ingested_items WHERE external_id='notes.rtf'", [], |r| r.get(0)).unwrap();
+        assert!(text.contains("Final release notes"), "{text}");
+        let md: String = conn.query_row("SELECT text FROM ingested_items WHERE external_id='plan.md'", [], |r| r.get(0)).unwrap();
+        assert!(md.contains("stands"), "current generation + same fingerprint = skipped: {md}");
+        let gen: i64 =
+            conn.query_row("SELECT extractor_gen FROM ingested_items WHERE external_id='notes.rtf'", [], |r| r.get(0)).unwrap();
+        assert_eq!(gen, crate::extract::RTF_EXTRACTOR_VERSION, "re-extraction re-stamps");
+        // Idempotent: the next sync skips both.
+        drop(conn);
+        let (items, _, _, unchanged, _) = run_folder_once(&pipe, &data_dir, sid, &cfg, false).await;
+        assert_eq!((items, unchanged), (0, 2));
     }
 
     #[tokio::test]

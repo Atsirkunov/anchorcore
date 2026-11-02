@@ -1,4 +1,4 @@
-//! R47.2: the System tab's errors & warnings panel over `system_events`.
+//! R47.2: the Status & logs errors & warnings panel over `system_events`.
 //!
 //! `GET /system/errors` lists events (flat, or `group=true` to fold repeats
 //! of one component + level + source + message into a row with a count and
