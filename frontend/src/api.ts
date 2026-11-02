@@ -8,62 +8,86 @@ export class RequestAbortedError extends Error {
   }
 }
 
-const REQUEST_TIMEOUT_MS = 30_000;
+/** R48.7: no reply in time — distinct from a cancel, and the server may still be working. */
+export class RequestTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`No reply after ${Math.round(timeoutMs / 1000)} s — the app may still be working on it. Try again in a moment.`);
+    this.name = "RequestTimeoutError";
+  }
+}
 
-// R7.1: per-session CSRF token for local-mode mutating requests
+/** One readable line from anything a request can throw. */
+export const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+const REQUEST_TIMEOUT_MS = 30_000;
+/** Ask waits for generation: the server allows `answer_timeout` (120 s default) plus query expansion. */
+export const ASK_TIMEOUT_MS = 180_000;
+const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+// R7.1: per-session CSRF token for mutating requests. The server mints a new
+// one on every start, so a refusal clears it and the request retries once.
 let csrfToken: string | null = null;
 async function getCsrfToken(): Promise<string | null> {
   if (csrfToken !== null) return csrfToken;
   try {
     const res = await fetch("/csrf", { method: "GET" });
-    if (res.ok) {
-      const data = await res.json();
-      csrfToken = data.csrf_token ?? null;
-      return csrfToken;
-    }
+    if (res.ok) csrfToken = ((await res.json()).csrf_token as string | undefined) ?? null;
   } catch {
-    // ignore
+    // unreachable server: the request itself reports it
   }
-  return null;
+  return csrfToken;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/** fetch with an optional timeout and caller signal; a timeout and a cancel throw different errors. */
+async function fetchWithTimeout(path: string, init: RequestInit, timeoutMs: number | null): Promise<Response> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  // an external signal (e.g. a Cancel button) wins over the timeout
-  const onExternalAbort = () => controller.abort();
-  if (init?.signal) {
-    if (init.signal.aborted) controller.abort();
-    else init.signal.addEventListener("abort", onExternalAbort, { once: true });
-  }
-  // R7.1: attach CSRF token for mutating requests when auth is off (local mode)
-  const method = (init?.method ?? "GET").toUpperCase();
-  const isMutating = method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE";
-  const csrfHeaders: Record<string, string> = {};
-  if (isMutating && path !== "/csrf") {
-    const token = await getCsrfToken();
-    if (token) (csrfHeaders as Record<string, string>)["X-CSRF-Token"] = token;
-  }
-  const mergedInit: RequestInit = {
-    ...init,
-    // R35.5: the app identifies itself so the Sensitive gate exempts the
-    // person at the UI (agents send no such header and stay gated).
-    headers: { "X-Anchor-Client": "ui", ...(init?.headers as Record<string, string> | undefined), ...csrfHeaders },
-    signal: controller.signal,
-  };
-  let res: Response;
+  let timedOut = false;
+  const timer = timeoutMs === null ? undefined : window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const external = init.signal;
+  const forward = () => controller.abort();
+  if (external?.aborted) controller.abort();
+  else external?.addEventListener("abort", forward, { once: true });
   try {
-    res = await fetch(path, mergedInit);
+    return await fetch(path, { ...init, signal: controller.signal });
   } catch (e) {
+    if (timedOut && timeoutMs !== null) throw new RequestTimeoutError(timeoutMs);
     if (controller.signal.aborted) throw new RequestAbortedError();
     throw e;
   } finally {
-    window.clearTimeout(timeout);
-    if (init?.signal) init.signal.removeEventListener("abort", onExternalAbort);
+    window.clearTimeout(timer);
+    external?.removeEventListener("abort", forward);
   }
-  if (!res.ok) {
-    throw new Error(await errorMessage(res));
-  }
+}
+
+async function isCsrfRefusal(res: Response): Promise<boolean> {
+  return res.status === 403 && (await res.clone().text()).includes("CSRF");
+}
+
+/** Every call to the app goes through here: the UI client header (R35.5),
+ *  the CSRF token on mutations (R7.1, refreshed once when stale) and the timeout. */
+async function send(path: string, init: RequestInit = {}, timeoutMs: number | null = REQUEST_TIMEOUT_MS): Promise<Response> {
+  const mutating = MUTATING.has((init.method ?? "GET").toUpperCase()) && path !== "/csrf";
+  const attempt = async () => {
+    const token = mutating ? await getCsrfToken() : null;
+    const headers: Record<string, string> = {
+      "X-Anchor-Client": "ui",
+      ...(init.headers as Record<string, string> | undefined),
+      ...(token ? { "X-CSRF-Token": token } : {}),
+    };
+    return fetchWithTimeout(path, { ...init, headers }, timeoutMs);
+  };
+  const res = await attempt();
+  if (!mutating || !(await isCsrfRefusal(res))) return res;
+  csrfToken = null;
+  return attempt();
+}
+
+async function request<T>(path: string, init?: RequestInit, timeoutMs: number | null = REQUEST_TIMEOUT_MS): Promise<T> {
+  const res = await send(path, init, timeoutMs);
+  if (!res.ok) throw new Error(await errorMessage(res));
   return res.json();
 }
 
@@ -85,20 +109,8 @@ async function errorMessage(res: Response): Promise<string> {
 /** R35.5: raw bytes with the UI client header (`<img>` can't set headers,
  *  so thumbnails fetch through here and render a blob URL). */
 async function requestBlob(path: string): Promise<Blob> {
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  let res: Response;
-  try {
-    res = await fetch(path, { headers: { "X-Anchor-Client": "ui" }, signal: controller.signal });
-  } catch (e) {
-    if (controller.signal.aborted) throw new RequestAbortedError();
-    throw e;
-  } finally {
-    window.clearTimeout(timeout);
-  }
-  if (!res.ok) {
-    throw new Error(await errorMessage(res));
-  }
+  const res = await send(path);
+  if (!res.ok) throw new Error(await errorMessage(res));
   return res.blob();
 }
 
@@ -221,7 +233,7 @@ export const api = {
         project_id: projectId ?? null,
         public_only: publicOnly,
       }),
-    }),
+    }, ASK_TIMEOUT_MS),
 
   systemStatus: () => request<SystemStatus>("/system/status"),
   /** R47.0: redacted bundle for the last query ("it's wrong" flow). */
@@ -290,7 +302,7 @@ export const api = {
   logDownloadUrl: (name: string) => `/system/logs/${encodeURIComponent(name)}`,
   skillUrl: (name: string) => `/system/skills/${encodeURIComponent(name)}`,
   fetchSkill: async (name: string): Promise<string> => {
-    const res = await fetch(`/system/skills/${encodeURIComponent(name)}`);
+    const res = await send(`/system/skills/${encodeURIComponent(name)}`);
     if (!res.ok) throw new Error(await errorMessage(res));
     return res.text();
   },
@@ -310,15 +322,14 @@ export const api = {
       }
     ),
 
-  // R25.5: backup & restore. These bypass request() — an archive is a blob
-  // download and an import is a multipart upload that may run for minutes.
+  // R25.5: backup & restore. No timeout — an archive is a blob download and
+  // an import is a multipart upload that may run for minutes.
   backupExport: async (payload: BackupExportOptions): Promise<{ blob: Blob; filename: string }> => {
-    const token = await getCsrfToken();
-    const res = await fetch("/backup/export", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(token ? { "X-CSRF-Token": token } : {}) },
-      body: JSON.stringify(payload),
-    });
+    const res = await send(
+      "/backup/export",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) },
+      null,
+    );
     if (!res.ok) throw new Error(await errorMessage(res));
     const disposition = res.headers.get("content-disposition") ?? "";
     const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? "anchorcore-backup.anchorcore-backup";
@@ -328,12 +339,7 @@ export const api = {
     const form = new FormData();
     form.append("file", file);
     form.append("options", JSON.stringify(options));
-    const token = await getCsrfToken();
-    const res = await fetch("/backup/import", {
-      method: "POST",
-      headers: token ? { "X-CSRF-Token": token } : {},
-      body: form,
-    });
+    const res = await send("/backup/import", { method: "POST", body: form }, null);
     if (!res.ok) throw new Error(await errorMessage(res));
     return res.json();
   },

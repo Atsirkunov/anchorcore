@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, RequestAbortedError } from "../api";
+import { api, errMsg, RequestAbortedError } from "../api";
 import { theme, radius } from "../theme";
 import type { AskResponse, AskTurn } from "../types";
 import { AnswerView, type AnswerTurn } from "./AnswerView";
@@ -72,11 +72,8 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
       ]);
       setQuestion("");
     } catch (e) {
-      if (e instanceof RequestAbortedError) {
-        setError("Question cancelled.");
-      } else {
-        setError(e instanceof Error ? e.message : String(e));
-      }
+      // R48.7: only a real cancel says so; a timeout explains itself.
+      setError(e instanceof RequestAbortedError ? "Question cancelled." : errMsg(e));
     } finally {
       abortRef.current = null;
       setBusy(false);
