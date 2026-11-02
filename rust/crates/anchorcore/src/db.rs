@@ -561,6 +561,8 @@ const MIGRATIONS: &[(&str, Option<Hook>, &str)] = &[
     (include_str!("../migrations/31_chunk_item_index.sql"), None, "indexing chunks by document (can take a minute on large libraries)"),
     // R41.8: entity cascades use indexes (the migration 27 hook runs it first)
     (ENTITY_FK_INDEXES, None, "indexing records"),
+    // R48.18: extractor generation per item (stale items re-extract on their next sync)
+    (include_str!("../migrations/33_extractor_gen.sql"), None, "adding extractor generations"),
 ];
 
 const ENTITY_FK_INDEXES: &str = include_str!("../migrations/32_entity_fk_indexes.sql");
@@ -983,6 +985,9 @@ mod tests {
             // A real v10 DB also predates R36.2 — drop the chunker
             // generation so migration 28 has real work to do.
             conn.execute("ALTER TABLE ingested_items DROP COLUMN chunker_version", []).unwrap();
+            // A real v10 DB also predates R48.18 — drop the extractor
+            // generation so migration 33 has real work to do.
+            conn.execute("ALTER TABLE ingested_items DROP COLUMN extractor_gen", []).unwrap();
             // A real v10 DB also predates R35.4 — the per-document mark is
             // still `is_pii`, the chunk PII columns exist, and a source may
             // carry the `pii` label, so migration 29 has real work to do.
@@ -1019,7 +1024,7 @@ mod tests {
         let mut conn = open_db(&path).unwrap();
         migrate_all(&mut conn);
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 32);
+        assert_eq!(v, 33);
         // R41.10 (migration 31): per-item chunk lookups are indexed.
         // R41.8 (migration 32, also run by the 27 hook): entity cascades are.
         for (table, index) in [
@@ -1072,6 +1077,14 @@ mod tests {
             .map(|r| r.unwrap())
             .collect();
         assert!(!generations.is_empty() && generations.iter().all(|&g| g == 1), "migration 28 (R36.2) starts existing items at generation 1: {generations:?}");
+        let egens: Vec<i64> = conn
+            .prepare("SELECT extractor_gen FROM ingested_items")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(!egens.is_empty() && egens.iter().all(|&g| g == 1), "migration 33 (R48.18) starts existing items at generation 1: {egens:?}");
         let asset_tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('assets','asset_blobs','assets_blob_gc_delete','assets_blob_gc_update')",
@@ -1186,6 +1199,7 @@ mod tests {
         drop_entity_record_columns(&conn);
         drop_glossary_artifacts(&conn);
         conn.execute("ALTER TABLE ingested_items DROP COLUMN chunker_version", []).unwrap();
+        conn.execute("ALTER TABLE ingested_items DROP COLUMN extractor_gen", []).unwrap();
         migrate_all(&mut conn);
         assert!(table_exists(&conn, "vec_chunks"));
         assert_eq!(vec_trigger_sql(&conn), before);

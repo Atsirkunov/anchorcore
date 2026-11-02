@@ -84,6 +84,24 @@ pub fn is_supported_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// R48.18: extractor generations, stored per item (`ingested_items.extractor_gen`,
+/// migration 33). Bump a format's number when its extractor changes what it
+/// emits; folder sync re-extracts stale items even when their stat fingerprint
+/// is unchanged, so an extractor fix reaches already-indexed files. 1 = every
+/// extractor before R48.18; 2 = RTF (the R48.9 rewrite).
+pub const BASE_EXTRACTOR_VERSION: i64 = 1;
+pub const RTF_EXTRACTOR_VERSION: i64 = 2;
+
+/// The generation `extract_bytes` produces for `filename` (extension match —
+/// connector ids without an extension read as the base generation).
+pub fn extractor_version(filename: &str) -> i64 {
+    let base = filename.rsplit(['/', '\\']).next().unwrap_or(filename);
+    match base.rsplit('.').next() {
+        Some(ext) if ext != base && ext.eq_ignore_ascii_case("rtf") => RTF_EXTRACTOR_VERSION,
+        _ => BASE_EXTRACTOR_VERSION,
+    }
+}
+
 /// True when a filename (absolute/relative path or bare name) is source
 /// code — drives the `code` doc_type fast path in the pipeline.
 pub fn is_code_filename(name: &str) -> bool {
@@ -2303,6 +2321,17 @@ Hello \b bold\b0  and \'93quoted\'94.\par Second \u8364? paragraph.\par}";
         let rtf = "{\\rtf1\\ansi First sentence wraps\r\n here.\\\n Second paragraph.\\par Third.}";
         let text = extract_bytes("rtf", rtf.as_bytes()).unwrap();
         assert_eq!(text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>(), ["First sentence wraps here.", "Second paragraph.", "Third."], "{text}");
+    }
+
+    /// R48.18: the generation dispatch is per format — RTF sits at 2 since
+    /// the R48.9 rewrite, everything else (and extension-less ids) at 1.
+    #[test]
+    fn extractor_version_is_per_format() {
+        assert_eq!(extractor_version("notes.rtf"), RTF_EXTRACTOR_VERSION);
+        assert_eq!(extractor_version("sub/dir/NOTES.RTF"), RTF_EXTRACTOR_VERSION);
+        assert_eq!(extractor_version("notes.md"), BASE_EXTRACTOR_VERSION);
+        assert_eq!(extractor_version("Jira:PROJ-1"), BASE_EXTRACTOR_VERSION);
+        assert_eq!(extractor_version("noext"), BASE_EXTRACTOR_VERSION);
     }
 
     #[test]
