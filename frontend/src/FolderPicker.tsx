@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { api } from "./api";
+import { api, errMsg } from "./api";
 import { commonStyles, theme, radius } from "./theme";
 import type { FolderListing } from "./types";
 
 function message(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+  return errMsg(e);
 }
 
 /**

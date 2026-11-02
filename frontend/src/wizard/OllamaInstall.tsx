@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api } from "../api";
+import { api, errMsg } from "../api";
 import { theme } from "../theme";
 import type { OnboardingState } from "../types";
 import { styles } from "./styles";
@@ -35,7 +35,7 @@ export function OllamaInstall({ state, recheck }: { state: OnboardingState | nul
         setMsg(res.error ?? "Could not start Ollama — install it first (see below).");
       }
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : String(e));
+      setMsg(errMsg(e));
     } finally {
       setStarting(false);
     }

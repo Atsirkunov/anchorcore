@@ -1,3 +1,4 @@
+import { errMsg } from "../api";
 import { useState } from "react";
 import { theme, radius } from "../theme";
 import { AGENT_COMPOSE_HINT, isAgentCompose, modeBannerNotes } from "../answerMode";
@@ -71,7 +72,7 @@ function ReportButton() {
       URL.revokeObjectURL(url);
       setDone(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(false);
     }

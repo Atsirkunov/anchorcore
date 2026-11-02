@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api } from "../../api";
+import { api, errMsg } from "../../api";
 import { FolderPicker } from "../../FolderPicker";
 import { LABEL_OPTIONS } from "./labels";
 import { stripPlaceholders } from "../../placeholders";
@@ -57,7 +57,7 @@ function JiraProjectPicker({
       setProjects(res);
       if (res.length === 0) setErr("No projects found or no permission");
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errMsg(e));
     } finally {
       setLoading(false);
     }
@@ -151,7 +151,7 @@ function RestFields({
       }
       setPreview(await api.previewRest(value));
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errMsg(e));
     } finally {
       setLoading(false);
     }
@@ -298,7 +298,7 @@ export function SourceForm({ onAdded }: { onAdded: () => void }) {
       setLabel("internal");
       onAdded();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(false);
     }
@@ -440,7 +440,7 @@ export function SourceEditForm({
       await api.updateSource(source.id, payload);
       onSaved();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   }
 

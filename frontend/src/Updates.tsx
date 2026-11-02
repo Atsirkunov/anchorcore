@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "./api";
+import { api, errMsg } from "./api";
 import { commonStyles, theme, radius } from "./theme";
 import type { UpdateStatus } from "./types";
 
@@ -26,7 +26,7 @@ export function UpdateCard({ onGoSettings }: { onGoSettings?: () => void } = {})
     try {
       setStatus(await api.updateStatus(true));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(false);
     }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "../api";
+import { api, errMsg } from "../api";
 import { stripPlaceholders } from "../placeholders";
 import { theme, radius } from "../theme";
 import type { AppSettings, AskResponse, EmbedProvider, LlmMode } from "../types";
@@ -34,7 +34,7 @@ export function SettingsTab() {
         setSettings(s);
         setForm({ ...s });
       })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setError(errMsg(e)));
   }, []);
 
   useEffect(() => refresh(), [refresh]);
@@ -76,7 +76,7 @@ export function SettingsTab() {
       setSaved(true);
       setSavedCount((n) => n + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(false);
     }
@@ -90,7 +90,7 @@ export function SettingsTab() {
       const r = await api.testConnection(providerId);
       setTestResult({ provider: providerId, ok: r.ok, message: r.message });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setTestBusy(null);
     }
@@ -119,7 +119,7 @@ export function SettingsTab() {
         setProbeResult({ status: "fail", message: res.warning ?? `No answer model ran (mode: ${res.mode ?? "unknown"}). Save settings, then probe again.` });
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setProbeBusy(false);
     }

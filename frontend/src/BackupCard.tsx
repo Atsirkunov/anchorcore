@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "./api";
+import { api, errMsg } from "./api";
 import { theme, radius } from "./theme";
 import type { BackupImportReport, Job } from "./types";
 
@@ -110,7 +110,7 @@ export function BackupCard() {
       URL.revokeObjectURL(url);
       setNote(`Exported ${filename} (${Math.max(1, Math.round(blob.size / 1024))} KB) — saved by your browser.`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(null);
     }
@@ -151,7 +151,7 @@ export function BackupCard() {
         setConfirmText("");
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(null);
     }

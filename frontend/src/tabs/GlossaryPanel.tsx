@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "../api";
+import { api, errMsg } from "../api";
 import { theme, radius } from "../theme";
 import type { GlossaryEntry, ItemMeta } from "../types";
 
@@ -24,7 +24,7 @@ export function GlossaryPanel({ defaultOpen = false }: { defaultOpen?: boolean }
     api
       .glossary()
       .then(setEntries)
-      .catch((e) => setError(String(e)));
+      .catch((e) => setError(errMsg(e)));
   }, []);
   useEffect(() => refresh(), [refresh]);
 
@@ -35,7 +35,7 @@ export function GlossaryPanel({ defaultOpen = false }: { defaultOpen?: boolean }
       await work();
       refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(false);
     }

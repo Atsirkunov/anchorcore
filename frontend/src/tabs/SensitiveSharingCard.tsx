@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { api } from "../api";
+import { api, errMsg } from "../api";
 import { destinationStatus, SHARING_QUERY_KEY } from "../sharingText";
 import { radius, theme } from "../theme";
 import type { SensitiveSharing, SharingDestination, SharingDestinationId } from "../types";
@@ -22,7 +22,7 @@ export function SensitiveSharingCard({ refreshKey }: { refreshKey: number }) {
     api
       .getSensitiveSharing()
       .then(setState)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setError(errMsg(e)));
   }, []);
 
   useEffect(() => load(), [load, refreshKey]);
@@ -35,7 +35,7 @@ export function SensitiveSharingCard({ refreshKey }: { refreshKey: number }) {
       setState(next);
       queryClient.setQueryData(SHARING_QUERY_KEY, next);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(null);
     }

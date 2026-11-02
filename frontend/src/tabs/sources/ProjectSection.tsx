@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api } from "../../api";
+import { api, errMsg } from "../../api";
 import { useProjects } from "../../useProjects";
 import { theme, commonStyles, radius } from "../../theme";
 import type { Source } from "../../types";
@@ -21,7 +21,7 @@ export function ProjectSection({ sources, onChanged }: { sources: Source[]; onCh
       refreshProjects();
       onChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   }
 
@@ -36,7 +36,7 @@ export function ProjectSection({ sources, onChanged }: { sources: Source[]; onCh
       refreshProjects();
       onChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   }
 
@@ -47,7 +47,7 @@ export function ProjectSection({ sources, onChanged }: { sources: Source[]; onCh
       refreshProjects();
       onChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   }
 
@@ -58,7 +58,7 @@ export function ProjectSection({ sources, onChanged }: { sources: Source[]; onCh
       refreshProjects();
       onChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   }
 

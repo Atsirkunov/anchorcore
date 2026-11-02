@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api } from "../api";
+import { api, errMsg } from "../api";
 import { FolderPicker } from "../FolderPicker";
 import { theme } from "../theme";
 import type { OnboardingState } from "../types";
@@ -33,7 +33,7 @@ export function SourceStep({ state, onSynced }: { state: OnboardingState | null;
       }
       onSynced();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(false);
     }

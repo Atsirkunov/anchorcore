@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "../../api";
+import { api, errMsg } from "../../api";
 import { theme, radius } from "../../theme";
 import type { EventGroup, EventLevel, EventSummary } from "../../types";
 import { filterMatch, groupMatch, levelColor } from "./errorsMatch";
@@ -80,7 +80,7 @@ export function ErrorsPanel({ refreshKey = 0 }: { refreshKey?: number }) {
     try {
       setNote(await action());
     } catch (e) {
-      setNote(e instanceof Error ? e.message : String(e));
+      setNote(errMsg(e));
     } finally {
       setBusy(false);
       load();

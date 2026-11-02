@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { api } from "../api";
+import { api, errMsg } from "../api";
 import { useJobsPoll } from "../hooks/useJobsPoll";
 import { cancelledLine, isActiveJob } from "../jobControlsText";
 import { JobStopButton, StopNoteLine } from "../JobStopButton";
@@ -48,7 +48,7 @@ export function SystemTab({ onConfigure, focusJobs }: { onConfigure?: () => void
     api
       .systemStatus()
       .then(setStatus)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setError(errMsg(e)));
     api.systemLogs().then(setLogs).catch(() => {});
     api
       .listSources()
@@ -140,7 +140,7 @@ export function SystemTab({ onConfigure, focusJobs }: { onConfigure?: () => void
                         setOllamaMsg(res.error ?? "Failed to start Ollama");
                       }
                     } catch (e) {
-                      setOllamaMsg(e instanceof Error ? e.message : String(e));
+                      setOllamaMsg(errMsg(e));
                     } finally {
                       setStartingOllama(false);
                     }
@@ -363,7 +363,7 @@ function AgentSkillsCard() {
       const r = await api.skillInstall(pending.skill, selectedClient.id, pending.handle?.trim());
       setNotes((n) => ({ ...n, [pending.skill]: installNote(r, pendingPath, pending.clientName) }));
     } catch (e) {
-      setNotes((n) => ({ ...n, [pending.skill]: e instanceof Error ? e.message : String(e) }));
+      setNotes((n) => ({ ...n, [pending.skill]: errMsg(e) }));
     } finally {
       setInstalling(false);
       setPending(null);
@@ -379,7 +379,7 @@ function AgentSkillsCard() {
       setCopied(name);
       setTimeout(() => setCopied(null), 1500);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(null);
     }
@@ -397,7 +397,7 @@ function AgentSkillsCard() {
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     } finally {
       setBusy(null);
     }
