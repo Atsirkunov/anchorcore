@@ -59,7 +59,7 @@ export function Thumb({ a }: { a: AssetRef }) {
     <figure style={{ ...styles.figure, width }}>
       {blocked || !src ? (
         blocked ? (
-          <div style={{ ...styles.tile, ...styles.locked, width, height: THUMB_H }} title={`${label(a)} — ${reason}`} role="img" aria-label={`${label(a)} (${reason})`}>
+          <div style={{ ...styles.tile, ...styles.locked, width, height: THUMB_H }} title={`${label(a)}: ${reason}`} role="img" aria-label={`${label(a)} (${reason})`}>
             <LockGlyph />
             <span style={styles.lockText}>{!a.url ? "not stored" : "withheld"}</span>
           </div>
@@ -125,7 +125,7 @@ const styles: Record<string, React.CSSProperties> = {
   figure: { margin: 0, display: "grid", gap: 3 },
   tile: { display: "block", objectFit: "contain", background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: radius },
   locked: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, color: theme.textDim },
-  lockText: { fontFamily: theme.mono, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em" },
+  lockText: { fontFamily: theme.sans, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em" },
   caption: { fontSize: 11, lineHeight: 1.35, color: theme.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   heading: { fontSize: 10, color: theme.textDim, textTransform: "uppercase", marginBottom: 2 },
 };

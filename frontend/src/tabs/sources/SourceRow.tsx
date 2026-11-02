@@ -134,7 +134,7 @@ export function SourceRow({
         </div>
         {source.label !== "internal" && (
           <div style={{ fontSize: 11, color: source.label === "sensitive" ? theme.amber : theme.textMuted, marginTop: 2 }}>
-            label: {source.label} — {LABEL_ALLOWS[source.label] ?? sensitiveHint(sharing.data)}
+            label: {source.label} · {LABEL_ALLOWS[source.label] ?? sensitiveHint(sharing.data)}
           </div>
         )}
           {jobs.map((job) => (

@@ -52,7 +52,7 @@ export function useModelPull() {
         setPulls(mine);
         if (mine.length === models.length && mine.every((p) => p.done)) return mine;
       }
-      throw new Error("timed out waiting for the model download — check the connection and retry");
+      throw new Error("timed out waiting for the model download. Check the connection and retry.");
     } catch (e) {
       setPullError(e instanceof Error ? e.message : String(e));
       return [];

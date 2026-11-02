@@ -47,7 +47,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: "none",
     border: "none",
     padding: "0.25rem 0.55rem",
-    fontFamily: theme.mono,
+    fontFamily: theme.sans,
     fontSize: 11,
     color: theme.textDim,
     cursor: "pointer",

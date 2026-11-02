@@ -36,7 +36,7 @@ describe("modelIssues", () => {
 
   it("narrows to search when answers come from an agent or cloud model", () => {
     const issues = modelIssues(health({ ollama: "offline" }));
-    expect(issues.join(" ")).toMatch(/answers are unaffected/);
+    expect(issues.join(" ")).toMatch(/answers are unaffected/i);
     expect(issues.join(" ")).toMatch(/keyword-only/);
     expect(issues.join(" ")).not.toMatch(/stay basic/);
   });

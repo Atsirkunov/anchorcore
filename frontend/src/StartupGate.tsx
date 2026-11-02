@@ -82,7 +82,7 @@ export function UpgradeScreen({ status }: { status: StartupStatus }) {
       {elapsed && <p style={{ margin: "0 0 0.75rem", color: theme.textMuted, fontSize: "0.9rem" }}>{elapsed}</p>}
       {status.upgrading && (
         <p style={{ margin: 0, color: theme.textMuted, fontSize: "0.9rem" }}>
-          This can take several minutes on large libraries. Don't close AnchorCore — this page continues by itself
+          This can take several minutes on large libraries. Don't close AnchorCore; this page continues by itself
           when the upgrade is done.
         </p>
       )}

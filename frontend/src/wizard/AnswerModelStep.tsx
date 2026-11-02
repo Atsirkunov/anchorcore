@@ -66,7 +66,7 @@ export function AnswerModelStep({ state, recheck }: Props) {
   return (
     <div style={styles.body}>
       <div style={styles.note}>
-        {ram ? `This computer has ${ram} of memory. ` : "Couldn't read this computer's memory — showing the default. "}
+        {ram ? `This computer has ${ram} of memory. ` : "Couldn't read this computer's memory, so this shows the default. "}
         Bigger models write better answers but need more memory and answer slower. The recommended one leaves room for your other apps.
       </div>
       {options.length > 0 && (
@@ -88,7 +88,7 @@ export function AnswerModelStep({ state, recheck }: Props) {
                 <div style={{ fontSize: 12, color: tooBig ? theme.amber : theme.textMuted }}>
                   <code>{o.model}</code> · {o.download_gb} GB download
                   {o.min_ram_gb > 0 ? ` · for ${o.min_ram_gb} GB+ RAM` : ""}
-                  {tooBig ? " — more than this computer has; expect slow answers" : ""}
+                  {tooBig ? " (more than this computer has; expect slow answers)" : ""}
                 </div>
               </button>
             );
@@ -106,7 +106,7 @@ export function AnswerModelStep({ state, recheck }: Props) {
           {ready && (
             <span style={styles.checkRow}>
               <span style={{ ...styles.dot, background: theme.green }} />
-              <span style={{ fontSize: 13 }}>Answers: {pick} via Ollama — ready</span>
+              <span style={{ fontSize: 13 }}>Answers: {pick} via Ollama, ready</span>
             </span>
           )}
         </div>
@@ -114,7 +114,7 @@ export function AnswerModelStep({ state, recheck }: Props) {
       {pull.pulling || pull.pullError ? <PullProgress pulls={pull.pulls} models={[pick]} error={pull.pullError} /> : null}
       {msg && <div style={{ fontSize: 12, color: theme.red }}>{msg}</div>}
       {!ready && state?.answer_ready && !usingPick && (
-        <div style={styles.hint}>An answer model is already configured ({current?.model}) — keep it, or pick one above.</div>
+        <div style={styles.hint}>An answer model is already configured ({current?.model}). Keep it, or pick one above.</div>
       )}
       <AdvancedEndpoint ollamaBase={ollamaBase} setOllamaBase={setOllamaBase} recheck={recheck} />
     </div>
@@ -182,13 +182,13 @@ function AdvancedEndpoint({
         <input style={styles.input} value={ollamaBase} onChange={(e) => setOllamaBase(e.target.value)} placeholder="http://localhost:11434" />
         <label style={styles.label}>Answer API base URL</label>
         <input style={styles.input} value={base} onChange={(e) => setBase(e.target.value)} placeholder="https://api.openai.com/v1" />
-        <label style={styles.label}>Answer API key — stored in the OS keychain</label>
+        <label style={styles.label}>Answer API key (stored in the OS keychain)</label>
         <input
           style={styles.input}
           type="password"
           value={key}
           onChange={(e) => setKey(e.target.value)}
-          placeholder={keyStored ? "•••••••• (stored — type to replace, blank keeps it)" : "sk-… (not needed for local Ollama)"}
+          placeholder={keyStored ? "•••••••• (stored; type to replace, blank keeps it)" : "sk-… (not needed for local Ollama)"}
         />
         <label style={styles.label}>Answer model</label>
         <input style={styles.input} value={model} onChange={(e) => setModel(e.target.value)} placeholder="gpt-4o-mini" />

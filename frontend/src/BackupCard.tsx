@@ -57,8 +57,8 @@ function ReembedProgress({ jobIds }: { jobIds: number[] }) {
   return (
     <div style={{ fontSize: 12, marginTop: 6, color: failed ? theme.red : theme.textMuted }}>
       Re-embedding imported chunks: {done}/{jobIds.length} job(s)
-      {total > 0 ? ` — ${processed}/${total} chunks` : " — queued"}
-      {failed ? " — a job failed (see System → Errors). Answers stay keyword-only for those chunks." : ""}
+      {total > 0 ? ` · ${processed}/${total} chunks` : " · queued"}
+      {failed ? ". A job failed (see System → Errors). Answers stay keyword-only for those chunks." : ""}
     </div>
   );
 }
@@ -108,7 +108,7 @@ export function BackupCard() {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      setNote(`Exported ${filename} (${Math.max(1, Math.round(blob.size / 1024))} KB) — saved by your browser.`);
+      setNote(`Exported ${filename} (${Math.max(1, Math.round(blob.size / 1024))} KB), saved by your browser.`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -179,7 +179,7 @@ export function BackupCard() {
             type="password"
             value={passphrase}
             onChange={(e) => setPassphrase(e.target.value)}
-            placeholder="Passphrase (not stored — losing it loses the bundle)"
+            placeholder="Passphrase (not stored; losing it loses the bundle)"
             style={{ ...styles.input, marginTop: 4 }}
           />
         )}
@@ -229,18 +229,18 @@ export function BackupCard() {
             <CountsLine title="Kept local" counts={report.skipped} />
             {report.conflicts.length > 0 && (
               <div style={{ fontSize: 12, color: theme.amber }}>
-                {report.conflicts.length} conflict(s) resolved {report.dry_run ? "(would be)" : ""} — local newer
+                {report.conflicts.length} conflict(s) resolved {report.dry_run ? "(would be)" : ""}, local newer
                 state wins.
               </div>
             )}
             {report.needs_secret.length > 0 && (
               <div style={{ fontSize: 12, marginTop: 4 }}>
                 <div style={{ color: theme.amber }}>
-                  Credentials to re-enter ({report.needs_secret.length}) — Sources tab:
+                  Credentials to re-enter ({report.needs_secret.length}), in the Sources tab:
                 </div>
                 {report.needs_secret.map((s) => (
                   <div key={`${s.source_uid}:${s.field}`} style={{ color: theme.textMuted }}>
-                    {s.source_name || shortUid(s.source_uid)} — {s.field}
+                    {s.source_name || shortUid(s.source_uid)}: {s.field}
                   </div>
                 ))}
               </div>

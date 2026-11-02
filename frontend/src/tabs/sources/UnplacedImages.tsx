@@ -59,7 +59,7 @@ export function UnplacedImages({ sources }: { sources: Source[] }) {
         </button>
       </div>
       <p style={styles.help}>
-        No synced document links these images. Write what each one shows and pick the document it belongs to — your caption is
+        No synced document links these images. Write what each one shows and pick the document it belongs to. Your caption is
         how questions find it. Nothing is suggested automatically.
       </p>
       {error && <p style={{ color: theme.red, margin: "0 0 8px" }}>{error}</p>}
@@ -172,7 +172,7 @@ function ImageCard({ row, onDone }: { row: MediaRow; onDone: () => void }) {
 const styles: Record<string, React.CSSProperties> = {
   panel: { background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.9rem 1rem", marginBottom: 16 },
   header: { display: "flex", alignItems: "center", gap: 8, marginBottom: 4 },
-  badge: { fontFamily: theme.mono, fontSize: 11, padding: "0 6px", borderRadius: radius, background: theme.amberBg, color: theme.text, border: `1px solid ${theme.border}` },
+  badge: { fontFamily: theme.sans, fontSize: 11, padding: "0 6px", borderRadius: radius, background: theme.amberBg, color: theme.text, border: `1px solid ${theme.border}` },
   tab: { ...commonStyles.button, fontSize: 12, padding: "0.2rem 0.6rem" },
   tabOn: { ...commonStyles.button, fontSize: 12, padding: "0.2rem 0.6rem", background: theme.accent, color: theme.onAccent },
   help: { fontSize: 12, color: theme.textDim, margin: "0 0 10px" },

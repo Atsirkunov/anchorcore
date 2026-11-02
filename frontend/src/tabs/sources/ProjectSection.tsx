@@ -90,7 +90,7 @@ export function ProjectSection({ sources, onChanged }: { sources: Source[]; onCh
       {error && <p style={{ color: theme.red }}>{error}</p>}
       {projects.length === 0 ? (
         <div style={{ fontSize: 12, color: theme.textDim }}>
-          No projects yet — create one, then tick sources to include them.
+          No projects yet. Create one, then tick sources to include them.
         </div>
       ) : (
         <div style={{ display: "grid", gap: 8 }}>
@@ -129,7 +129,7 @@ export function ProjectSection({ sources, onChanged }: { sources: Source[]; onCh
                         fontSize: 12,
                         padding: "0.2rem 0.6rem",
                         ...(inProject
-                          ? { background: theme.citeSoft, color: theme.accentAlt }
+                          ? { background: theme.bgHover, color: theme.text }
                           : { background: theme.buttonBg, color: theme.textMuted }),
                       }}
                     >

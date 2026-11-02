@@ -15,11 +15,11 @@
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:image" content="https://anchorcore.dev/og-card.png" />
   <script>
-    // Theme before first paint (no flash) — same resolution as src/themeMode.ts.
+    // Theme before first paint (no flash): Light unless the visitor chose Auto or Dark (src/themeMode.ts).
     (function () {
       var m = null;
       try { m = localStorage.getItem("theme-mode"); } catch (e) {}
-      var dark = m === "dark" || (m !== "light" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
+      var dark = m === "dark" || (m === "auto" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
       document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
     })();
   </script>
@@ -28,7 +28,7 @@
 <body>
   <header class="site-header">
     <div class="wrap">
-      <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-sage"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-stone"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-stone"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-stone"/></svg>AnchorCore</a>
+      <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-accent"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-muted"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-muted"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-muted"/></svg>AnchorCore</a>
       <!-- Nav IA (R18.3): every nav label matches its section heading verbatim; section ids stay stable (#roadmap is the legacy anchor for "Get started") -->
       <nav class="nav">
         <a href="/#how">How it works</a>
@@ -73,7 +73,7 @@
 
   <footer>
     <div class="wrap foot">
-      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-sage"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-stone"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-stone"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-stone"/></svg><b>AnchorCore</b> is free for personal use · Team self-hosted on request · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="/team">For teams</a> · <a href="/hosted">Hosted waitlist</a> · <a href="/privacy">Privacy notice</a> · <a href="/#trust">Trust &amp; verification</a> · <a href="/security">Security notes</a> · <a href="/vs/notebooklm">vs NotebookLM</a></div>
+      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-accent"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-muted"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-muted"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-muted"/></svg><b>AnchorCore</b> is free for personal use · Team self-hosted on request · Hosted soon. <a href="https://github.com/Atsirkunov/anchorcore">Source (GitHub)</a> · <a href="/team">For teams</a> · <a href="/hosted">Hosted waitlist</a> · <a href="/privacy">Privacy notice</a> · <a href="/#trust">Trust &amp; verification</a> · <a href="/security">Security notes</a> · <a href="/vs/notebooklm">vs NotebookLM</a></div>
       <div>Private by default · cited by design</div>
     </div>
   </footer>

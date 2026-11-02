@@ -87,7 +87,7 @@ function ReportButton() {
       <button onClick={download} disabled={busy} style={styles.reportLink} title="Download a redacted diagnostics bundle for this answer (no document text) to send to support">
         {busy ? "Preparing report…" : "Report issue"}
       </button>
-      {done && !error ? <span style={styles.reportNote}>saved — safe to share after a glance at the query text</span> : null}
+      {done && !error ? <span style={styles.reportNote}>saved. Safe to share after a glance at the query text.</span> : null}
       {error ? <span style={styles.reportError}>{error}</span> : null}
     </p>
   );
@@ -164,7 +164,7 @@ const styles: Record<string, React.CSSProperties> = {
   turn: { borderTop: `1px solid ${theme.border}`, paddingTop: 20 },
   latest: { borderTop: `1px solid ${theme.text}` },
   question: { margin: "0 0 14px", fontFamily: theme.serif, fontWeight: 500, fontSize: 20, lineHeight: 1.35 },
-  label: { margin: "0 0 8px", fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", color: theme.textDim },
+  label: { margin: "0 0 8px", fontFamily: theme.sans, fontWeight: 600, fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", color: theme.textDim },
   answer: { fontFamily: theme.serif, fontSize: 16, lineHeight: 1.65 },
   para: { margin: "0 0 10px" },
   answerList: { margin: "0 0 10px", paddingLeft: "1.4em" },
@@ -185,10 +185,10 @@ const styles: Record<string, React.CSSProperties> = {
   cardActive: { borderColor: theme.cite, background: theme.citeSoft },
   sid: { flexShrink: 0, fontFamily: theme.mono, fontWeight: 600, color: theme.cite, paddingTop: 1 },
   cardTitle: { fontWeight: 600 },
-  badge: { marginLeft: 8, fontFamily: theme.mono, fontSize: 11, color: theme.blue },
+  badge: { marginLeft: 8, fontFamily: theme.sans, fontSize: 11, color: theme.blue },
   where: { fontFamily: theme.mono, fontSize: 12, color: theme.textDim, overflowWrap: "anywhere" },
   quote: { margin: "4px 0 0", fontFamily: theme.serif, fontSize: 14, color: theme.text, whiteSpace: "pre-wrap" },
-  tags: { marginTop: 4, fontFamily: theme.mono, fontSize: 11, color: theme.textDim },
+  tags: { marginTop: 4, fontFamily: theme.sans, fontSize: 11, color: theme.textDim },
   degradedNote: {
     background: theme.amberBg,
     color: theme.amber,
@@ -200,7 +200,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   agentNote: { margin: "0 0 4px", fontSize: 13, lineHeight: 1.55, color: theme.textMuted },
   reportRow: { margin: "14px 0 0", fontSize: 12 },
-  reportLink: { background: "none", border: "none", padding: 0, fontFamily: theme.mono, fontSize: 12, color: theme.textDim, cursor: "pointer", textDecoration: "underline" },
+  reportLink: { background: "none", border: "none", padding: 0, fontFamily: theme.sans, fontSize: 12, color: theme.textDim, cursor: "pointer", textDecoration: "underline" },
   reportNote: { marginLeft: 8, color: theme.textDim },
   reportError: { marginLeft: 8, color: theme.red },
 };

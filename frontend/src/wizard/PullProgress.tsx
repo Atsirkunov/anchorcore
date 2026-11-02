@@ -18,10 +18,10 @@ export function PullProgress({ pulls, models, error }: { pulls: Pull[]; models: 
           {p.model}:{" "}
           {p.done
             ? p.error
-              ? `failed — ${p.error}`
+              ? `failed: ${p.error}`
               : "done"
             : p.total > 0
-              ? `${p.status} — ${(p.completed / MB).toFixed(0)} / ${(p.total / MB).toFixed(0)} MB`
+              ? `${p.status} · ${(p.completed / MB).toFixed(0)} / ${(p.total / MB).toFixed(0)} MB`
               : p.status}
         </div>
       ))}

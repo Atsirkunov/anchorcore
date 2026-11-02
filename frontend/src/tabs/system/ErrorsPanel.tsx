@@ -23,7 +23,7 @@ function EventRow({ group, onToggle, busy }: { group: EventGroup; onToggle: (g: 
   return (
     <li style={{ ...styles.row, opacity: group.dismissed ? 0.6 : 1 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
-        <span style={{ fontSize: 11, fontFamily: theme.mono, textTransform: "uppercase", color: levelColor(group.level) }}>{group.level}</span>
+        <span style={{ fontSize: 11, fontFamily: theme.sans, fontWeight: 600, textTransform: "uppercase", color: levelColor(group.level) }}>{group.level}</span>
         {group.count > 1 && (
           <span style={styles.badge} title={`${group.count} occurrences`}>
             ×{group.count}
@@ -172,10 +172,10 @@ export function ErrorsPanel({ refreshKey = 0 }: { refreshKey?: number }) {
 
 const styles: Record<string, React.CSSProperties> = {
   row: { display: "flex", flexDirection: "column", gap: 2, background: theme.bgCard, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.5rem 0.75rem" },
-  chip: { padding: "0.2rem 0.6rem", borderRadius: radius, border: "1px solid", background: theme.bgCard, cursor: "pointer", fontSize: 12, fontFamily: theme.mono, textTransform: "uppercase" },
+  chip: { padding: "0.2rem 0.6rem", borderRadius: radius, border: "1px solid", background: theme.bgCard, cursor: "pointer", fontSize: 12, fontFamily: theme.sans, textTransform: "uppercase" },
   select: { padding: "0.3rem 0.5rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgCard, color: theme.text, fontSize: 12 },
   small: { padding: "0.25rem 0.7rem", borderRadius: radius, border: `1px solid ${theme.border}`, background: theme.bgHover, color: theme.text, cursor: "pointer", fontSize: 12 },
-  badge: { fontSize: 11, fontFamily: theme.mono, background: theme.bgHover, borderRadius: radius, padding: "0 0.35rem" },
+  badge: { fontSize: 11, fontFamily: theme.sans, background: theme.bgHover, borderRadius: radius, padding: "0 0.35rem" },
   tag: { fontSize: 12, background: theme.bgHover, borderRadius: radius, padding: "0 0.35rem" },
   linkButton: { background: "none", border: "none", padding: 0, color: theme.accentAlt, cursor: "pointer", fontSize: 12 },
 };

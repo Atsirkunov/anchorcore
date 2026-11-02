@@ -62,7 +62,7 @@ export function FolderPicker({
           return;
         } catch {
           if (cancelled) return;
-          setError(`"${initial}" is not a folder — pick one below or type an absolute path.`);
+          setError(`"${initial}" is not a folder. Pick one below or type an absolute path.`);
         }
       }
       try {
@@ -128,7 +128,7 @@ export function FolderPicker({
                 <span style={styles.dirLabel}>{d.name}/</span>
               </button>
             ))}
-            {dirs.length === 0 && <div style={styles.hint}>No subfolders — you can select this folder.</div>}
+            {dirs.length === 0 && <div style={styles.hint}>No subfolders. You can select this folder.</div>}
             {listing?.truncated && <div style={styles.hint}>First {dirs.length} folders shown.</div>}
           </>
         )}

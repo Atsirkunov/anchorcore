@@ -25,11 +25,11 @@ export function sensitiveHint(s: SensitiveSharing | undefined): string {
 
 /** One destination's status line under its switch. */
 export function destinationStatus(d: SharingDestination): string {
-  if (d.local) return "Local — Sensitive content stays on this computer; no switch needed.";
-  if (d.env) return "Set by environment (ANCHOR_CLOUD_TRUST / ANCHOR_TRUSTED_PROVIDERS) — an admin override.";
-  if (d.switch) return `On — Sensitive content may be sent to ${d.id === "agents" ? d.destination : hostOf(d.destination)}.`;
+  if (d.local) return "Local: Sensitive content stays on this computer; no switch needed.";
+  if (d.env) return "Set by environment (ANCHOR_CLOUD_TRUST / ANCHOR_TRUSTED_PROVIDERS), an admin override.";
+  if (d.switch) return `On: Sensitive content may be sent to ${d.id === "agents" ? d.destination : hostOf(d.destination)}.`;
   if (d.stale_for) return `Was allowed for ${hostOf(d.stale_for)}; the provider changed, so it is off until you allow the new host.`;
-  return "Off — Sensitive content is withheld.";
+  return "Off: Sensitive content is withheld.";
 }
 
 /** react-query key shared by the Settings card and the source rows. */

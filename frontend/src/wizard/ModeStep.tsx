@@ -69,14 +69,14 @@ export function ModeStep({ state, mode, embedModel, onMode, recheck }: Props) {
           </button>
         ))}
       </div>
-      <div style={styles.hint}>Switch any time in Settings — the index is the same in both modes.</div>
+      <div style={styles.hint}>Switch any time in Settings; the index is the same in both modes.</div>
 
       <div style={styles.note}>
         <div style={{ ...styles.label, marginBottom: 6 }}>Search embeddings (needed in both modes)</div>
         <BuiltinEmbedder onReady={recheck} />
         {reachable && !ollamaServes && (
           <div style={{ marginTop: 10, fontSize: 13 }}>
-            Ollama is running. {builtinServes ? "Optional: " : "Or "}pull <code>{embedModel}</code> into it for faster indexing — same
+            Ollama is running. {builtinServes ? "Optional: " : "Or "}pull <code>{embedModel}</code> into it for faster indexing, same
             vectors, nothing re-embeds when you switch.
             {!pull.pulling ? (
               <div>
@@ -93,12 +93,12 @@ export function ModeStep({ state, mode, embedModel, onMode, recheck }: Props) {
         {ollamaServes && (
           <div style={{ ...styles.checkRow, marginTop: 8, fontSize: 13 }}>
             <span style={{ ...styles.dot, background: theme.green }} />
-            <span>Ollama serves {embedModel} — indexing uses it; the built-in model takes over when Ollama is off.</span>
+            <span>Ollama serves {embedModel}, so indexing uses it. The built-in model takes over when Ollama is off.</span>
           </div>
         )}
         {embed && !searchReady && (
           <div style={{ ...styles.hint, marginTop: 8 }}>
-            You can continue now — search stays keyword-only until an embedding model is ready, then catches up on its own.
+            You can continue now. Search stays keyword-only until an embedding model is ready, then catches up on its own.
           </div>
         )}
         <div style={{ ...styles.hint, marginTop: 8 }}>

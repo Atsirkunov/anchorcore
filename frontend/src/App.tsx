@@ -87,7 +87,7 @@ export default function App() {
         (s) => !runningJobs?.some((j) => j.source_id === s.id && (j.status === "running" || j.status === "pending")),
       )
     : [];
-  const others = failingForBanner.map((s) => `Sync failing: ${s.name} (${s.count}×) — ${s.error ?? "unknown error"}`);
+  const others = failingForBanner.map((s) => `Sync failing: ${s.name} (${s.count}×): ${s.error ?? "unknown error"}`);
   const othersSig = JSON.stringify(others);
   const visibleOthers = dismissedSig === othersSig ? [] : others;
   // Wave 1 (one notice rule): model issues are a header dot plus one

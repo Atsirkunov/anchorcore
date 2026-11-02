@@ -137,7 +137,7 @@ export function SystemTab({ onConfigure, focusJobs }: { onConfigure?: () => void
                     try {
                       const res = await api.startOllama();
                       if (res.ok) {
-                        setOllamaMsg(res.already_running ? "Ollama already running" : "Ollama started — refreshing…");
+                        setOllamaMsg(res.already_running ? "Ollama already running" : "Ollama started, refreshing…");
                         setTimeout(refresh, 1500);
                       } else {
                         setOllamaMsg(res.error ?? "Failed to start Ollama");
@@ -170,7 +170,7 @@ export function SystemTab({ onConfigure, focusJobs }: { onConfigure?: () => void
             <div style={styles.cardTitle}>Answer model</div>
             <div style={{ fontSize: 12 }}>
               {status.answer.provider} · {status.answer.model}
-              {status.answer_ready === false && <div style={{ color: theme.amber }}>not working — answers are excerpts only</div>}
+              {status.answer_ready === false && <div style={{ color: theme.amber }}>not working: answers show matching passages only</div>}
             </div>
           </div>
           <div style={styles.card}>
@@ -206,9 +206,9 @@ export function SystemTab({ onConfigure, focusJobs }: { onConfigure?: () => void
             <div style={styles.cardTitle}>Entity extraction</div>
             <div style={{ fontSize: 12 }}>
               {status.extraction?.mode === "off" ? (
-                <span style={{ color: theme.textDim }}>off — no entities are stored</span>
+                <span style={{ color: theme.textDim }}>off: no entities are stored</span>
               ) : (
-                <>rules — decisions and actions read from record structure, no model</>
+                <>rules: decisions and actions read from record structure, no model</>
               )}
             </div>
           </div>
@@ -410,12 +410,12 @@ function AgentSkillsCard() {
     <div style={{ ...styles.card, marginBottom: 16 }}>
       <div style={styles.cardTitle}>Agent skills</div>
       <div style={{ fontSize: 12, color: theme.textMuted }}>
-        Served by this app — an agent can fetch them over HTTP with no git clone.
+        Served by this app. An agent can fetch them over HTTP with no git clone.
       </div>
       {offerInstall && installClients && (
         <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ fontSize: 12, color: theme.textMuted }}>
-            MCP isn't connected — install a skill file into an agent instead:
+            MCP isn't connected. Install a skill file into an agent instead:
           </span>
           <select
             value={clientId}
@@ -520,12 +520,12 @@ function JobRow({ job: j, sourceName, busy, onStop, note }: {
         {isActiveJob(j) && <JobStopButton job={j} sourceName={sourceName} busy={busy} onStop={onStop} />}
       </div>
       <div style={{ fontSize: 13 }}>
-        <span style={{ fontFamily: theme.mono, color: jobStatusColor(j.status) }}>{j.status}</span>
+        <span style={{ fontWeight: 600, color: jobStatusColor(j.status) }}>{j.status}</span>
         {j.status === "done" && j.result && (
-          <span> — {j.result.items ?? 0} items, {j.result.entities ?? 0} entities{j.result.purged ? `, ${j.result.purged} purged` : ''}{j.result.unchanged ? `, ${j.result.unchanged} unchanged` : ''}</span>
+          <span> · {j.result.items ?? 0} items, {j.result.entities ?? 0} entities{j.result.purged ? `, ${j.result.purged} purged` : ''}{j.result.unchanged ? `, ${j.result.unchanged} unchanged` : ''}</span>
         )}
-        {j.status === "cancelled" && <span style={{ color: theme.textMuted }}> — {cancelledLine(j.processed, j.total)}</span>}
-        {j.status === "failed" && j.error && <span style={{ color: theme.red }}> — {j.error}</span>}
+        {j.status === "cancelled" && <span style={{ color: theme.textMuted }}> · {cancelledLine(j.processed, j.total)}</span>}
+        {j.status === "failed" && j.error && <span style={{ color: theme.red }}>: {j.error}</span>}
       </div>
       {note && !note.ok && <StopNoteLine note={note} />}
     </li>

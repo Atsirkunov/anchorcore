@@ -107,11 +107,11 @@ function page(g, html, h1, others, chromeParts) {
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:image" content="${ORIGIN}/og-card.png" />
   <script>
-    // Theme before first paint (no flash) — same resolution as src/themeMode.ts.
+    // Theme before first paint (no flash): Light unless the visitor chose Auto or Dark (src/themeMode.ts).
     (function () {
       var m = null;
       try { m = localStorage.getItem("theme-mode"); } catch (e) {}
-      var dark = m === "dark" || (m !== "light" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
+      var dark = m === "dark" || (m === "auto" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
       document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
     })();
   </script>

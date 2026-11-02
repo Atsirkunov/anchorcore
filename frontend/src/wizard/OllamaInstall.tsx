@@ -28,11 +28,11 @@ export function OllamaInstall({ state, recheck }: { state: OnboardingState | nul
     try {
       const res = await api.startOllama();
       if (res.ok) {
-        setMsg(res.already_running ? "Ollama already running — re-checking…" : "Ollama started — re-checking…");
+        setMsg(res.already_running ? "Ollama already running, re-checking…" : "Ollama started, re-checking…");
         await delay(1200);
         await recheck();
       } else {
-        setMsg(res.error ?? "Could not start Ollama — install it first (see below).");
+        setMsg(res.error ?? "Could not start Ollama. Install it first (see below).");
       }
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));

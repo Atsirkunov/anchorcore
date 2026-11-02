@@ -71,7 +71,7 @@ export function BuiltinEmbedder({ onReady }: { onReady?: () => void }) {
           <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
             {phase === "converting"
               ? "Converting to f16…"
-              : `${p.file ?? ""} — ${Math.round(p.done_bytes / MB)} / ${Math.round(p.total_bytes / MB)} MB`}
+              : `${p.file ?? ""} · ${Math.round(p.done_bytes / MB)} / ${Math.round(p.total_bytes / MB)} MB`}
           </div>
         </div>
       )}
@@ -80,7 +80,7 @@ export function BuiltinEmbedder({ onReady }: { onReady?: () => void }) {
       {!status.ready && status.dir && (
         <div style={{ fontSize: 12, color: theme.textDim, marginTop: 6 }}>
           Offline? Put <code>config.json</code>, <code>tokenizer.json</code> and <code>model.safetensors</code> from {status.model} (revision{" "}
-          <code>{status.revision.slice(0, 7)}</code>) in <code>{status.dir}</code>, then press Download — present files are checked first.
+          <code>{status.revision.slice(0, 7)}</code>) in <code>{status.dir}</code>, then press Download. Files already there are checked first.
         </div>
       )}
     </div>

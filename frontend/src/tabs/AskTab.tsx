@@ -93,13 +93,13 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
         <h2 style={{ margin: 0 }}>Ask</h2>
         {turns.length > 0 && (
-          <button onClick={clearContext} style={styles.clearButton} title="Forget the conversation — the next question is asked standalone">
+          <button onClick={clearContext} style={styles.clearButton} title="Forget the conversation. The next question is asked standalone">
             Clear context
           </button>
         )}
         {turns.length > 0 && (
           <span style={{ fontSize: 12, color: theme.textDim }}>
-            {turns.length / 2} question{turns.length / 2 === 1 ? "" : "s"} in context — follow-ups like "and what about its steps?" work
+            {turns.length / 2} question{turns.length / 2 === 1 ? "" : "s"} in context. Follow-ups like "and what about its steps?" work
           </span>
         )}
       </div>
@@ -123,10 +123,10 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
       </div>
       <label
         style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: theme.textDim, marginTop: 8, cursor: "pointer" }}
-        title="Answer only from sources labelled 'public' — safe to share"
+        title="Answer only from sources labelled 'public', safe to share"
       >
         <input type="checkbox" checked={publicOnly} onChange={(e) => setPublicOnly(e.target.checked)} />
-        Public-only — answer from public sources only (share/MCP-safe)
+        Public only: answer from public sources (safe to share or give to agents)
       </label>
       {busy && (
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 16, color: theme.textMuted, fontSize: 13 }}>
@@ -181,11 +181,11 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
             </>
           )}
           <p style={{ color: theme.textDim, margin: "12px 0 0", fontSize: 13 }}>
-            Ask a question, then follow up naturally — e.g. "refund details" → "show the steps for it".
+            Ask a question, then follow up naturally, e.g. "refund details" → "show the steps for it".
           </p>
           {sourceCount === 0 && (
             <p style={{ margin: "8px 0 0", fontSize: 13, color: theme.textDim }}>
-              No sources connected yet —{" "}
+              No sources connected yet.{" "}
               <button onClick={onGoSources} style={styles.linkButton}>
                 connect a folder in Sources
               </button>{" "}
@@ -244,7 +244,7 @@ const styles: Record<string, React.CSSProperties> = {
     paddingTop: 18,
     borderTop: `1px solid ${theme.border}`,
   },
-  starterLabel: { margin: "0 0 8px", fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", color: theme.textDim },
+  starterLabel: { margin: "0 0 8px", fontFamily: theme.sans, fontWeight: 600, fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", color: theme.textDim },
   chip: {
     background: theme.bgCard,
     border: `1px solid ${theme.border}`,

@@ -11,9 +11,9 @@ export function downloadPct(p: EmbedModelStatus["progress"]): number {
 
 /** One line describing where search embeddings come from right now. */
 export function embedderLine(s: EmbedModelStatus): string {
-  if (s.ready && s.active === "builtin") return `Built-in model ready (${s.model}${s.backend ? `, ${s.backend}` : ""}) — no Ollama needed for search.`;
+  if (s.ready && s.active === "builtin") return `Built-in model ready (${s.model}${s.backend ? `, ${s.backend}` : ""}). Search needs no Ollama.`;
   if (s.ready && s.setting === "ollama") return "Built-in model downloaded; search uses Ollama because Settings say so.";
-  if (s.ready) return "Built-in model downloaded; Ollama is serving, so search uses it (faster indexing) — the built-in model takes over when Ollama is off.";
-  if (s.setting === "builtin") return "Built-in model selected but not downloaded yet — search is keyword-only until it is.";
+  if (s.ready) return "Built-in model downloaded; Ollama is serving, so search uses it (faster indexing). The built-in model takes over when Ollama is off.";
+  if (s.setting === "builtin") return "Built-in model selected but not downloaded yet. Search is keyword-only until it is.";
   return "Search embeddings come from Ollama. Download the built-in model to drop that requirement.";
 }

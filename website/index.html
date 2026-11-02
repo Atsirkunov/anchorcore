@@ -4,10 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AnchorCore — Private AI Search with Cited Answers</title>
-  <meta name="description" content="A private AI search app. Ask your folders, Drive, Jira and Linear in plain language — get the answer and the exact source. Runs on your computer." />
+  <meta name="description" content="A private AI search app. Ask your folders, Drive, Jira and Linear in plain language and get the answer with its exact source. Runs on your computer." />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <meta property="og:title" content="AnchorCore — Private AI Search with Cited Answers" />
-  <meta property="og:description" content="A private AI search app. Ask your folders, Drive, Jira and Linear in plain language — get the answer and the exact source. Runs on your computer." />
+  <meta property="og:description" content="A private AI search app. Ask your folders, Drive, Jira and Linear in plain language and get the answer with its exact source. Runs on your computer." />
   <!-- JSON-LD (SoftwareApplication + FAQPage) is generated at build by the anchorcore-seo plugin in vite.config.ts from this page's visible content; do not hand-write it. -->
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://anchorcore.dev/" />
@@ -16,11 +16,11 @@
   <meta name="twitter:image" content="https://anchorcore.dev/og-card.png" />
   <link rel="canonical" href="https://anchorcore.dev/" />
   <script>
-    // Theme before first paint (no flash) — same resolution as src/themeMode.ts.
+    // Theme before first paint (no flash): Light unless the visitor chose Auto or Dark (src/themeMode.ts).
     (function () {
       var m = null;
       try { m = localStorage.getItem("theme-mode"); } catch (e) {}
-      var dark = m === "dark" || (m !== "light" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
+      var dark = m === "dark" || (m === "auto" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
       document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
     })();
   </script>
@@ -30,7 +30,7 @@
   <!-- tweakable copy lives in src/main.ts + this HTML — no build system magic -->
   <header class="site-header">
     <div class="wrap">
-      <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-sage"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-stone"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-stone"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-stone"/></svg>AnchorCore</a>
+      <a class="brand" href="/"><svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-accent"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-muted"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-muted"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-muted"/></svg>AnchorCore</a>
       <!-- Nav IA (R18.3): every nav label matches its section heading verbatim; section ids stay stable (#roadmap is the legacy anchor for "Get started") -->
       <nav class="nav">
         <a href="#how">How it works</a>
@@ -269,7 +269,7 @@
 
   <footer>
     <div class="wrap foot">
-      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-sage"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-stone"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-stone"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-stone"/></svg><b>AnchorCore</b> · <a href="https://github.com/Atsirkunov/anchorcore">GitHub</a> · <a href="/team">For teams</a> · <a href="/hosted">Hosted waitlist</a> · <a href="/security">Security notes</a> · <a href="/privacy">Privacy notice</a> · <a href="/vs/notebooklm">vs NotebookLM</a></div>
+      <div><svg class="footmark" width="16" height="16" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" class="mk-paper"/><rect x="2" y="2" width="60" height="60" rx="14" class="mk-ring" stroke-width="4"/><rect x="16" y="12" width="10" height="40" rx="3" class="mk-accent"/><rect x="32" y="17" width="16" height="6" rx="3" class="mk-muted"/><rect x="32" y="29" width="12" height="6" rx="3" class="mk-muted"/><rect x="32" y="41" width="16" height="6" rx="3" class="mk-muted"/></svg><b>AnchorCore</b> · <a href="https://github.com/Atsirkunov/anchorcore">GitHub</a> · <a href="/team">For teams</a> · <a href="/hosted">Hosted waitlist</a> · <a href="/security">Security notes</a> · <a href="/privacy">Privacy notice</a> · <a href="/vs/notebooklm">vs NotebookLM</a></div>
       <div>This site sets no cookies and runs no analytics.</div>
     </div>
   </footer>

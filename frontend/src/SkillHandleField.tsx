@@ -7,7 +7,7 @@ export function SkillHandleField({ value, onChange, disabled }: { value: string;
   return (
     <div style={{ marginTop: 6 }}>
       <label style={{ fontSize: 12, color: theme.textMuted, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-        Handle — what you type after / to call it:
+        Handle (what you type after / to call it):
         <span style={{ fontFamily: theme.mono }}>/</span>
         <input
           aria-label="Skill handle"

@@ -53,7 +53,7 @@ function DisputeControl({ entityId, reviewStatus, onStatus }: { entityId: number
   if (reviewStatus === DISPUTED) {
     return (
       <div style={styles.disputeRow}>
-        <span style={styles.disputedNote}>Disputed — hidden from this list and from AI agents until restored.</span>
+        <span style={styles.disputedNote}>Disputed: hidden from this list and from AI agents until restored.</span>
         <button style={styles.button} disabled={busy} onClick={() => run(() => api.updateEntity(entityId, { status: "unverified" }))}>
           {busy ? "…" : "Restore"}
         </button>
@@ -265,8 +265,8 @@ const styles: Record<string, React.CSSProperties> = {
   list: { display: "flex", flexDirection: "column", gap: 8 },
   card: { background: theme.bgElevated, border: `1px solid ${theme.border}`, borderRadius: radius, padding: "0.6rem 0.8rem" },
   rowHead: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 },
-  recordId: { fontSize: 11, fontFamily: theme.mono, fontWeight: 600, color: theme.accentAlt },
-  badge: { fontSize: 10, fontFamily: theme.mono, padding: "0.15rem 0.5rem", borderRadius: radius, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" },
+  recordId: { fontSize: 11, fontFamily: theme.mono, fontWeight: 600, color: theme.textMuted },
+  badge: { fontSize: 10, fontFamily: theme.sans, padding: "0.15rem 0.5rem", borderRadius: radius, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" },
   meta: { fontSize: 12, color: theme.textDim },
   provenance: { fontSize: 11, fontFamily: theme.mono, color: theme.textMuted, marginLeft: "auto" },
   summary: { fontSize: 15, fontFamily: theme.serif, color: theme.text },

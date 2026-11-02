@@ -1,7 +1,7 @@
 /** Shared visual tokens (B37). Values are CSS variables defined in theme.css
  * (light by default, dark via prefers-color-scheme), so every inline style
  * follows the OS theme without re-rendering. Palette: Archive — ink on paper,
- * oxblood for citations and links, shared with anchorcore.dev. */
+ * oxblood for citations only (R49.7), shared with anchorcore.dev. */
 export const theme = {
   bg: "var(--ac-bg)",
   bgElevated: "var(--ac-bg-elevated)",
@@ -14,8 +14,9 @@ export const theme = {
   textDim: "var(--ac-text-dim)",
   // primary buttons: ink
   accent: "var(--ac-accent)",
-  // links, highlights and citation marks: oxblood
-  accentAlt: "var(--ac-cite)",
+  // links, spinners, focus: ink (R49.7 — oxblood means "this is sourced")
+  accentAlt: "var(--ac-text)",
+  // citation marks, source ids, the active citation card: oxblood
   cite: "var(--ac-cite)",
   citeSoft: "var(--ac-cite-soft)",
   onAccent: "var(--ac-on-accent)",

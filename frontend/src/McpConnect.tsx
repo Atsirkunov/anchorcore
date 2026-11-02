@@ -83,8 +83,8 @@ export function McpConnectCard() {
       const r = action === "connect" ? await api.mcpConnect(id) : await api.mcpDisconnect(id);
       const note = r.ok
         ? r.method === "cli"
-          ? "Done — restart your agent to pick it up."
-          : `Written to ${r.config_path ?? "config"} — restart your agent.`
+          ? "Done. Restart your agent to pick it up."
+          : `Written to ${r.config_path ?? "config"}. Restart your agent.`
         : r.error ?? "Failed";
       setNotes((n) => ({ ...n, [id]: note }));
     } catch (e) {
@@ -99,7 +99,7 @@ export function McpConnectCard() {
     <div style={{ ...styles.card, marginBottom: 16 }}>
       <div style={styles.cardTitle}>Agent access (MCP)</div>
       <div style={{ fontSize: 13, marginBottom: 6 }}>
-        Claude Code, Claude Desktop, Cursor, opencode, Codex — same memory, same citations, no browser.
+        Claude Code, Claude Desktop, Cursor, opencode, Codex: same memory, same citations, no browser.
       </div>
       {mcp === null || !command ? (
         <div style={{ fontSize: 12, color: theme.textMuted }}>Checking MCP mode…</div>
@@ -136,7 +136,7 @@ export function McpConnectCard() {
           ))}
 
           <div style={{ fontSize: 12, color: theme.textMuted, margin: "10px 0 4px" }}>
-            Manual setup — the exact command (runs this app in stdio MCP mode, no separate binary):
+            Manual setup: the exact command (runs this app in stdio MCP mode, no separate binary):
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
             <code style={styles.code}>{claudeLine}</code>

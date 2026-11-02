@@ -61,7 +61,7 @@ afterEach(async () => {
 describe("per-job Stop controls (R30.4)", () => {
   it("labels helpers name kind + id and the kept count", () => {
     expect(jobStopLabel({ id: 11, kind: "reclassify" })).toBe("Stop reclassify #11");
-    expect(cancelledLine(37, 513)).toBe("cancelled — 37/513 docs kept");
+    expect(cancelledLine(37, 513)).toBe("cancelled, 37/513 docs kept");
   });
 
   it("renders one labeled control per active job and stops exactly the one clicked", async () => {
@@ -103,7 +103,7 @@ describe("per-job Stop controls (R30.4)", () => {
       second.click();
     });
     expect(cancel).toHaveBeenCalledTimes(2);
-    expect(el.textContent).toContain("#10 sync cancelled — 37/513 docs kept");
+    expect(el.textContent).toContain("#10 sync cancelled, 37/513 docs kept");
     expect(el.textContent).toContain("Stop embed #12 failed: Job #12 is done, not running");
   });
 });

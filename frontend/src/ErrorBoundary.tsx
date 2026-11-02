@@ -33,7 +33,7 @@ export class ErrorBoundary extends Component<Props, State> {
     const { error } = this.state;
     return (
       <div style={styles.card}>
-        <div style={styles.title}>Something went wrong{this.props.label ? ` — ${this.props.label}` : ""}</div>
+        <div style={styles.title}>Something went wrong{this.props.label ? ` in ${this.props.label}` : ""}</div>
         <pre style={styles.detail}>{error.message}</pre>
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={this.reset} style={styles.button}>

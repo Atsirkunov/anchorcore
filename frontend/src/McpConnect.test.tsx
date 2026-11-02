@@ -121,7 +121,7 @@ describe("McpConnectCard", () => {
       buttons[1].dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(connect).toHaveBeenCalledWith("cursor");
-    expect(host.textContent).toContain("Written to /home/u/.cursor/mcp.json — restart your agent.");
+    expect(host.textContent).toContain("Written to /home/u/.cursor/mcp.json. Restart your agent.");
   });
 
   it("disconnects a connected client and surfaces backend errors", async () => {

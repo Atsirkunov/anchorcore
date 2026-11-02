@@ -1,27 +1,28 @@
-// Auto / Light / Dark — same contract as the app (frontend/src/themeMode.ts):
-// the choice lives in localStorage ("theme-mode"), "auto" follows the OS, and
-// the resolved theme is written to <html data-theme="light|dark">, which
-// style.css keys the dark tokens on. Every page's <head> runs the same
-// resolution inline before first paint (no flash) — keep them in sync.
-// The switch is injected here so the eleven copied headers stay untouched;
-// without JS there is no switch and the page follows the OS via that script.
+// Light / Auto / Dark. R49.7 (owner decision 2026-11-02): the site opens in
+// Light, the designed palette; "auto" follows the OS and "dark" forces dark.
+// The choice lives in localStorage ("theme-mode", absent = light) and the
+// resolved theme is written to <html data-theme="light|dark">, which style.css
+// keys the dark tokens on. Every page's <head> (and scripts/build-guides.mjs)
+// runs the same resolution inline before first paint — keep them in sync.
+// The switch is injected into the footer so the copied pages stay untouched;
+// without JS there is no switch and the page stays Light unless stored.
 
 type ThemeMode = "auto" | "light" | "dark";
 
 const KEY = "theme-mode";
 const DARK = "(prefers-color-scheme: dark)";
 const MODES: { id: ThemeMode; label: string; title: string }[] = [
+  { id: "light", label: "Light", title: "Always light (default)" },
   { id: "auto", label: "Auto", title: "Follow the system setting" },
-  { id: "light", label: "Light", title: "Always light" },
   { id: "dark", label: "Dark", title: "Always dark" },
 ];
 
 function readMode(): ThemeMode {
   try {
     const v = localStorage.getItem(KEY);
-    return v === "light" || v === "dark" ? v : "auto";
+    return v === "auto" || v === "dark" ? v : "light";
   } catch {
-    return "auto";
+    return "light";
   }
 }
 
@@ -33,16 +34,16 @@ function resolve(mode: ThemeMode): "light" | "dark" {
 function apply(mode: ThemeMode): void {
   document.documentElement.dataset.theme = resolve(mode);
   try {
-    if (mode === "auto") localStorage.removeItem(KEY);
+    if (mode === "light") localStorage.removeItem(KEY);
     else localStorage.setItem(KEY, mode);
   } catch {
     /* applied for this visit only */
   }
 }
 
-function build(extraClass: string): HTMLElement {
+function build(): HTMLElement {
   const group = document.createElement("div");
-  group.className = `theme-switch ${extraClass}`;
+  group.className = "theme-switch";
   group.setAttribute("role", "group");
   group.setAttribute("aria-label", "Theme");
   for (const m of MODES) {
@@ -57,12 +58,10 @@ function build(extraClass: string): HTMLElement {
 }
 
 export function initThemeSwitch(): void {
-  const header = document.querySelector(".site-header .wrap");
-  if (!header) return;
-  // one in the header (desktop), one at the end of the mobile menu (phones)
-  const groups = [build("in-header"), build("in-menu")];
-  header.querySelector(".nav-cta")?.before(groups[0]);
-  document.querySelector(".nav-mobile")?.appendChild(groups[1]);
+  const foot = document.querySelector("footer .foot");
+  if (!foot) return;
+  const groups = [build()];
+  foot.appendChild(groups[0]);
   let mode = readMode();
   const paint = (): void => {
     for (const b of document.querySelectorAll<HTMLButtonElement>(".theme-switch button")) {

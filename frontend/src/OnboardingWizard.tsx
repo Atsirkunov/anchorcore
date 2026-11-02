@@ -86,7 +86,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
             </div>
             <button
               onClick={onClose}
-              title="Skip the wizard — you can connect a source later in Sources"
+              title="Skip the wizard. You can connect a source later in Sources"
               style={{ ...styles.button, ...styles.ghost, flexShrink: 0 }}
             >
               Skip →
@@ -130,7 +130,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
           )}
           {step === "answers" || (step === "agent" && mode === "local") ? (
             <button style={{ ...styles.button, ...styles.ghost }} onClick={next}>
-              {last ? "Skip — open AnchorCore" : "Skip"}
+              {last ? "Skip and open AnchorCore" : "Skip"}
             </button>
           ) : null}
           <button
@@ -139,7 +139,7 @@ export function OnboardingWizard({ onClose }: { onClose: () => void }) {
             title={sourceMissing ? "Connect a folder or the sample first" : undefined}
             onClick={next}
           >
-            {last ? "Done — open AnchorCore" : "Continue →"}
+            {last ? "Open AnchorCore" : "Continue →"}
           </button>
         </div>
       </div>

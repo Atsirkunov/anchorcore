@@ -107,13 +107,13 @@ export function SettingsTab() {
       const raw = await api.ask("Summarize what this memory contains in one sentence.", [], undefined, undefined, false);
       const res = raw as AskResponse & { warning?: string | null };
       if (res.mode === "composed") {
-        setProbeResult({ status: "pass", message: "Composed answer confirmed (mode: composed) — your answer model is working." });
+        setProbeResult({ status: "pass", message: "Composed answer confirmed (mode: composed). Your answer model is working." });
       } else if (res.refusal) {
         setProbeResult({ status: "fail", message: res.warning ?? "Probe refused: relevant knowledge is gated from this provider." });
       } else if ((res.citations?.length ?? 0) === 0) {
         setProbeResult({
           status: "inconclusive",
-          message: "No matching content to compose from — sync a source first, then probe again. (An empty memory reports mode: none even with a working model.)",
+          message: "No matching content to compose from. Sync a source first, then probe again. (An empty memory reports mode: none even with a working model.)",
         });
       } else {
         setProbeResult({ status: "fail", message: res.warning ?? `No answer model ran (mode: ${res.mode ?? "unknown"}). Save settings, then probe again.` });
@@ -148,7 +148,7 @@ export function SettingsTab() {
         type="password"
         value={form![key]}
         onChange={set(key)}
-        placeholder={keySet(key) ? "•••••••• (stored — type to replace)" : provider === "local" ? "not needed for local" : "sk-…"}
+        placeholder={keySet(key) ? "•••••••• (stored; type to replace)" : provider === "local" ? "not needed for local" : "sk-…"}
       />
     </>
   );
@@ -178,7 +178,7 @@ export function SettingsTab() {
             value={form.embed_provider ?? "auto"}
             onChange={(e) => setForm({ ...form, embed_provider: e.target.value as EmbedProvider })}
           >
-            <option value="auto">Automatic — Ollama/endpoint below when it serves, else the built-in model</option>
+            <option value="auto">Automatic: Ollama or the endpoint below when it serves, else the built-in model</option>
             <option value="builtin">Built-in model (in the app, no Ollama)</option>
             <option value="ollama">Ollama or a cloud endpoint (below)</option>
           </select>
@@ -209,7 +209,7 @@ export function SettingsTab() {
         </div>
 
         <div style={styles.section}>
-          <div style={styles.sectionTitle}>TOC & Tags — hierarchical retrieval</div>
+          <div style={styles.sectionTitle}>Sections and tags</div>
           <div style={{ fontSize: 12, color: theme.textDim, lineHeight: 1.5 }}>
             Sections are split at headings (<code>§434</code>, <code>4.2.1</code>, <code>Article 12</code>) into a tree (<code>level/path</code>) with per-section summaries. Each section gets up to four keyword tags, picked by rules from its text (no model). A new keyword joins an existing tag when the two are similar enough; otherwise it becomes a new tag.
           </div>
@@ -218,7 +218,7 @@ export function SettingsTab() {
             style={styles.input}
             value={form ? (form as unknown as Record<string, string>)["tag_reuse_threshold"] ?? "0.82" : "0.82"}
             onChange={(e) => setForm({ ...(form as unknown as Record<string, string>), tag_reuse_threshold: e.target.value } as unknown as AppSettings)}
-            placeholder="0.82 — higher = stricter reuse, lower = more new tags"
+            placeholder="0.82 (higher = stricter reuse, lower = more merging)"
           />
           <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 4 }}>
             Higher values reuse an existing tag only for very close keywords, so you get more tags; lower values merge more. Applies to documents indexed after the change. Env <code>ANCHOR_TAG_REUSE_THRESHOLD</code> overrides.
@@ -247,7 +247,7 @@ export function SettingsTab() {
             <span>
               Check for new releases once at startup
               <span style={{ display: "block", fontSize: 11, color: theme.textMuted }}>
-                One request to github.com at launch — a plain fetch of the public release info; nothing about you
+                One request to github.com at launch: a plain fetch of the public release info; nothing about you
                 is sent. Off unless you turn it on.
               </span>
             </span>
@@ -265,7 +265,7 @@ export function SettingsTab() {
             <option value="local">A local model on this computer</option>
           </select>
           <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 4, lineHeight: 1.5 }}>
-            Agent: AnchorCore runs no chat model for answers — <code>ask</code> returns ranked, cited passages
+            Agent: AnchorCore runs no chat model for answers. <code>ask</code> returns ranked, cited passages
             (<code>mode: agent_compose</code>) and your agent composes. Local: the answer model below writes them.
             Switching needs no re-ingest.
           </div>
@@ -290,7 +290,7 @@ export function SettingsTab() {
             value={form.answer_reasoning_effort || "none"}
             onChange={(e) => setForm({ ...form, answer_reasoning_effort: e.target.value })}
           >
-            <option value="none">none — fast, no reasoning (default)</option>
+            <option value="none">none: fast, no reasoning (default)</option>
             <option value="low">low</option>
             <option value="medium">medium</option>
             <option value="high">high</option>
@@ -299,7 +299,7 @@ export function SettingsTab() {
             Cloud (o-series, gpt-5): sends <code>reasoning_effort</code>. Local Ollama: enables thinking on reasoning models (deepseek-r1, qwen3, llama3.3-thinking).
           </div>
           <div style={{ fontSize: 12, color: theme.textDim, marginTop: 4 }}>
-            Local-only? Set the Ollama URL explicitly here — answers never fall back to Ollama on their own (embeddings do).
+            Local-only? Set the Ollama URL explicitly here. Answers never fall back to Ollama on their own (embeddings do).
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <button style={styles.button} disabled={testBusy === "answer"} onClick={() => testConnection("answer")}>
@@ -354,7 +354,7 @@ export function SettingsTab() {
           <button style={{ ...styles.button, background: theme.accent, color: theme.onAccent }} disabled={busy} onClick={save}>
             {busy ? "Saving…" : "Save"}
           </button>
-          {saved && <span style={{ color: theme.green, fontSize: 13 }}>Saved — applied without restart</span>}
+          {saved && <span style={{ color: theme.green, fontSize: 13 }}>Saved and applied, no restart needed</span>}
         </div>
       </div>
     </div>

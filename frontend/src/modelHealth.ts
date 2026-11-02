@@ -20,11 +20,11 @@ export function modelIssues(health: Health | undefined): string[] {
     // Absent (old backend) counts as local: the narrow note is the safe side.
     const searchDown = c.embedder?.provider !== "cloud";
     if (answersDown && searchDown) {
-      issues.push("Ollama is offline — local answers stay basic and search stays keyword-only.");
+      issues.push("Ollama is offline: local answers stay basic and search stays keyword-only.");
     } else if (answersDown) {
-      issues.push("Ollama is offline — local answers stay basic.");
+      issues.push("Ollama is offline: local answers stay basic.");
     } else if (searchDown) {
-      issues.push("Ollama is offline — answers are unaffected, but search stays keyword-only until it's back.");
+      issues.push("Ollama is offline. Answers are unaffected, but search stays keyword-only until it's back.");
     }
     // Cloud answers + cloud embeddings: Ollama is irrelevant — silent.
   }
@@ -32,12 +32,12 @@ export function modelIssues(health: Health | undefined): string[] {
   if (missing.length > 0) {
     issues.push(
       ready
-        ? `Models not installed yet (${missing.join(", ")}) — install them for full search quality.`
-        : `Models not installed yet (${missing.join(", ")}) — install them for full answers.`,
+        ? `Models not installed yet (${missing.join(", ")}). Install them for full search quality.`
+        : `Models not installed yet (${missing.join(", ")}). Install them for full answers.`,
     );
   }
   if (!ready) {
-    issues.push("No working answer model — answers show context excerpts only, not composed answers.");
+    issues.push("No working answer model: answers show matching passages, not written answers.");
   }
   return issues;
 }

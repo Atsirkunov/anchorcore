@@ -138,7 +138,7 @@ describe("RecordsTab R45.25 (Decisions + Actions + Glossary)", () => {
     await act(async () => click(button(c, "Record dispute")));
     await act(async () => {});
     expect(dispute).toHaveBeenCalledWith(1, "wrong vendor");
-    expect(c.textContent).toContain("Disputed — hidden from this list and from AI agents until restored.");
+    expect(c.textContent).toContain("Disputed: hidden from this list and from AI agents until restored.");
     expect(c.textContent).toContain("Stripe provider");
 
     await act(async () => click(button(c, "Restore")));

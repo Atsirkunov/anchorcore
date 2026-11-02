@@ -19,7 +19,7 @@ export function jobStopTitle(job: Pick<Job, "id" | "kind" | "status">, sourceNam
 
 /** `cancelled — X/Y docs kept`: partial ingestion stays (docs/architecture.md, "Jobs and stopping them"). */
 export function cancelledLine(processed: number, total: number): string {
-  return `cancelled — ${processed}/${total} docs kept`;
+  return `cancelled, ${processed}/${total} docs kept`;
 }
 
 /** Feedback after a successful Stop. */
