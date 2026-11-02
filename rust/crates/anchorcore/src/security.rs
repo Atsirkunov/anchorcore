@@ -219,7 +219,8 @@ pub async fn csrf_middleware(
         return Ok(next.run(request).await);
     }
 
-    if header_val == token {
+    // R48.16: constant time, like the password check.
+    if crate::common::ct_eq(header_val, token) {
         return Ok(next.run(request).await);
     }
     Err((

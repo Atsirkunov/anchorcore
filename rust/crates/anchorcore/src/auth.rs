@@ -146,16 +146,7 @@ pub fn verify_password(password: &str, stored: &str) -> bool {
     let expected = parts[3];
     let mut dk = [0u8; 32];
     pbkdf2::pbkdf2_hmac::<Sha256>(password.as_bytes(), salt.as_bytes(), it, &mut dk);
-    let got = hex::encode(dk);
-    // constant-time compare
-    if got.len() != expected.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (a, b) in got.bytes().zip(expected.bytes()) {
-        diff |= a ^ b;
-    }
-    diff == 0
+    crate::common::ct_eq(&hex::encode(dk), expected)
 }
 
 // --- JWT HS256 ---

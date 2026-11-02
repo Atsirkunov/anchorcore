@@ -1070,7 +1070,8 @@ impl ClassifyCtx {
         let external_id = self.external_id.clone();
         let (item_id, label, prev_hashes, doc_type) = run_db(&self.data_dir, move |conn| {
             let item_id: i64 = conn.query_row("SELECT id FROM ingested_items WHERE source_id=?1 AND external_id=?2", rusqlite::params![source_id, external_id], |r| r.get(0)).map_err(|e| e.to_string())?;
-            let label: String = conn.query_row("SELECT label FROM sources WHERE id=?1", [source_id], |r| r.get(0)).unwrap_or_else(|_| "internal".to_string());
+            // R48.11: the label gates cloud embedding — a failed read fails the job, never defaults open.
+            let label: String = conn.query_row("SELECT label FROM sources WHERE id=?1", [source_id], |r| r.get(0)).map_err(|e| e.to_string())?;
             let s: String = conn.query_row("SELECT window_hashes FROM ingested_items WHERE id=?1", [item_id], |r| r.get(0)).unwrap_or_else(|_| "{}".to_string());
             let prev_hashes: std::collections::HashMap<String, String> = serde_json::from_str(&s).unwrap_or_default();
             let doc_type: String = conn.query_row("SELECT doc_type FROM ingested_items WHERE id=?1", [item_id], |r| r.get(0)).unwrap_or_default();
@@ -1932,7 +1933,11 @@ async fn embed_chunks(ctx: &ClassifyCtx) -> Result<(), String> {
     let (chunks, sensitive_override): (Vec<(i64, String, String)>, bool) = run_db(&ctx.data_dir, move |conn| {
         let mut stmt = conn.prepare("SELECT id, content, path FROM chunks WHERE (item_id=?1 OR entity_id IN (SELECT id FROM entities WHERE item_id=?1)) AND embedding IS NULL").unwrap();
         let rows = stmt.query_map([item_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).unwrap().filter_map(|r| r.ok()).collect();
-        let marked = conn.query_row("SELECT sensitive_override FROM ingested_items WHERE id=?1", [item_id], |r| r.get::<_, Option<i64>>(0)).ok().flatten().is_some_and(|v| v == 1);
+        // R48.11: gates cloud embedding — a failed read fails the phase, never defaults open.
+        let marked = conn
+            .query_row("SELECT sensitive_override FROM ingested_items WHERE id=?1", [item_id], |r| r.get::<_, Option<i64>>(0))
+            .map_err(|e| e.to_string())?
+            == Some(1);
         Ok((rows, marked))
     }).await?;
     if chunks.is_empty() {

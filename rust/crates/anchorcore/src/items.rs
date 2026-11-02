@@ -604,7 +604,7 @@ fn fetch_item(conn: &rusqlite::Connection, item_id: i64) -> Option<Value> {
                     r.get(2)?,
                     r.get(3)?,
                     r.get::<_, Option<String>>(4)?.unwrap_or_default(),
-                    r.get::<_, Option<i64>>(5).ok().flatten().is_some_and(|v| v == 1),
+                    crate::common::gate_marked(r, 5),
                 ))
             },
         )

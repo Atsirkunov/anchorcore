@@ -48,6 +48,53 @@ pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     payload.downcast_ref::<String>().cloned().unwrap_or_else(|| "non-string panic payload".to_string())
 }
 
+/// R48.11: a Sensitive-gate input that fails to read counts as Sensitive —
+/// the gate fails closed. NULL keeps its meaning (no item/source: internal).
+pub fn gate_label(r: &rusqlite::Row, idx: usize) -> String {
+    match r.get::<_, Option<String>>(idx) {
+        Ok(label) => label.unwrap_or_else(|| "internal".to_string()),
+        Err(e) => {
+            tracing::warn!(target: "anchorcore::gate", "label column unreadable, treated as sensitive: {e}");
+            "sensitive".to_string()
+        }
+    }
+}
+
+/// R48.11: the per-document override column, failing closed like [`gate_label`].
+pub fn gate_marked(r: &rusqlite::Row, idx: usize) -> bool {
+    match r.get::<_, Option<i64>>(idx) {
+        Ok(v) => v == Some(1),
+        Err(e) => {
+            tracing::warn!(target: "anchorcore::gate", "sensitive_override column unreadable, treated as set: {e}");
+            true
+        }
+    }
+}
+
+/// Constant-time string equality for secrets (tokens, password hashes): the
+/// time taken never depends on where the first difference is. Length is not
+/// secret here (fixed-size tokens and hex digests).
+pub fn ct_eq(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
+}
+
+/// R48.11: rows that fail to decode are skipped but logged — never dropped
+/// silently. For read paths where one bad row must not fail the whole list.
+pub fn logged_rows<T>(rows: impl Iterator<Item = rusqlite::Result<T>>) -> impl Iterator<Item = T> {
+    rows.filter_map(row_ok)
+}
+
+/// One row of [`logged_rows`]: `.filter_map(row_ok)`.
+pub fn row_ok<T>(r: rusqlite::Result<T>) -> Option<T> {
+    r.map_err(|e| tracing::warn!(target: "anchorcore::db", "row skipped: {e}")).ok()
+}
+
+/// R48.11: a read query that could not run, logged; the caller answers empty.
+pub fn query_failed<T>(e: rusqlite::Error) -> Vec<T> {
+    tracing::warn!(target: "anchorcore::db", "query failed: {e}");
+    Vec::new()
+}
+
 /// `IN (?, ?, ...)` placeholders for `count` ids.
 pub fn placeholders(count: usize) -> String {
     std::iter::repeat_n("?", count).collect::<Vec<_>>().join(",")
@@ -171,6 +218,25 @@ mod tests {
 
     fn pragma(conn: &rusqlite::Connection, name: &str) -> i64 {
         conn.query_row(&format!("PRAGMA {name}"), [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn ct_eq_matches_plain_equality() {
+        assert!(ct_eq("abc123", "abc123"));
+        assert!(!ct_eq("abc123", "abc124"));
+        assert!(!ct_eq("abc", "abc1"));
+        assert!(ct_eq("", ""));
+    }
+
+    /// R48.11: gate columns fail closed on a read error; NULL keeps "internal" / unmarked.
+    #[test]
+    fn gate_columns_fail_closed() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let read = |sql: &str| conn.query_row(sql, [], |r| Ok((gate_label(r, 0), gate_marked(r, 1)))).unwrap();
+        assert_eq!(read("SELECT 'public', 0"), ("public".to_string(), false));
+        assert_eq!(read("SELECT NULL, NULL"), ("internal".to_string(), false));
+        assert_eq!(read("SELECT 'internal', 1"), ("internal".to_string(), true));
+        assert_eq!(read("SELECT 42, 'yes'"), ("sensitive".to_string(), true), "unreadable columns read as Sensitive");
     }
 
     /// R48.1: both the migrating open and the per-process fast path keep FK

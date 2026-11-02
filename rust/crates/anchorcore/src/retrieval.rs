@@ -744,14 +744,14 @@ fn exec_fts_search(
     params.push(rusqlite::types::Value::Integer(limit));
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
-        Err(_) => return vec![],
+        Err(e) => return crate::common::query_failed(e),
     };
     let rows: Vec<(i64, f64, String)> = match stmt
         .query_map(rusqlite::params_from_iter(params.iter()), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .and_then(|m| m.collect())
     {
         Ok(v) => v,
-        Err(_) => return vec![],
+        Err(e) => return crate::common::query_failed(e),
     };
     hits_from_ranks(conn, rows, source_ids, section_ids, qa_exclude_disputed)
 }
@@ -912,7 +912,7 @@ fn load_hits_filtered(
     );
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
-        Err(_) => return vec![],
+        Err(e) => return crate::common::query_failed(e),
     };
     let rows = stmt
         .query_map(rusqlite::params_from_iter(ids.iter()), |r| {
@@ -932,7 +932,7 @@ fn load_hits_filtered(
         })
         .unwrap();
     let mut out = Vec::new();
-    for row in rows.flatten() {
+    for row in crate::common::logged_rows(rows) {
         if let Some(h) = hit_from_row10(row, source_ids, section_ids, qa_exclude_disputed) {
             out.push(h);
         }
@@ -1010,14 +1010,14 @@ pub fn exact_search(
     params.push(rusqlite::types::Value::Integer(top_k as i64));
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
-        Err(_) => return vec![],
+        Err(e) => return crate::common::query_failed(e),
     };
     let ids: Vec<i64> = match stmt
         .query_map(rusqlite::params_from_iter(params.iter()), |r| r.get(0))
         .and_then(|m| m.collect())
     {
         Ok(v) => v,
-        Err(_) => return vec![],
+        Err(e) => return crate::common::query_failed(e),
     };
     hits_from_ordered_ids(conn, ids, source_ids, qa_exclude_disputed)
 }
@@ -1066,7 +1066,7 @@ fn matching_tag_sections(
     let tag_ids: Vec<i64> = stmt
         .query_map(rusqlite::params_from_iter(tokens.iter()), |r| r.get(0))
         .ok()?
-        .filter_map(|r| r.ok())
+        .filter_map(crate::common::row_ok)
         .collect();
     if tag_ids.is_empty() {
         return None;
@@ -1079,7 +1079,7 @@ fn matching_tag_sections(
     let secs: HashSet<i64> = stmt2
         .query_map(rusqlite::params_from_iter(tag_ids.iter()), |r| r.get(0))
         .ok()?
-        .filter_map(|r| r.ok())
+        .filter_map(crate::common::row_ok)
         .collect();
     if secs.is_empty() {
         None
@@ -1195,7 +1195,7 @@ fn extract_top_sections(conn: &Connection, summary_hits: &[Hit]) -> HashSet<i64>
             Ok(m) => m,
             Err(_) => continue,
         };
-        for id in rows.flatten() {
+        for id in crate::common::logged_rows(rows) {
             admit_section(&mut per_item, &mut out, Some(item), id);
             if out.len() >= TOC_SECTION_TOTAL {
                 break;
@@ -1493,7 +1493,7 @@ pub fn apply_age_decay(conn: &Connection, hits: &mut [Hit], halflife_days: f64) 
         if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
         }) {
-            for row in rows.flatten() {
+            for row in crate::common::logged_rows(rows) {
                 let (id, s) = row;
                 let dt = s.as_deref().and_then(parse_created_at);
                 map.insert(id, dt);
@@ -1596,10 +1596,10 @@ pub fn dedupe_similar(mut hits: Vec<Hit>) -> Vec<Hit> {
 fn fetch_siblings(conn: &Connection, sql: &str, key: i64) -> Vec<(i64, String)> {
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
-        Err(_) => return vec![],
+        Err(e) => return crate::common::query_failed(e),
     };
     stmt.query_map([key], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map(|m| m.filter_map(|r| r.ok()).collect())
+        .map(|m| m.filter_map(crate::common::row_ok).collect())
         .unwrap_or_default()
 }
 
@@ -1671,10 +1671,10 @@ fn subtree_leaf_chunks(conn: &Connection, section_id: i64) -> Vec<(i64, String)>
         "{SUBTREE_CTE} SELECT c.id, c.content FROM chunks c WHERE c.section_id IN (SELECT id FROM sub) AND c.kind IN ('document','caption') ORDER BY c.id"
     )) {
         Ok(s) => s,
-        Err(_) => return vec![],
+        Err(e) => return crate::common::query_failed(e),
     };
     stmt.query_map([section_id], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map(|m| m.filter_map(|r| r.ok()).collect())
+        .map(|m| m.filter_map(crate::common::row_ok).collect())
         .unwrap_or_default()
 }
 
@@ -1993,7 +1993,7 @@ fn chunk_item_env(conn: &Connection, chunk_ids: &[i64]) -> HashMap<i64, (String,
     if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(chunk_ids.iter()), |r| {
         Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
     }) {
-        for (id, path, head) in rows.flatten() {
+        for (id, path, head) in crate::common::logged_rows(rows) {
             out.insert(id, (path, head));
         }
     }
@@ -2339,7 +2339,7 @@ fn best_item_for_name(conn: &Connection, name: &str, scope: Option<&HashSet<i64>
     let rows: Vec<(i64, String, Option<String>, i64)> = stmt
         .query_map(rusqlite::params![pat, pat], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .ok()?
-        .flatten()
+        .filter_map(crate::common::row_ok)
         .collect();
     rows.into_iter()
         .filter(|(_, _, _, sid)| scope.map_or(true, |s| s.contains(sid)))
@@ -2363,7 +2363,7 @@ fn best_chunk_for_item(conn: &Connection, item_id: i64, match_q: &str) -> Option
     let rows: Vec<i64> = stmt
         .query_map(rusqlite::params![match_q, item_id], |r| r.get::<_, i64>(0))
         .ok()?
-        .flatten()
+        .filter_map(crate::common::row_ok)
         .collect();
     rows.into_iter().next()
 }
@@ -2536,7 +2536,7 @@ fn doc_types_for_items(conn: &Connection, item_ids: &[i64]) -> HashMap<i64, Stri
         Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
     })
     .map(|m| {
-        m.filter_map(|r| r.ok())
+        m.filter_map(crate::common::row_ok)
             .filter_map(|(id, dt)| dt.filter(|s| !s.is_empty()).map(|d| (id, d)))
             .collect()
     })

@@ -99,9 +99,7 @@ fn entity_select_list() -> String {
 
 /// R35.5: one entity row's gate inputs (missing item reads as internal).
 fn entity_gate(row: &rusqlite::Row) -> (String, bool) {
-    let label = row.get::<_, Option<String>>(17).ok().flatten().unwrap_or_else(|| "internal".to_string());
-    let marked = row.get::<_, Option<i64>>(18).ok().flatten().is_some_and(|v| v == 1);
-    (label, marked)
+    (crate::common::gate_label(row, 17), crate::common::gate_marked(row, 18))
 }
 
 pub async fn list_handler(State(state): State<AppState>, Query(q): Query<ListQuery>, headers: HeaderMap) -> Json<Value> {
