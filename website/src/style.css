@@ -4,34 +4,35 @@
 @import "@fontsource/ibm-plex-serif/latin-500.css";
 @import "@fontsource/ibm-plex-mono/latin-400.css";
 @import "@fontsource/ibm-plex-mono/latin-600.css";
-/* Archive palette: ink on cool paper; oxblood (--cite) is reserved for
-   citations — it means "this is sourced" (R49.7). Links are ink + underline,
-   oxblood on hover. */
+/* Olive palette (R49.12): olive-tinted ink on olive-cream paper; oxblood
+   (--cite) is reserved for citations — it means "this is sourced" (R49.7).
+   --nx-path is the hero's search path: it travels in olive and only the hit
+   is oxblood. Links are ink + underline, oxblood on hover. */
 :root{
-  --paper:#F6F5F2;
-  --paper2:#EEECE7;
-  --surface:#ffffff;
-  --border:#DCD8D0;
-  --border2:#C9C4BA;
-  --control-border:#7A7166;
-  --ink:#1F1B16;
-  --ink-h:#3A332B;
-  --dim:#5E554A;
-  --faint:#6B6257;
+  --paper:#F2F1E8;
+  --paper2:#E8E7DA;
+  --surface:#FAFAF4;
+  --border:#D6D4C2;
+  --border2:#C3C0A8;
+  --control-border:#6E6B52;
+  --ink:#23251A;
+  --ink-h:#3A3D2A;
+  --dim:#55583F;
+  --faint:#64674C;
   --cite:#8C2F2B;
-  --cite-soft:#F3E6E3;
-  --muted:#A99E8E;
-  --on-ink:#ffffff;
-  --header-bg:rgba(246,245,242,0.94);
-  --shadow-ink:#1F1B16;
-  --term-bg:#FBFAF7;
-  --term-bar:#F1EEE8;
-  --term-panel:#F4F1EB;
-  --term-fg:#1F1B16;
-  --term-dim:#5E554A;
+  --cite-soft:#F1E4DC;
+  --muted:#A3A184;
+  --on-ink:#FAFAF4;
+  --header-bg:rgba(242,241,232,0.94);
+  --shadow-ink:#23251A;
+  --term-bg:#F8F8F0;
+  --term-bar:#ECEBDF;
+  --term-panel:#EFEEE3;
+  --term-fg:#23251A;
+  --term-dim:#55583F;
   --term-accent:#8C2F2B;
-  --term-ok:#2F5D46;
-  --term-border:#D6D0C5;
+  --term-ok:#4B6A2E;
+  --term-border:#D2D0BC;
   --serif:"IBM Plex Serif",Georgia,serif;
   --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
   --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
@@ -45,36 +46,38 @@
   --fs-xl:clamp(28px,1.7vw,36px);
   --fs-display:clamp(40px,calc(20px + 2.2vw),64px);
   --pad-sec:clamp(48px,3.6vw,96px);
+  --nx-path:#5A6B23;
 }
 :root{color-scheme:light}
 /* Dark set — applied by <html data-theme="dark"> (themeMode.ts + the inline
-   pre-paint script in every page head). Same values as the app's theme.css. */
+   pre-paint script in every page head). The app's theme.css follows (R49.13). */
 :root[data-theme="dark"]{
   color-scheme:dark;
-  --paper:#17171A;
-  --paper2:#1B1B1F;
-  --surface:#1F1F23;
-  --border:#3A3A41;
-  --border2:#47474F;
-  --control-border:#86868E;
-  --ink:#E9E8E5;
+  --paper:#181A12;
+  --paper2:#1D2016;
+  --surface:#22251A;
+  --border:#383C2B;
+  --border2:#454A35;
+  --control-border:#8A8E72;
+  --ink:#EEEEE4;
   --ink-h:#FFFFFF;
-  --dim:#B0AEA9;
-  --faint:#929089;
+  --dim:#B3B59C;
+  --faint:#969880;
   --cite:#CC8A80;
-  --cite-soft:#33242A;
-  --muted:#66666E;
-  --on-ink:#17171A;
-  --header-bg:rgba(23,23,26,0.92);
+  --cite-soft:#36261F;
+  --muted:#626650;
+  --on-ink:#12140D;
+  --header-bg:rgba(24,26,18,0.92);
   --shadow-ink:#000000;
-  --term-bg:#1B1B1F;
-  --term-bar:#1F1F23;
-  --term-panel:#232328;
-  --term-fg:#E9E8E5;
-  --term-dim:#9D9B96;
+  --term-bg:#1D2016;
+  --term-bar:#22251A;
+  --term-panel:#262A1D;
+  --term-fg:#E8E8DC;
+  --term-dim:#A3A58C;
   --term-accent:#CC8A80;
-  --term-ok:#8CC2A2;
-  --term-border:#3A3A41;
+  --term-ok:#9FBF7E;
+  --term-border:#383C2B;
+  --nx-path:#B5C47A;
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
@@ -142,21 +145,21 @@ h1{font-family:var(--serif);font-weight:500;letter-spacing:-0.015em;line-height:
 .api .c{color:var(--term-accent)}
 .api-foot{padding:10px 14px;border-top:1px solid var(--term-border);color:var(--term-dim);font-size:12px}
 .api-foot a{color:inherit}
-/* neuron band ink: tissue in muted greys, the one search in cite red */
+/* neuron band ink: tissue in muted sage, the search path in olive, the hit in cite oxblood */
 .lx-faint{fill:none;stroke:var(--muted)}
 .lx-body{fill:var(--term-panel);stroke:var(--dim);stroke-width:1}
-.lx-dot{fill:var(--cite)}
+.lx-dot{fill:var(--nx-path)}
 .lx-label{font:600 12px var(--mono);fill:var(--cite);paint-order:stroke;stroke:var(--paper);stroke-width:5px;stroke-linejoin:round}
-.nx-route{fill:none;stroke:var(--cite);stroke-width:1.7;stroke-linecap:round}
+.nx-route{fill:none;stroke:var(--nx-path);stroke-width:2;stroke-linecap:round}
 .nx-halo{fill:none;stroke:var(--paper);stroke-width:6;opacity:.8}
 .nx-lead{fill:none;stroke:var(--ink);stroke-width:1.1;opacity:.5}
 .nx-miss{opacity:.8}
 .nx-miss circle{fill:var(--paper);stroke:var(--ink);stroke-width:1.1}
 .nx-miss path{fill:none;stroke:var(--ink);stroke-width:1.3;stroke-linecap:round}
 .nx-node{fill:var(--paper);stroke:var(--dim);stroke-width:1.2;transition:fill .25s,stroke .25s}
-.nx-node.on,html:not(.js) .nx-node{fill:var(--cite);stroke:var(--cite)}
+.nx-node.on,html:not(.js) .nx-node{fill:var(--nx-path);stroke:var(--nx-path)}
 .nx-word{font:12px var(--mono);fill:var(--faint);paint-order:stroke;stroke:var(--paper);stroke-linejoin:round;transition:fill .25s}
-.nx-word.on,html:not(.js) .nx-word{fill:var(--cite);font-weight:600}
+.nx-word.on,html:not(.js) .nx-word{fill:var(--nx-path);font-weight:600}
 .nx-bang line{stroke:var(--cite);stroke-width:1.6;stroke-linecap:round}
 .nx-ring{fill:none;stroke:var(--cite);stroke-width:1.2}
 .nx-core{fill:var(--cite)}
