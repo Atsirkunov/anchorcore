@@ -66,14 +66,12 @@ fn source_json(row: &rusqlite::Row) -> rusqlite::Result<Value> {
     let id: i64 = row.get(0)?;
     let name: String = row.get(1)?;
     let connector: String = row.get(2)?;
-    let config: String = row.get(3)?;
     let enabled: i64 = row.get(4)?;
     let label: String = row.get(5)?;
     let last_synced_at: Option<String> = row.get(6)?;
     let last_error: Option<String> = row.get(7)?;
     let error_count: i64 = row.get(8)?;
     let created_at: Option<String> = row.get(9)?;
-    let _cfg: Value = serde_json::from_str(&config).unwrap_or(Value::Object(Default::default()));
     Ok(serde_json::json!({
         "id": id,
         "name": name,
@@ -120,8 +118,18 @@ pub async fn list_handler(State(state): State<AppState>) -> Json<Value> {
     let result = tokio::task::spawn_blocking(move || {
         let conn = crate::common::open_data_db(&data_dir);
         let mut stmt = conn.prepare("SELECT id, name, connector, config, enabled, label, last_synced_at, last_error, error_count, created_at FROM sources ORDER BY created_at").unwrap();
-        let rows = stmt.query_map([], |r| source_json(r)).unwrap();
-        let out: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
+        let rows = stmt.query_map([], |r| Ok((source_json(r)?, r.get::<_, i64>(0)?, r.get::<_, String>(3)?))).unwrap();
+        // R48.14: each row carries its masked config, so the UI needs no
+        // per-source `/sources/:id/config` call (that route stays for agents).
+        let out: Vec<Value> = rows
+            .filter_map(|r| r.ok())
+            .map(|(mut v, id, raw)| {
+                let mut cfg: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+                mask_secrets(&data_dir, id, &mut cfg);
+                v["config"] = cfg;
+                v
+            })
+            .collect();
         Value::Array(out)
     }).await.unwrap();
     Json(result)
@@ -447,6 +455,47 @@ mod tests {
         drop(conn);
         let cfg = config_handler(State(state), Path(fresh)).await.unwrap().0;
         assert!(cfg.get("token").is_none(), "recycled id must show no token, got {}", cfg);
+
+        match prev {
+            Some(v) => std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", v),
+            None => std::env::remove_var("ANCHOR_SECRETS_NO_KEYRING"),
+        }
+    }
+
+    /// R48.14: the list carries each source's config with secrets masked —
+    /// stored ones and legacy plaintext alike — and never the raw value.
+    #[tokio::test]
+    async fn list_carries_masked_config() {
+        let _lock = crate::secrets::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("ANCHOR_SECRETS_NO_KEYRING").ok();
+        std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", "1");
+
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let conn = crate::common::try_open_data_db(&data_dir).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config) VALUES ('docs','folder','{\"path\":\"/tmp/docs\"}')", []).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config) VALUES ('jira','jira','{\"base_url\":\"https://j.example\",\"api_key\":\"legacy-plain\"}')", []).unwrap();
+        let jira: i64 = conn.query_row("SELECT id FROM sources WHERE name='jira'", [], |r| r.get(0)).unwrap();
+        secret_store(&data_dir).set(&crate::secrets::source_secret_key(jira, "token"), "tok123");
+        drop(conn);
+
+        let settings = Arc::new(crate::settings::SettingsService::new(secret_store(&data_dir)));
+        settings.set_data_dir(dir.path());
+        let state = crate::health::AppState {
+            data_dir: data_dir.clone(),
+            settings: settings.clone(),
+            jobs: crate::jobs::JobManager::new(),
+            csrf_token: "test".to_string(),
+            embedder: Arc::new(crate::embedder::Embedder::new(settings)),
+        };
+        let list = list_handler(State(state)).await.0;
+        let by_name = |n: &str| list.as_array().unwrap().iter().find(|s| s["name"] == n).unwrap().clone();
+        assert_eq!(by_name("docs")["config"]["path"], "/tmp/docs");
+        let jira_cfg = &by_name("jira")["config"];
+        assert_eq!(jira_cfg["base_url"], "https://j.example");
+        assert_eq!(jira_cfg["token"], "***set***");
+        assert_eq!(jira_cfg["api_key"], "***set***");
+        assert!(!list.to_string().contains("tok123") && !list.to_string().contains("legacy-plain"));
 
         match prev {
             Some(v) => std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", v),

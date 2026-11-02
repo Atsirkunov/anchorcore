@@ -149,7 +149,6 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
-  sourceConfig: (id: number) => request<Record<string, string>>(`/sources/${id}/config`),
   listJiraProjects: (payload: { base_url: string; email: string; token: string }) =>
     request<{ key: string; name: string }[]>("/sources/jira/projects", {
       method: "POST",

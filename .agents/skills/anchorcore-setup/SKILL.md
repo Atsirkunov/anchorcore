@@ -192,7 +192,7 @@ environment"). If the user is not comfortable sharing, use a local model.
 
 ## 3. Index the knowledge (sources)
 
-`GET /sources` first. Create with `POST /sources`:
+`GET /sources` first (each row carries its config, secrets shown as `***set***`). Create with `POST /sources`:
 
 ```json
 {"connector":"folder","name":"Handbook","label":"internal","config":{"path":"/abs/path"}}

@@ -40,12 +40,12 @@ export function AskTab({ projectId, onGoSources }: { projectId?: number; onGoSou
     let cancelled = false;
     api
       .listSources()
-      .then(async (sources) => {
+      .then((sources) => {
         if (cancelled) return;
         setSourceCount(sources.length);
+        // R48.14: folder roots come from the masked config on the list.
         const folders = sources.filter((s) => s.connector === "folder");
-        const configs = await Promise.all(folders.map((s) => api.sourceConfig(s.id).catch(() => ({}) as Record<string, string>)));
-        if (!cancelled) setRoots(configs.map((c) => c.path).filter((p): p is string => !!p));
+        setRoots(folders.map((s) => s.config?.path).filter((p): p is string => !!p));
       })
       .catch(() => {
         if (!cancelled) setSourceCount(null);
