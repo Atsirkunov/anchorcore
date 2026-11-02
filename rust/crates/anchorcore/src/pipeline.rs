@@ -1292,6 +1292,20 @@ fn load_section_chunks(
     Ok(out)
 }
 
+/// One `sections` row as the summary pass reads it.
+struct SectionRow {
+    id: i64,
+    title: String,
+    path: String,
+    level: i64,
+    summary_hash: String,
+    summary: String,
+    line_start: i64,
+    line_end: i64,
+}
+
+/// R48.10: split into a load, a per-section step and the doc summary (was one
+/// CCN-32 loop); a row that fails to read is now an error, not a gap.
 fn create_summaries_inner(
     conn: &Connection,
     item_id: i64,
@@ -1299,72 +1313,76 @@ fn create_summaries_inner(
     base_ref: &str,
     force: bool,
 ) -> Result<(), String> {
-    let mut stmt = conn
-        .prepare("SELECT id, title, path, level, summary_hash, summary, line_start, line_end FROM sections WHERE item_id=?1 ORDER BY id")
-        .map_err(|e| e.to_string())?;
-    let secs: Vec<(i64, String, String, i64, String, String, i64, i64)> = stmt
-        .query_map([item_id], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
-                r.get::<_, i64>(6)?,
-                r.get::<_, i64>(7)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+    let secs = load_summary_sections(conn, item_id)?;
     // R15.4: one batched read for all section texts (was one query per section).
-    let sec_ids: Vec<i64> = secs.iter().map(|(id, _, _, _, _, _, _, _)| *id).collect();
+    let sec_ids: Vec<i64> = secs.iter().map(|s| s.id).collect();
     let mut section_chunks = load_section_chunks(conn, &sec_ids)?;
-    for (sec_id, title, path, level, stored_hash, stored_summary, line_start, line_end) in secs {
-        if title.is_empty() && path.is_empty() && level == 0 {
-            continue;
-        }
-        let sec_text: String = section_chunks
-            .remove(&sec_id)
+    for sec in secs.iter().filter(|s| !(s.title.is_empty() && s.path.is_empty() && s.level == 0)) {
+        let text = section_chunks
+            .remove(&sec.id)
             .unwrap_or_default()
             .into_iter()
             .map(|(_, c)| c)
             .collect::<Vec<_>>()
             .join("\n\n");
-        if sec_text.trim().is_empty() {
-            continue;
-        }
-        let new_hash = window_hash(&sec_text);
-        if !force && stored_hash == new_hash && !stored_summary.is_empty() {
-            continue;
-        }
-        let summary = extractive_section_summary(&sec_text);
-        if summary.is_empty() {
-            continue;
-        }
-        conn.execute(
-            "UPDATE sections SET summary=?1, summary_hash=?2 WHERE id=?3",
-            rusqlite::params![summary, new_hash, sec_id],
-        )
-        .map_err(|e| e.to_string())?;
-        conn.execute(
-            "DELETE FROM chunks WHERE section_id=?1 AND kind='section_summary'",
-            [sec_id],
-        )
-        .map_err(|e| e.to_string())?;
-        let src_ref = if title.is_empty() {
-            format!("{} summary", base_ref)
-        } else {
-            format!("{} summary: {}", base_ref, title)
-        };
-        conn.execute(
-            "INSERT INTO chunks (item_id, section_id, kind, source_ref, content, level, path, line_start, line_end, created_at, uid) VALUES (?1,?2,'section_summary',?3,?4,?5,?6,?7,?8,datetime('now'),?9)",
-            rusqlite::params![item_id, sec_id, src_ref, summary, level, path, line_start, line_end, crate::db::new_uid()],
-        )
-        .map_err(|e| e.to_string())?;
+        summarize_section(conn, item_id, base_ref, force, sec, &text)?;
     }
-    // doc summary
+    write_doc_summary(conn, item_id, base_ref, force, full_text)
+}
+
+fn load_summary_sections(conn: &Connection, item_id: i64) -> Result<Vec<SectionRow>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, title, path, level, summary_hash, summary, line_start, line_end FROM sections WHERE item_id=?1 ORDER BY id")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([item_id], |r| {
+            Ok(SectionRow {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                path: r.get(2)?,
+                level: r.get(3)?,
+                summary_hash: r.get(4)?,
+                summary: r.get(5)?,
+                line_start: r.get(6)?,
+                line_end: r.get(7)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// Rewrite one section's summary (and its `section_summary` chunk) when its
+/// text changed, or always under `force`.
+fn summarize_section(conn: &Connection, item_id: i64, base_ref: &str, force: bool, sec: &SectionRow, text: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Ok(());
+    }
+    let new_hash = window_hash(text);
+    if !force && sec.summary_hash == new_hash && !sec.summary.is_empty() {
+        return Ok(());
+    }
+    let summary = extractive_section_summary(text);
+    if summary.is_empty() {
+        return Ok(());
+    }
+    let src_ref = match sec.title.as_str() {
+        "" => format!("{} summary", base_ref),
+        title => format!("{} summary: {}", base_ref, title),
+    };
+    let e = |e: rusqlite::Error| e.to_string();
+    conn.execute("UPDATE sections SET summary=?1, summary_hash=?2 WHERE id=?3", rusqlite::params![summary, new_hash, sec.id]).map_err(e)?;
+    conn.execute("DELETE FROM chunks WHERE section_id=?1 AND kind='section_summary'", [sec.id]).map_err(e)?;
+    conn.execute(
+        "INSERT INTO chunks (item_id, section_id, kind, source_ref, content, level, path, line_start, line_end, created_at, uid) VALUES (?1,?2,'section_summary',?3,?4,?5,?6,?7,?8,datetime('now'),?9)",
+        rusqlite::params![item_id, sec.id, src_ref, summary, sec.level, sec.path, sec.line_start, sec.line_end, crate::db::new_uid()],
+    )
+    .map_err(e)?;
+    Ok(())
+}
+
+/// The item's one `doc_summary` chunk, rewritten only when its text changed.
+fn write_doc_summary(conn: &Connection, item_id: i64, base_ref: &str, force: bool, full_text: &str) -> Result<(), String> {
+    use rusqlite::OptionalExtension;
     if full_text.trim().is_empty() {
         return Ok(());
     }
@@ -1372,31 +1390,20 @@ fn create_summaries_inner(
     if doc_summary.is_empty() {
         return Ok(());
     }
-    let new_doc_hash = window_hash(&doc_summary);
-    let existing_doc: Option<String> = conn
-        .query_row(
-            "SELECT content FROM chunks WHERE item_id=?1 AND kind='doc_summary' LIMIT 1",
-            [item_id],
-            |r| r.get::<_, String>(0),
-        )
-        .ok();
-    if !force {
-        if let Some(existing) = existing_doc {
-            if window_hash(&existing) == new_doc_hash {
-                return Ok(());
-            }
-        }
+    let e = |e: rusqlite::Error| e.to_string();
+    let existing: Option<String> = conn
+        .query_row("SELECT content FROM chunks WHERE item_id=?1 AND kind='doc_summary' LIMIT 1", [item_id], |r| r.get(0))
+        .optional()
+        .map_err(e)?;
+    if !force && existing.is_some_and(|old| window_hash(&old) == window_hash(&doc_summary)) {
+        return Ok(());
     }
-    conn.execute(
-        "DELETE FROM chunks WHERE item_id=?1 AND kind='doc_summary'",
-        [item_id],
-    )
-    .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM chunks WHERE item_id=?1 AND kind='doc_summary'", [item_id]).map_err(e)?;
     conn.execute(
         "INSERT INTO chunks (item_id, kind, source_ref, content, level, path, line_start, line_end, created_at, uid) VALUES (?1,'doc_summary',?2,?3,0,'',1,?4,datetime('now'),?5)",
         rusqlite::params![item_id, format!("{} summary", base_ref), doc_summary, full_text.split('\n').count().max(1) as i64, crate::db::new_uid()],
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(e)?;
     Ok(())
 }
 
@@ -1418,50 +1425,84 @@ async fn create_tags(ctx: &ClassifyCtx) -> Result<(), String> {
     .await
 }
 
-fn create_tags_inner(conn: &Connection, item_id: i64, full_text: &str) -> Result<(), String> {
-    use std::sync::atomic::Ordering;
-    let t_all = std::time::Instant::now();
-    let calls0 = crate::tags::ENSURE_CALLS.load(Ordering::Relaxed);
-    let exact0 = crate::tags::ENSURE_EXACT.load(Ordering::Relaxed);
-    let scans0 = crate::tags::ENSURE_SCANS.load(Ordering::Relaxed);
-    let micros0 = crate::tags::ENSURE_MICROS.load(Ordering::Relaxed);
-    let mut stmt = conn
-        .prepare("SELECT id, title, path FROM sections WHERE item_id=?1 ORDER BY id")
+/// `tags::ensure_tag*` counters at the start of a tag pass, for the perf line.
+struct TagPerf {
+    started: std::time::Instant,
+    calls: u64,
+    exact: u64,
+    scans: u64,
+    micros: u64,
+}
+
+impl TagPerf {
+    fn start() -> Self {
+        use std::sync::atomic::Ordering::Relaxed;
+        Self {
+            started: std::time::Instant::now(),
+            calls: crate::tags::ENSURE_CALLS.load(Relaxed),
+            exact: crate::tags::ENSURE_EXACT.load(Relaxed),
+            scans: crate::tags::ENSURE_SCANS.load(Relaxed),
+            micros: crate::tags::ENSURE_MICROS.load(Relaxed),
+        }
+    }
+
+    fn log(&self, item_id: i64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        tracing::debug!(
+            target: "anchorcore::perf",
+            item = item_id,
+            total_ms = self.started.elapsed().as_millis(),
+            calls = crate::tags::ENSURE_CALLS.load(Relaxed) - self.calls,
+            exact = crate::tags::ENSURE_EXACT.load(Relaxed) - self.exact,
+            scans = crate::tags::ENSURE_SCANS.load(Relaxed) - self.scans,
+            ensure_ms = (crate::tags::ENSURE_MICROS.load(Relaxed) - self.micros) / 1000,
+            "tags"
+        );
+    }
+}
+
+/// Link each named tag to every chunk id. R48.10: a failed link is an error
+/// (the caller's transaction then rolls back) instead of a silent gap.
+fn link_tags(conn: &Connection, tags: &[String], chunk_ids: &[i64], cache: &mut crate::tags::TagVecCache) -> Result<(), String> {
+    let mut insert = conn
+        .prepare_cached("INSERT OR IGNORE INTO chunk_tags (chunk_id, tag_id) VALUES (?1,?2)")
         .map_err(|e| e.to_string())?;
-    let secs: Vec<(i64, String, String)> = stmt
-        .query_map([item_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+    for tag_name in tags {
+        let tag_id = crate::tags::ensure_tag_cached(conn, tag_name, cache)?;
+        for cid in chunk_ids {
+            insert.execute(rusqlite::params![cid, tag_id]).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn create_tags_inner(conn: &Connection, item_id: i64, full_text: &str) -> Result<(), String> {
+    let perf = TagPerf::start();
+    let mut stmt = conn
+        .prepare("SELECT id, title FROM sections WHERE item_id=?1 ORDER BY id")
+        .map_err(|e| e.to_string())?;
+    let secs: Vec<(i64, String)> = stmt
+        .query_map([item_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
     // R15.4: one batched read for all section chunks (was per-section content
     // + per-tag id queries).
-    let sec_ids: Vec<i64> = secs.iter().map(|(id, _, _)| *id).collect();
+    let sec_ids: Vec<i64> = secs.iter().map(|(id, _)| *id).collect();
     let mut section_chunks = load_section_chunks(conn, &sec_ids)?;
     // R30.5: tag vectors are decoded once per pass, not on every miss.
     let mut tag_cache = crate::tags::TagVecCache::default();
-    for (sec_id, title, _path) in secs {
-        if title.is_empty() {
-            continue;
-        }
+    for (sec_id, title) in secs.into_iter().filter(|(_, t)| !t.is_empty()) {
         let chunks = section_chunks.remove(&sec_id).unwrap_or_default();
-        let mut sec_text: String = chunks.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>().join("\n\n");
+        let mut sec_text: String = chunks.iter().map(|(_, c)| c.as_str()).collect::<Vec<_>>().join("\n\n");
         if sec_text.trim().is_empty() {
             sec_text = title.clone();
         }
         let chunk_ids: Vec<i64> = chunks.into_iter().map(|(cid, _)| cid).collect();
-        let proposed = crate::tags::propose_tags(&sec_text, &title);
-        for tag_name in proposed {
-            let tag_id = crate::tags::ensure_tag_cached(conn, &tag_name, &mut tag_cache)?;
-            for cid in &chunk_ids {
-                let _ = conn.execute(
-                    "INSERT OR IGNORE INTO chunk_tags (chunk_id, tag_id) VALUES (?1,?2)",
-                    rusqlite::params![cid, tag_id],
-                );
-            }
-        }
+        link_tags(conn, &crate::tags::propose_tags(&sec_text, &title), &chunk_ids, &mut tag_cache)?;
     }
-    // also tag doc-level chunks (doc_summary) with top tags from full_text
-    let doc_tags = crate::tags::propose_tags(full_text, "");
+    // also tag doc-level chunks (doc_summary) with the top two tags from full_text
+    let doc_tags: Vec<String> = crate::tags::propose_tags(full_text, "").into_iter().take(2).collect();
     if !doc_tags.is_empty() {
         // R15.4: hoisted out of the per-tag loop (was re-queried per tag).
         let doc_chunks: Vec<i64> = conn
@@ -1469,28 +1510,11 @@ fn create_tags_inner(conn: &Connection, item_id: i64, full_text: &str) -> Result
             .map_err(|e| e.to_string())?
             .query_map([item_id], |r| r.get::<_, i64>(0))
             .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
-        for tag_name in doc_tags.iter().take(2) {
-            let tag_id = crate::tags::ensure_tag_cached(conn, tag_name, &mut tag_cache)?;
-            for cid in &doc_chunks {
-                let _ = conn.execute(
-                    "INSERT OR IGNORE INTO chunk_tags (chunk_id, tag_id) VALUES (?1,?2)",
-                    rusqlite::params![cid, tag_id],
-                );
-            }
-        }
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        link_tags(conn, &doc_tags, &doc_chunks, &mut tag_cache)?;
     }
-    tracing::debug!(
-        target: "anchorcore::perf",
-        item = item_id,
-        total_ms = t_all.elapsed().as_millis(),
-        calls = crate::tags::ENSURE_CALLS.load(Ordering::Relaxed) - calls0,
-        exact = crate::tags::ENSURE_EXACT.load(Ordering::Relaxed) - exact0,
-        scans = crate::tags::ENSURE_SCANS.load(Ordering::Relaxed) - scans0,
-        ensure_ms = (crate::tags::ENSURE_MICROS.load(Ordering::Relaxed) - micros0) / 1000,
-        "tags"
-    );
+    perf.log(item_id);
     Ok(())
 }
 
