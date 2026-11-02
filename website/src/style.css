@@ -154,13 +154,16 @@ h1{font-family:var(--serif);font-weight:500;letter-spacing:-0.015em;line-height:
 .nx-miss circle{fill:var(--paper);stroke:var(--ink);stroke-width:1.1}
 .nx-miss path{fill:none;stroke:var(--ink);stroke-width:1.3;stroke-linecap:round}
 .nx-node{fill:var(--paper);stroke:var(--dim);stroke-width:1.2;transition:fill .25s,stroke .25s}
-.nx-node.on{fill:var(--cite);stroke:var(--cite)}
+.nx-node.on,html:not(.js) .nx-node{fill:var(--cite);stroke:var(--cite)}
 .nx-word{font:12px var(--mono);fill:var(--faint);paint-order:stroke;stroke:var(--paper);stroke-linejoin:round;transition:fill .25s}
-.nx-word.on{fill:var(--cite);font-weight:600}
+.nx-word.on,html:not(.js) .nx-word{fill:var(--cite);font-weight:600}
 .nx-bang line{stroke:var(--cite);stroke-width:1.6;stroke-linecap:round}
 .nx-ring{fill:none;stroke:var(--cite);stroke-width:1.2}
 .nx-core{fill:var(--cite)}
-.nx-bang,.nx-hit{opacity:0}
+/* with JS the search starts undrawn (paths use pathLength=1); without JS the finished picture shows */
+.js .hero-art .nx-route,.js .hero-art .nx-lead{stroke-dasharray:1 2;stroke-dashoffset:1}
+.js .hero-art .nx-miss,.js .hero-art .nx-bang,.js .hero-art .nx-hit{opacity:0}
+.nx-ring{opacity:0}
 .hero-art .nx-word,.hero-art .lx-label{font-size:var(--lx-fs,12px);stroke-width:calc(var(--lx-fs,12px) * .42)}
 @media(max-width:720px){
   .for-item{flex-direction:column;align-items:center;gap:6px;padding:12px 6px 14px;text-align:center}

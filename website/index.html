@@ -22,6 +22,7 @@
       try { m = localStorage.getItem("theme-mode"); } catch (e) {}
       var dark = m === "dark" || (m === "auto" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
       document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+      document.documentElement.classList.add("js"); // hero band starts empty, src/heroArt.ts plays the search
     })();
   </script>
   <link rel="stylesheet" href="/src/style.css" />
@@ -55,10 +56,10 @@
   </header>
 
   <main>
-    <!-- Hero: line-art band (src/heroArt.ts), headline, one button, proof points, then the demo with one tab per audience.
+    <!-- Hero: line-art band (drawn at build by src/heroArtDraw.ts, played by src/heroArt.ts), headline, one button, proof points, then the demo with one tab per audience.
          Without JS the band is empty and the agent panel shows; the other panels stay in the DOM. -->
     <section class="hero hero-home">
-      <div class="hero-art" aria-hidden="true"><svg id="hero-neurons" preserveAspectRatio="xMidYMid slice"></svg></div>
+      <div class="hero-art" aria-hidden="true"><svg id="hero-neurons" viewBox="0 0 1600 300" preserveAspectRatio="xMidYMid slice"><!--hero:neurons--></svg></div>
       <div class="wrap hero-center">
         <p class="eyebrow-plain">Private AI search · runs on your computer</p>
         <h1 id="hero-title">Ask your data.<span class="l2"> Get the answer and its <span class="cited">exact source</span>.</span></h1>
