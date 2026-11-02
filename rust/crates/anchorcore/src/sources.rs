@@ -17,34 +17,36 @@ fn secret_store(data_dir: &str) -> crate::secrets::SecretStore {
     crate::secrets::SecretStore::new(std::path::PathBuf::from(data_dir).join("secrets.enc"))
 }
 
-fn store_secret_fields(data_dir: &str, source_id: i64, config: &mut Value) {
+/// R48.4: pull the secret fields out of a config before it is stored.
+/// `Some` = store this value, `None` = clear (`""` or `null`); `***set***`
+/// and absent fields leave the stored secret alone. Other JSON values are
+/// stored as their text (they used to clear the secret).
+fn take_secrets(config: &mut Value) -> Vec<(&'static str, Option<String>)> {
+    let Some(obj) = config.as_object_mut() else { return Vec::new() };
+    SECRET_FIELDS
+        .iter()
+        .filter_map(|&field| {
+            let change = match obj.remove(field)? {
+                Value::String(s) if s == "***set***" => return None,
+                Value::String(s) if s.is_empty() => None,
+                Value::String(s) => Some(s),
+                Value::Null => None,
+                other => Some(other.to_string()),
+            };
+            Some((field, change))
+        })
+        .collect()
+}
+
+/// Write [`take_secrets`] changes to the SecretStore — after the source row
+/// committed, so a failed write never leaves credentials it didn't keep.
+fn apply_secrets(data_dir: &str, source_id: i64, changes: &[(&'static str, Option<String>)]) {
     let store = secret_store(data_dir);
-    if let Some(obj) = config.as_object_mut() {
-        for &field in SECRET_FIELDS {
-            if let Some(v) = obj.remove(field) {
-                match v {
-                    Value::String(s) if s == "***set***" => {
-                        // keep existing – do nothing, but we removed it, so don't reinsert
-                        // Need to keep stored value, so just not store
-                    }
-                    Value::String(s) if s.is_empty() => {
-                        store.delete(&format!("source:{}:{}", source_id, field));
-                    }
-                    Value::String(s) => {
-                        store.set(&format!("source:{}:{}", source_id, field), &s);
-                    }
-                    other => {
-                        // non-string, treat as string
-                        let s = other.as_str().unwrap_or("").to_string();
-                        if s == "***set***" {
-                        } else if s.is_empty() {
-                            store.delete(&format!("source:{}:{}", source_id, field));
-                        } else {
-                            store.set(&format!("source:{}:{}", source_id, field), &s);
-                        }
-                    }
-                }
-            }
+    for (field, change) in changes {
+        let key = crate::secrets::source_secret_key(source_id, field);
+        match change {
+            Some(v) => store.set(&key, v),
+            None => store.delete(&key),
         }
     }
 }
@@ -176,25 +178,25 @@ pub async fn create_handler(State(state): State<AppState>, Json(payload): Json<V
     let label = payload.get("label").and_then(|v| v.as_str()).unwrap_or("internal").to_string();
     let mut config_val = payload.get("config").cloned().unwrap_or(Value::Object(Default::default()));
     let result = tokio::task::spawn_blocking(move || {
-        let conn = crate::common::open_data_db(&data_dir);
+        use crate::common::db_err;
         check_label(&label)?;
-        // initial insert with safe config (without secrets) – we need id first to store secrets
-        // Insert with empty config first, then update with safe config after storing secrets
-        let initial_str = serde_json::to_string(&Value::Object(Default::default())).unwrap();
-        conn.execute("INSERT INTO sources (name, connector, config, label, enabled, last_sync_cursor, error_count, created_at, uid) VALUES (?1, ?2, ?3, ?4, 1, '', 0, datetime('now'), ?5)", rusqlite::params![name, connector, initial_str, label, crate::db::new_uid()]).unwrap();
+        let conn = crate::common::try_open_data_db(&data_dir).map_err(db_err)?;
+        // R48.4: the row is inserted once with its secret-free config; the
+        // secrets (keyed by the new id) are stored only after that succeeded.
+        let secrets = take_secrets(&mut config_val);
+        conn.execute(
+            "INSERT INTO sources (name, connector, config, label, enabled, last_sync_cursor, error_count, created_at, uid) VALUES (?1, ?2, ?3, ?4, 1, '', 0, datetime('now'), ?5)",
+            rusqlite::params![name, connector, config_val.to_string(), label, crate::db::new_uid()],
+        )
+        .map_err(db_err)?;
         let id = conn.last_insert_rowid();
-        // store secrets and get safe config
-        store_secret_fields(&data_dir, id, &mut config_val);
-        let safe_str = serde_json::to_string(&config_val).unwrap();
-        let _ = conn.execute("UPDATE sources SET config=?1 WHERE id=?2", rusqlite::params![safe_str, id]);
+        apply_secrets(&data_dir, id, &secrets);
         // R11.1: reload scheduler on CRUD
         if let Some(sched) = scheduler::global() {
             sched.reload_sources(&conn);
         }
-        let mut stmt = conn.prepare("SELECT id, name, connector, config, enabled, label, last_synced_at, last_error, error_count, created_at FROM sources WHERE id = ?1").unwrap();
-        let v = stmt.query_row([id], |r| source_json(r)).unwrap();
-        Ok((StatusCode::CREATED, Json(v)))
-    }).await.unwrap();
+        Ok((StatusCode::CREATED, read_source(&conn, id)?))
+    }).await.map_err(crate::common::db_err)?;
     result
 }
 
@@ -208,49 +210,76 @@ pub struct UpdatePayload {
 
 pub async fn update_handler(State(state): State<AppState>, Path(source_id): Path<i64>, Json(payload): Json<UpdatePayload>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let data_dir = state.data_dir.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let conn = crate::common::open_data_db(&data_dir);
-        crate::common::require_row(&conn, "sources", source_id, "Source not found")?;
-        if let Some(name) = payload.name {
-            if name.trim().is_empty() {
-                return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"detail":"source name cannot be empty"}))));
-            }
-            let _ = conn.execute("UPDATE sources SET name=?1 WHERE id=?2", rusqlite::params![name.trim(), source_id]);
+    tokio::task::spawn_blocking(move || update_source(&data_dir, source_id, payload))
+        .await
+        .map_err(crate::common::db_err)?
+}
+
+/// R48.4: validate everything, then write every field in one transaction,
+/// then store secrets. A bad field or a failed write changes nothing —
+/// before, a failed `label` write (the Sensitive gate) still answered 200.
+fn update_source(data_dir: &str, source_id: i64, payload: UpdatePayload) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    use crate::common::db_err;
+    let conn = crate::common::try_open_data_db(data_dir).map_err(db_err)?;
+    crate::common::require_row(&conn, "sources", source_id, "Source not found")?;
+    let name = payload.name.map(|n| n.trim().to_string());
+    if name.as_deref() == Some("") {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"detail": "source name cannot be empty"}))));
+    }
+    if let Some(label) = &payload.label {
+        check_label(label)?;
+    }
+    let (config, secrets) = match payload.config {
+        Some(new_cfg) => {
+            let mut merged = merged_config(&conn, source_id, new_cfg)?;
+            let secrets = take_secrets(&mut merged);
+            (Some(merged.to_string()), secrets)
         }
-        if let Some(enabled) = payload.enabled {
-            let _ = conn.execute("UPDATE sources SET enabled=?1 WHERE id=?2", rusqlite::params![if enabled {1} else {0}, source_id]);
+        None => (None, Vec::new()),
+    };
+    let fields: [(&str, Option<rusqlite::types::Value>); 4] = [
+        ("name", name.map(Into::into)),
+        ("enabled", payload.enabled.map(|e| i64::from(e).into())),
+        ("label", payload.label.map(Into::into)),
+        ("config", config.map(Into::into)),
+    ];
+    let tx = conn.unchecked_transaction().map_err(db_err)?;
+    for (column, value) in fields {
+        if let Some(value) = value {
+            tx.execute(&format!("UPDATE sources SET {column}=?1 WHERE id=?2"), rusqlite::params![value, source_id])
+                .map_err(db_err)?;
         }
-        if let Some(label) = payload.label {
-            check_label(&label)?;
-            let _ = conn.execute("UPDATE sources SET label=?1 WHERE id=?2", rusqlite::params![label, source_id]);
-        }
-        if let Some(new_cfg) = payload.config {
-            // merge with existing config like Python's store_source_config
-            let existing_str: String = conn.query_row("SELECT config FROM sources WHERE id=?1", [source_id], |r| r.get(0)).unwrap_or_else(|_| "{}".to_string());
-            let mut existing: Value = serde_json::from_str(&existing_str).unwrap_or(json!({}));
-            if let Some(new_obj) = new_cfg.as_object() {
-                if let Some(exist_obj) = existing.as_object_mut() {
-                    for (k, v) in new_obj {
-                        exist_obj.insert(k.clone(), v.clone());
-                    }
-                } else {
-                    existing = new_cfg.clone();
-                }
-            } else {
-                existing = new_cfg.clone();
-            }
-            store_secret_fields(&data_dir, source_id, &mut existing);
-            let s = serde_json::to_string(&existing).unwrap();
-            let _ = conn.execute("UPDATE sources SET config=?1 WHERE id=?2", rusqlite::params![s, source_id]);
-        }
-        if let Some(sched) = scheduler::global() {
-            sched.reload_sources(&conn);
-        }
-        let mut stmt = conn.prepare("SELECT id, name, connector, config, enabled, label, last_synced_at, last_error, error_count, created_at FROM sources WHERE id=?1").unwrap();
-        let v = stmt.query_row([source_id], |r| source_json(r)).unwrap();
-        Ok(Json(v))
-    }).await.unwrap();
-    result
+    }
+    tx.commit().map_err(db_err)?;
+    apply_secrets(data_dir, source_id, &secrets);
+    if let Some(sched) = scheduler::global() {
+        sched.reload_sources(&conn);
+    }
+    read_source(&conn, source_id)
+}
+
+/// The stored config with `new_cfg`'s keys laid over it (Python's
+/// `store_source_config`); a non-object on either side replaces it whole.
+fn merged_config(conn: &rusqlite::Connection, source_id: i64, new_cfg: Value) -> Result<Value, (StatusCode, Json<Value>)> {
+    let stored: String = conn
+        .query_row("SELECT config FROM sources WHERE id=?1", [source_id], |r| r.get(0))
+        .map_err(crate::common::db_err)?;
+    let mut existing: Value = serde_json::from_str(&stored).unwrap_or(json!({}));
+    match (existing.as_object_mut(), new_cfg.as_object()) {
+        (Some(old), Some(new)) => old.extend(new.clone()),
+        _ => existing = new_cfg,
+    }
+    Ok(existing)
+}
+
+fn read_source(conn: &rusqlite::Connection, source_id: i64) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    conn.query_row(
+        "SELECT id, name, connector, config, enabled, label, last_synced_at, last_error, error_count, created_at FROM sources WHERE id=?1",
+        [source_id],
+        source_json,
+    )
+    .map(Json)
+    .map_err(crate::common::db_err)
 }
 
 pub async fn delete_handler(State(state): State<AppState>, Path(source_id): Path<i64>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -503,6 +532,68 @@ mod tests {
         }
     }
 
+    fn update(name: Option<&str>, label: Option<&str>, config: Option<Value>) -> UpdatePayload {
+        UpdatePayload { name: name.map(String::from), enabled: None, label: label.map(String::from), config }
+    }
+
+    /// R48.4: a failed write or a bad field changes nothing — no half-applied
+    /// name, no stored secret — and says so instead of answering 200.
+    #[test]
+    fn update_is_all_or_nothing() {
+        let _lock = crate::secrets::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("ANCHOR_SECRETS_NO_KEYRING").ok();
+        std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", "1");
+
+        let dir = tempdir().unwrap();
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let conn = crate::common::try_open_data_db(&data_dir).unwrap();
+        conn.execute("INSERT INTO sources (name, connector, config) VALUES ('old','jira','{\"base_url\":\"https://a\"}')", []).unwrap();
+        let sid: i64 = conn.query_row("SELECT id FROM sources", [], |r| r.get(0)).unwrap();
+        let key = crate::secrets::source_secret_key(sid, "token");
+        let row = |c: &rusqlite::Connection| -> (String, String, String) {
+            c.query_row("SELECT name, label, config FROM sources WHERE id=?1", [sid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
+        };
+        let before = row(&conn);
+
+        // A bad label is refused before anything is written.
+        let (status, _) = update_source(&data_dir, sid, update(Some("new"), Some("secret-ish"), None)).unwrap_err();
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(row(&conn), before);
+
+        // A failing label write rolls back the name and config, and the token is not stored.
+        conn.execute_batch("CREATE TRIGGER block_label BEFORE UPDATE OF label ON sources BEGIN SELECT RAISE(ABORT, 'locked'); END;").unwrap();
+        let payload = update(Some("new"), Some("sensitive"), Some(json!({"base_url": "https://b", "token": "tok"})));
+        let (status, _) = update_source(&data_dir, sid, payload).unwrap_err();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(row(&conn), before);
+        assert_eq!(secret_store(&data_dir).get(&key), None);
+
+        // Unblocked, the same update lands whole; the token goes to the store, not the row.
+        conn.execute_batch("DROP TRIGGER block_label;").unwrap();
+        let payload = update(Some(" new "), Some("sensitive"), Some(json!({"base_url": "https://b", "token": "tok"})));
+        let out = update_source(&data_dir, sid, payload).unwrap().0;
+        assert_eq!((out["name"].as_str(), out["label"].as_str()), (Some("new"), Some("sensitive")));
+        let (_, _, config) = row(&conn);
+        assert_eq!(serde_json::from_str::<Value>(&config).unwrap(), json!({"base_url": "https://b"}));
+        assert_eq!(secret_store(&data_dir).get(&key).as_deref(), Some("tok"));
+
+        match prev {
+            Some(v) => std::env::set_var("ANCHOR_SECRETS_NO_KEYRING", v),
+            None => std::env::remove_var("ANCHOR_SECRETS_NO_KEYRING"),
+        }
+    }
+
+    #[test]
+    fn take_secrets_keeps_masks_clears_empty_and_stores_text() {
+        let mut cfg = json!({"path": "/p", "token": "***set***", "api_key": "", "password": null, "client_secret": 42, "access_token": "at"});
+        let changes = take_secrets(&mut cfg);
+        assert_eq!(cfg, json!({"path": "/p"}));
+        assert_eq!(
+            changes,
+            vec![("api_key", None), ("password", None), ("client_secret", Some("42".to_string())), ("access_token", Some("at".to_string()))]
+        );
+    }
+
     /// R48.3: a delete that fails in the database keeps the source, its
     /// credentials and writes no "deleted" audit row.
     #[test]
@@ -557,7 +648,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let data_dir = dir.path().to_string_lossy().to_string();
         let mut cfg = serde_json::json!({"folder_id": "fld123", "access_token": "drive_at"});
-        store_secret_fields(&data_dir, 3, &mut cfg);
+        let secrets = take_secrets(&mut cfg);
+        apply_secrets(&data_dir, 3, &secrets);
         assert!(cfg.get("access_token").is_none(), "stripped from stored config: {cfg}");
         assert_eq!(cfg.get("folder_id").and_then(|v| v.as_str()), Some("fld123"));
         let store = secret_store(&data_dir);
