@@ -256,15 +256,6 @@ function useStarters(roots: string[], sourceCount: number | null, projectId?: nu
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  spinner: {
-    width: 14,
-    height: 14,
-    borderRadius: "50%",
-    border: `2px solid ${theme.border}`,
-    borderTopColor: theme.accentAlt,
-    animation: "spin 0.8s linear infinite",
-    flexShrink: 0,
-  },
   scopeRow: { display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", marginTop: 8 },
   scope: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: theme.textDim },
   scopeSelect: { background: theme.bgCard, border: `1px solid ${theme.border}`, color: theme.text, borderRadius: radius, padding: "0.2rem 0.4rem", fontSize: 12, maxWidth: 200 },

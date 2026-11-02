@@ -27,7 +27,7 @@ export function AnswerView({ turn, roots, latest }: { turn: AnswerTurn; roots: s
   const evidence = isEvidenceView(turn.mode);
   const label = agent ? "Evidence for your agent" : evidence ? "Matching passages" : "Sources";
   return (
-    <article className="animated" style={{ ...styles.turn, ...(latest ? styles.latest : {}), animation: "popIn 0.45s ease both" }}>
+    <article className="animated" style={{ ...styles.turn, ...(latest ? styles.latest : {}), animation: "fadeIn 0.15s ease both" }}>
       <p style={styles.question}>{turn.question}</p>
       {turn.warning && !evidence ? <div style={styles.degradedNote}>{turn.warning}</div> : null}
       {modeBannerNotes(turn.mode, turn.retrieval).map((note) => (
@@ -181,7 +181,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: theme.bgCard,
     fontSize: 13,
     lineHeight: 1.5,
-    transition: "border-color 0.2s ease, background 0.2s ease",
+    transition: "border-color 0.15s ease, background 0.15s ease",
   },
   cardActive: { borderColor: theme.cite, background: theme.citeSoft },
   sid: { flexShrink: 0, fontFamily: theme.mono, fontWeight: 600, color: theme.cite, paddingTop: 1 },

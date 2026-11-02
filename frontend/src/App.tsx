@@ -147,7 +147,7 @@ export default function App() {
             ].join("\n")}
             style={styles.jobsBadge}
           >
-            <span style={styles.spinner} />
+            <span className="animated" style={styles.spinner} />
             {badgeText(runningJobs)}
           </button>
         )}

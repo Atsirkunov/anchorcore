@@ -186,36 +186,11 @@ function initDemoTabs(onShow: Record<string, () => void>): void {
   });
 }
 
-// Scroll reveal, an enhancement only: content is visible unless this runs, and
-// it never runs for reduced motion or automation (headless capture, crawlers
-// that execute JS but never scroll). Printing reveals everything.
-function initReveal(): void {
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches || navigator.webdriver) return;
-  if (!("IntersectionObserver" in window)) return;
-  // the hero is above the fold: revealing it delays first paint (R44.3)
-  const targets = Array.from(document.querySelectorAll("section:not(.hero) .wrap, .col, .step, .qa, .fig")).filter((el) => !el.closest(".hero"));
-  targets.forEach((el) => el.classList.add("reveal"));
-  window.addEventListener("beforeprint", () => targets.forEach((el) => el.classList.add("in")));
-  const obs = new IntersectionObserver(
-    (entries) => {
-      for (const e of entries) {
-        if (e.isIntersecting) {
-          e.target.classList.add("in");
-          obs.unobserve(e.target);
-        }
-      }
-    },
-    { threshold: 0.12 },
-  );
-  targets.forEach((el) => obs.observe(el));
-}
-
 initEmailCapture();
 if (!redirectLegacyTrack() && !redirectLegacyGuide()) initDownloadLinks();
 initHashNav();
 initNavMenu();
 initThemeSwitch();
 initSkillCopy();
-initReveal();
 initClaudeSession("cs-hero");
 initDemoTabs({ "panel-app": initAppSession("ap-hero") });
