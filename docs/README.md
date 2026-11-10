@@ -22,6 +22,7 @@
 - [connectors/miro.md](./connectors/miro.md) — Miro boards as a source
 - [b48-clean-machine.md](./b48-clean-machine.md) — clean-machine acceptance script (B48)
 - [probes/](./probes/) — dated measurement probes behind decisions (embedding engine, LLM enrichment)
+- [code-review-2026-11-10.md](./code-review-2026-11-10.md) — whole-codebase review (dead code, comments, complexity, gaps); filed as Phase 50 (R50.1–R50.39) in `rust/BACKLOG.md`
 
 ## Plans (designs + proposals — check `rust/BACKLOG.md` for what landed)
 
